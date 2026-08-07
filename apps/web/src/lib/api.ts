@@ -2,9 +2,11 @@ import type {
   ApiError,
   AuthCredentials,
   AuthUser,
+  ChatMessage,
   ConversationSummary,
   HealthResponse,
   PublicCharacter,
+  SendMessageResult,
 } from '@over18/shared';
 
 /**
@@ -72,6 +74,20 @@ export const conversationsApi = {
   get(conversationId: string): Promise<ConversationSummary> {
     return request<ConversationSummary>(
       `/api/conversations/${encodeURIComponent(conversationId)}`,
+    );
+  },
+};
+
+export const messagesApi = {
+  list(conversationId: string): Promise<ChatMessage[]> {
+    return request<ChatMessage[]>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+    );
+  },
+  send(conversationId: string, content: string): Promise<SendMessageResult> {
+    return request<SendMessageResult>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { method: 'POST', body: JSON.stringify({ content }) },
     );
   },
 };

@@ -1,4 +1,13 @@
-import { pgTable, pgEnum, uuid, text, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import {
+  bigserial,
+  index,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 /**
  * users — one row per registered account.
@@ -90,7 +99,32 @@ export const conversations = pgTable(
   ],
 );
 
+export const messageSender = pgEnum('message_sender', ['user', 'character']);
+
+/**
+ * messages — the chat history of a conversation (US-07).
+ * Strictly children of conversations; ownership is enforced through the
+ * parent conversation, never per-message.
+ */
+export const messages = pgTable(
+  'messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    // Monotonic ordering key: created_at alone is ambiguous because both
+    // messages of an exchange share one transaction timestamp.
+    seq: bigserial('seq', { mode: 'number' }).notNull(),
+    sender: messageSender('sender').notNull(),
+    content: text('content').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('messages_conversation_seq_idx').on(table.conversationId, table.seq)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
 export type ConversationRow = typeof conversations.$inferSelect;
+export type MessageRow = typeof messages.$inferSelect;

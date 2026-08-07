@@ -8,6 +8,7 @@ import authPlugin from './plugins/auth.js';
 import authRoutes from './routes/auth.js';
 import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
+import messageRoutes from './routes/messages.js';
 
 /**
  * Builds and configures the Fastify instance.
@@ -46,6 +47,7 @@ export async function buildApp(env: Env, db: Db) {
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
   await app.register(conversationRoutes, { db });
+  await app.register(messageRoutes, { db });
 
   return app;
 }

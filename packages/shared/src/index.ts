@@ -46,6 +46,23 @@ export interface ConversationSummary {
   createdAt: string;
 }
 
+/** A single chat message inside a conversation (US-07). */
+export interface ChatMessage {
+  id: string;
+  sender: 'user' | 'character';
+  content: string;
+  createdAt: string;
+}
+
+/** Result of sending a message: both persisted messages, in order. */
+export interface SendMessageResult {
+  userMessage: ChatMessage;
+  characterMessage: ChatMessage;
+}
+
+/** Message content limits shared by client- and server-side validation. */
+export const MESSAGE_MAX_LENGTH = 2000;
+
 /**
  * Public representation of a character, as returned by GET /api/characters.
  * Internal fields (system_prompt, status) are never included.
