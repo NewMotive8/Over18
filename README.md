@@ -42,6 +42,32 @@ over18/
 
 API: `GET /health` → `{ "status": "ok", "service": "over18-api", "timestamp": "…" }`
 
+## Authentication (US-02)
+
+Server-managed sessions with HttpOnly cookies:
+
+- `POST /api/auth/register` — `{ email, password }` → creates user + session, sets cookie, returns `{ id, email }`
+- `POST /api/auth/login` — `{ email, password }` → verifies, sets cookie, returns `{ id, email }`
+- `POST /api/auth/logout` — deletes the session, clears the cookie
+- `GET /api/auth/me` — returns `{ id, email }` for the current session, else 401
+- `GET /api/chat/:conversationId` — protected placeholder (requires authentication)
+
+Design notes: passwords are bcrypt-hashed (cost 12) and never returned by the API; session tokens are 32 random bytes, stored only as SHA-256 hashes (`sessions.token_hash`); the raw token lives exclusively in the `over18_session` HttpOnly cookie (SameSite=Lax by default, Secure in production, Path=/, explicit Max-Age). Nothing auth-related is stored in localStorage. Login failures return a generic message that does not reveal whether an email exists. The service layer (`apps/api/src/services/auth-service.ts`) is transport-agnostic so a React Native client can reuse it with bearer tokens later.
+
+## Database
+
+Drizzle ORM + migrations live in `apps/api`:
+
+```bash
+# Generate a migration after editing src/db/schema.ts
+npm run db:generate -w apps/api
+
+# Apply migrations to the database in DATABASE_URL
+npm run db:migrate -w apps/api
+```
+
+Tables are only created via migrations (`apps/api/drizzle/`) — never by hand. On Railway, run migrations with the injected `DATABASE_URL`.
+
 ## Requirements
 
 - Node.js ≥ 20
@@ -81,7 +107,10 @@ Note: Vite loads `apps/web/.env` automatically. The API reads plain `process.env
 ```bash
 npm run build       # builds shared → web → api
 npm run typecheck   # strict TypeScript checks for web and api
+npm run test -w apps/api   # auth integration tests (needs a local *_test database)
 ```
+
+Tests refuse to run unless the database name ends in `_test`, so they can never touch the Railway production database. Default: `postgresql://over18:over18_local_dev@127.0.0.1:5432/over18_test` (override with `TEST_DATABASE_URL`).
 
 ## Environment variables
 
@@ -89,10 +118,13 @@ npm run typecheck   # strict TypeScript checks for web and api
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `DATABASE_URL` | — (**required**, API exits if missing) | PostgreSQL connection string (injected by Railway in production) |
 | `PORT` | `3001` | API listen port |
 | `HOST` | `0.0.0.0` | Bind address |
-| `CORS_ORIGIN` | `http://localhost:5173` | Allowed web origin |
-| `DATABASE_URL` | — | Railway PostgreSQL connection string (used from a later story) |
+| `CORS_ORIGIN` | `http://localhost:5173` | Allowed web origin (never `*` — credentials are enabled) |
+| `COOKIE_SECURE` | `true` in production, else `false` | `Secure` flag on the session cookie |
+| `COOKIE_SAMESITE` | `lax` | SameSite for the session cookie (`none` requires `COOKIE_SECURE=true`) |
+| `SESSION_TTL_DAYS` | `30` | Session lifetime |
 
 ### apps/web (`apps/web/.env.example`)
 
@@ -100,6 +132,6 @@ npm run typecheck   # strict TypeScript checks for web and api
 | --- | --- | --- |
 | `VITE_API_URL` | `http://localhost:3001` | Base URL of the REST API |
 
-## Out of scope for this checkpoint
+## Out of scope so far
 
-LLM integration, authentication, database schema/Drizzle setup, AI memory, payments, image/voice/video generation, swipe algorithm, and recommendations are intentionally **not** implemented yet.
+LLM integration, AI orchestration/memory, characters and conversations/messages, payments/credits/subscriptions, image/voice/video generation, swipe algorithm, recommendations, and admin tooling are intentionally **not** implemented yet. Within auth, US-02 deliberately excludes social login, email verification, password reset, MFA, OAuth, account deletion, and role systems.

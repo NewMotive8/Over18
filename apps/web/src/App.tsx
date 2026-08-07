@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom';
 import AppLayout from './components/AppLayout';
+import RequireAuth from './auth/RequireAuth';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -17,7 +18,14 @@ export default function App() {
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/characters" element={<CharactersPage />} />
         <Route path="/characters/:characterId" element={<CharacterDetailPage />} />
-        <Route path="/chat/:conversationId" element={<ChatPage />} />
+        <Route
+          path="/chat/:conversationId"
+          element={
+            <RequireAuth>
+              <ChatPage />
+            </RequireAuth>
+          }
+        />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

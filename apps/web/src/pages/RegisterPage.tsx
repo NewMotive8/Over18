@@ -1,5 +1,7 @@
-import PagePlaceholder from '../components/PagePlaceholder';
+import AuthForm from '../components/AuthForm';
+import { useAuth } from '../auth/AuthContext';
 
 export default function RegisterPage() {
-  return <PagePlaceholder title="Create account" subtitle="Registration will be implemented in a later story." />;
+  const { register } = useAuth();
+  return <AuthForm mode="register" onSubmit={register} />;
 }

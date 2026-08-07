@@ -1,19 +1,38 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import type { HealthResponse } from '@over18/shared';
+import type { Env } from './env.js';
+import type { Db } from './db/client.js';
+import authPlugin from './plugins/auth.js';
+import authRoutes from './routes/auth.js';
+import chatRoutes from './routes/chat.js';
 
 /**
  * Builds and configures the Fastify instance.
- * Kept separate from server.ts so it can be reused in tests later.
+ * Kept separate from server.ts so tests can build an app against an
+ * isolated database without opening a network port.
  */
-export async function buildApp() {
+export async function buildApp(env: Env, db: Db) {
   const app = Fastify({
-    logger: true,
+    logger: {
+      // Never log request bodies (passwords) or cookie headers (session tokens).
+      serializers: {
+        req(request) {
+          return { method: request.method, url: request.url };
+        },
+      },
+      redact: ['req.headers.cookie', 'req.headers.authorization'],
+    },
   });
 
   await app.register(cors, {
-    origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    // Origin-specific (never "*") so credentialed requests are allowed.
+    origin: env.corsOrigin,
+    credentials: true,
   });
+  await app.register(cookie);
+  await app.register(authPlugin, { db });
 
   app.get('/health', async (): Promise<HealthResponse> => {
     return {
@@ -22,6 +41,9 @@ export async function buildApp() {
       timestamp: new Date().toISOString(),
     };
   });
+
+  await app.register(authRoutes, { db, env });
+  await app.register(chatRoutes);
 
   return app;
 }
