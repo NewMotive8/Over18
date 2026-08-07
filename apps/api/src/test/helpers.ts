@@ -49,7 +49,7 @@ export async function createTestContext(): Promise<TestContext> {
 }
 
 export async function truncateAll(ctx: TestContext): Promise<void> {
-  await ctx.pool.query('TRUNCATE TABLE sessions, users, characters CASCADE');
+  await ctx.pool.query('TRUNCATE TABLE conversations, sessions, users, characters CASCADE');
 }
 
 export async function destroyTestContext(ctx: TestContext): Promise<void> {

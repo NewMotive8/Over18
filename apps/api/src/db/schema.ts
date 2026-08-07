@@ -1,4 +1,4 @@
-import { pgTable, pgEnum, uuid, text, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, pgEnum, uuid, text, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 /**
  * users — one row per registered account.
@@ -64,6 +64,33 @@ export const characters = pgTable(
   (table) => [index('characters_status_idx').on(table.status)],
 );
 
+/**
+ * conversations — one persistent conversation per (user, character) pair.
+ *
+ * The unique index on (user_id, character_id) is the database-level guarantee
+ * behind US-06's "existing conversation is reopened rather than duplicated".
+ * Messages arrive in a later story.
+ */
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('conversations_user_character_uq').on(table.userId, table.characterId),
+    index('conversations_user_id_idx').on(table.userId),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
+export type ConversationRow = typeof conversations.$inferSelect;

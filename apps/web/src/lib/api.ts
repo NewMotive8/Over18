@@ -1,4 +1,11 @@
-import type { ApiError, AuthCredentials, AuthUser, HealthResponse, PublicCharacter } from '@over18/shared';
+import type {
+  ApiError,
+  AuthCredentials,
+  AuthUser,
+  ConversationSummary,
+  HealthResponse,
+  PublicCharacter,
+} from '@over18/shared';
 
 /**
  * Single entry point for talking to the Over18 REST API.
@@ -51,6 +58,21 @@ export const charactersApi = {
   },
   get(characterId: string): Promise<PublicCharacter> {
     return request<PublicCharacter>(`/api/characters/${encodeURIComponent(characterId)}`);
+  },
+};
+
+export const conversationsApi = {
+  /** Creates the conversation with a character, or reopens the existing one. */
+  start(characterId: string): Promise<ConversationSummary> {
+    return request<ConversationSummary>('/api/conversations', {
+      method: 'POST',
+      body: JSON.stringify({ characterId }),
+    });
+  },
+  get(conversationId: string): Promise<ConversationSummary> {
+    return request<ConversationSummary>(
+      `/api/conversations/${encodeURIComponent(conversationId)}`,
+    );
   },
 };
 

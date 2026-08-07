@@ -172,22 +172,24 @@ describe('POST /api/auth/logout', () => {
   });
 });
 
-describe('protected chat route', () => {
+describe('protected conversation routes (chat area)', () => {
   it('rejects unauthenticated requests with 401', async () => {
-    const res = await ctx.app.inject({ method: 'GET', url: '/api/chat/some-conversation' });
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/conversations/00000000-0000-4000-8000-000000000000',
+    });
     expect(res.statusCode).toBe(401);
   });
 
-  it('allows authenticated requests', async () => {
+  it('lets authenticated requests through the auth gate (404 for unknown id, not 401)', async () => {
     const reg = await register();
     const cookie = extractSessionCookie(reg)!;
     const res = await ctx.app.inject({
       method: 'GET',
-      url: '/api/chat/some-conversation',
+      url: '/api/conversations/00000000-0000-4000-8000-000000000000',
       cookies: { [cookie.name]: cookie.value },
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().conversationId).toBe('some-conversation');
+    expect(res.statusCode).toBe(404);
   });
 });
 

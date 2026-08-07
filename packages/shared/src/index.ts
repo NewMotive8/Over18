@@ -36,6 +36,17 @@ export const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_MAX_LENGTH = 72; // bcrypt input limit
 
 /**
+ * A user's conversation with a character, as returned by the conversations
+ * API. Always scoped to the authenticated user — never contains other
+ * users' data.
+ */
+export interface ConversationSummary {
+  id: string;
+  character: PublicCharacter;
+  createdAt: string;
+}
+
+/**
  * Public representation of a character, as returned by GET /api/characters.
  * Internal fields (system_prompt, status) are never included.
  */

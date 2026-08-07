@@ -15,6 +15,13 @@
       "when": 1786115415710,
       "tag": "0001_yielding_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786119211213,
+      "tag": "0002_steep_rachel_grey",
+      "breakpoints": true
     }
   ]
 }

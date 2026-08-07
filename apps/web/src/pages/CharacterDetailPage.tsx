@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { PublicCharacter } from '@over18/shared';
-import { ApiRequestError, charactersApi } from '../lib/api';
+import { ApiRequestError, charactersApi, conversationsApi } from '../lib/api';
+import { useAuth } from '../auth/AuthContext';
 
 type ProfileState =
   | { status: 'loading' }
@@ -10,16 +11,40 @@ type ProfileState =
   | { status: 'ready'; character: PublicCharacter };
 
 /**
- * US-05 — Character profile: everything a user should know before starting
- * a conversation. Start Chat leads into the protected /chat area (US-02's
- * auth gate applies); real conversation creation arrives in a later story.
+ * Character profile (US-05). Start Chat (US-06) creates or reopens the
+ * conversation with this character via the API, then navigates to it.
+ * Logged-out users are sent to login and returned here afterwards.
  */
 export default function CharacterDetailPage() {
   const { characterId } = useParams<{ characterId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { status: authStatus } = useAuth();
   const [state, setState] = useState<ProfileState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [imageFailed, setImageFailed] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+
+  const startChat = useCallback(
+    async (character: PublicCharacter) => {
+      if (authStatus !== 'authenticated') {
+        // Log in first, then come back to this profile to continue.
+        navigate('/login', { state: { from: location.pathname } });
+        return;
+      }
+      setStarting(true);
+      setStartError(null);
+      try {
+        const conversation = await conversationsApi.start(character.id);
+        navigate(`/chat/${conversation.id}`);
+      } catch {
+        setStartError("Couldn't start the conversation. Please try again.");
+        setStarting(false);
+      }
+    },
+    [authStatus, navigate, location.pathname],
+  );
 
   useEffect(() => {
     if (!characterId) return;
@@ -182,12 +207,18 @@ export default function CharacterDetailPage() {
 
       {/* Sticky CTA above the bottom nav so it's always in thumb's reach */}
       <div className="fixed inset-x-0 bottom-14 z-10 mx-auto w-full max-w-lg px-4 pb-2">
+        {startError && (
+          <p role="alert" className="mb-2 rounded-lg border border-red-900 bg-red-950/90 px-3 py-2 text-center text-sm text-red-300">
+            {startError}
+          </p>
+        )}
         <button
           type="button"
-          onClick={() => navigate(`/chat/${character.id}`)}
-          className="w-full rounded-xl bg-rose-600 py-3 text-sm font-semibold text-white shadow-lg shadow-rose-950/40 transition-colors hover:bg-rose-500 active:bg-rose-700"
+          onClick={() => startChat(character)}
+          disabled={starting}
+          className="w-full rounded-xl bg-rose-600 py-3 text-sm font-semibold text-white shadow-lg shadow-rose-950/40 transition-colors hover:bg-rose-500 active:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Start chatting with {character.displayName}
+          {starting ? 'Starting…' : `Start chatting with ${character.displayName}`}
         </button>
       </div>
     </section>
