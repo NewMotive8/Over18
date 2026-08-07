@@ -1,85 +1,78 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import type { PublicCharacter } from '@over18/shared';
-import { charactersApi } from '../lib/api';
+import CharacterCard from '../components/CharacterCard';
+import { useCharacters } from '../hooks/useCharacters';
 
-type LoadState =
-  | { status: 'loading' }
-  | { status: 'error'; message: string }
-  | { status: 'ready'; characters: PublicCharacter[] };
+/** Skeleton placeholder matching the card layout while the API loads. */
+function CharacterCardSkeleton() {
+  return (
+    <div className="animate-pulse overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900">
+      <div className="aspect-[4/5] w-full bg-zinc-800" />
+      <div className="absolute" />
+    </div>
+  );
+}
 
 export default function CharactersPage() {
-  const [state, setState] = useState<LoadState>({ status: 'loading' });
-
-  useEffect(() => {
-    let cancelled = false;
-    charactersApi
-      .list()
-      .then((characters) => !cancelled && setState({ status: 'ready', characters }))
-      .catch(() => !cancelled && setState({ status: 'error', message: 'Could not load characters. Please try again.' }));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (state.status === 'loading') {
-    return (
-      <div className="flex justify-center py-16">
-        <span className="text-sm text-zinc-400">Loading characters…</span>
-      </div>
-    );
-  }
-
-  if (state.status === 'error') {
-    return (
-      <div className="py-16 text-center">
-        <p role="alert" className="text-sm text-red-400">
-          {state.message}
-        </p>
-      </div>
-    );
-  }
-
-  if (state.characters.length === 0) {
-    return (
-      <div className="py-16 text-center">
-        <p className="text-sm text-zinc-400">No characters available yet. Check back soon.</p>
-      </div>
-    );
-  }
+  const { state, reload } = useCharacters();
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-xl font-semibold">Characters</h2>
-      <ul className="flex flex-col gap-3">
-        {state.characters.map((character) => (
-          <li key={character.id}>
-            <Link
-              to={`/characters/${character.id}`}
-              className="flex gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 transition-colors hover:border-zinc-700"
-            >
-              {character.profileImage ? (
-                <img
-                  src={character.profileImage}
-                  alt=""
-                  className="h-16 w-16 shrink-0 rounded-lg object-cover"
-                />
-              ) : (
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-zinc-800 text-xl">
-                  {character.displayName.charAt(0)}
-                </div>
-              )}
-              <div className="min-w-0">
-                <h3 className="font-medium">{character.displayName}</h3>
-                <p className="mt-0.5 line-clamp-2 text-sm text-zinc-400">{character.shortBio}</p>
-                <p className="mt-1 truncate text-xs text-zinc-500">
-                  {character.interests.slice(0, 3).join(' · ')}
-                </p>
-              </div>
-            </Link>
-          </li>
-        ))}
-      </ul>
+      <header>
+        <h2 className="text-xl font-semibold">Discover</h2>
+        <p className="mt-0.5 text-sm text-zinc-400">Choose someone to get to know.</p>
+      </header>
+
+      {state.status === 'loading' && (
+        <div className="grid grid-cols-2 gap-3" aria-hidden data-testid="characters-skeleton">
+          {Array.from({ length: 4 }, (_, i) => (
+            <CharacterCardSkeleton key={i} />
+          ))}
+        </div>
+      )}
+
+      {state.status === 'error' && (
+        <div className="flex flex-col items-center gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 px-6 py-14 text-center">
+          <span aria-hidden className="text-3xl">
+            ⚠
+          </span>
+          <div>
+            <p className="font-medium">Couldn't load characters</p>
+            <p className="mt-1 text-sm text-zinc-400">
+              Something went wrong on our side. Check your connection and try again.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={reload}
+            className="rounded-lg bg-rose-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {state.status === 'ready' && state.characters.length === 0 && (
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/60 px-6 py-14 text-center">
+          <span aria-hidden className="text-3xl">
+            ☾
+          </span>
+          <div>
+            <p className="font-medium">No one's here yet</p>
+            <p className="mt-1 text-sm text-zinc-400">
+              New characters are on their way. Check back soon.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {state.status === 'ready' && state.characters.length > 0 && (
+        <ul className="grid grid-cols-2 gap-3">
+          {state.characters.map((character) => (
+            <li key={character.id}>
+              <CharacterCard character={character} />
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
