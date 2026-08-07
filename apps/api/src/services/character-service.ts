@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { PublicCharacter } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { characters, type CharacterRow } from '../db/schema.js';
@@ -33,4 +33,12 @@ export async function listActiveCharacters(db: Db): Promise<PublicCharacter[]> {
     .where(eq(characters.status, 'active'))
     .orderBy(asc(characters.displayName), asc(characters.id));
   return rows.map(toPublicCharacter);
+}
+
+/** A single active character by id, or null (unknown id and inactive both read as "not found"). */
+export async function getActiveCharacterById(db: Db, id: string): Promise<PublicCharacter | null> {
+  const row = await db.query.characters.findFirst({
+    where: and(eq(characters.id, id), eq(characters.status, 'active')),
+  });
+  return row ? toPublicCharacter(row) : null;
 }

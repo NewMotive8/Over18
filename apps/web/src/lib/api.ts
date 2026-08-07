@@ -49,6 +49,9 @@ export const charactersApi = {
   list(): Promise<PublicCharacter[]> {
     return request<PublicCharacter[]>('/api/characters');
   },
+  get(characterId: string): Promise<PublicCharacter> {
+    return request<PublicCharacter>(`/api/characters/${encodeURIComponent(characterId)}`);
+  },
 };
 
 export const authApi = {

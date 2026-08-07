@@ -168,3 +168,51 @@ describe('GET /api/characters', () => {
     expect(res.statusCode).toBe(404); // no character creation endpoint in US-03
   });
 });
+
+describe('GET /api/characters/:characterId (US-05)', () => {
+  it('returns a single active character by id, public shape only', async () => {
+    await seedCharacters(ctx.db);
+    const luna = SEED_CHARACTERS.find((c) => c.name === 'luna')!;
+    const res = await ctx.app.inject({ method: 'GET', url: `/api/characters/${luna.id}` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.id).toBe(luna.id);
+    expect(body.displayName).toBe('Luna');
+    expect(body.interests).toEqual(luna.interests);
+    expect(body).not.toHaveProperty('systemPrompt');
+    expect(body).not.toHaveProperty('system_prompt');
+    expect(body).not.toHaveProperty('status');
+  });
+
+  it('is public: no authentication required', async () => {
+    await seedCharacters(ctx.db);
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/characters/${SEED_CHARACTERS[0]!.id}`,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('returns 404 for an unknown id', async () => {
+    await seedCharacters(ctx.db);
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/characters/00000000-0000-4000-8000-999999999999',
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe('not_found');
+  });
+
+  it('returns 404 for an inactive character (no existence leak)', async () => {
+    await seedCharacters(ctx.db);
+    const ember = SEED_CHARACTERS.find((c) => c.name === 'ember')!;
+    await ctx.pool.query(`UPDATE characters SET status = 'inactive' WHERE id = $1`, [ember.id]);
+    const res = await ctx.app.inject({ method: 'GET', url: `/api/characters/${ember.id}` });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('returns 404 (not 500) for a malformed id', async () => {
+    const res = await ctx.app.inject({ method: 'GET', url: '/api/characters/not-a-uuid' });
+    expect(res.statusCode).toBe(404);
+  });
+});
