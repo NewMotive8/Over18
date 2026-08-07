@@ -139,7 +139,20 @@ Tests refuse to run unless the database name ends in `_test`, so they can never 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VITE_API_URL` | `http://localhost:3001` | Base URL of the REST API |
+| `VITE_API_URL` | `http://localhost:3001` | Base URL of the REST API (baked in at build time by Vite) |
+
+## Deploying the web frontend (Railway)
+
+The web app deploys as its own Railway service from this repository, built as static files and served by [`serve`](https://www.npmjs.com/package/serve) with SPA fallback (`npm run start -w apps/web`).
+
+Service settings (workspaces require building from the repo root):
+
+- Root Directory: `/`
+- Build Command: `npm ci && npm run build -w packages/shared && npm run build -w apps/web`
+- Start Command: `npm run start -w apps/web`
+- Variables: `VITE_API_URL=<public URL of the API service>` — must be set **before** the build, since Vite bakes it into the bundle.
+
+Because the web and API services live on different `up.railway.app` domains (a Public Suffix List domain, so they are different *sites*), the API service additionally needs these variables for cross-site session cookies to work: `CORS_ORIGIN=<public URL of the web service>`, `COOKIE_SAMESITE=none`, `COOKIE_SECURE=true`.
 
 ## Out of scope so far
 

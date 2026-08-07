@@ -8,13 +8,15 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
+    "start": "serve -s dist -l tcp://0.0.0.0:${PORT:-4173} --no-port-switching",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@over18/shared": "*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0"
+    "react-router-dom": "^6.28.0",
+    "serve": "^14.2.4"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
