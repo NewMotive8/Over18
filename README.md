@@ -52,6 +52,12 @@ Server-managed sessions with HttpOnly cookies:
 - `GET /api/auth/me` — returns `{ id, email }` for the current session, else 401
 - `GET /api/chat/:conversationId` — protected placeholder (requires authentication)
 
+## Characters (US-03)
+
+- `GET /api/characters` — public; returns active characters ordered by display name. Internal fields (`system_prompt`, `status`) are never exposed; the wire shape is `PublicCharacter` in `@over18/shared`.
+- Schema: `characters` table (uuid id, unique `name` slug, `display_name`, nullable `profile_image`, `short_bio`, `personality`, `interests` text[], `conversation_style`, `system_prompt`, `status` enum active|inactive, timestamps) — migration `0001`.
+- Seeding: `npm run db:seed -w apps/api` upserts 3 deterministic characters (Luna, Ember, Sage) by fixed UUIDs — idempotent, safe to re-run anywhere `DATABASE_URL` points (run it once on Railway after migrating).
+
 Design notes: passwords are bcrypt-hashed (cost 12) and never returned by the API; session tokens are 32 random bytes, stored only as SHA-256 hashes (`sessions.token_hash`); the raw token lives exclusively in the `over18_session` HttpOnly cookie (SameSite=Lax by default, Secure in production, Path=/, explicit Max-Age). Nothing auth-related is stored in localStorage. Login failures return a generic message that does not reveal whether an email exists. The service layer (`apps/api/src/services/auth-service.ts`) is transport-agnostic so a React Native client can reuse it with bearer tokens later.
 
 ## Database
@@ -64,6 +70,9 @@ npm run db:generate -w apps/api
 
 # Apply migrations to the database in DATABASE_URL
 npm run db:migrate -w apps/api
+
+# Upsert the deterministic seed characters (idempotent)
+npm run db:seed -w apps/api
 ```
 
 Tables are only created via migrations (`apps/api/drizzle/`) — never by hand. On Railway, run migrations with the injected `DATABASE_URL`.

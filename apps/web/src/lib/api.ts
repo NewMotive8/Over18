@@ -1,4 +1,4 @@
-import type { ApiError, AuthCredentials, AuthUser, HealthResponse } from '@over18/shared';
+import type { ApiError, AuthCredentials, AuthUser, HealthResponse, PublicCharacter } from '@over18/shared';
 
 /**
  * Single entry point for talking to the Over18 REST API.
@@ -44,6 +44,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export function fetchHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health');
 }
+
+export const charactersApi = {
+  list(): Promise<PublicCharacter[]> {
+    return request<PublicCharacter[]>('/api/characters');
+  },
+};
 
 export const authApi = {
   register(credentials: AuthCredentials): Promise<AuthUser> {

@@ -6,6 +6,7 @@ import type { Env } from './env.js';
 import type { Db } from './db/client.js';
 import authPlugin from './plugins/auth.js';
 import authRoutes from './routes/auth.js';
+import characterRoutes from './routes/characters.js';
 import chatRoutes from './routes/chat.js';
 
 /**
@@ -43,6 +44,7 @@ export async function buildApp(env: Env, db: Db) {
   });
 
   await app.register(authRoutes, { db, env });
+  await app.register(characterRoutes, { db });
   await app.register(chatRoutes);
 
   return app;

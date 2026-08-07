@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, pgEnum, uuid, text, timestamp, index } from 'drizzle-orm/pg-core';
 
 /**
  * users — one row per registered account.
@@ -33,5 +33,37 @@ export const sessions = pgTable(
   (table) => [index('sessions_user_id_idx').on(table.userId)],
 );
 
+export const characterStatus = pgEnum('character_status', ['active', 'inactive']);
+
+/**
+ * characters — the AI companion personas users can browse and (later) chat with.
+ *
+ * - name: unique internal identifier (stable, lowercase slug), used by seeds
+ *   and future tooling; display_name is what users see.
+ * - system_prompt: internal LLM instruction material — NEVER exposed through
+ *   the public API (same allow-list treatment as users.password_hash).
+ * - status: only 'active' characters are returned by the API; 'inactive'
+ *   soft-hides a character without deleting it.
+ */
+export const characters = pgTable(
+  'characters',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull().unique(),
+    displayName: text('display_name').notNull(),
+    profileImage: text('profile_image'),
+    shortBio: text('short_bio').notNull(),
+    personality: text('personality').notNull(),
+    interests: text('interests').array().notNull().default([]),
+    conversationStyle: text('conversation_style').notNull(),
+    systemPrompt: text('system_prompt').notNull(),
+    status: characterStatus('status').notNull().default('active'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('characters_status_idx').on(table.status)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
+export type CharacterRow = typeof characters.$inferSelect;

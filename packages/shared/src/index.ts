@@ -34,3 +34,18 @@ export interface AuthCredentials {
 /** Password policy shared by client-side and server-side validation. */
 export const PASSWORD_MIN_LENGTH = 8;
 export const PASSWORD_MAX_LENGTH = 72; // bcrypt input limit
+
+/**
+ * Public representation of a character, as returned by GET /api/characters.
+ * Internal fields (system_prompt, status) are never included.
+ */
+export interface PublicCharacter {
+  id: string;
+  name: string;
+  displayName: string;
+  profileImage: string | null;
+  shortBio: string;
+  personality: string;
+  interests: string[];
+  conversationStyle: string;
+}
