@@ -1,7 +1,8 @@
-import { LlmError, type LlmClient, type LlmMessage } from '../llm/types.js';
+import { LlmError, type LlmClient } from '../llm/types.js';
 import type { Env } from '../env.js';
 import { createOpenAiCompatibleClient } from '../llm/openai-compatible.js';
 import { deterministicReplyProvider, type ReplyContext, type ReplyProvider } from './character-reply.js';
+import { buildLlmMessages, type PromptBuilder } from './prompt-builder.js';
 
 export interface LlmReplyOptions {
   maxTokens: number;
@@ -13,29 +14,21 @@ export interface LlmReplyOptions {
  * via the injected LlmClient. The client is the swappable part — this
  * function contains no provider-, model-, or vendor-specific logic.
  *
- * Prompt assembly:
- * - system: the character's internal system_prompt (server-side only)
- * - history: prior messages mapped user→user / character→assistant
- * - the new user message last
- * Context-window management is deliberately NOT done here (US-10).
+ * Prompt/context assembly lives in the injectable PromptBuilder (US-09,
+ * prompt-builder.ts): character persona + system_prompt as the system
+ * message, role-mapped history, new user message last. Context-window
+ * management is deliberately NOT done here (US-10).
  */
-export function createLlmReplyProvider(client: LlmClient, options: LlmReplyOptions): ReplyProvider {
+export function createLlmReplyProvider(
+  client: LlmClient,
+  options: LlmReplyOptions,
+  promptBuilder: PromptBuilder = buildLlmMessages,
+): ReplyProvider {
   return async (context: ReplyContext): Promise<string> => {
-    const messages: LlmMessage[] = [
-      { role: 'system', content: context.systemPrompt },
-      ...context.history.map(
-        (message): LlmMessage => ({
-          role: message.sender === 'user' ? 'user' : 'assistant',
-          content: message.content,
-        }),
-      ),
-      { role: 'user', content: context.userMessage },
-    ];
-
     // Errors (LlmError) propagate: the message-service transaction rolls the
     // whole exchange back and the route maps the failure to a clean 502.
     return client.generate({
-      messages,
+      messages: promptBuilder(context),
       maxTokens: options.maxTokens,
       temperature: options.temperature,
     });
