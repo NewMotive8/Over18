@@ -1,3 +1,4 @@
+import type { ChatMessage } from '@over18/shared';
 import type { LlmMessage } from '../llm/types.js';
 import type { ReplyContext } from './character-reply.js';
 
@@ -76,10 +77,53 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
  * then the new user message last. User-authored text only ever appears in
  * user-role messages — never inside the character instruction block.
  */
-export const buildLlmMessages: PromptBuilder = (context) => {
-  return [
+
+/** Context-window policy (US-10). Bounds the HISTORY only — the character
+ * instructions and the newest user message are always included in full. */
+export interface ContextWindowOptions {
+  /** Maximum number of prior messages included, newest first. */
+  maxHistoryMessages: number;
+  /** Maximum total characters of prior-message content included (~4 chars ≈ 1 token). */
+  maxHistoryChars: number;
+}
+
+export const DEFAULT_CONTEXT_WINDOW: ContextWindowOptions = {
+  maxHistoryMessages: 40,
+  maxHistoryChars: 16_000,
+};
+
+/**
+ * Deterministic context-window selection (US-10).
+ *
+ * Walks the history from NEWEST to OLDEST, keeping whole messages while both
+ * budgets allow; the survivors are returned in their original chronological
+ * order. Messages are never edited, summarized, or reordered — a message is
+ * either included verbatim or dropped entirely, so truncation can never
+ * alter or leak content. Same inputs always produce the same window.
+ */
+export function selectContextWindow(
+  history: ChatMessage[],
+  options: ContextWindowOptions = DEFAULT_CONTEXT_WINDOW,
+): ChatMessage[] {
+  const selected: ChatMessage[] = [];
+  let usedChars = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i]!;
+    if (selected.length >= options.maxHistoryMessages) break;
+    if (usedChars + message.content.length > options.maxHistoryChars) break;
+    usedChars += message.content.length;
+    selected.push(message);
+  }
+  return selected.reverse(); // back to chronological order
+}
+
+/** Builds a PromptBuilder with an explicit context-window policy. */
+export function createPromptBuilder(
+  windowOptions: ContextWindowOptions = DEFAULT_CONTEXT_WINDOW,
+): PromptBuilder {
+  return (context) => [
     { role: 'system', content: buildCharacterSystemPrompt(context) },
-    ...context.history.map(
+    ...selectContextWindow(context.history, windowOptions).map(
       (message): LlmMessage => ({
         role: message.sender === 'user' ? 'user' : 'assistant',
         content: message.content,
@@ -87,4 +131,7 @@ export const buildLlmMessages: PromptBuilder = (context) => {
     ),
     { role: 'user', content: context.userMessage },
   ];
-};
+}
+
+/** Default prompt builder: default context window applied. */
+export const buildLlmMessages: PromptBuilder = createPromptBuilder();

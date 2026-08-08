@@ -242,6 +242,8 @@ describe('provider selection by environment', () => {
       timeoutMs: 1000,
       maxTokens: 64,
       temperature: 0.5,
+      contextMaxMessages: 40,
+      contextMaxChars: 16_000,
     };
     for (const isProduction of [true, false]) {
       const provider = selectReplyProvider({ ...testEnv, isProduction, llm });

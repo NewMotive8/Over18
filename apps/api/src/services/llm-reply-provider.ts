@@ -2,7 +2,7 @@ import { LlmError, type LlmClient } from '../llm/types.js';
 import type { Env } from '../env.js';
 import { createOpenAiCompatibleClient } from '../llm/openai-compatible.js';
 import { deterministicReplyProvider, type ReplyContext, type ReplyProvider } from './character-reply.js';
-import { buildLlmMessages, type PromptBuilder } from './prompt-builder.js';
+import { buildLlmMessages, createPromptBuilder, type PromptBuilder } from './prompt-builder.js';
 
 export interface LlmReplyOptions {
   maxTokens: number;
@@ -16,8 +16,8 @@ export interface LlmReplyOptions {
  *
  * Prompt/context assembly lives in the injectable PromptBuilder (US-09,
  * prompt-builder.ts): character persona + system_prompt as the system
- * message, role-mapped history, new user message last. Context-window
- * management is deliberately NOT done here (US-10).
+ * message, role-mapped windowed history (US-10 context window), new user
+ * message last.
  */
 export function createLlmReplyProvider(
   client: LlmClient,
@@ -53,10 +53,15 @@ export const unconfiguredReplyProvider: ReplyProvider = () => {
  */
 export function selectReplyProvider(env: Env): ReplyProvider {
   if (env.llm) {
-    return createLlmReplyProvider(createOpenAiCompatibleClient(env.llm), {
-      maxTokens: env.llm.maxTokens,
-      temperature: env.llm.temperature,
-    });
+    return createLlmReplyProvider(
+      createOpenAiCompatibleClient(env.llm),
+      { maxTokens: env.llm.maxTokens, temperature: env.llm.temperature },
+      // US-10: bound the history sent to the model via env-configured window.
+      createPromptBuilder({
+        maxHistoryMessages: env.llm.contextMaxMessages,
+        maxHistoryChars: env.llm.contextMaxChars,
+      }),
+    );
   }
   return env.isProduction ? unconfiguredReplyProvider : deterministicReplyProvider;
 }

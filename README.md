@@ -141,6 +141,8 @@ Tests refuse to run unless the database name ends in `_test`, so they can never 
 | `LLM_TIMEOUT_MS` | `30000` | Inference request timeout |
 | `LLM_MAX_TOKENS` | `512` | Max tokens per reply |
 | `LLM_TEMPERATURE` | `0.8` | Sampling temperature |
+| `LLM_CONTEXT_MAX_MESSAGES` | `40` | US-10 context window: max prior messages sent to the model (system prompt + newest user message always included) |
+| `LLM_CONTEXT_MAX_CHARS` | `16000` | US-10 context window: max total characters of prior-message content sent (~4k tokens); whole messages only, never edited |
 
 ### apps/web (`apps/web/.env.example`)
 

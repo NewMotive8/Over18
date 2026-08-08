@@ -14,6 +14,10 @@ export interface LlmEnv {
   timeoutMs: number;
   maxTokens: number;
   temperature: number;
+  /** US-10 context window: max prior messages sent to the model. */
+  contextMaxMessages: number;
+  /** US-10 context window: max total chars of prior-message content sent. */
+  contextMaxChars: number;
 }
 
 export interface Env {
@@ -73,6 +77,8 @@ export function loadEnv(): Env {
       timeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 30_000),
       maxTokens: Number(process.env.LLM_MAX_TOKENS ?? 512),
       temperature: Number(process.env.LLM_TEMPERATURE ?? 0.8),
+      contextMaxMessages: Number(process.env.LLM_CONTEXT_MAX_MESSAGES ?? 40),
+      contextMaxChars: Number(process.env.LLM_CONTEXT_MAX_CHARS ?? 16_000),
     };
   }
 
