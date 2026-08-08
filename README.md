@@ -134,6 +134,13 @@ Tests refuse to run unless the database name ends in `_test`, so they can never 
 | `COOKIE_SECURE` | `true` in production, else `false` | `Secure` flag on the session cookie |
 | `COOKIE_SAMESITE` | `lax` | SameSite for the session cookie (`none` requires `COOKIE_SECURE=true`) |
 | `SESSION_TTL_DAYS` | `30` | Session lifetime |
+| `LLM_BASE_URL` | — (unset → deterministic fallback in dev; **503 ai_not_configured in production**) | OpenAI-compatible inference endpoint base URL (US-08) |
+| `LLM_MODEL` | — (required when `LLM_BASE_URL` is set) | Model id as known by the endpoint |
+| `LLM_API_KEY` | — (optional) | Bearer token; omit for keyless self-hosted endpoints |
+| `LLM_PROVIDER` | `openai-compatible` | Adapter selection (only `openai-compatible` today) |
+| `LLM_TIMEOUT_MS` | `30000` | Inference request timeout |
+| `LLM_MAX_TOKENS` | `512` | Max tokens per reply |
+| `LLM_TEMPERATURE` | `0.8` | Sampling temperature |
 
 ### apps/web (`apps/web/.env.example`)
 
@@ -156,4 +163,4 @@ Because the web and API services live on different `up.railway.app` domains (a P
 
 ## Out of scope so far
 
-LLM integration, AI orchestration/memory, characters and conversations/messages, payments/credits/subscriptions, image/voice/video generation, swipe algorithm, recommendations, and admin tooling are intentionally **not** implemented yet. Within auth, US-02 deliberately excludes social login, email verification, password reset, MFA, OAuth, account deletion, and role systems.
+AI memory, response streaming, context-window management, payments/credits/subscriptions, image/voice/video generation, swipe algorithm, recommendations, moderation, and admin tooling are intentionally **not** implemented yet. LLM replies (US-08) use a provider-agnostic OpenAI-compatible adapter configured entirely via `LLM_*` env vars — no vendor, model, or GPU host is hardcoded. Without configuration, development falls back to deterministic replies, while production fails message sends with a clear `503 ai_not_configured` rather than faking AI. Within auth, US-02 deliberately excludes social login, email verification, password reset, MFA, OAuth, account deletion, and role systems.

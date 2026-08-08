@@ -1,7 +1,7 @@
-import { asc, count, eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import type { ChatMessage, SendMessageResult } from '@over18/shared';
 import type { Db } from '../db/client.js';
-import { conversations, messages, type MessageRow } from '../db/schema.js';
+import { characters, conversations, messages, type MessageRow } from '../db/schema.js';
 import { getConversationForUser } from './conversation-service.js';
 import { deterministicReplyProvider, type ReplyProvider } from './character-reply.js';
 
@@ -55,10 +55,19 @@ export async function sendMessage(
   if (!conversation) return null;
 
   return db.transaction(async (tx) => {
-    const [{ priorCount }] = (await tx
-      .select({ priorCount: count() })
+    // Full prior history (oldest first) — the LLM provider needs it, and its
+    // length doubles as the deterministic provider's message counter.
+    const historyRows = await tx
+      .select()
       .from(messages)
-      .where(eq(messages.conversationId, conversationId))) as [{ priorCount: number }];
+      .where(eq(messages.conversationId, conversationId))
+      .orderBy(asc(messages.seq));
+
+    // Internal persona instructions — read server-side only, never on the wire.
+    const [personaRow] = await tx
+      .select({ systemPrompt: characters.systemPrompt })
+      .from(characters)
+      .where(eq(characters.id, conversation.character.id));
 
     const [userRow] = await tx
       .insert(messages)
@@ -67,7 +76,9 @@ export async function sendMessage(
 
     const replyText = await replyProvider({
       character: conversation.character,
-      priorMessageCount: Number(priorCount),
+      systemPrompt: personaRow!.systemPrompt,
+      history: historyRows.map(toChatMessage),
+      priorMessageCount: historyRows.length,
       userMessage: content,
     });
 

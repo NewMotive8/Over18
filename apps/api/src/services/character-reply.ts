@@ -1,21 +1,24 @@
-import type { PublicCharacter } from '@over18/shared';
+import type { ChatMessage, PublicCharacter } from '@over18/shared';
 
 /**
- * Reply-provider seam (US-07).
+ * Reply-provider seam (US-07, extended in US-08).
  *
  * This interface is the ONLY contract the message service depends on for
- * producing a character's response. US-08 replaces the deterministic
- * implementation below with the AI orchestrator without touching the
- * message service or the API.
+ * producing a character's response. Implementations:
+ * - deterministicReplyProvider (below): US-07 placeholder, still the
+ *   fallback when no inference endpoint is configured.
+ * - createLlmReplyProvider (llm-reply-provider.ts): US-08, backed by a
+ *   swappable LlmClient adapter.
  *
- * Deliberate constraints:
- * - The context contains ONLY public persona fields (PublicCharacter).
- *   system_prompt is not part of this contract and is never read here;
- *   the orchestrator may extend its own implementation-side data access
- *   in US-08, but the seam itself stays prompt-free.
+ * systemPrompt and history exist ONLY server-side inside this context —
+ * they are never serialized into any API response.
  */
 export interface ReplyContext {
   character: PublicCharacter;
+  /** Internal persona instructions from the DB. Never exposed on the wire. */
+  systemPrompt: string;
+  /** Prior messages in the conversation, oldest first (excludes the new user message). */
+  history: ChatMessage[];
   /** Number of messages already in the conversation before this exchange. */
   priorMessageCount: number;
   userMessage: string;

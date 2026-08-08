@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { MESSAGE_MAX_LENGTH } from '@over18/shared';
 import type { Db } from '../db/client.js';
+import { LlmError } from '../llm/types.js';
+import type { ReplyProvider } from '../services/character-reply.js';
 import { listMessages, sendMessage } from '../services/message-service.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -18,7 +20,10 @@ const sendBodySchema = {
  * Message routes (US-07). Auth required; ownership enforced in the service
  * (foreign/unknown conversations read as 404). Handlers stay thin.
  */
-export default async function messageRoutes(app: FastifyInstance, opts: { db: Db }) {
+export default async function messageRoutes(
+  app: FastifyInstance,
+  opts: { db: Db; replyProvider: ReplyProvider },
+) {
   app.get<{ Params: { conversationId: string } }>(
     '/api/conversations/:conversationId/messages',
     { preHandler: app.requireAuth },
@@ -49,7 +54,33 @@ export default async function messageRoutes(app: FastifyInstance, opts: { db: Db
           .code(400)
           .send({ error: 'empty_message', message: 'Message cannot be empty.' });
       }
-      const result = await sendMessage(opts.db, request.currentUser!.id, conversationId, content);
+      let result;
+      try {
+        result = await sendMessage(
+          opts.db,
+          request.currentUser!.id,
+          conversationId,
+          content,
+          opts.replyProvider,
+        );
+      } catch (err) {
+        if (err instanceof LlmError) {
+          // The transaction already rolled back — nothing was persisted.
+          // Log kind/status only; never prompts, keys, or provider bodies.
+          request.log.warn({ llmErrorKind: err.kind, llmStatus: err.status }, 'AI generation failed');
+          if (err.kind === 'not_configured') {
+            return reply.code(503).send({
+              error: 'ai_not_configured',
+              message: 'AI is not configured for this environment yet. Please try again later.',
+            });
+          }
+          return reply.code(502).send({
+            error: 'ai_unavailable',
+            message: "The character couldn't respond right now. Please try again.",
+          });
+        }
+        throw err;
+      }
       if (result === null) {
         return reply.code(404).send({ error: 'not_found', message: 'Conversation not found.' });
       }

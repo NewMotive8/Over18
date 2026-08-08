@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../db/client.js';
-import { buildApp } from '../app.js';
+import { buildApp, type BuildAppOptions } from '../app.js';
 import type { Env } from '../env.js';
 
 /**
@@ -26,6 +26,8 @@ export const testEnv: Env = {
   cookieSecure: false,
   cookieSameSite: 'lax',
   sessionTtlDays: 30,
+  isProduction: false,
+  llm: null, // tests always inject providers explicitly — no real endpoint
 };
 
 export function migrateTestDb(): void {
@@ -42,9 +44,9 @@ export interface TestContext {
   pool: ReturnType<typeof createDb>['pool'];
 }
 
-export async function createTestContext(): Promise<TestContext> {
+export async function createTestContext(options: BuildAppOptions = {}): Promise<TestContext> {
   const { db, pool } = createDb(TEST_DATABASE_URL);
-  const app = await buildApp(testEnv, db);
+  const app = await buildApp(testEnv, db, options);
   return { app, db, pool };
 }
 

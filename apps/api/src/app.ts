@@ -9,13 +9,20 @@ import authRoutes from './routes/auth.js';
 import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
+import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
+
+export interface BuildAppOptions {
+  /** Reply provider for chat messages. Defaults to the deterministic fallback. */
+  replyProvider?: ReplyProvider;
+}
 
 /**
  * Builds and configures the Fastify instance.
  * Kept separate from server.ts so tests can build an app against an
- * isolated database without opening a network port.
+ * isolated database (and an injected fake reply provider) without opening
+ * a network port.
  */
-export async function buildApp(env: Env, db: Db) {
+export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) {
   const app = Fastify({
     logger: {
       // Never log request bodies (passwords) or cookie headers (session tokens).
@@ -47,7 +54,10 @@ export async function buildApp(env: Env, db: Db) {
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
   await app.register(conversationRoutes, { db });
-  await app.register(messageRoutes, { db });
+  await app.register(messageRoutes, {
+    db,
+    replyProvider: options.replyProvider ?? deterministicReplyProvider,
+  });
 
   return app;
 }
