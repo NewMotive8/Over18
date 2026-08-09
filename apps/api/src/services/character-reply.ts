@@ -22,6 +22,13 @@ export interface ReplyContext {
   /** Number of messages already in the conversation before this exchange. */
   priorMessageCount: number;
   userMessage: string;
+  /**
+   * Durable facts remembered about this user for THIS character (US-12),
+   * oldest first. Strictly (user, character)-scoped — never crosses
+   * characters. Server-side only, like systemPrompt: never on the wire.
+   * Optional so existing ReplyProvider callers/fixtures stay source-compatible.
+   */
+  memories?: string[];
 }
 
 export type ReplyProvider = (context: ReplyContext) => Promise<string> | string;

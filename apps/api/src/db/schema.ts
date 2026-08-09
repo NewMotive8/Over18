@@ -123,8 +123,50 @@ export const messages = pgTable(
   (table) => [index('messages_conversation_seq_idx').on(table.conversationId, table.seq)],
 );
 
+/**
+ * memories — durable user facts the character remembers (US-12).
+ *
+ * Stored SEPARATELY from raw messages (acceptance criterion): extraction
+ * distills messages into short facts; the originals stay untouched in
+ * `messages`. Scope is strictly (user_id, character_id) — what a user tells
+ * one character is never visible to another (product decision, 2026-08-09).
+ *
+ * content is internal prompt material: like characters.system_prompt it is
+ * NEVER exposed through the public API. There is deliberately no user-facing
+ * view/edit/delete surface in the PoC — recorded as a future privacy/product
+ * requirement (see README).
+ *
+ * The unique index doubles as the deduplication guarantee: re-extracting an
+ * identical fact is a no-op at the database level.
+ */
+export const memories = pgTable(
+  'memories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    /** The durable fact, short plain text (e.g. "Their name is Maya."). */
+    content: text('content').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('memories_user_character_content_uq').on(
+      table.userId,
+      table.characterId,
+      table.content,
+    ),
+    index('memories_user_character_idx').on(table.userId, table.characterId),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
 export type ConversationRow = typeof conversations.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
+export type MemoryRow = typeof memories.$inferSelect;

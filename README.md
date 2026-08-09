@@ -143,6 +143,9 @@ Tests refuse to run unless the database name ends in `_test`, so they can never 
 | `LLM_TEMPERATURE` | `0.8` | Sampling temperature |
 | `LLM_CONTEXT_MAX_MESSAGES` | `40` | US-10 context window: max prior messages sent to the model (system prompt + newest user message always included) |
 | `LLM_CONTEXT_MAX_CHARS` | `16000` | US-10 context window: max total characters of prior-message content sent (~4k tokens); whole messages only, never edited |
+| `MEMORY_MAX_INJECTED` | `10` | US-12 memory: max remembered facts injected into a single prompt |
+| `MEMORY_MAX_INJECTED_CHARS` | `2000` | US-12 memory: max total characters of injected facts |
+| `MEMORY_MAX_STORED` | `100` | US-12 memory: storage cap per (user, character); oldest facts evicted beyond it |
 
 ### apps/web (`apps/web/.env.example`)
 
@@ -163,6 +166,12 @@ Service settings (workspaces require building from the repo root):
 
 Because the web and API services live on different `up.railway.app` domains (a Public Suffix List domain, so they are different *sites*), the API service additionally needs these variables for cross-site session cookies to work: `CORS_ORIGIN=<public URL of the web service>`, `COOKIE_SAMESITE=none`, `COOKIE_SECURE=true`.
 
+## Basic user memory (US-12)
+
+The API extracts durable facts a user states in chat ("my name is…", "I live in…") into a separate `memories` table and injects them into subsequent prompts, so characters remember across sessions and beyond the US-10 context window. Memory is scoped strictly to (user, character) — facts told to one character are never visible to another. Extraction runs only after a chat exchange has committed and its failures are swallowed (logged as kind/status only), so memory can never break a conversation. There is no RAG, no embeddings, and no semantic search — this is deliberately basic PoC memory.
+
+> **Future privacy/product requirement (recorded 2026-08-09, out of scope for US-12):** memories are currently server-side only — users cannot view, edit, or delete what a character remembers about them. Before any public launch, a user-facing memory transparency/control surface (view + delete, plus data-deletion policy) must be specified and built.
+
 ## Out of scope so far
 
-AI memory, response streaming, context-window management, payments/credits/subscriptions, image/voice/video generation, swipe algorithm, recommendations, moderation, and admin tooling are intentionally **not** implemented yet. LLM replies (US-08) use a provider-agnostic OpenAI-compatible adapter configured entirely via `LLM_*` env vars — no vendor, model, or GPU host is hardcoded. Without configuration, development falls back to deterministic replies, while production fails message sends with a clear `503 ai_not_configured` rather than faking AI. Within auth, US-02 deliberately excludes social login, email verification, password reset, MFA, OAuth, account deletion, and role systems.
+Response streaming, payments/credits/subscriptions, image/voice/video generation, swipe algorithm, recommendations, moderation, and admin tooling are intentionally **not** implemented yet. LLM replies (US-08) use a provider-agnostic OpenAI-compatible adapter configured entirely via `LLM_*` env vars — no vendor, model, or GPU host is hardcoded. Without configuration, development falls back to deterministic replies, while production fails message sends with a clear `503 ai_not_configured` rather than faking AI. Within auth, US-02 deliberately excludes social login, email verification, password reset, MFA, OAuth, account deletion, and role systems.

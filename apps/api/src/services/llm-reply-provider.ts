@@ -57,10 +57,17 @@ export function selectReplyProvider(env: Env): ReplyProvider {
       createOpenAiCompatibleClient(env.llm),
       { maxTokens: env.llm.maxTokens, temperature: env.llm.temperature },
       // US-10: bound the history sent to the model via env-configured window.
-      createPromptBuilder({
-        maxHistoryMessages: env.llm.contextMaxMessages,
-        maxHistoryChars: env.llm.contextMaxChars,
-      }),
+      // US-12: bound injected memories the same way.
+      createPromptBuilder(
+        {
+          maxHistoryMessages: env.llm.contextMaxMessages,
+          maxHistoryChars: env.llm.contextMaxChars,
+        },
+        {
+          maxMemories: env.memory.maxInjected,
+          maxMemoryChars: env.memory.maxInjectedChars,
+        },
+      ),
     );
   }
   return env.isProduction ? unconfiguredReplyProvider : deterministicReplyProvider;

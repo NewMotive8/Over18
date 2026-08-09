@@ -3,6 +3,7 @@ import { MESSAGE_MAX_LENGTH } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { LlmError } from '../llm/types.js';
 import type { ReplyProvider } from '../services/character-reply.js';
+import type { MemoryExtractor } from '../services/memory-extractor.js';
 import { listMessages, sendMessage } from '../services/message-service.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -22,7 +23,13 @@ const sendBodySchema = {
  */
 export default async function messageRoutes(
   app: FastifyInstance,
-  opts: { db: Db; replyProvider: ReplyProvider },
+  opts: {
+    db: Db;
+    replyProvider: ReplyProvider;
+    /** US-12 memory hook (extractor + storage cap). */
+    memoryExtractor: MemoryExtractor;
+    memoryMaxStored: number;
+  },
 ) {
   app.get<{ Params: { conversationId: string } }>(
     '/api/conversations/:conversationId/messages',
@@ -62,6 +69,21 @@ export default async function messageRoutes(
           conversationId,
           content,
           opts.replyProvider,
+          {
+            extractor: opts.memoryExtractor,
+            maxStored: opts.memoryMaxStored,
+            // Memory failures never fail the request; log kind/status only —
+            // never message content, facts, prompts, or provider bodies.
+            onError: (error) => {
+              request.log.warn(
+                {
+                  memoryErrorKind: error instanceof LlmError ? error.kind : 'unexpected',
+                  memoryErrorStatus: error instanceof LlmError ? error.status : undefined,
+                },
+                'memory extraction failed (chat exchange unaffected)',
+              );
+            },
+          },
         );
       } catch (err) {
         if (err instanceof LlmError) {

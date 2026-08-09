@@ -4,12 +4,28 @@ import type { Db } from '../db/client.js';
 import { characters, conversations, messages, type MessageRow } from '../db/schema.js';
 import { getConversationForUser } from './conversation-service.js';
 import { deterministicReplyProvider, type ReplyProvider } from './character-reply.js';
+import { noopMemoryExtractor, type MemoryExtractor } from './memory-extractor.js';
+import { DEFAULT_MEMORY_MAX_STORED, listMemories, storeMemories } from './memory-service.js';
 
 /**
  * Message service (US-07). Transport-agnostic; ownership is enforced by
  * resolving the conversation through the same owner-scoped lookup US-06
  * established — callers with no access simply see null.
  */
+
+/** US-12 memory hook configuration for sendMessage. */
+export interface MemoryHookOptions {
+  extractor: MemoryExtractor;
+  /** Per-(user, character) storage cap; oldest facts evicted beyond it. */
+  maxStored: number;
+  /** Called when extraction/storage fails; the failure is otherwise swallowed. */
+  onError?: (error: unknown) => void;
+}
+
+export const DEFAULT_MEMORY_HOOK: MemoryHookOptions = {
+  extractor: noopMemoryExtractor,
+  maxStored: DEFAULT_MEMORY_MAX_STORED,
+};
 
 function toChatMessage(row: MessageRow): ChatMessage {
   return {
@@ -50,11 +66,12 @@ export async function sendMessage(
   conversationId: string,
   content: string,
   replyProvider: ReplyProvider = deterministicReplyProvider,
+  memory: MemoryHookOptions = DEFAULT_MEMORY_HOOK,
 ): Promise<SendMessageResult | null> {
   const conversation = await getConversationForUser(db, userId, conversationId);
   if (!conversation) return null;
 
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     // Full prior history (oldest first) — the LLM provider needs it, and its
     // length doubles as the deterministic provider's message counter.
     const historyRows = await tx
@@ -69,6 +86,10 @@ export async function sendMessage(
       .from(characters)
       .where(eq(characters.id, conversation.character.id));
 
+    // US-12: remembered facts for THIS (user, character) pair only, oldest
+    // first. Like systemPrompt, they exist purely server-side in the context.
+    const rememberedFacts = await listMemories(tx, userId, conversation.character.id);
+
     const [userRow] = await tx
       .insert(messages)
       .values({ conversationId, sender: 'user', content })
@@ -80,6 +101,7 @@ export async function sendMessage(
       history: historyRows.map(toChatMessage),
       priorMessageCount: historyRows.length,
       userMessage: content,
+      memories: rememberedFacts,
     });
 
     const [characterRow] = await tx
@@ -97,4 +119,22 @@ export async function sendMessage(
       characterMessage: toChatMessage(characterRow!),
     };
   });
+
+  // US-12 memory extraction — strictly AFTER the exchange has committed, so
+  // it can never break or roll back a successful chat exchange. Any failure
+  // here (extractor or storage) is reported via onError and swallowed: the
+  // worst case is that this exchange's facts are not remembered.
+  try {
+    const facts = await memory.extractor({
+      character: conversation.character,
+      userMessage: content,
+    });
+    if (facts.length > 0) {
+      await storeMemories(db, userId, conversation.character.id, facts, memory.maxStored);
+    }
+  } catch (error) {
+    memory.onError?.(error);
+  }
+
+  return result;
 }

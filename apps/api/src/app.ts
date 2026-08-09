@@ -10,10 +10,16 @@ import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
+import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 
 export interface BuildAppOptions {
   /** Reply provider for chat messages. Defaults to the deterministic fallback. */
   replyProvider?: ReplyProvider;
+  /**
+   * US-12 memory extractor. Defaults to noop so existing tests/behavior are
+   * unchanged unless one is injected (server.ts selects from the env).
+   */
+  memoryExtractor?: MemoryExtractor;
 }
 
 /**
@@ -57,6 +63,8 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   await app.register(messageRoutes, {
     db,
     replyProvider: options.replyProvider ?? deterministicReplyProvider,
+    memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
+    memoryMaxStored: env.memory.maxStored,
   });
 
   return app;

@@ -20,6 +20,16 @@ export interface LlmEnv {
   contextMaxChars: number;
 }
 
+/** US-12 basic user memory tuning. Always present (defaults apply). */
+export interface MemoryEnv {
+  /** Max memories injected into a single prompt. */
+  maxInjected: number;
+  /** Max total characters of memory content injected into a single prompt. */
+  maxInjectedChars: number;
+  /** Max memories stored per (user, character); oldest are evicted beyond this. */
+  maxStored: number;
+}
+
 export interface Env {
   databaseUrl: string;
   port: number;
@@ -32,6 +42,8 @@ export interface Env {
   isProduction: boolean;
   /** Null when no inference endpoint is configured. */
   llm: LlmEnv | null;
+  /** US-12 memory bounds (defaults apply when env vars are unset). */
+  memory: MemoryEnv;
 }
 
 export function loadEnv(): Env {
@@ -92,5 +104,10 @@ export function loadEnv(): Env {
     sessionTtlDays: Number(process.env.SESSION_TTL_DAYS ?? 30),
     isProduction: process.env.NODE_ENV === 'production',
     llm,
+    memory: {
+      maxInjected: Number(process.env.MEMORY_MAX_INJECTED ?? 10),
+      maxInjectedChars: Number(process.env.MEMORY_MAX_INJECTED_CHARS ?? 2_000),
+      maxStored: Number(process.env.MEMORY_MAX_STORED ?? 100),
+    },
   };
 }

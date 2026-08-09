@@ -28,6 +28,7 @@ export const testEnv: Env = {
   sessionTtlDays: 30,
   isProduction: false,
   llm: null, // tests always inject providers explicitly — no real endpoint
+  memory: { maxInjected: 10, maxInjectedChars: 2_000, maxStored: 100 },
 };
 
 export function migrateTestDb(): void {
@@ -51,7 +52,9 @@ export async function createTestContext(options: BuildAppOptions = {}): Promise<
 }
 
 export async function truncateAll(ctx: TestContext): Promise<void> {
-  await ctx.pool.query('TRUNCATE TABLE messages, conversations, sessions, users, characters CASCADE');
+  await ctx.pool.query(
+    'TRUNCATE TABLE memories, messages, conversations, sessions, users, characters CASCADE',
+  );
 }
 
 export async function destroyTestContext(ctx: TestContext): Promise<void> {
