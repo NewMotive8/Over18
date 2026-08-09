@@ -1,6 +1,9 @@
 import {
   bigserial,
+  boolean,
   index,
+  integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -8,6 +11,8 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import type { VisualDna } from '@over18/shared';
 
 /**
  * users — one row per registered account.
@@ -164,9 +169,120 @@ export const memories = pgTable(
   ],
 );
 
+/**
+ * ── Character Visual Identity (US-16A) ──────────────────────────────────
+ *
+ * Swipey owns the character's visual identity: a versioned Visual DNA record
+ * plus a lifecycle-managed set of visual assets. The image model/provider is
+ * a later, replaceable implementation detail (US-16D) — it does NOT own
+ * identity. US-16A is the data/architecture foundation only: no generation,
+ * no provider, no object storage, no endpoints, no UI.
+ */
+
+export const visualIdentityStatus = pgEnum('visual_identity_status', [
+  'draft',
+  'active',
+  'retired',
+]);
+export const visualAssetKind = pgEnum('visual_asset_kind', ['reference', 'generated']);
+export const visualAssetStatus = pgEnum('visual_asset_status', [
+  'generated',
+  'under_review',
+  'approved',
+  'rejected',
+]);
+/** 18+ readiness plug-point ONLY. US-16A carries the classification; it does
+ * NOT implement adult generation, policy, moderation, or access control. */
+export const contentRating = pgEnum('content_rating', ['sfw', 'explicit']);
+
+/**
+ * character_visual_identities — the versioned visual identity of a character.
+ *
+ * A character may have many versions; exactly one is `active` (enforced by a
+ * partial unique index). A deliberate redesign creates a new version and
+ * retires the old one — previous versions are never overwritten, so identity
+ * has provenance and rollback. visual_dna holds IDENTITY attributes only;
+ * presentation (clothing/pose/scene/lighting/…) is a generation-time concern
+ * and never appears here.
+ */
+export const characterVisualIdentities = pgTable(
+  'character_visual_identities',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    status: visualIdentityStatus('status').notNull().default('draft'),
+    visualDna: jsonb('visual_dna').$type<VisualDna>().notNull(),
+    label: text('label'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('character_visual_identities_character_version_uq').on(
+      table.characterId,
+      table.version,
+    ),
+    // At most ONE active identity version per character.
+    uniqueIndex('character_visual_identities_active_uq')
+      .on(table.characterId)
+      .where(sql`${table.status} = 'active'`),
+    index('character_visual_identities_character_idx').on(table.characterId),
+  ],
+);
+
+/**
+ * character_visual_assets — a first-class visual asset (not characters.profile_image).
+ *
+ * Unified table: `kind` distinguishes reference vs generated, `status` tracks
+ * the lifecycle, and `is_canonical` marks membership of the approved canonical
+ * reference set. Canonical means, and only means:
+ *   kind = 'reference' AND status = 'approved' AND is_canonical = true.
+ * A generated asset NEVER auto-promotes — canonical status is reachable only
+ * through an explicit approval transition (which records approved_by/at).
+ *
+ * provenance is server-side-only internal metadata (like characters.system_prompt);
+ * it must never be serialised through any public wire mapper. storage_key is a
+ * reserved forward-compatible field — US-16A moves no image bytes.
+ */
+export const characterVisualAssets = pgTable(
+  'character_visual_assets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    visualIdentityId: uuid('visual_identity_id')
+      .notNull()
+      .references(() => characterVisualIdentities.id, { onDelete: 'cascade' }),
+    kind: visualAssetKind('kind').notNull(),
+    status: visualAssetStatus('status').notNull(),
+    isCanonical: boolean('is_canonical').notNull().default(false),
+    position: integer('position'),
+    storageKey: text('storage_key'),
+    provenance: jsonb('provenance').$type<Record<string, unknown>>().notNull().default({}),
+    contentRating: contentRating('content_rating').notNull().default('sfw'),
+    approvedBy: uuid('approved_by'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('character_visual_assets_character_idx').on(table.characterId),
+    index('character_visual_assets_identity_kind_status_idx').on(
+      table.visualIdentityId,
+      table.kind,
+      table.status,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
 export type ConversationRow = typeof conversations.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
+export type CharacterVisualIdentityRow = typeof characterVisualIdentities.$inferSelect;
+export type CharacterVisualAssetRow = typeof characterVisualAssets.$inferSelect;
 export type MemoryRow = typeof memories.$inferSelect;

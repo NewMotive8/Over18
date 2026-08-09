@@ -77,3 +77,33 @@ export interface PublicCharacter {
   interests: string[];
   conversationStyle: string;
 }
+
+/**
+ * Visual DNA (US-16A) — the IDENTITY-only description of a character's visual
+ * self. Deliberately flexible: individual attributes are open-ended strings /
+ * nested shapes because the taxonomy is not yet proven. Two rules are firm:
+ *  1. `apparentAgeBand` is required and must denote an adult.
+ *  2. PRESENTATION attributes (hairstyle, makeup, clothing, accessories, pose,
+ *     expression, environment, lighting, camera, composition, photographicStyle)
+ *     must NEVER appear here — they are a generation-time concern recorded in a
+ *     generated asset's provenance. This identity-vs-presentation separation is
+ *     a core architectural principle.
+ *
+ * This is identity metadata used to compose future generation requests; it is
+ * NOT itself secret, but it is not exposed through any existing public wire
+ * mapper in US-16A (no visual endpoints exist yet).
+ */
+export interface VisualDna {
+  /** Required. Must denote an adult (e.g. "adult", "adult-20s"). Non-adult is rejected. */
+  apparentAgeBand: string;
+  face?: unknown;
+  eyes?: unknown;
+  nose?: unknown;
+  lips?: unknown;
+  skin?: unknown;
+  hair?: unknown;
+  body?: unknown;
+  distinctiveFeatures?: unknown;
+  /** Open-ended room for additional identity attributes as the taxonomy matures. */
+  [key: string]: unknown;
+}

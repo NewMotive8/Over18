@@ -53,7 +53,7 @@ export async function createTestContext(options: BuildAppOptions = {}): Promise<
 
 export async function truncateAll(ctx: TestContext): Promise<void> {
   await ctx.pool.query(
-    'TRUNCATE TABLE memories, messages, conversations, sessions, users, characters CASCADE',
+    'TRUNCATE TABLE character_visual_assets, character_visual_identities, memories, messages, conversations, sessions, users, characters CASCADE',
   );
 }
 
