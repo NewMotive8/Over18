@@ -1,16 +1,53 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { PublicCharacter } from '@over18/shared';
+import { charactersApi } from '../lib/api';
 
 /**
  * Consumer-grade character card: portrait image with a gradient overlay,
  * name + bio on top, and explicit selection affordances (hover/press states,
  * a "Meet <name>" pill, and full-card tap target).
+ *
+ * US-16B.1: prefer the active Visual Identity's first canonical reference
+ * over the legacy profileImage. This lets the Discover surface consume the
+ * same canonical asset that the character-detail page uses, while retaining
+ * the existing profileImage/initial fallbacks.
  */
 export default function CharacterCard({ character }: { character: PublicCharacter }) {
   const navigate = useNavigate();
   const [imageFailed, setImageFailed] = useState(false);
-  const showImage = character.profileImage && !imageFailed;
+  const [visualImage, setVisualImage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setImageFailed(false);
+    setVisualImage(null);
+
+    charactersApi
+      .visualIdentity(character.id)
+      .then((data) => {
+        if (cancelled) return;
+        const firstCanonical = data.canonicalAssets
+          .slice()
+          .sort(
+            (a, b) =>
+              (a.position ?? Number.MAX_SAFE_INTEGER) -
+              (b.position ?? Number.MAX_SAFE_INTEGER),
+          )[0];
+        setVisualImage(firstCanonical?.imageUrl ?? null);
+      })
+      .catch(() => {
+        // Visual identity is an enhancement; retain the existing profile fallback.
+        if (!cancelled) setVisualImage(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [character.id]);
+
+  const imageUrl = visualImage ?? character.profileImage;
+  const showImage = imageUrl && !imageFailed;
 
   return (
     <button
@@ -22,10 +59,17 @@ export default function CharacterCard({ character }: { character: PublicCharacte
       <div className="aspect-[4/5] w-full">
         {showImage ? (
           <img
-            src={character.profileImage!}
+            src={imageUrl}
             alt={character.displayName}
             loading="lazy"
-            onError={() => setImageFailed(true)}
+            onError={() => {
+              if (visualImage) {
+                setVisualImage(null);
+                setImageFailed(false);
+              } else {
+                setImageFailed(true);
+              }
+            }}
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
           />
         ) : (
