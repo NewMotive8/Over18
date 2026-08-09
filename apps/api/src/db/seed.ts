@@ -1,6 +1,6 @@
 import { createDb } from './client.js';
-import { characters } from './schema.js';
-import { SEED_CHARACTERS } from './seed-data.js';
+import { characters, characterVisualAssets, characterVisualIdentities } from './schema.js';
+import { SEED_CHARACTERS, SEED_VISUAL_ASSETS, SEED_VISUAL_IDENTITIES } from './seed-data.js';
 
 /**
  * Idempotent character seeding: upserts the deterministic seed characters by
@@ -33,6 +33,53 @@ export async function seedCharacters(db: ReturnType<typeof createDb>['db']): Pro
   return SEED_CHARACTERS.length;
 }
 
+/**
+ * Idempotent US-16B visual-identity seeding: upserts one active Visual Identity
+ * and its approved canonical reference assets per seed character (fixed UUIDs).
+ * Placeholder images only — see seed-data.ts. Safe to re-run.
+ */
+export async function seedVisualIdentities(
+  db: ReturnType<typeof createDb>['db'],
+): Promise<{ identities: number; assets: number }> {
+  for (const seed of SEED_VISUAL_IDENTITIES) {
+    await db
+      .insert(characterVisualIdentities)
+      .values(seed)
+      .onConflictDoUpdate({
+        target: characterVisualIdentities.id,
+        set: {
+          characterId: seed.characterId,
+          version: seed.version,
+          status: seed.status,
+          visualDna: seed.visualDna,
+          label: seed.label,
+          updatedAt: new Date(),
+        },
+      });
+  }
+  for (const seed of SEED_VISUAL_ASSETS) {
+    await db
+      .insert(characterVisualAssets)
+      .values(seed)
+      .onConflictDoUpdate({
+        target: characterVisualAssets.id,
+        set: {
+          characterId: seed.characterId,
+          visualIdentityId: seed.visualIdentityId,
+          kind: seed.kind,
+          status: seed.status,
+          isCanonical: seed.isCanonical,
+          position: seed.position,
+          storageKey: seed.storageKey,
+          contentRating: seed.contentRating,
+          provenance: seed.provenance,
+          updatedAt: new Date(),
+        },
+      });
+  }
+  return { identities: SEED_VISUAL_IDENTITIES.length, assets: SEED_VISUAL_ASSETS.length };
+}
+
 // Run directly: node dist/db/seed.js (or via the db:seed npm script)
 if (import.meta.url === `file://${process.argv[1]}`) {
   const databaseUrl = process.env.DATABASE_URL;
@@ -42,6 +89,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   const { db, pool } = createDb(databaseUrl);
   const count = await seedCharacters(db);
-  console.log(`Seeded ${count} characters.`);
+  const visual = await seedVisualIdentities(db);
+  console.log(
+    `Seeded ${count} characters, ${visual.identities} visual identities, ${visual.assets} canonical assets.`,
+  );
   await pool.end();
 }

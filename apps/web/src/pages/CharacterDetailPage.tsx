@@ -1,8 +1,114 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import type { PublicCharacter } from '@over18/shared';
+import type {
+  CharacterVisualIdentityResponse,
+  PublicCharacter,
+  PublicVisualAsset,
+} from '@over18/shared';
 import { ApiRequestError, charactersApi, conversationsApi } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
+
+/** A single canonical reference thumbnail. Placeholder scaffolding in the PoC. */
+function CanonicalThumb({ asset }: { asset: PublicVisualAsset }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <li
+      data-testid="canonical-thumb"
+      className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
+    >
+      <div className="aspect-[4/5] w-full">
+        {failed ? (
+          <div className="flex h-full w-full items-center justify-center bg-zinc-800 text-xs text-zinc-500">
+            image unavailable
+          </div>
+        ) : (
+          <img
+            src={asset.imageUrl}
+            alt=""
+            loading="lazy"
+            onError={() => setFailed(true)}
+            className="h-full w-full object-cover"
+          />
+        )}
+      </div>
+    </li>
+  );
+}
+
+type VisualState =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'ready'; data: CharacterVisualIdentityResponse };
+
+/** Visual identity panel + canonical reference gallery (US-16B). Read-only. */
+function VisualIdentitySection({ visual }: { visual: VisualState }) {
+  if (visual.status === 'loading' || visual.status === 'error') {
+    // Non-blocking: a failed visual fetch simply hides the section — it never
+    // breaks the profile page.
+    return null;
+  }
+  const { identity, canonicalAssets } = visual.data;
+
+  if (!identity) {
+    // Clean empty state for a character with no active visual identity yet.
+    return (
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Visual identity
+        </h3>
+        <p className="mt-2 text-sm text-zinc-400">
+          No visual identity has been defined for this character yet.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="visual-identity-panel" className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
+      <div className="flex items-baseline justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Visual identity
+        </h3>
+        <span className="text-[10px] uppercase tracking-wide text-zinc-600">
+          {identity.label ?? `v${identity.version}`}
+        </span>
+      </div>
+
+      {identity.attributes.length > 0 && (
+        <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+          {identity.attributes.map((attr) => (
+            <div key={attr.label} className="flex flex-col">
+              <dt className="text-[11px] uppercase tracking-wide text-zinc-500">{attr.label}</dt>
+              <dd className="text-sm text-zinc-300">{attr.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {canonicalAssets.length > 0 && (
+        <div className="mt-4">
+          <div className="flex items-center justify-between">
+            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+              Canonical references
+            </h4>
+            <span className="rounded-full border border-amber-900/60 bg-amber-950/40 px-2 py-0.5 text-[10px] text-amber-300/80">
+              placeholder scaffolding
+            </span>
+          </div>
+          <ul className="mt-2 grid grid-cols-3 gap-2">
+            {canonicalAssets.map((asset) => (
+              <CanonicalThumb key={asset.id} asset={asset} />
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] leading-snug text-zinc-500">
+            Reference images are placeholders. No image generation exists yet — these are not
+            generated or photorealistic assets.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 type ProfileState =
   | { status: 'loading' }
@@ -25,6 +131,7 @@ export default function CharacterDetailPage() {
   const [imageFailed, setImageFailed] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [visual, setVisual] = useState<VisualState>({ status: 'loading' });
 
   const startChat = useCallback(
     async (character: PublicCharacter) => {
@@ -61,6 +168,21 @@ export default function CharacterDetailPage() {
             : { status: 'error' },
         );
       });
+    return () => {
+      cancelled = true;
+    };
+  }, [characterId, attempt]);
+
+  // US-16B: load the public visual identity independently — it never blocks or
+  // breaks the profile page (a failure just hides the section).
+  useEffect(() => {
+    if (!characterId) return;
+    let cancelled = false;
+    setVisual({ status: 'loading' });
+    charactersApi
+      .visualIdentity(characterId)
+      .then((data) => !cancelled && setVisual({ status: 'ready', data }))
+      .catch(() => !cancelled && setVisual({ status: 'error' }));
     return () => {
       cancelled = true;
     };
@@ -203,6 +325,8 @@ export default function CharacterDetailPage() {
           </h3>
           <p className="mt-2 text-sm leading-relaxed text-zinc-300">{character.conversationStyle}</p>
         </div>
+
+        <VisualIdentitySection visual={visual} />
       </div>
 
       {/* Sticky CTA above the bottom nav so it's always in thumb's reach */}

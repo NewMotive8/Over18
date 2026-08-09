@@ -3,6 +3,7 @@ import type {
   AuthCredentials,
   AuthUser,
   ChatMessage,
+  CharacterVisualIdentityResponse,
   ConversationSummary,
   HealthResponse,
   PublicCharacter,
@@ -60,6 +61,12 @@ export const charactersApi = {
   },
   get(characterId: string): Promise<PublicCharacter> {
     return request<PublicCharacter>(`/api/characters/${encodeURIComponent(characterId)}`);
+  },
+  /** US-16B: public visual identity + approved canonical gallery for a character. */
+  visualIdentity(characterId: string): Promise<CharacterVisualIdentityResponse> {
+    return request<CharacterVisualIdentityResponse>(
+      `/api/characters/${encodeURIComponent(characterId)}/visual-identity`,
+    );
   },
 };
 

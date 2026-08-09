@@ -107,3 +107,45 @@ export interface VisualDna {
   /** Open-ended room for additional identity attributes as the taxonomy matures. */
   [key: string]: unknown;
 }
+
+/**
+ * Public, display-ready Visual Identity projection (US-16B).
+ * A strict allow-list of the active identity version — it NEVER carries
+ * provenance, content-rating internals, draft/retired state, storage details,
+ * or any raw jsonb. `attributes` is a curated, ordered set of identity
+ * descriptors rendered server-side from the Visual DNA allow-list.
+ */
+export interface PublicVisualIdentityAttribute {
+  label: string;
+  value: string;
+}
+
+export interface PublicVisualIdentity {
+  characterId: string;
+  version: number;
+  label: string | null;
+  attributes: PublicVisualIdentityAttribute[];
+}
+
+/**
+ * Public, display-ready canonical reference asset (US-16B). Only approved
+ * canonical references are ever projected. Carries only what the gallery needs
+ * — never kind/status/is_canonical/provenance/content_rating/approver.
+ * `imageUrl` is an opaque display locator (a placeholder URL in the PoC; a
+ * future StorageProvider resolves it identically).
+ */
+export interface PublicVisualAsset {
+  id: string;
+  position: number | null;
+  imageUrl: string;
+}
+
+/**
+ * Response of GET /api/characters/:characterId/visual-identity.
+ * `identity` is null (with an empty gallery) when the character has no active
+ * visual identity — the clean empty state.
+ */
+export interface CharacterVisualIdentityResponse {
+  identity: PublicVisualIdentity | null;
+  canonicalAssets: PublicVisualAsset[];
+}
