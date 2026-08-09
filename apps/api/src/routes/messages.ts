@@ -96,9 +96,15 @@ export default async function messageRoutes(
               message: 'AI is not configured for this environment yet. Please try again later.',
             });
           }
+          // US-14: a timeout gets its own understandable message; every other
+          // provider failure shares the generic one. Same 502 envelope either
+          // way — the atomic rollback already guaranteed nothing persisted.
           return reply.code(502).send({
             error: 'ai_unavailable',
-            message: "The character couldn't respond right now. Please try again.",
+            message:
+              err.kind === 'timeout'
+                ? 'The character took too long to respond. Please try again.'
+                : "The character couldn't respond right now. Please try again.",
           });
         }
         throw err;

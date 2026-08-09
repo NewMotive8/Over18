@@ -57,22 +57,45 @@ export default function ChatPage() {
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
+  // US-14: one send path shared by the form and the Retry button. On failure
+  // nothing is appended and the draft is preserved, so a retry re-sends the
+  // exact same content — the server's atomic transaction guarantees the failed
+  // attempt persisted no user (or character) message, so no duplicates arise.
+  const sendContent = useCallback(
+    async (content: string) => {
+      if (!content || !conversationId) return;
+      setSending(true);
+      setSendError(null);
+      try {
+        const result = await messagesApi.send(conversationId, content);
+        setMessages((prev) => [...prev, result.userMessage, result.characterMessage]);
+        setDraft(''); // clear only on success — errors keep the draft for retry
+      } catch (err) {
+        // Prefer the API's understandable message (timeout / unavailable /
+        // not-configured); fall back for a network error with no response.
+        setSendError(
+          err instanceof ApiRequestError
+            ? err.message
+            : "Couldn't reach the server. Check your connection and try again.",
+        );
+      } finally {
+        setSending(false);
+      }
+    },
+    [conversationId],
+  );
+
   async function handleSend(event: FormEvent) {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || sending || !conversationId) return;
-    setSending(true);
-    setSendError(null);
-    try {
-      const result = await messagesApi.send(conversationId, content);
-      setMessages((prev) => [...prev, result.userMessage, result.characterMessage]);
-      setDraft(''); // clear only on success — errors keep the draft
-    } catch {
-      setSendError("Couldn't send your message. Please try again.");
-    } finally {
-      setSending(false);
-    }
+    if (sending) return;
+    await sendContent(draft.trim());
   }
+
+  // Retry re-sends the preserved draft — no retyping required.
+  const retrySend = useCallback(() => {
+    if (sending) return;
+    void sendContent(draft.trim());
+  }, [sending, draft, sendContent]);
 
   if (state.status === 'loading') {
     return (
@@ -199,9 +222,20 @@ export default function ChatPage() {
       </div>
 
       {sendError && (
-        <p role="alert" className="mb-2 rounded-lg border border-red-900 bg-red-950/60 px-3 py-2 text-center text-sm text-red-300">
-          {sendError}
-        </p>
+        <div
+          role="alert"
+          className="mb-2 flex items-center justify-between gap-3 rounded-lg border border-red-900 bg-red-950/60 px-3 py-2 text-sm text-red-300"
+        >
+          <span>{sendError}</span>
+          <button
+            type="button"
+            onClick={retrySend}
+            disabled={sending || draft.trim().length === 0}
+            className="shrink-0 rounded-md bg-red-800/70 px-3 py-1 text-xs font-semibold text-red-50 transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {sending ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
       )}
 
       <form onSubmit={handleSend} className="flex items-end gap-2 border-t border-zinc-800 pt-3">
