@@ -1,39 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import type {
-  CharacterVisualIdentityResponse,
-  PublicCharacter,
-  PublicVisualAsset,
-} from '@over18/shared';
+import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import { ApiRequestError, charactersApi, conversationsApi } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
-
-/** A single canonical reference thumbnail. Placeholder scaffolding in the PoC. */
-function CanonicalThumb({ asset }: { asset: PublicVisualAsset }) {
-  const [failed, setFailed] = useState(false);
-  return (
-    <li
-      data-testid="canonical-thumb"
-      className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
-    >
-      <div className="aspect-[4/5] w-full">
-        {failed ? (
-          <div className="flex h-full w-full items-center justify-center bg-zinc-800 text-xs text-zinc-500">
-            image unavailable
-          </div>
-        ) : (
-          <img
-            src={asset.imageUrl}
-            alt=""
-            loading="lazy"
-            onError={() => setFailed(true)}
-            className="h-full w-full object-cover"
-          />
-        )}
-      </div>
-    </li>
-  );
-}
+import { characterMediaList, resolveHeroMedia, type CharacterMediaItem } from '../lib/media';
+import HeroMedia from '../components/HeroMedia';
+import MediaGallery from '../components/MediaGallery';
+import MediaViewer from '../components/MediaViewer';
+import PremiumGate from '../components/PremiumGate';
 
 type VisualState =
   | { status: 'loading' }
@@ -47,7 +21,7 @@ function VisualIdentitySection({ visual }: { visual: VisualState }) {
     // breaks the profile page.
     return null;
   }
-  const { identity, canonicalAssets } = visual.data;
+  const { identity } = visual.data;
 
   if (!identity) {
     // Clean empty state for a character with no active visual identity yet.
@@ -84,28 +58,6 @@ function VisualIdentitySection({ visual }: { visual: VisualState }) {
           ))}
         </dl>
       )}
-
-      {canonicalAssets.length > 0 && (
-        <div className="mt-4">
-          <div className="flex items-center justify-between">
-            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-              Canonical references
-            </h4>
-            <span className="rounded-full border border-amber-900/60 bg-amber-950/40 px-2 py-0.5 text-[10px] text-amber-300/80">
-              placeholder scaffolding
-            </span>
-          </div>
-          <ul className="mt-2 grid grid-cols-3 gap-2">
-            {canonicalAssets.map((asset) => (
-              <CanonicalThumb key={asset.id} asset={asset} />
-            ))}
-          </ul>
-          <p className="mt-2 text-[11px] leading-snug text-zinc-500">
-            Reference images are placeholders. No image generation exists yet — these are not
-            generated or photorealistic assets.
-          </p>
-        </div>
-      )}
     </div>
   );
 }
@@ -128,10 +80,11 @@ export default function CharacterDetailPage() {
   const { status: authStatus } = useAuth();
   const [state, setState] = useState<ProfileState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
-  const [imageFailed, setImageFailed] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [visual, setVisual] = useState<VisualState>({ status: 'loading' });
+  const [viewer, setViewer] = useState<{ items: CharacterMediaItem[]; index: number } | null>(null);
+  const [gateOpen, setGateOpen] = useState(false);
 
   const startChat = useCallback(
     async (character: PublicCharacter) => {
@@ -265,35 +218,37 @@ export default function CharacterDetailPage() {
   }
 
   const { character } = state;
-  const showImage = character.profileImage && !imageFailed;
+  const visualData = visual.status === 'ready' ? visual.data : null;
+  const mediaItems = characterMediaList(character, visualData);
+  const freeItems = mediaItems.filter((item) => !item.premium);
 
   return (
     <section className="flex flex-col gap-4 pb-24">
       {backLink}
 
-      <div className="relative overflow-hidden rounded-2xl border border-zinc-800">
+      <button
+        type="button"
+        onClick={() => setViewer({ items: freeItems, index: 0 })}
+        aria-label={`View ${character.displayName}'s media`}
+        className="relative block overflow-hidden rounded-2xl border border-zinc-800 text-left"
+      >
         <div className="aspect-[4/5] w-full">
-          {showImage ? (
-            <img
-              src={character.profileImage!}
-              alt={character.displayName}
-              onError={() => setImageFailed(true)}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-900 text-8xl font-semibold text-rose-500/70">
-              {character.displayName.charAt(0)}
-            </div>
-          )}
+          <HeroMedia media={resolveHeroMedia(character, visualData)} alt={character.displayName} />
         </div>
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-zinc-950 via-zinc-950/50 to-transparent" />
-        <div className="absolute inset-x-0 bottom-0 p-4">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 p-4">
           <h2 className="text-2xl font-bold text-white">{character.displayName}</h2>
           <p className="mt-1 text-sm leading-snug text-zinc-300">{character.shortBio}</p>
         </div>
-      </div>
+      </button>
 
       <div className="flex flex-col gap-4">
+        <MediaGallery
+          items={mediaItems}
+          onOpenFree={(freeIndex) => setViewer({ items: freeItems, index: freeIndex })}
+          onLocked={() => setGateOpen(true)}
+        />
+
         <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
             Personality
@@ -345,6 +300,16 @@ export default function CharacterDetailPage() {
           {starting ? 'Starting…' : `Start chatting with ${character.displayName}`}
         </button>
       </div>
+
+      {viewer && (
+        <MediaViewer
+          items={viewer.items}
+          startIndex={viewer.index}
+          label={character.displayName}
+          onClose={() => setViewer(null)}
+        />
+      )}
+      {gateOpen && <PremiumGate name={character.displayName} onClose={() => setGateOpen(false)} />}
     </section>
   );
 }

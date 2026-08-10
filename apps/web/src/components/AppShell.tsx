@@ -26,7 +26,7 @@ export default function AppShell() {
         </Link>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-4 pb-8 pt-6">
+      <main className="flex flex-1 flex-col overflow-y-auto px-4 pb-8 pt-6">
         <Outlet />
       </main>
 

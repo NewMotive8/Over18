@@ -55,3 +55,30 @@ export function SparkleIcon(props: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+
+export function PassIcon(props: SVGProps<SVGSVGElement>) {
+  // X — pass / skip
+  return (
+    <svg {...base} {...props}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+export function LikeIcon(props: SVGProps<SVGSVGElement>) {
+  // filled heart — interested / like
+  return (
+    <svg {...base} fill="currentColor" stroke="none" {...props}>
+      <path d="M12 20.3S3.5 15 3.5 8.9A4.4 4.4 0 0 1 12 6.9a4.4 4.4 0 0 1 8.5 2c0 6.1-8.5 11.4-8.5 11.4Z" />
+    </svg>
+  );
+}
+
+export function OpenProfileIcon(props: SVGProps<SVGSVGElement>) {
+  // chevron up — open / expand the profile
+  return (
+    <svg {...base} {...props}>
+      <path d="M6 15l6-6 6 6" />
+    </svg>
+  );
+}
