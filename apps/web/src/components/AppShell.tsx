@@ -1,4 +1,4 @@
-import { Link, Outlet } from 'react-router-dom';
+import { Link, Outlet, useLocation } from 'react-router-dom';
 import MobileNavigation from './MobileNavigation';
 
 /**
@@ -14,19 +14,27 @@ import MobileNavigation from './MobileNavigation';
  * Profile destination — which keeps it a pure, reusable layout primitive.
  */
 export default function AppShell() {
+  const { pathname } = useLocation();
+  // The v2 lobby (US-28) owns its own top navigation and full-bleed media, so on
+  // that route the shell drops its default brand bar and content padding. Every
+  // other screen keeps the original shell chrome unchanged.
+  const isLobby = pathname === '/characters';
+
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-lg flex-col bg-zinc-950 text-zinc-100">
-      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur pt-[max(0.75rem,env(safe-area-inset-top))]">
-        <Link
-          to="/characters"
-          aria-label="Over18 — Discover"
-          className="text-lg font-semibold tracking-tight text-white transition-opacity hover:opacity-80"
-        >
-          Over<span className="text-rose-500">18</span>
-        </Link>
-      </header>
+      {!isLobby && (
+        <header className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <Link
+            to="/characters"
+            aria-label="Over18 — Discover"
+            className="text-lg font-semibold tracking-tight text-white transition-opacity hover:opacity-80"
+          >
+            Over<span className="text-rose-500">18</span>
+          </Link>
+        </header>
+      )}
 
-      <main className="flex flex-1 flex-col overflow-y-auto px-4 pb-8 pt-6">
+      <main className={`flex flex-1 flex-col overflow-y-auto ${isLobby ? '' : 'px-4 pb-8 pt-6'}`}>
         <Outlet />
       </main>
 

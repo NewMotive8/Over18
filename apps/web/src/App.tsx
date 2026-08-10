@@ -3,7 +3,8 @@ import AppShell from './components/AppShell';
 import RequireAuth from './auth/RequireAuth';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
-import CharactersPage from './pages/CharactersPage';
+import LobbyPage from './pages/LobbyPage';
+import SwipePage from './pages/SwipePage';
 import CharacterDetailPage from './pages/CharacterDetailPage';
 import GoSteadyPage from './pages/GoSteadyPage';
 import ProfilePage from './pages/ProfilePage';
@@ -27,10 +28,13 @@ export default function App() {
         {/* Discover is the primary entry point */}
         <Route path="/" element={<Navigate to="/characters" replace />} />
 
-        {/* Primary destinations */}
-        <Route path="/characters" element={<CharactersPage />} />
+        {/* Primary destination: the v2 media-rich Lobby & Discovery Hub (US-28) */}
+        <Route path="/characters" element={<LobbyPage />} />
         <Route path="/go-steady" element={<GoSteadyPage />} />
         <Route path="/profile" element={<ProfilePage />} />
+
+        {/* Swipe discovery (US-19) preserved as a secondary interaction */}
+        <Route path="/discover/swipe" element={<SwipePage />} />
 
         {/* Character profile (existing flow, preserved) */}
         <Route path="/characters/:characterId" element={<CharacterDetailPage />} />

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import type { PublicCharacter } from '@over18/shared';
 import { useCharacters } from '../hooks/useCharacters';
 import SwipeDeck, { type SwipeDeckHandle } from '../components/SwipeDeck';
@@ -8,7 +8,12 @@ import EmptyState from '../components/EmptyState';
 import { DiscoverIcon, LikeIcon, SparkleIcon } from '../components/icons';
 import type { SwipeDecision } from '../lib/swipe';
 
-/** Swipye-style loading placeholder: one dominant card, not a grid. */
+/**
+ * Swipe discovery (US-19), preserved as a SECONDARY interaction under the v2
+ * lobby (US-28). The Tinder-style deck is no longer the primary Discover
+ * experience — the media-rich lobby is — but it remains fully available here at
+ * /discover/swipe and reuses the exact US-19 deck components unchanged.
+ */
 function DeckSkeleton() {
   return (
     <div className="flex flex-1 min-h-0 flex-col gap-4" data-testid="discover-skeleton">
@@ -27,7 +32,7 @@ function DeckSkeleton() {
   );
 }
 
-export default function CharactersPage() {
+export default function SwipePage() {
   const { state, reload } = useCharacters();
   const navigate = useNavigate();
   const deckRef = useRef<SwipeDeckHandle>(null);
@@ -74,14 +79,21 @@ export default function CharactersPage() {
     setFeedback(null);
   }, []);
 
+  const backLink = (
+    <Link
+      to="/characters"
+      className="inline-flex w-fit items-center gap-1 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
+    >
+      <span aria-hidden>←</span> Back to lobby
+    </Link>
+  );
+
   const header = useMemo(
     () => (
       <header className="flex items-end justify-between">
         <div className="flex flex-col gap-0.5">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-rose-500">
-            Discover
-          </span>
-          <h2 className="text-xl font-semibold tracking-tight text-white">Find your someone</h2>
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-rose-500">Swipe</span>
+          <h2 className="text-xl font-semibold tracking-tight text-white">Quick discovery</h2>
         </div>
         {state.status === 'ready' && characters.length > 0 && current && (
           <span className="rounded-full border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-[11px] font-medium text-zinc-400">
@@ -93,15 +105,19 @@ export default function CharactersPage() {
     [state.status, characters.length, current, index],
   );
 
-  // ── Loading ────────────────────────────────────────────────────────────
   if (state.status === 'loading') {
-    return <DeckSkeleton />;
+    return (
+      <div className="flex flex-1 min-h-0 flex-col gap-3">
+        {backLink}
+        <DeckSkeleton />
+      </div>
+    );
   }
 
-  // ── Error ──────────────────────────────────────────────────────────────
   if (state.status === 'error') {
     return (
-      <div className="flex flex-1 min-h-0 flex-col justify-center">
+      <div className="flex flex-1 min-h-0 flex-col justify-center gap-3">
+        {backLink}
         <EmptyState
           icon={<SparkleIcon />}
           title="Couldn't load characters"
@@ -120,10 +136,10 @@ export default function CharactersPage() {
     );
   }
 
-  // ── Empty (no characters at all) ───────────────────────────────────────
   if (characters.length === 0) {
     return (
-      <div className="flex flex-1 min-h-0 flex-col justify-center">
+      <div className="flex flex-1 min-h-0 flex-col justify-center gap-3">
+        {backLink}
         <EmptyState
           icon={<DiscoverIcon />}
           title="No one's here yet"
@@ -134,11 +150,11 @@ export default function CharactersPage() {
     );
   }
 
-  // ── End of deck ────────────────────────────────────────────────────────
   if (!current) {
     const likedCount = liked.size;
     return (
-      <div className="flex flex-1 min-h-0 flex-col justify-center">
+      <div className="flex flex-1 min-h-0 flex-col justify-center gap-3">
+        {backLink}
         <EmptyState
           icon={<LikeIcon />}
           title="You're all caught up"
@@ -161,9 +177,9 @@ export default function CharactersPage() {
     );
   }
 
-  // ── Active discovery deck ──────────────────────────────────────────────
   return (
     <div className="flex flex-1 min-h-0 flex-col gap-3">
+      {backLink}
       {header}
 
       <div className="relative min-h-[420px] flex-1">
@@ -177,7 +193,6 @@ export default function CharactersPage() {
           />
         </div>
 
-        {/* Transient interaction feedback. */}
         {feedback && (
           <div
             role="status"
