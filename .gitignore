@@ -18,3 +18,7 @@ npm-debug.log*
 .DS_Store
 .idea/
 .vscode/
+
+# US-18 QA artifacts (not committed)
+qa-shots/
+qa-run.mjs
