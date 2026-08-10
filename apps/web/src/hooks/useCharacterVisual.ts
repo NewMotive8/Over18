@@ -22,6 +22,13 @@ export function useCharacterVisual(characterId: string): {
   const [loading, setLoading] = useState<boolean>(() => !cache.has(characterId));
 
   useEffect(() => {
+    // No id (e.g. a non-persona hero slide) → nothing to load, no request.
+    if (!characterId) {
+      setVisual(null);
+      setLoading(false);
+      return;
+    }
+
     if (cache.has(characterId)) {
       setVisual(cache.get(characterId) ?? null);
       setLoading(false);
