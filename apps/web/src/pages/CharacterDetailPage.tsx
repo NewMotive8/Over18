@@ -1,114 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import type {
-  CharacterVisualIdentityResponse,
-  PublicCharacter,
-  PublicVisualAsset,
-} from '@over18/shared';
+import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import { ApiRequestError, charactersApi, conversationsApi } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
-
-/** A single canonical reference thumbnail. Placeholder scaffolding in the PoC. */
-function CanonicalThumb({ asset }: { asset: PublicVisualAsset }) {
-  const [failed, setFailed] = useState(false);
-  return (
-    <li
-      data-testid="canonical-thumb"
-      className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900"
-    >
-      <div className="aspect-[4/5] w-full">
-        {failed ? (
-          <div className="flex h-full w-full items-center justify-center bg-zinc-800 text-xs text-zinc-500">
-            image unavailable
-          </div>
-        ) : (
-          <img
-            src={asset.imageUrl}
-            alt=""
-            loading="lazy"
-            onError={() => setFailed(true)}
-            className="h-full w-full object-cover"
-          />
-        )}
-      </div>
-    </li>
-  );
-}
+import { apparentAge, resolveHeroMedia, type CharacterMediaItem } from '../lib/media';
+import { characterVideoItems } from '../lib/characterMedia';
+import { adultAgeFromBand } from '../lib/lobbyContent';
+import { mockRelationship } from '../lib/relationship';
+import ProfileHero from '../components/profile/ProfileHero';
+import ProfileActions from '../components/profile/ProfileActions';
+import RelationshipTracker from '../components/profile/RelationshipTracker';
+import ProfileTabs, { type ProfileTab } from '../components/profile/ProfileTabs';
+import AboutTab from '../components/profile/AboutTab';
+import PostsTab from '../components/profile/PostsTab';
+import MediaViewer from '../components/MediaViewer';
+import PremiumGate from '../components/PremiumGate';
 
 type VisualState =
   | { status: 'loading' }
   | { status: 'error' }
   | { status: 'ready'; data: CharacterVisualIdentityResponse };
-
-/** Visual identity panel + canonical reference gallery (US-16B). Read-only. */
-function VisualIdentitySection({ visual }: { visual: VisualState }) {
-  if (visual.status === 'loading' || visual.status === 'error') {
-    // Non-blocking: a failed visual fetch simply hides the section — it never
-    // breaks the profile page.
-    return null;
-  }
-  const { identity, canonicalAssets } = visual.data;
-
-  if (!identity) {
-    // Clean empty state for a character with no active visual identity yet.
-    return (
-      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-          Visual identity
-        </h3>
-        <p className="mt-2 text-sm text-zinc-400">
-          No visual identity has been defined for this character yet.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div data-testid="visual-identity-panel" className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-      <div className="flex items-baseline justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-          Visual identity
-        </h3>
-        <span className="text-[10px] uppercase tracking-wide text-zinc-600">
-          {identity.label ?? `v${identity.version}`}
-        </span>
-      </div>
-
-      {identity.attributes.length > 0 && (
-        <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
-          {identity.attributes.map((attr) => (
-            <div key={attr.label} className="flex flex-col">
-              <dt className="text-[11px] uppercase tracking-wide text-zinc-500">{attr.label}</dt>
-              <dd className="text-sm text-zinc-300">{attr.value}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
-
-      {canonicalAssets.length > 0 && (
-        <div className="mt-4">
-          <div className="flex items-center justify-between">
-            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-              Canonical references
-            </h4>
-            <span className="rounded-full border border-amber-900/60 bg-amber-950/40 px-2 py-0.5 text-[10px] text-amber-300/80">
-              placeholder scaffolding
-            </span>
-          </div>
-          <ul className="mt-2 grid grid-cols-3 gap-2">
-            {canonicalAssets.map((asset) => (
-              <CanonicalThumb key={asset.id} asset={asset} />
-            ))}
-          </ul>
-          <p className="mt-2 text-[11px] leading-snug text-zinc-500">
-            Reference images are placeholders. No image generation exists yet — these are not
-            generated or photorealistic assets.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
 
 type ProfileState =
   | { status: 'loading' }
@@ -117,9 +28,15 @@ type ProfileState =
   | { status: 'ready'; character: PublicCharacter };
 
 /**
- * Character profile (US-05). Start Chat (US-06) creates or reopens the
- * conversation with this character via the API, then navigates to it.
- * Logged-out users are sent to login and returned here afterwards.
+ * Persona Profile — UI v2 (US-29).
+ *
+ * A media-led adult-companion profile: a paginated hero player over the
+ * character's REAL video clips, a mock relationship tracker, primary actions
+ * (Premium / Chat / Call), and About / Posts tabs — Posts carrying a content
+ * paywall. Data loading (character + public Visual Identity), the Start-chat
+ * flow, and the profile states are all preserved from the prior implementation;
+ * only the presentation changed. Media flows through the existing provider-
+ * agnostic resolver and the US-19 MediaViewer / PremiumGate.
  */
 export default function CharacterDetailPage() {
   const { characterId } = useParams<{ characterId: string }>();
@@ -128,15 +45,16 @@ export default function CharacterDetailPage() {
   const { status: authStatus } = useAuth();
   const [state, setState] = useState<ProfileState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
-  const [imageFailed, setImageFailed] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [visual, setVisual] = useState<VisualState>({ status: 'loading' });
+  const [tab, setTab] = useState<ProfileTab>('about');
+  const [viewer, setViewer] = useState<{ items: CharacterMediaItem[]; index: number } | null>(null);
+  const [gateOpen, setGateOpen] = useState(false);
 
   const startChat = useCallback(
     async (character: PublicCharacter) => {
       if (authStatus !== 'authenticated') {
-        // Log in first, then come back to this profile to continue.
         navigate('/login', { state: { from: location.pathname } });
         return;
       }
@@ -173,8 +91,6 @@ export default function CharacterDetailPage() {
     };
   }, [characterId, attempt]);
 
-  // US-16B: load the public visual identity independently — it never blocks or
-  // breaks the profile page (a failure just hides the section).
   useEffect(() => {
     if (!characterId) return;
     let cancelled = false;
@@ -189,162 +105,137 @@ export default function CharacterDetailPage() {
   }, [characterId, attempt]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  const goBack = useCallback(() => navigate('/characters'), [navigate]);
 
   const backLink = (
-    <Link
-      to="/characters"
-      className="inline-flex items-center gap-1 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
+    <button
+      type="button"
+      onClick={goBack}
+      className="inline-flex w-fit items-center gap-1 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
     >
-      <span aria-hidden>←</span> All characters
-    </Link>
+      <span aria-hidden>←</span> Back to lobby
+    </button>
   );
 
   if (state.status === 'loading') {
     return (
-      <section className="flex flex-col gap-4" aria-busy>
+      <section className="flex flex-col gap-4 px-4 pb-8 pt-6" aria-busy>
         {backLink}
-        <div className="animate-pulse overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900">
+        <div className="animate-pulse overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900">
           <div className="aspect-[4/5] w-full bg-zinc-800" />
-          <div className="flex flex-col gap-3 p-4">
-            <div className="h-6 w-1/3 rounded bg-zinc-800" />
-            <div className="h-4 w-full rounded bg-zinc-800" />
-            <div className="h-4 w-2/3 rounded bg-zinc-800" />
-          </div>
         </div>
+        <div className="h-12 animate-pulse rounded-2xl bg-zinc-900" />
       </section>
     );
   }
 
-  if (state.status === 'not-found') {
+  if (state.status === 'not-found' || state.status === 'error') {
+    const notFound = state.status === 'not-found';
     return (
-      <section className="flex flex-col gap-4">
+      <section className="flex flex-col gap-4 px-4 pb-8 pt-6">
         {backLink}
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/60 px-6 py-14 text-center">
           <span aria-hidden className="text-3xl">
-            ☾
+            {notFound ? '☾' : '⚠'}
           </span>
           <div>
-            <p className="font-medium">This character isn't available</p>
+            <p className="font-medium">
+              {notFound ? "This companion isn't available" : "Couldn't load this profile"}
+            </p>
             <p className="mt-1 text-sm text-zinc-400">
-              They may have been retired. Plenty of others would love to meet you.
+              {notFound
+                ? 'They may have been retired. Plenty of others would love to meet you.'
+                : 'Check your connection and try again.'}
             </p>
           </div>
-          <Link
-            to="/characters"
-            className="rounded-lg bg-rose-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
-          >
-            Browse characters
-          </Link>
-        </div>
-      </section>
-    );
-  }
-
-  if (state.status === 'error') {
-    return (
-      <section className="flex flex-col gap-4">
-        {backLink}
-        <div className="flex flex-col items-center gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 px-6 py-14 text-center">
-          <span aria-hidden className="text-3xl">
-            ⚠
-          </span>
-          <div>
-            <p className="font-medium">Couldn't load this profile</p>
-            <p className="mt-1 text-sm text-zinc-400">Check your connection and try again.</p>
-          </div>
-          <button
-            type="button"
-            onClick={retry}
-            className="rounded-lg bg-rose-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
-          >
-            Retry
-          </button>
+          {notFound ? (
+            <Link
+              to="/characters"
+              className="rounded-lg bg-rose-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+            >
+              Browse companions
+            </Link>
+          ) : (
+            <button
+              type="button"
+              onClick={retry}
+              className="rounded-lg bg-rose-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+            >
+              Retry
+            </button>
+          )}
         </div>
       </section>
     );
   }
 
   const { character } = state;
-  const showImage = character.profileImage && !imageFailed;
+  const visualData = visual.status === 'ready' ? visual.data : null;
+  const attributes = visualData?.identity?.attributes ?? [];
+  const videoItems = characterVideoItems(character);
+  const heroItems: CharacterMediaItem[] =
+    videoItems.length > 0
+      ? videoItems
+      : [{ id: 'hero', media: resolveHeroMedia(character, visualData), premium: false }];
+  const age = adultAgeFromBand(apparentAge(visualData));
+  const first = heroItems[0]!.media;
+  const avatarPoster =
+    first.kind === 'video' ? first.poster : first.kind === 'image' ? first.src : character.profileImage ?? undefined;
+  const relationship = mockRelationship(character);
 
   return (
-    <section className="flex flex-col gap-4 pb-24">
-      {backLink}
+    <div className="flex flex-col pb-10">
+      <ProfileHero
+        items={heroItems}
+        name={character.displayName}
+        age={age}
+        avatarPoster={avatarPoster}
+        onBack={goBack}
+        onOpen={(index) => setViewer({ items: heroItems, index })}
+      />
 
-      <div className="relative overflow-hidden rounded-2xl border border-zinc-800">
-        <div className="aspect-[4/5] w-full">
-          {showImage ? (
-            <img
-              src={character.profileImage!}
-              alt={character.displayName}
-              onError={() => setImageFailed(true)}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-900 text-8xl font-semibold text-rose-500/70">
-              {character.displayName.charAt(0)}
-            </div>
-          )}
-        </div>
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-zinc-950 via-zinc-950/50 to-transparent" />
-        <div className="absolute inset-x-0 bottom-0 p-4">
-          <h2 className="text-2xl font-bold text-white">{character.displayName}</h2>
-          <p className="mt-1 text-sm leading-snug text-zinc-300">{character.shortBio}</p>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-4">
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-            Personality
-          </h3>
-          <p className="mt-2 text-sm leading-relaxed text-zinc-300">{character.personality}</p>
-        </div>
-
-        {character.interests.length > 0 && (
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Interests
-            </h3>
-            <ul className="mt-2 flex flex-wrap gap-2">
-              {character.interests.map((interest) => (
-                <li
-                  key={interest}
-                  className="rounded-full border border-zinc-700 bg-zinc-800/80 px-3 py-1 text-xs text-zinc-300"
-                >
-                  {interest}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-            Conversation style
-          </h3>
-          <p className="mt-2 text-sm leading-relaxed text-zinc-300">{character.conversationStyle}</p>
-        </div>
-
-        <VisualIdentitySection visual={visual} />
-      </div>
-
-      {/* Sticky CTA above the bottom nav so it's always in thumb's reach */}
-      <div className="fixed inset-x-0 bottom-14 z-10 mx-auto w-full max-w-lg px-4 pb-2">
+      <div className="flex flex-col gap-4 px-4 pt-4">
         {startError && (
-          <p role="alert" className="mb-2 rounded-lg border border-red-900 bg-red-950/90 px-3 py-2 text-center text-sm text-red-300">
+          <p role="alert" className="rounded-lg border border-red-900 bg-red-950/90 px-3 py-2 text-center text-sm text-red-300">
             {startError}
           </p>
         )}
-        <button
-          type="button"
-          onClick={() => startChat(character)}
-          disabled={starting}
-          className="w-full rounded-xl bg-rose-600 py-3 text-sm font-semibold text-white shadow-lg shadow-rose-950/40 transition-colors hover:bg-rose-500 active:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {starting ? 'Starting…' : `Start chatting with ${character.displayName}`}
-        </button>
+
+        <ProfileActions
+          onUpgrade={() => setGateOpen(true)}
+          onChat={() => startChat(character)}
+          onCall={() => setGateOpen(true)}
+          chatting={starting}
+        />
+
+        <RelationshipTracker state={relationship} />
+
+        <ProfileTabs active={tab} onChange={setTab} postsCount={8} />
+
+        {tab === 'about' ? (
+          <AboutTab
+            character={character}
+            attributes={attributes}
+            onOpenClip={(index) => setViewer({ items: heroItems, index })}
+          />
+        ) : (
+          <PostsTab
+            character={character}
+            onOpenClip={(index) => setViewer({ items: heroItems, index })}
+            onLocked={() => setGateOpen(true)}
+          />
+        )}
       </div>
-    </section>
+
+      {viewer && (
+        <MediaViewer
+          items={viewer.items}
+          startIndex={viewer.index}
+          label={character.displayName}
+          onClose={() => setViewer(null)}
+        />
+      )}
+      {gateOpen && <PremiumGate name={character.displayName} onClose={() => setGateOpen(false)} />}
+    </div>
   );
 }
