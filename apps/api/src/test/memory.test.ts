@@ -242,20 +242,105 @@ describe('LLM-backed extractor (fake/injected client)', () => {
       '',
       '* Their name is Maya.', // duplicate, different bullet
       '• They live in Haifa.',
-      `- ${'x'.repeat(MEMORY_MAX_CONTENT_LENGTH + 1)}`, // overlong — dropped
-      '- Fact three.',
-      '- Fact four.',
-      '- Fact five.',
-      '- Fact six — beyond the per-exchange cap.',
+      `- They like ${'x'.repeat(MEMORY_MAX_CONTENT_LENGTH)}.`, // contract-shaped but overlong — dropped
+      '- They work as a nurse.',
+      '- Their favorite color is turquoise.',
+      '- They have a dog named Rex.',
+      '- They are 29 years old.', // beyond the per-exchange cap — dropped
     ].join('\n');
     const facts = parseExtractedFacts(messy);
     expect(facts).toEqual([
       'Their name is Maya.',
       'They live in Haifa.',
-      'Fact three.',
-      'Fact four.',
-      'Fact five.',
+      'They work as a nurse.',
+      'Their favorite color is turquoise.',
+      'They have a dog named Rex.',
     ]);
+  });
+
+  // ── Extraction hardening: arbitrary model prose must never become memory ─
+  describe('rejects non-fact model output (pollution guard)', () => {
+    it('REPRO: un-bulleted generic assistant prose yields no facts', () => {
+      // Observed live during QA: a chatty model answered the extraction
+      // request with conversation instead of the mandated format, and the
+      // prose was stored verbatim as a persistent memory.
+      expect(parseExtractedFacts('The night sky is lovely; tell me more about your day.')).toEqual(
+        [],
+      );
+      expect(
+        parseExtractedFacts(
+          "I'm sorry, I don't see any personal facts in this message.\nLet me know if you'd like to chat!",
+        ),
+      ).toEqual([]);
+    });
+
+    it('rejects bulleted chatter, questions, instructions, and headings', () => {
+      expect(
+        parseExtractedFacts(
+          [
+            'Facts:', // heading
+            '- What is your cat called?', // question
+            '- Tell me more about your day.', // instruction back at the user
+            '- I could not find any durable facts.', // first-person chatter
+            '- Sure! Here are the facts you asked for:', // preamble ending in a colon
+          ].join('\n'),
+        ),
+      ).toEqual([]);
+    });
+
+    it('still accepts contract-shaped facts, ignoring surrounding chatter lines', () => {
+      expect(
+        parseExtractedFacts(
+          [
+            'Here are the facts I found:', // unbulleted preamble — ignored
+            '- Their name is Maya.',
+            "- They're training for a marathon.",
+            '- They have a cat named Orion.',
+            'Hope that helps!', // unbulleted sign-off — ignored
+          ].join('\n'),
+        ),
+      ).toEqual([
+        'Their name is Maya.',
+        "They're training for a marathon.",
+        'They have a cat named Orion.',
+      ]);
+    });
+
+    it('a sloppy model reply stores NOTHING through the full API path', async () => {
+      // End-to-end: LLM-backed extractor whose model ignores the format.
+      const fake = createFakeClient();
+      migrateTestDb();
+      const ctx = await createTestContext({
+        memoryExtractor: createLlmMemoryExtractor(fake.client),
+      });
+      try {
+        await truncateAll(ctx);
+        await seedCharacters(ctx.db);
+        fake.setReply('What a lovely question! I think your cat is wonderful.');
+        const reg = await ctx.app.inject({
+          method: 'POST',
+          url: '/api/auth/register',
+          payload: { email: 'pollution.guard@example.com', password: 'pollution-pass1' },
+        });
+        const cookie = extractSessionCookie(reg)!;
+        const conv = await ctx.app.inject({
+          method: 'POST',
+          url: '/api/conversations',
+          payload: { characterId: LUNA.id },
+          cookies: { [cookie.name]: cookie.value },
+        });
+        const res = await ctx.app.inject({
+          method: 'POST',
+          url: `/api/conversations/${conv.json().id}/messages`,
+          payload: { content: 'I have a cat named Orion.' },
+          cookies: { [cookie.name]: cookie.value },
+        });
+        expect(res.statusCode).toBe(201); // the chat exchange is unaffected
+        expect(await ctx.db.select().from(memories)).toHaveLength(0); // nothing polluted
+      } finally {
+        await destroyTestContext(ctx);
+      }
+    });
   });
 
   it('propagates client failures as LlmError (isolation happens in the caller)', async () => {

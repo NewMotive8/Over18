@@ -188,21 +188,43 @@ const EXTRACTION_INSTRUCTIONS = [
   'A durable fact is something about THEM that would still be true and worth remembering weeks from now: their name, age, where they live or come from, their job, family members, pets, or strong lasting likes and dislikes.',
   'Rules:',
   '- Output ONLY the facts, one per line, each line starting with "- ".',
-  '- Write each fact in the third person as one short standalone sentence, e.g. "- Their name is Maya."',
+  '- Write each fact in the third person as one short standalone sentence beginning with "They" or "Their" and ending with a period, e.g. "- Their name is Maya."',
   `- At most ${MAX_FACTS_PER_EXCHANGE} facts.`,
   '- Do NOT include small talk, questions, moods, opinions about the conversation partner, or anything temporary.',
   '- If the message contains no durable personal facts, output exactly: NONE',
 ].join('\n');
 
-/** Turns the model's line-per-fact output into a clean, bounded fact list. */
+/**
+ * Turns the model's line-per-fact output into a clean, bounded fact list.
+ *
+ * This is the pollution guard for persistent memory: only lines that follow
+ * the instructed contract are accepted, everything else is silently ignored
+ * (never an error — a chatty model loses its chatter, not the exchange).
+ * A line qualifies as a fact ONLY if it:
+ *   1. is a bullet line ("- ", "* ", or "• " — the instructed format);
+ *   2. is a third-person statement about the user, i.e. starts with
+ *      "They"/"Their" (covering "They're"/"Their ..."), the only form the
+ *      instructions mandate and the only form this system ever produces;
+ *   3. ends like a sentence ("." or "!") — which structurally excludes
+ *      questions ("?"), headings/preambles (":"), and cut-off fragments.
+ * Un-bulleted prose, assistant chatter, instructions, and headings therefore
+ * can never silently become memories. This deliberately favors dropping a
+ * malformed fact over storing junk, matching the extractor's documented
+ * precision-over-recall stance, and is provider-agnostic: every
+ * OpenAI-compatible model receives the same format instructions.
+ */
 export function parseExtractedFacts(raw: string): string[] {
   const trimmed = raw.trim();
   if (trimmed.length === 0 || /^none[.!]?$/i.test(trimmed)) return [];
   const facts: string[] = [];
   for (const line of trimmed.split('\n')) {
-    const fact = line.replace(/^\s*[-*•]\s*/, '').trim();
+    const bulleted = line.match(/^\s*[-*•]\s*(.*)$/);
+    if (!bulleted) continue; // not the instructed format — model chatter, ignored
+    const fact = bulleted[1]!.trim();
     if (fact.length === 0 || /^none[.!]?$/i.test(fact)) continue;
     if (fact.length > MEMORY_MAX_CONTENT_LENGTH) continue;
+    if (!/^(?:They|Their)\b/.test(fact)) continue; // not third-person about the user
+    if (!/[.!]$/.test(fact)) continue; // not a finished statement (question/heading/fragment)
     if (!facts.includes(fact)) facts.push(fact);
     if (facts.length >= MAX_FACTS_PER_EXCHANGE) break;
   }
