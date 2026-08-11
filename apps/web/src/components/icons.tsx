@@ -117,3 +117,47 @@ export function MessageIcon(props: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+
+export function ChevronLeftIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="m15 18-6-6 6-6" />
+    </svg>
+  );
+}
+
+export function MoreIcon(props: SVGProps<SVGSVGElement>) {
+  // horizontal three-dots
+  return (
+    <svg {...base} {...props}>
+      <circle cx="5" cy="12" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+    </svg>
+  );
+}
+
+export function PhoneIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2 4.2 2 2 0 0 1 4 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.6a2 2 0 0 1-.5 2.1L8 9.6a16 16 0 0 0 6 6l1.2-1.2a2 2 0 0 1 2.1-.5c.8.3 1.7.6 2.6.7a2 2 0 0 1 1.7 2Z" />
+    </svg>
+  );
+}
+
+export function CrownIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} fill="currentColor" stroke="none" {...props}>
+      <path d="M3 7l4 4 5-6 5 6 4-4-1.5 12h-15L3 7Z" />
+    </svg>
+  );
+}
+
+export function LockIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="4.5" y="10.5" width="15" height="10" rx="2" />
+      <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
+    </svg>
+  );
+}
