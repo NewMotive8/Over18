@@ -31,3 +31,4 @@ qa-run.mjs
 _to_delete/
 llm-eval-openrouter.mjs
 llm-eval-out/
+SHIP-EVIDENCE.md

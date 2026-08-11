@@ -702,6 +702,79 @@ describe('US-33: env-selected real provider through the API (local endpoint)', (
     expect(res.body).not.toContain('Their name is Maya.');
   });
 
+  // ── QA memory regression (blocking gate) ────────────────────────────────
+  // Proves recall comes from PERSISTED MEMORY, not from replayed chat history.
+  // Strong variant: the conversation's message rows are deleted from the
+  // guarded test DB (memories deliberately left intact), so the fact CANNOT
+  // ride along in history — if it reaches the model, it came from memory.
+
+  it('QA regression: recalls a fact from persisted memory after history rows are deleted', async () => {
+    const { cookies, conversationId } = await setup('qa.memory.deleted@example.com');
+
+    // 1. Establish the fact through the real application path.
+    const factSend = await send(cookies, conversationId, 'I have a cat named Orion.');
+    expect(factSend.statusCode).toBe(201);
+
+    // 2. The fact was persisted as memory (extraction ran after the exchange).
+    const userId = (
+      await ctx.app.inject({ method: 'GET', url: '/api/auth/me', cookies })
+    ).json().id as string;
+    expect(await listMemories(ctx.db, userId, LUNA.id)).toContain('They have a cat named Orion.');
+
+    // 3. Remove ALL conversation message rows; leave the memories row intact.
+    await ctx.db.delete(messages);
+    expect(await ctx.db.select().from(messages)).toHaveLength(0);
+    expect(await listMemories(ctx.db, userId, LUNA.id)).toContain('They have a cat named Orion.');
+
+    // 4. Ask for the fact back through the real env-selected provider path.
+    wire.length = 0;
+    const recall = await send(cookies, conversationId, 'What is the name of my cat?');
+    expect(recall.statusCode).toBe(201);
+
+    // 5. Inspect the provider wire request: history is provably absent…
+    expect(wire).toHaveLength(1);
+    const sent = wire[0]!.body.messages as Array<{ role: string; content: string }>;
+    expect(sent.map((m) => m.role)).toEqual(['system', 'user']); // no history at all
+    for (const m of sent.filter((m) => m.role !== 'system')) {
+      expect(m.content).not.toContain('Orion');
+    }
+    // …and the fact is present ONLY via the injected memory block.
+    const system = sent.find((m) => m.role === 'system')!.content;
+    expect(system).toContain('Things you remember about this person');
+    expect(system).toContain('They have a cat named Orion.');
+  });
+
+  // Window-overflow variant: same proof under production-like conditions —
+  // nothing is deleted; the fact-bearing exchange simply falls out of the
+  // US-10 context window (16k chars), so only the memory block can carry it.
+  it('QA regression: recalls a fact from memory once history falls out of the context window', async () => {
+    const { cookies, conversationId } = await setup('qa.memory.window@example.com');
+
+    const factSend = await send(cookies, conversationId, 'I have a cat named Orion.');
+    expect(factSend.statusCode).toBe(201);
+
+    // Push the fact exchange out of the 16 000-char window with neutral filler
+    // (extracts no facts, mentions no cat). 9 × 1 900 chars > 16 000.
+    const filler = 'The sky tonight looks calm and quiet over the harbour. '.repeat(40).slice(0, 1_900);
+    for (let i = 0; i < 9; i++) {
+      expect((await send(cookies, conversationId, filler)).statusCode).toBe(201);
+    }
+
+    wire.length = 0;
+    const recall = await send(cookies, conversationId, 'What is the name of my cat?');
+    expect(recall.statusCode).toBe(201);
+
+    expect(wire).toHaveLength(1);
+    const sent = wire[0]!.body.messages as Array<{ role: string; content: string }>;
+    // The fact-bearing user message was evicted by the window…
+    for (const m of sent.filter((m) => m.role !== 'system')) {
+      expect(m.content).not.toContain('Orion');
+    }
+    // …yet the fact still reaches the model, via persisted memory alone.
+    const system = sent.find((m) => m.role === 'system')!.content;
+    expect(system).toContain('They have a cat named Orion.');
+  });
+
   it('keeps the safe error path: provider failure → clean 502, nothing persisted, nothing leaked', async () => {
     const { cookies, conversationId } = await setup('us33.failure@example.com');
     mode = 'http500';
