@@ -22,3 +22,12 @@ npm-debug.log*
 # US-18 QA artifacts (not committed)
 qa-shots/
 qa-run.mjs
+
+# Local approval-workflow & discovery artifacts (approve.ps1 requires a clean
+# untracked view; these live in the working folder but are never committed)
+*.bundle
+*.patch
+*.mp4
+_to_delete/
+llm-eval-openrouter.mjs
+llm-eval-out/

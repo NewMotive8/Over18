@@ -1,11 +1,13 @@
+import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { PublicCharacter } from '@over18/shared';
 import { memories, messages } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters } from '../db/seed.js';
+import type { Env } from '../env.js';
 import { LlmError, type LlmClient, type LlmRequest } from '../llm/types.js';
 import type { ReplyContext } from '../services/character-reply.js';
-import { createLlmReplyProvider } from '../services/llm-reply-provider.js';
+import { createLlmReplyProvider, selectReplyProvider } from '../services/llm-reply-provider.js';
 import {
   createLlmMemoryExtractor,
   deterministicMemoryExtractor,
@@ -547,6 +549,170 @@ describe('memory through the API (extraction → storage → injection)', () => 
     const { userId, conversationId } = await setup('flow.default@example.com');
     await sendMessage(ctx.db, userId, conversationId, 'My name is Maya.', () => 'a reply');
     expect(await listMemories(ctx.db, userId, LUNA.id)).toEqual([]);
+  });
+});
+
+// ───────────────────────── US-33: env-configured real provider path ──────
+//
+// The eval/smoke runs prove the provider side; these tests prove OUR side of
+// the seam with the SAME selection logic production uses: an Env with llm
+// configured → selectReplyProvider → OpenAI-compatible adapter → real HTTP —
+// against a local mock endpoint (the sandbox cannot reach openrouter.ai; the
+// documented smoke test in scripts/llm-smoke.mjs covers the live provider).
+
+describe('US-33: env-selected real provider through the API (local endpoint)', () => {
+  let ctx: TestContext;
+  let server: Server;
+  let mode: 'ok' | 'http500' = 'ok';
+  const MOCK_REPLY = 'Under a real sky tonight — I kept your place by the window.';
+  const API_KEY = 'test-provider-key-not-a-real-secret';
+  /** Everything the provider endpoint received, request by request. */
+  const wire: Array<{ authorization: string | undefined; body: any }> = [];
+
+  beforeAll(async () => {
+    migrateTestDb();
+
+    server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => (raw += chunk));
+      req.on('end', () => {
+        wire.push({ authorization: req.headers.authorization, body: JSON.parse(raw) });
+        if (mode === 'http500') {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'provider exploded' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: MOCK_REPLY } }] }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as { port: number };
+
+    // Exactly what production does: an Env with llm configured, passed through
+    // selectReplyProvider. Model/timeout/token settings are environment-driven.
+    const llmEnv: Env = {
+      ...testEnv,
+      llm: {
+        provider: 'openai-compatible',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        model: 'nousresearch/hermes-3-llama-3.1-70b',
+        apiKey: API_KEY,
+        timeoutMs: 2_000,
+        maxTokens: 512,
+        temperature: 0.8,
+        contextMaxMessages: 40,
+        contextMaxChars: 16_000,
+      },
+    };
+    ctx = await createTestContext({
+      replyProvider: selectReplyProvider(llmEnv),
+      memoryExtractor: deterministicMemoryExtractor,
+    });
+  });
+
+  afterAll(async () => {
+    await destroyTestContext(ctx);
+    await new Promise<void>((resolve, reject) =>
+      server.close((err) => (err ? reject(err) : resolve())),
+    );
+  });
+
+  beforeEach(async () => {
+    await truncateAll(ctx);
+    await seedCharacters(ctx.db);
+    wire.length = 0;
+    mode = 'ok';
+  });
+
+  async function setup(email: string) {
+    const reg = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { email, password: 'us33-real-llm-pass1' },
+    });
+    const cookie = extractSessionCookie(reg)!;
+    const cookies = { [cookie.name]: cookie.value };
+    const conv = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      payload: { characterId: LUNA.id },
+      cookies,
+    });
+    return { cookies, conversationId: conv.json().id as string };
+  }
+
+  function send(cookies: Record<string, string>, conversationId: string, content: string) {
+    return ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${conversationId}/messages`,
+      payload: { content },
+      cookies,
+    });
+  }
+
+  it('completes a request through the existing backend path with env-driven settings', async () => {
+    const { cookies, conversationId } = await setup('us33.path@example.com');
+    const res = await send(cookies, conversationId, 'Hi Luna, are you real now?');
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().characterMessage.content).toBe(MOCK_REPLY);
+
+    // The provider received exactly the env-configured model/sampling settings
+    // over the OpenAI-compatible wire shape — nothing hardcoded in the path.
+    expect(wire).toHaveLength(1);
+    expect(wire[0]!.body.model).toBe('nousresearch/hermes-3-llama-3.1-70b');
+    expect(wire[0]!.body.max_tokens).toBe(512);
+    expect(wire[0]!.body.temperature).toBe(0.8);
+    expect(wire[0]!.body.messages[0]!.role).toBe('system');
+  });
+
+  it('sends credentials to the provider only — the browser never sees key or prompts', async () => {
+    const { cookies, conversationId } = await setup('us33.secrets@example.com');
+    const res = await send(cookies, conversationId, 'My name is Maya, by the way.');
+    const history = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/conversations/${conversationId}/messages`,
+      cookies,
+    });
+
+    // Server→provider: bearer auth actually applied.
+    expect(wire[0]!.authorization).toBe(`Bearer ${API_KEY}`);
+    // Server→browser: no credential, no composed prompt, no persona internals.
+    for (const body of [res.body, history.body]) {
+      expect(body).not.toContain(API_KEY);
+      expect(body).not.toContain('Bearer');
+      expect(body).not.toContain(LUNA.systemPrompt);
+      expect(body).not.toContain('Things you remember about this person');
+    }
+  });
+
+  it('injects stored memories into the real provider call on the next send', async () => {
+    const { cookies, conversationId } = await setup('us33.memory@example.com');
+    await send(cookies, conversationId, 'My name is Maya and I have a cat named Miso.');
+    const res = await send(cookies, conversationId, 'What do you remember about me?');
+
+    expect(res.statusCode).toBe(201);
+    expect(wire).toHaveLength(2);
+    const system = wire[1]!.body.messages.find((m: any) => m.role === 'system')!.content as string;
+    expect(system).toContain('Things you remember about this person');
+    expect(system).toContain('Their name is Maya.');
+    // Same guarantee as US-12, now on the real path: memories reach the model,
+    // never the browser.
+    expect(res.body).not.toContain('Their name is Maya.');
+  });
+
+  it('keeps the safe error path: provider failure → clean 502, nothing persisted, nothing leaked', async () => {
+    const { cookies, conversationId } = await setup('us33.failure@example.com');
+    mode = 'http500';
+    const res = await send(cookies, conversationId, 'Hello?');
+
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toBe('ai_unavailable');
+    expect(res.body).not.toContain(API_KEY);
+    expect(res.body).not.toContain(LUNA.systemPrompt);
+    // Full exchange rollback — the failed send left no message rows behind.
+    expect(await ctx.db.select().from(messages)).toHaveLength(0);
   });
 });
 
