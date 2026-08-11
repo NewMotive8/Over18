@@ -10,9 +10,9 @@ import {
 function character(overrides: Partial<PublicCharacter> = {}): PublicCharacter {
   return {
     id: 'c1',
-    name: 'luna',
-    displayName: 'Luna',
-    profileImage: 'https://img.example/luna.png',
+    name: 'nova',
+    displayName: 'Nova',
+    profileImage: 'https://img.example/nova.png',
     shortBio: 'bio',
     personality: 'p',
     interests: [],
@@ -36,18 +36,18 @@ function visual(
 
 describe('resolveHeroMedia', () => {
   it('is video-first when the character carries a video url (future API field)', () => {
-    const withVideo = { ...character(), videoUrl: 'https://cdn.example/luna.mp4' } as PublicCharacter;
+    const withVideo = { ...character(), videoUrl: 'https://cdn.example/nova.mp4' } as PublicCharacter;
     const media = resolveHeroMedia(withVideo, null);
     expect(media.kind).toBe('video');
     if (media.kind === 'video') {
-      expect(media.src).toBe('https://cdn.example/luna.mp4');
+      expect(media.src).toBe('https://cdn.example/nova.mp4');
       // best available still becomes the poster
-      expect(media.poster).toBe('https://img.example/luna.png');
+      expect(media.poster).toBe('https://img.example/nova.png');
     }
   });
 
   it('uses the visual identity poster for video when available', () => {
-    const withVideo = { ...character(), videoUrl: 'https://cdn.example/luna.mp4' } as PublicCharacter;
+    const withVideo = { ...character(), videoUrl: 'https://cdn.example/nova.mp4' } as PublicCharacter;
     const media = resolveHeroMedia(
       withVideo,
       visual([{ id: 'a1', position: 0, imageUrl: 'https://img.example/canon.png' }]),
@@ -68,12 +68,12 @@ describe('resolveHeroMedia', () => {
 
   it('falls back to profileImage when there is no visual identity', () => {
     const media = resolveHeroMedia(character(), null);
-    expect(media).toEqual({ kind: 'image', src: 'https://img.example/luna.png' });
+    expect(media).toEqual({ kind: 'image', src: 'https://img.example/nova.png' });
   });
 
   it('falls back to an initial-letter placeholder when there is no media at all', () => {
     const media = resolveHeroMedia(character({ profileImage: null }), null);
-    expect(media).toEqual({ kind: 'placeholder', initial: 'L' });
+    expect(media).toEqual({ kind: 'placeholder', initial: 'N' });
   });
 });
 
@@ -97,7 +97,7 @@ describe('characterMediaList', () => {
     const items = characterMediaList(character(), null);
     expect(items).toHaveLength(6); // default minItems
     expect(items[0]?.premium).toBe(false); // hero is free
-    expect(items[0]?.media).toEqual({ kind: 'image', src: 'https://img.example/luna.png' });
+    expect(items[0]?.media).toEqual({ kind: 'image', src: 'https://img.example/nova.png' });
     expect(items.filter((i) => i.premium).length).toBe(5);
     expect(items.slice(1).every((i) => i.premium && i.mock)).toBe(true); // padded tiles are flagged mock
   });

@@ -9,11 +9,11 @@ import HeroCarousel from './HeroCarousel';
 import LobbyTopBar from './LobbyTopBar';
 import { CATEGORIES, FORBIDDEN_AGE_TERMS, buildHeroSlides } from '../../lib/lobbyContent';
 
-const luna: PublicCharacter = {
+const nova: PublicCharacter = {
   id: 'c1',
-  name: 'luna',
-  displayName: 'Luna',
-  profileImage: 'https://img/luna.png',
+  name: 'nova',
+  displayName: 'Nova',
+  profileImage: 'https://img/nova.png',
   shortBio: 'Night-owl astronomy grad student.',
   personality: 'p',
   interests: [],
@@ -26,8 +26,8 @@ function router(node: React.ReactNode): string {
 
 describe('PersonaGridCard', () => {
   it('shows the name, a clearly-adult age, a badge, and links to the profile', () => {
-    const html = router(<PersonaGridCard character={luna} index={0} />);
-    expect(html).toContain('Luna');
+    const html = router(<PersonaGridCard character={nova} index={0} />);
+    expect(html).toContain('Nova');
     expect(html).toContain('26'); // safe adult default when no visual identity is loaded
     expect(html).toContain('Hot'); // index 0 badge
     expect(html).toContain('href="/characters/c1"');
@@ -58,9 +58,9 @@ describe('CategoryPills', () => {
 
 describe('HeroCarousel', () => {
   it('renders the promo headline, CTA and pagination across slides', () => {
-    const html = router(<HeroCarousel slides={buildHeroSlides([luna])} />);
+    const html = router(<HeroCarousel slides={buildHeroSlides([nova])} />);
     expect(html).toContain('Refer a friend, get 85% off');
-    expect(html).toContain('Spend the evening with Luna');
+    expect(html).toContain('Spend the evening with Nova');
     expect(html).toContain('aria-label="Go to slide 2"');
   });
 });
@@ -69,10 +69,10 @@ describe('adult-safety guard', () => {
   it('renders no minor-coded language anywhere across the lobby surfaces', () => {
     const html = (
       router(<LobbyTopBar />) +
-      router(<PersonaGridCard character={luna} index={1} />) +
+      router(<PersonaGridCard character={nova} index={1} />) +
       router(<CommunityPromoCard />) +
       renderToStaticMarkup(<CategoryPills categories={CATEGORIES} active="All" onSelect={() => {}} />) +
-      router(<HeroCarousel slides={buildHeroSlides([luna])} />)
+      router(<HeroCarousel slides={buildHeroSlides([nova])} />)
     ).toLowerCase();
 
     for (const term of FORBIDDEN_AGE_TERMS) {

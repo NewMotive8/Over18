@@ -1,4 +1,5 @@
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
+import { characterHeroVideo } from './characterMedia';
 
 /**
  * Hero-media resolution for the Discover experience (US-19).
@@ -69,11 +70,15 @@ export function resolveHeroMedia(
   visual?: CharacterVisualIdentityResponse | null,
 ): HeroMedia {
   const override = DEMO_MEDIA_OVERRIDES[character.id];
-  const videoUrl = override?.videoUrl ?? characterVideoUrl(character);
+  // Real approved local clip (US-29) is the video-first source when present, so
+  // the character's video loads across Lobby / Discovery / Profile. A future API
+  // `videoUrl` or a PoC override still take precedence.
+  const localHero = characterHeroVideo(character);
+  const videoUrl = override?.videoUrl ?? characterVideoUrl(character) ?? localHero?.src;
   const stillImage = firstCanonicalImage(visual) ?? character.profileImage ?? undefined;
 
   if (videoUrl) {
-    const poster = override?.poster ?? stillImage;
+    const poster = override?.poster ?? localHero?.poster ?? stillImage;
     return poster ? { kind: 'video', src: videoUrl, poster } : { kind: 'video', src: videoUrl };
   }
 

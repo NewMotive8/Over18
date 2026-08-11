@@ -8,11 +8,11 @@ import DiscoverCard from './DiscoverCard';
  * alone, falling back to profileImage with no visual-identity fetch, and must
  * never crash. Media-first hierarchy: name + tagline over the image.
  */
-const luna: PublicCharacter = {
+const nova: PublicCharacter = {
   id: 'c1',
-  name: 'luna',
-  displayName: 'Luna',
-  profileImage: 'https://img.example/luna.png',
+  name: 'nova',
+  displayName: 'Nova',
+  profileImage: 'https://img.example/nova.png',
   shortBio: 'Night-owl astronomy grad student.',
   personality: 'p',
   interests: [],
@@ -21,20 +21,20 @@ const luna: PublicCharacter = {
 
 describe('DiscoverCard', () => {
   it('renders the character identity over the hero media', () => {
-    const html = renderToStaticMarkup(<DiscoverCard character={luna} />);
-    expect(html).toContain('Luna');
+    const html = renderToStaticMarkup(<DiscoverCard character={nova} />);
+    expect(html).toContain('Nova');
     expect(html).toContain('Night-owl astronomy grad student.');
     // hero falls back to the profile image when no visual identity is loaded
-    expect(html).toContain('src="https://img.example/luna.png"');
+    expect(html).toContain('src="https://img.example/nova.png"');
   });
 
   it('exposes a View profile affordance when an open handler is provided', () => {
-    const html = renderToStaticMarkup(<DiscoverCard character={luna} onOpen={() => {}} />);
+    const html = renderToStaticMarkup(<DiscoverCard character={nova} onOpen={() => {}} />);
     expect(html).toContain('View profile');
   });
 
   it('does not render online/premium badges unless the data supplies them', () => {
-    const html = renderToStaticMarkup(<DiscoverCard character={luna} />);
+    const html = renderToStaticMarkup(<DiscoverCard character={nova} />);
     expect(html).not.toContain('Online');
     expect(html).not.toContain('Premium');
   });

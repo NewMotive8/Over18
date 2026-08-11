@@ -51,8 +51,11 @@ describe('app shell + routes', () => {
 
   it('keeps the character-profile route mounted inside the shell (no crash)', () => {
     const html = renderApp('/characters/some-character-id');
-    expect(html).toContain('Over'); // shell present, page mounted
+    // US-29: the profile is immersive (its own top controls), so the shell brand
+    // bar is intentionally hidden — the persistent primary nav still frames it,
+    // and the page mounts to its loading state.
     expect(html).toContain('aria-label="Primary"');
+    expect(html).toContain('Back to lobby');
   });
 
   it('shows a safe not-found fallback for unknown routes (never crashes)', () => {
