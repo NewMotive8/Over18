@@ -72,7 +72,16 @@ export interface MediaProviders {
 
 export class ProviderError extends Error {
   constructor(
-    public readonly kind: 'auth' | 'network' | 'http' | 'malformed_response' | 'not_verified' | 'output_missing',
+    public readonly kind:
+      | 'auth'
+      | 'network'
+      | 'http'
+      | 'malformed_response'
+      | 'not_verified'
+      | 'output_missing'
+      /** Request rejected LOCALLY against known model capability, BEFORE any
+       * paid call — e.g. a duration the model does not support. */
+      | 'unsupported_request',
     message: string,
   ) {
     super(message);

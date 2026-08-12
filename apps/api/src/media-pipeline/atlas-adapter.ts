@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { basename, dirname } from 'node:path';
 import {
   ProviderError,
   type GenerationResult,
@@ -17,8 +17,21 @@ import {
  *   - Base API:        https://api.atlascloud.ai/api/v1
  *   - Image submit:    POST /model/generateImage
  *                      body { model, prompt, size: "W*H" (asterisk!), num_images }
- *   - Video submit:    POST /model/generateVideo  (same /model/ prefix pattern;
- *                      wan model docs: submit → poll → result URL)
+ *   - Video submit:    POST /model/generateVideo
+ *                      body { model, image, prompt, negative_prompt,
+ *                             resolution, duration, seed }
+ *     VERIFIED against the official Wan model pages (2026-08-12). Three
+ *     things the earlier guessed implementation got WRONG:
+ *       1. The model id carries a TASK SUFFIX:
+ *          "atlascloud/wan-2.7-spicy/image-to-video", not the bare family id.
+ *       2. `image` takes an https URL, NOT base64. Local files must first be
+ *          uploaded: POST /model/uploadMedia (multipart/form-data) which
+ *          returns the temporary URL to pass through.
+ *       3. Resolution CASING is model-specific: the wan-2.6/2.7 pages document
+ *          "720P"/"1080P"; the wan-2.2 pages document "480p"/"720p"/"1080p".
+ *          A blanket toUpperCase() is wrong for half the catalogue.
+ *   - Upload:          POST /model/uploadMedia (multipart/form-data)
+ *                      → { url } / { download_url } (data-wrapped variants too)
  *   - Auth:            Authorization: Bearer $ATLASCLOUD_API_KEY
  *   - Response envelope: { id, status, output: [urls...], urls: { result }, ... }
  *     Generation is ASYNC: initial status "processing"; poll the ABSOLUTE
@@ -44,10 +57,22 @@ export interface AtlasOptions {
   videoModel?: string;
   imageUnitCostUsd?: number;
   videoUnitCostPerSecondUsd?: number;
+  /** Overrides the model-derived resolution casing when a new model deviates. */
+  videoResolutionCase?: 'upper' | 'lower';
+  /** Overrides the default anti-cut negative prompt; '' disables it. */
+  videoNegativePrompt?: string;
   /** Human confirmation gate for live paid calls. */
   contractConfirmed?: boolean;
   pollIntervalMs?: number;
   timeoutMs?: number;
+  /**
+   * Deadline for the whole submit→poll→terminal cycle. Video jobs are
+   * documented at 1-5 minutes (fast variants 30-90s), far longer than a single
+   * HTTP read timeout, so this defaults to 15 min. An explicit timeoutMs with
+   * no pollTimeoutMs still governs the deadline, so existing callers and tests
+   * keep their tight bounds.
+   */
+  pollTimeoutMs?: number;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -55,11 +80,20 @@ export interface AtlasOptions {
 const DEFAULTS = {
   baseUrl: 'https://api.atlascloud.ai/api/v1',
   imageModel: 'black-forest-labs/flux-kontext-dev',
-  videoModel: 'atlascloud/wan-2.7-spicy',
+  // Task-suffixed id, as the official model page documents it.
+  videoModel: 'atlascloud/wan-2.7-spicy/image-to-video',
   imageUnitCostUsd: 0.025,
   videoUnitCostPerSecondUsd: 0.1,
   pollIntervalMs: 3000,
   timeoutMs: 300_000,
+  /**
+   * The official Wan image-to-video example ships this negative prompt. It
+   * targets exactly the failure mode our QA cares about — shot changes inside
+   * a 5s loop — so it is the adapter default rather than prompt boilerplate
+   * every caller has to remember.
+   */
+  videoNegativePrompt:
+    'camera cut, shot change, scene change, transition, jump cut, rapid editing, montage, multi-shot, multiple camera angles, perspective shift',
 };
 
 // Terminal states only; any other status re-polls until the deadline, which is
@@ -145,6 +179,44 @@ export function normalizeFluxSize(
   return { width: snap(w), height: snap(h) };
 }
 
+const DEFAULT_POLL_TIMEOUT_MS = 900_000;
+
+/**
+ * Wan resolution CASING is model-family specific (adapter owns model
+ * capability, exactly as normalizeFluxSize does for image sizes):
+ *   - wan-2.6 / wan-2.7 pages document "720P", "1080P" (plus SR variants)
+ *   - wan-2.2 pages document "480p", "720p", "1080p"
+ * The pipeline keeps expressing intent in its own lowercase vocabulary; this
+ * maps intent onto whatever the selected model actually accepts. Unknown
+ * models default to the lowercase form the majority of the catalogue uses,
+ * and callers can force either casing via AtlasOptions.videoResolutionCase.
+ */
+export function normalizeWanResolution(model: string, resolution: string, override?: 'upper' | 'lower'): string {
+  const wants = override ?? (/wan-2\.[67]/i.test(model) ? 'upper' : 'lower');
+  return wants === 'upper' ? resolution.toUpperCase() : resolution.toLowerCase();
+}
+
+/**
+ * Duration support differs per Wan family, and an unsupported value is a
+ * WASTED PAID CALL — so it is rejected locally, before authorization spends
+ * anything:
+ *   - wan-2.2 turbo variants: 5 or 8 seconds only
+ *   - wan-2.6 / wan-2.7: any integer from 2 to 15
+ * Unknown models: only the generic "positive integer" rule is enforced, so a
+ * new model is never blocked by stale knowledge encoded here.
+ */
+export function validateWanDuration(model: string, durationSeconds: number): void {
+  if (!Number.isInteger(durationSeconds) || durationSeconds <= 0) {
+    throw new ProviderError('unsupported_request', `video duration must be a positive whole number of seconds, got ${durationSeconds}`);
+  }
+  if (/wan-2\.2/i.test(model) && ![5, 8].includes(durationSeconds)) {
+    throw new ProviderError('unsupported_request', `model ${model} supports only 5s or 8s clips, got ${durationSeconds}s — refusing before a paid call`);
+  }
+  if (/wan-2\.[67]/i.test(model) && (durationSeconds < 2 || durationSeconds > 15)) {
+    throw new ProviderError('unsupported_request', `model ${model} supports 2-15s clips, got ${durationSeconds}s — refusing before a paid call`);
+  }
+}
+
 /** Some gateways wrap the documented envelope in a {data: {...}} container. */
 function unwrap(envelope: AtlasEnvelope): AtlasEnvelope {
   if (envelope && typeof envelope === 'object' && envelope.data && typeof envelope.data === 'object' && !Array.isArray(envelope.data)) {
@@ -214,6 +286,51 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
   }
 
   /**
+   * Uploads a local file and returns the temporary https URL Atlas serves it
+   * from — the documented prerequisite for image-to-video, whose `image` field
+   * takes a URL and not base64.
+   *
+   * POST /model/uploadMedia, multipart/form-data. The docs page shows the URL
+   * returned as `url` while the official client examples read `download_url`,
+   * so BOTH are accepted (data-wrapped too) and anything else is malformed
+   * with a sanitized shape summary rather than a guess. The uploaded bytes are
+   * the character's own canonical still; the key is never part of the body.
+   */
+  async function uploadMedia(filePath: string): Promise<string> {
+    const bytes = readFileSync(filePath);
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(bytes)]), basename(filePath));
+    let res: Response;
+    try {
+      res = await fetchImpl(`${cfg.baseUrl}/model/uploadMedia`, {
+        method: 'POST',
+        // NOTE: no Content-Type header — fetch must set the multipart boundary.
+        headers: { Authorization: `Bearer ${apiKey()}` },
+        body: form,
+        signal: AbortSignal.timeout(cfg.timeoutMs),
+      });
+    } catch (err) {
+      if (err instanceof ProviderError) throw err;
+      throw new ProviderError('network', 'could not reach Atlas Cloud to upload the reference image');
+    }
+    if (!res.ok) throw new ProviderError('http', `Atlas returned HTTP ${res.status} for /model/uploadMedia`);
+    let payload: AtlasEnvelope;
+    try {
+      payload = (await res.json()) as AtlasEnvelope;
+    } catch {
+      throw new ProviderError('malformed_response', 'Atlas upload returned non-JSON output');
+    }
+    const body = unwrap(payload) as { url?: unknown; download_url?: unknown };
+    for (const candidate of [body.url, body.download_url]) {
+      if (typeof candidate === 'string' && candidate.length > 0) return candidate;
+    }
+    throw new ProviderError(
+      'malformed_response',
+      `Atlas upload returned no usable URL (response shape: ${describeShape(unwrap(payload))})`,
+    );
+  }
+
+  /**
    * Resolves a submit/poll envelope to the final output URL, following the
    * ACTUAL documented+observed Atlas job lifecycle (established US-36):
    *
@@ -238,7 +355,7 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
     let envelope = unwrap(rawEnvelope);
     const submitId = typeof envelope.id === 'string' && envelope.id.length > 0 ? envelope.id : undefined;
     let polled = false;
-    const deadline = Date.now() + cfg.timeoutMs;
+    const deadline = Date.now() + (options.pollTimeoutMs ?? options.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS);
     for (;;) {
       const statusRaw = envelope.status;
       const status = typeof statusRaw === 'string' && statusRaw.length > 0 ? statusRaw.toLowerCase() : undefined;
@@ -328,14 +445,21 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
       if (!existsSync(request.referenceImagePath)) {
         throw new ProviderError('output_missing', `reference image missing: ${request.referenceImagePath}`);
       }
-      const reference = readFileSync(request.referenceImagePath).toString('base64');
+      // Local capability check FIRST: an unsupported duration is a wasted paid
+      // call, so it never reaches authorization or the network.
+      validateWanDuration(cfg.videoModel, request.durationSeconds);
+      // `image` takes an https URL, never base64 — upload the canonical still
+      // and pass the temporary URL Atlas hands back.
+      const imageUrl = await uploadMedia(request.referenceImagePath);
+      const negativePrompt = cfg.videoNegativePrompt;
       const envelope = await atlasRequest('POST', `${cfg.baseUrl}/model/generateVideo`, {
         model: cfg.videoModel,
+        image: imageUrl,
         prompt: request.prompt,
-        image: reference, // documented: Base64 or URL image inputs
+        ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
+        resolution: normalizeWanResolution(cfg.videoModel, request.resolution, cfg.videoResolutionCase),
         duration: request.durationSeconds,
-        // Wan model pages document uppercase resolution labels (720P/1080P).
-        resolution: request.resolution.toUpperCase(),
+        seed: -1,
       });
       const url = await resolveOutput(envelope);
       await downloadTo(url, request.outputPath, fetchImpl);

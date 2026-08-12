@@ -18,6 +18,7 @@ import type { MediaProviders } from './types.js';
  *   select         --character <slug> --image <candidatePath> [--replace]
  *   gen-videos     --character <slug> --prompt "<motion text>" --count N
  *                  [--duration 5] [--resolution 1080p] [--provider mock|atlas] [--budget USD]
+ *                  [--video-model <id>] [--video-cost <usdPerSecond>]
  *   qa             --file <path> [--poster <path>]
  *   reject         --character <slug> --file <path> --reason "<why>"
  *   approve        --character <slug> --video <candidatePath> --approved-by "<name>"
@@ -47,6 +48,19 @@ function required(name: string): string {
   return v;
 }
 
+/** Cost overrides must be positive numbers — a bad value must never silently
+ * become 0 and defeat budget authorization. */
+function positiveCost(name: string): number | undefined {
+  const raw = arg(name);
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    console.error(`--${name} must be a positive number, got "${raw}"`);
+    process.exit(2);
+  }
+  return value;
+}
+
 const OUT_ROOT = process.env.MEDIA_OUT_DIR ?? 'media-out';
 const LEDGER_FILE = process.env.MEDIA_LEDGER_FILE ?? join(OUT_ROOT, 'sprint-ledger.json');
 
@@ -56,16 +70,19 @@ function providers(): MediaProviders {
     // Optional overrides so the cheapest contract probe (Flux Schnell,
     // ~$0.003/image) can be selected without touching adapter defaults.
     const imageModel = arg('image-model');
-    const imageCostRaw = arg('image-cost');
-    const imageUnitCostUsd = imageCostRaw === undefined ? undefined : Number(imageCostRaw);
-    if (imageCostRaw !== undefined && (!Number.isFinite(imageUnitCostUsd!) || imageUnitCostUsd! <= 0)) {
-      console.error(`--image-cost must be a positive number, got "${imageCostRaw}"`);
-      process.exit(2);
-    }
+    const videoModel = arg('video-model');
+    const imageUnitCostUsd = positiveCost('image-cost');
+    // Per-second video price. Model-specific ($0.10/s for wan-2.7-spicy,
+    // $0.02/s for the wan-2.2-turbo screening tier), so selecting a cheaper
+    // model WITHOUT its price would make the ledger wrong — which is why both
+    // flags exist together.
+    const videoUnitCostPerSecondUsd = positiveCost('video-cost');
     return createAtlasProviders({
       contractConfirmed: flag('confirm-contract'),
       ...(imageModel ? { imageModel } : {}),
+      ...(videoModel ? { videoModel } : {}),
       ...(imageUnitCostUsd !== undefined ? { imageUnitCostUsd } : {}),
+      ...(videoUnitCostPerSecondUsd !== undefined ? { videoUnitCostPerSecondUsd } : {}),
     });
   }
   if (which === 'mock') {

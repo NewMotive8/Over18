@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CostLedger } from '../media-pipeline/cost-ledger.js';
-import { createAtlasProviders, normalizeFluxSize } from '../media-pipeline/atlas-adapter.js';
+import { createAtlasProviders, normalizeFluxSize, normalizeWanResolution, validateWanDuration } from '../media-pipeline/atlas-adapter.js';
 import { createMockProviders } from '../media-pipeline/mock-adapter.js';
 import { qaImage, qaVideo } from '../media-pipeline/media-qa.js';
 import { MediaPipeline, PipelineRefusal } from '../media-pipeline/pipeline.js';
@@ -368,6 +368,9 @@ describe('atlas adapter contract guards', () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
       calls.push(url);
+      if (url === 'https://api.atlascloud.ai/api/v1/model/uploadMedia') {
+        return new Response(JSON.stringify({ url: 'https://cdn.example/uploads/ref.jpg' }), { status: 200 });
+      }
       if (url === 'https://api.atlascloud.ai/api/v1/model/generateVideo') {
         return new Response(
           JSON.stringify({ id: 'pred-1', status: 'processing', output: [], urls: { result: 'https://api.atlascloud.ai/api/v1/model/prediction/pred-1' } }),
@@ -391,8 +394,9 @@ describe('atlas adapter contract guards', () => {
     });
     expect(existsSync(out)).toBe(true);
     expect(result.estimatedCostUsd).toBeCloseTo(0.5, 6); // 5s × $0.10
-    expect(calls[0]).toBe('https://api.atlascloud.ai/api/v1/model/generateVideo');
-    expect(calls[1]).toBe('https://api.atlascloud.ai/api/v1/model/prediction/pred-1'); // polls the envelope's ABSOLUTE urls.result
+    expect(calls[0]).toBe('https://api.atlascloud.ai/api/v1/model/uploadMedia'); // reference uploaded FIRST
+    expect(calls[1]).toBe('https://api.atlascloud.ai/api/v1/model/generateVideo');
+    expect(calls[2]).toBe('https://api.atlascloud.ai/api/v1/model/prediction/pred-1'); // polls the constructed prediction endpoint
   });
 
   it('HTTP 404 from Atlas surfaces as a clear http error with the path, never a success', async () => {
@@ -414,6 +418,9 @@ describe('atlas adapter contract guards', () => {
   it('failed generation status aborts without writing output', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
+      if (url.endsWith('/model/uploadMedia')) {
+        return new Response(JSON.stringify({ download_url: 'https://cdn.example/uploads/ref.jpg' }), { status: 200 });
+      }
       if (url.endsWith('/model/generateVideo')) {
         return new Response(
           JSON.stringify({ id: 'pred-2', status: 'processing', urls: { result: 'https://api.atlascloud.ai/api/v1/model/prediction/pred-2' } }),
@@ -618,6 +625,156 @@ describe('atlas adapter contract guards', () => {
     await expect(
       atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'x.jpg') }),
     ).rejects.toMatchObject({ kind: 'malformed_response' });
+  });
+});
+
+// ────────────── atlas VIDEO contract (US-36 pre-probe verification) ────────
+//
+// The video path was written by analogy to the image path and never verified.
+// Checking it against the official Wan model pages found three defects that
+// would each have burned a paid call. These lock the verified contract in.
+
+describe('atlas video contract', () => {
+  function videoFetch(record: { body?: Record<string, unknown>; upload?: boolean } = {}): typeof fetch {
+    return async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/model/uploadMedia')) {
+        record.upload = true;
+        // Multipart: fetch must own the boundary, so no explicit Content-Type.
+        expect((init?.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+        expect(init?.body).toBeInstanceOf(FormData);
+        return new Response(JSON.stringify({ data: { url: 'https://cdn.example/uploads/ref.jpg' } }), { status: 200 });
+      }
+      if (url.endsWith('/model/generateVideo')) {
+        record.body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ data: { id: 'v1', status: 'completed', outputs: ['https://cdn.example/clip.mp4'] } }), { status: 200 });
+      }
+      if (url === 'https://cdn.example/clip.mp4') return new Response(readFileSync(LUNA_MP4), { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+  }
+
+  it('sends the documented body: uploaded image URL (never base64), task-suffixed model, seed, anti-cut negative prompt', async () => {
+    const record: { body?: Record<string, unknown>; upload?: boolean } = {};
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl: videoFetch(record), pollIntervalMs: 1 });
+    await atlas.video.imageToVideo({
+      referenceImagePath: LUNA_JPG,
+      prompt: 'gentle motion',
+      durationSeconds: 5,
+      resolution: '1080p',
+      outputPath: join(root, 'v.mp4'),
+    });
+    expect(record.upload).toBe(true);
+    expect(record.body!.model).toBe('atlascloud/wan-2.7-spicy/image-to-video'); // task suffix, not the bare family id
+    expect(record.body!.image).toBe('https://cdn.example/uploads/ref.jpg');
+    expect(String(record.body!.image)).not.toMatch(/^[A-Za-z0-9+/]{100,}={0,2}$/); // never raw base64
+    expect(record.body!.duration).toBe(5);
+    expect(record.body!.seed).toBe(-1);
+    expect(String(record.body!.negative_prompt)).toContain('camera cut');
+  });
+
+  it('resolution casing follows the selected model family, not a blanket toUpperCase', () => {
+    // wan-2.6/2.7 pages document 720P/1080P; wan-2.2 pages document 480p/720p/1080p.
+    expect(normalizeWanResolution('atlascloud/wan-2.7-spicy/image-to-video', '1080p')).toBe('1080P');
+    expect(normalizeWanResolution('atlascloud/wan-2.6-spicy/image-to-video', '720p')).toBe('720P');
+    expect(normalizeWanResolution('atlascloud/wan-2.2-turbo-spicy/image-to-video', '720p')).toBe('720p');
+    expect(normalizeWanResolution('atlascloud/wan-2.2-turbo-spicy/image-to-video', '720P')).toBe('720p');
+    expect(normalizeWanResolution('some/unknown-model', '720P')).toBe('720p'); // catalogue majority
+    expect(normalizeWanResolution('atlascloud/wan-2.2-turbo-spicy/image-to-video', '720p', 'upper')).toBe('720P'); // explicit override wins
+  });
+
+  it('uses the model-appropriate casing on the wire for the cheap screening model', async () => {
+    const record: { body?: Record<string, unknown> } = {};
+    const atlas = createAtlasProviders({
+      contractConfirmed: true,
+      fetchImpl: videoFetch(record),
+      pollIntervalMs: 1,
+      videoModel: 'atlascloud/wan-2.2-turbo-spicy/image-to-video',
+      videoUnitCostPerSecondUsd: 0.02,
+    });
+    const result = await atlas.video.imageToVideo({
+      referenceImagePath: LUNA_JPG,
+      prompt: 'p',
+      durationSeconds: 5,
+      resolution: '720p',
+      outputPath: join(root, 'v2.mp4'),
+    });
+    expect(record.body!.resolution).toBe('720p');
+    expect(result.estimatedCostUsd).toBeCloseTo(0.1, 6); // 5s × $0.02 screening tier
+  });
+
+  it('refuses a duration the model does not support BEFORE any network call or spend', async () => {
+    let called = false;
+    const atlas = createAtlasProviders({
+      contractConfirmed: true,
+      videoModel: 'atlascloud/wan-2.2-turbo-spicy/image-to-video',
+      fetchImpl: async () => {
+        called = true;
+        return new Response('{}', { status: 200 });
+      },
+    });
+    // wan-2.2 turbo accepts 5s or 8s only.
+    await expect(
+      atlas.video.imageToVideo({
+        referenceImagePath: LUNA_JPG,
+        prompt: 'p',
+        durationSeconds: 6,
+        resolution: '720p',
+        outputPath: join(root, 'never3.mp4'),
+      }),
+    ).rejects.toMatchObject({ kind: 'unsupported_request' });
+    expect(called).toBe(false);
+    expect(existsSync(join(root, 'never3.mp4'))).toBe(false);
+
+    expect(() => validateWanDuration('atlascloud/wan-2.7-spicy/image-to-video', 16)).toThrow(/2-15s/);
+    expect(() => validateWanDuration('atlascloud/wan-2.7-spicy/image-to-video', 5)).not.toThrow();
+    expect(() => validateWanDuration('atlascloud/wan-2.2-turbo-spicy/image-to-video', 8)).not.toThrow();
+    expect(() => validateWanDuration('some/unknown-model', 7)).not.toThrow(); // stale knowledge never blocks a new model
+    expect(() => validateWanDuration('some/unknown-model', 5.5)).toThrow(/whole number/);
+  });
+
+  it('an upload response without a usable URL is malformed — no video call is attempted', async () => {
+    let generateCalled = false;
+    const atlas = createAtlasProviders({
+      contractConfirmed: true,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith('/model/uploadMedia')) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        generateCalled = true;
+        return new Response('{}', { status: 200 });
+      },
+    });
+    await expect(
+      atlas.video.imageToVideo({
+        referenceImagePath: LUNA_JPG,
+        prompt: 'p',
+        durationSeconds: 5,
+        resolution: '720p',
+        outputPath: join(root, 'never4.mp4'),
+      }),
+    ).rejects.toMatchObject({ kind: 'malformed_response' });
+    expect(generateCalled).toBe(false);
+  });
+
+  it('never leaks the key through the upload path', async () => {
+    const seen: string[] = [];
+    const atlas = createAtlasProviders({
+      contractConfirmed: true,
+      fetchImpl: async (input, init) => {
+        seen.push(String(init?.body ?? ''));
+        return new Response(`upload exploded for ${String(input)}`, { status: 500 });
+      },
+    });
+    await expect(
+      atlas.video.imageToVideo({
+        referenceImagePath: LUNA_JPG,
+        prompt: 'p',
+        durationSeconds: 5,
+        resolution: '720p',
+        outputPath: join(root, 'never5.mp4'),
+      }),
+    ).rejects.toSatisfy((err: Error) => !err.message.includes(FAKE_KEY));
+    expect(seen.join('')).not.toContain(FAKE_KEY);
   });
 });
 
