@@ -359,6 +359,36 @@ describe('atlas adapter contract guards', () => {
   });
 });
 
+// ───────────────────────── launcher regression (US-36 silent-failure bug) ─
+
+describe('scripts/media-pipeline.mjs launcher', () => {
+  const LAUNCHER = resolve(HERE, '..', '..', 'scripts', 'media-pipeline.mjs');
+
+  it('REGRESSION: runs without npx/PATH resolution (the Windows silent-failure bug)', async () => {
+    // The original launcher used spawnSync('npx', ...): on Windows, .cmd shims
+    // cannot be spawned without a shell (EINVAL post CVE-2024-27980), and the
+    // spawn error was silently swallowed -> instant exit, no output, no work.
+    // The fixed launcher resolves tsx's JS entry and runs it with THIS node
+    // binary, so it must work even when PATH is completely empty.
+    const { spawnSync } = await import('node:child_process');
+    const out = mkdtempSync(join(tmpdir(), 'launcher-'));
+    const result = spawnSync(process.execPath, [LAUNCHER, 'status'], {
+      env: { ...process.env, PATH: '', MEDIA_OUT_DIR: out, MEDIA_LEDGER_FILE: join(out, 'ledger.json') },
+      encoding: 'utf8',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('sprint spend');
+  });
+
+  it('unknown commands exit non-zero WITH a visible message (never silent)', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const result = spawnSync(process.execPath, [LAUNCHER, 'no-such-command'], { encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('usage');
+  });
+});
+
 // ───────────────────────── media QA vs real approved assets ───────────────
 
 describe('technical media QA against the real approved benchmark assets', () => {
