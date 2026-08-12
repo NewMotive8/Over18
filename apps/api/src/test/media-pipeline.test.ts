@@ -149,6 +149,66 @@ describe('cost ledger', () => {
   });
 });
 
+// ─── budget boundary precision (IEEE-754: 0.275 + 0.025 === 0.30000000000004) ─
+
+describe('budget boundary precision', () => {
+  function spend(ledger: CostLedger, character: string, usd: number): void {
+    ledger.record({
+      runId: 'r',
+      character,
+      provider: 'mock',
+      model: 'm',
+      operation: 'image',
+      status: 'succeeded',
+      unit: 'image',
+      quantity: 1,
+      unitCostUsd: usd,
+      estimatedCostUsd: usd,
+    });
+  }
+
+  it('sanity: the naive float comparison really does misfire at this boundary', () => {
+    // Guards the premise — if this ever stops being true the regression below
+    // would pass vacuously. This is the exact Nova case that refused wrongly.
+    expect(0.275 + 0.025 > 0.3).toBe(true); // IEEE-754 drift → 0.30000000000000004
+  });
+
+  it('authorizes a request landing EXACTLY on the character budget (0.275 + 0.025 == 0.30)', () => {
+    const ledger = new CostLedger(ledgerFile);
+    spend(ledger, 'nova', 0.275);
+    expect(ledger.characterSpentUsd('nova')).toBeCloseTo(0.275, 6);
+    const auth = ledger.authorize(0.025, 'nova', 0.3);
+    expect(auth.ok).toBe(true); // must NOT be refused by float drift
+  });
+
+  it('authorizes just BELOW the character budget', () => {
+    const ledger = new CostLedger(ledgerFile);
+    spend(ledger, 'nova', 0.275);
+    expect(ledger.authorize(0.024, 'nova', 0.3).ok).toBe(true); // 0.299
+  });
+
+  it('still REFUSES a request genuinely just above the character budget', () => {
+    const ledger = new CostLedger(ledgerFile);
+    spend(ledger, 'nova', 0.275);
+    const auth = ledger.authorize(0.026, 'nova', 0.3); // 0.301 — a real overage
+    expect(auth.ok).toBe(false);
+    expect(auth.reason).toContain('character budget');
+  });
+
+  it('applies the same exact-boundary semantics to the sprint hard stop', () => {
+    // spend 0.275 across the sprint, hard stop 0.30: +0.025 lands exactly on it.
+    const atBoundary = new CostLedger(join(root, 'hs-boundary.json'), { sprintCeilingUsd: 0.4, hardStopUsd: 0.3, softWarnUsd: 0.2 });
+    spend(atBoundary, 'nova', 0.275);
+    expect(atBoundary.authorize(0.025, 'nova').ok).toBe(true); // exactly 0.30, allowed
+
+    const overBoundary = new CostLedger(join(root, 'hs-over.json'), { sprintCeilingUsd: 0.4, hardStopUsd: 0.3, softWarnUsd: 0.2 });
+    spend(overBoundary, 'nova', 0.275);
+    const refused = overBoundary.authorize(0.026, 'nova'); // 0.301
+    expect(refused.ok).toBe(false);
+    expect(refused.reason).toContain('HARD STOP');
+  });
+});
+
 // ───────────────────────── successful mock flow ───────────────────────────
 
 describe('pipeline happy path (mock provider, real fixture media)', () => {

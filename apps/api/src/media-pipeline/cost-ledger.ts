@@ -50,6 +50,26 @@ export interface AuthorizationResult {
   characterSpentUsd: number;
 }
 
+/**
+ * Money is compared in integer MICRO-DOLLARS to avoid IEEE-754 drift. In
+ * floating point `0.275 + 0.025 === 0.30000000000000004`, which would refuse a
+ * legitimate request landing exactly on a $0.30 budget. Costs are still stored
+ * and displayed as USD numbers; ONLY the enforcement comparisons run on exact
+ * integers. Rounding to the nearest micro-dollar (6 decimals — far finer than a
+ * cent) is deterministic and is NOT an arbitrary tolerance: a request that
+ * genuinely exceeds a limit by >= $0.000001 still refuses. Each operand is
+ * rounded independently so accumulated float drift in the running total can
+ * never tip an exact-boundary request over.
+ */
+const MICROS_PER_USD = 1_000_000;
+function toMicros(usd: number): number {
+  return Math.round(usd * MICROS_PER_USD);
+}
+/** True when `spent + cost` strictly exceeds `limit`, computed on exact integers. */
+function exceedsLimit(spentUsd: number, costUsd: number, limitUsd: number): boolean {
+  return toMicros(spentUsd) + toMicros(costUsd) > toMicros(limitUsd);
+}
+
 function envNumber(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
@@ -118,7 +138,7 @@ export class CostLedger {
       if (!Number.isFinite(characterBudgetUsd) || characterBudgetUsd <= 0) {
         return { ok: false, reason: `invalid character budget (${characterBudgetUsd})`, cumulativeUsd, characterSpentUsd };
       }
-      if (characterSpentUsd + estimatedCostUsd > characterBudgetUsd) {
+      if (exceedsLimit(characterSpentUsd, estimatedCostUsd, characterBudgetUsd)) {
         return {
           ok: false,
           reason: `character budget would be exceeded: spent $${characterSpentUsd.toFixed(3)} + $${estimatedCostUsd.toFixed(3)} > $${characterBudgetUsd.toFixed(2)}`,
@@ -127,7 +147,7 @@ export class CostLedger {
         };
       }
     }
-    if (cumulativeUsd + estimatedCostUsd > this.data.hardStopUsd) {
+    if (exceedsLimit(cumulativeUsd, estimatedCostUsd, this.data.hardStopUsd)) {
       return {
         ok: false,
         reason: `sprint HARD STOP: $${cumulativeUsd.toFixed(2)} + $${estimatedCostUsd.toFixed(3)} > $${this.data.hardStopUsd.toFixed(2)} (ceiling $${this.data.sprintCeilingUsd.toFixed(2)})`,
@@ -135,10 +155,9 @@ export class CostLedger {
         characterSpentUsd,
       };
     }
-    const softWarning =
-      cumulativeUsd + estimatedCostUsd > this.data.softWarnUsd
-        ? `soft warning: sprint spend $${(cumulativeUsd + estimatedCostUsd).toFixed(2)} exceeds $${this.data.softWarnUsd.toFixed(2)}`
-        : undefined;
+    const softWarning = exceedsLimit(cumulativeUsd, estimatedCostUsd, this.data.softWarnUsd)
+      ? `soft warning: sprint spend $${(cumulativeUsd + estimatedCostUsd).toFixed(2)} exceeds $${this.data.softWarnUsd.toFixed(2)}`
+      : undefined;
     return { ok: true, softWarning, cumulativeUsd, characterSpentUsd };
   }
 
