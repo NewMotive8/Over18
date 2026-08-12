@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CostLedger } from '../media-pipeline/cost-ledger.js';
 import { createAtlasProviders, normalizeFluxSize, normalizeWanResolution, validateWanDuration } from '../media-pipeline/atlas-adapter.js';
 import { createMockProviders } from '../media-pipeline/mock-adapter.js';
-import { qaImage, qaVideo } from '../media-pipeline/media-qa.js';
+import { QaToolingError, qaImage, qaVideo, readImageInfo, sniffImageFormat } from '../media-pipeline/media-qa.js';
 import { MediaPipeline, PipelineRefusal } from '../media-pipeline/pipeline.js';
 import { ProviderError } from '../media-pipeline/types.js';
 
@@ -761,6 +761,193 @@ describe('atlas adapter contract guards', () => {
     await expect(
       atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'x.jpg') }),
     ).rejects.toMatchObject({ kind: 'malformed_response' });
+  });
+});
+
+// ─── media QA: image inspection is pure-JS; tooling failure != bad asset ────
+//
+// Root cause of the run-msqatez0 incident: qaImage shelled out to ffprobe and
+// its blanket catch turned "ffprobe could not run" (no ffprobe on the Windows
+// host) into "file integrity: not decodable" — a valid JPEG wrongly rejected.
+// Image QA is now pure-JS (no external tool); video QA still uses ffprobe but
+// distinguishes a MISSING tool from a bad asset.
+
+describe('media QA robustness (pure-JS image inspection + tooling honesty)', () => {
+  // Minimal, parser-valid PNG: signature + IHDR(w,h) + trailing IEND chunk.
+  function makePng(w: number, h: number): Buffer {
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const ihdrLen = Buffer.from([0, 0, 0, 13]);
+    const ihdrType = Buffer.from('IHDR', 'ascii');
+    const dims = Buffer.alloc(8);
+    dims.writeUInt32BE(w, 0);
+    dims.writeUInt32BE(h, 4);
+    const ihdrRest = Buffer.from([8, 2, 0, 0, 0]); // bitdepth, colortype, compression, filter, interlace
+    const ihdrCrc = Buffer.from([0, 0, 0, 0]);
+    const iend = Buffer.concat([Buffer.from([0, 0, 0, 0]), Buffer.from('IEND', 'ascii'), Buffer.from([0xae, 0x42, 0x60, 0x82])]);
+    return Buffer.concat([sig, ihdrLen, ihdrType, dims, ihdrRest, ihdrCrc, iend]);
+  }
+  // Minimal, parser-valid WebP (VP8X) with canvas dims.
+  function makeWebp(w: number, h: number): Buffer {
+    const buf = Buffer.alloc(30);
+    buf.write('RIFF', 0, 'ascii');
+    buf.writeUInt32LE(30 - 8, 4);
+    buf.write('WEBP', 8, 'ascii');
+    buf.write('VP8X', 12, 'ascii');
+    buf.writeUInt32LE(10, 16); // VP8X chunk length (not read by the parser)
+    buf.writeUIntLE(w - 1, 24, 3);
+    buf.writeUIntLE(h - 1, 27, 3);
+    return buf;
+  }
+  function writeTmp(name: string, buf: Buffer): string {
+    const p = join(root, name);
+    writeFileSync(p, buf);
+    return p;
+  }
+
+  it('sniffs formats from magic bytes, not the extension', () => {
+    expect(sniffImageFormat(readFileSync(LUNA_JPG))).toBe('jpeg');
+    expect(sniffImageFormat(makePng(720, 1280))).toBe('png');
+    expect(sniffImageFormat(makeWebp(720, 1280))).toBe('webp');
+    expect(sniffImageFormat(Buffer.from('this is not an image'))).toBeUndefined();
+  });
+
+  it('reads true dimensions of real JPEGs with NO external tool (matches ffprobe)', () => {
+    const luna = readImageInfo(LUNA_JPG);
+    expect(luna).toMatchObject({ format: 'jpeg', width: 1240, height: 1668, complete: true });
+    const ember = readImageInfo(EMBER_JPG);
+    expect(ember).toMatchObject({ format: 'jpeg', width: 1080, height: 1920, complete: true });
+    expect(readImageInfo(writeTmp('info.png', makePng(800, 1400)))).toMatchObject({ format: 'png', width: 800, height: 1400, complete: true });
+    expect(readImageInfo(writeTmp('info.webp', makeWebp(800, 1400)))).toMatchObject({ format: 'webp', width: 800, height: 1400 });
+  });
+
+  it('THE incident: a valid JPEG passes image QA even when ffprobe is unavailable', () => {
+    // Point ffprobe at a binary that cannot spawn — the Windows-host condition.
+    process.env.FFPROBE_BIN = 'definitely-not-a-real-binary-xyz';
+    try {
+      const report = qaImage(LUNA_JPG);
+      expect(report.pass).toBe(true); // pre-fix this reported "not decodable"
+      expect(report.checks.find((c) => c.name === 'decodable image')?.ok).toBe(true);
+    } finally {
+      delete process.env.FFPROBE_BIN;
+    }
+  });
+
+  it('genuinely invalid images still FAIL image QA (not a tooling error)', () => {
+    const junk = join(root, 'not-an-image.jpg');
+    writeFileSync(junk, 'this is not a decodable image');
+    const report = qaImage(junk);
+    expect(report.pass).toBe(false);
+    expect(report.checks[0]!.value).toBe('not decodable');
+  });
+
+  it('a truncated JPEG (missing EOI) fails the completeness check', () => {
+    const full = readFileSync(LUNA_JPG);
+    const truncated = join(root, 'truncated.jpg');
+    writeFileSync(truncated, full.subarray(0, full.length - 4)); // drop the ff d9 tail
+    const report = qaImage(truncated);
+    expect(report.pass).toBe(false);
+    expect(report.checks.find((c) => c.name === 'complete (not truncated)')?.ok).toBe(false);
+  });
+
+  it('a portrait PNG passes; an undersized one fails on resolution (format-agnostic checks)', () => {
+    const tall = writeTmp('tall.png', makePng(800, 1400));
+    expect(qaImage(tall).pass).toBe(true);
+    const small = writeTmp('small.png', makePng(320, 480));
+    const report = qaImage(small);
+    expect(report.pass).toBe(false);
+    expect(report.checks.find((c) => c.name === 'minimum resolution')?.ok).toBe(false);
+  });
+
+  it('VIDEO QA: a missing ffprobe raises a tooling error, never a false "not decodable" verdict', () => {
+    process.env.FFPROBE_BIN = 'definitely-not-a-real-binary-xyz';
+    try {
+      expect(() => qaVideo(LUNA_MP4)).toThrow(QaToolingError);
+    } finally {
+      delete process.env.FFPROBE_BIN;
+    }
+  });
+
+  it('VIDEO QA: a real corrupt clip (ffprobe present) still fails as not-decodable', () => {
+    const junk = join(root, 'corrupt.mp4');
+    writeFileSync(junk, 'not a video');
+    const report = qaVideo(junk);
+    expect(report.pass).toBe(false);
+    expect(report.checks[0]!.value).toBe('not decodable');
+  });
+});
+
+// ─── adapter names images by their REAL format (truthful extension) ─────────
+
+describe('atlas image truthful format/extension', () => {
+  function imageFetch(assetBytes: Buffer | string, assetUrl = 'https://cdn.example/out'): typeof fetch {
+    return async (input) => {
+      const url = String(input);
+      if (url.endsWith('/model/generateImage')) {
+        return new Response(JSON.stringify({ data: { id: 'i1', status: 'completed', outputs: [assetUrl] } }), { status: 200 });
+      }
+      if (url === assetUrl) return new Response(assetBytes, { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+  }
+  function makePng(w: number, h: number): Buffer {
+    const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const dims = Buffer.alloc(8);
+    dims.writeUInt32BE(w, 0);
+    dims.writeUInt32BE(h, 4);
+    return Buffer.concat([
+      sig,
+      Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR', 'ascii'), dims, Buffer.from([8, 2, 0, 0, 0, 0, 0, 0, 0]),
+      Buffer.from([0, 0, 0, 0]), Buffer.from('IEND', 'ascii'), Buffer.from([0xae, 0x42, 0x60, 0x82]),
+    ]);
+  }
+
+  it('saves PNG bytes with a .png extension even when a .jpg path was requested', async () => {
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl: imageFetch(makePng(1056, 1888)), pollIntervalMs: 1 });
+    const requested = join(root, 'nova', 'candidates', 'images', 'run-x-img-01.jpg');
+    const result = await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: requested });
+    expect(result.outputPath.endsWith('.png')).toBe(true);
+    expect(existsSync(result.outputPath)).toBe(true);
+    expect(existsSync(requested)).toBe(false); // never wrote the lying .jpg
+    expect(sniffImageFormat(readFileSync(result.outputPath))).toBe('png');
+  });
+
+  it('keeps the .jpg extension when the bytes really are JPEG', async () => {
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl: imageFetch(readFileSync(LUNA_JPG)), pollIntervalMs: 1 });
+    const requested = join(root, 'nova', 'candidates', 'images', 'run-y-img-01.jpg');
+    const result = await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: requested });
+    expect(result.outputPath).toBe(requested);
+    expect(existsSync(requested)).toBe(true);
+  });
+
+  it('refuses to save non-image bytes as an image (never writes a lie)', async () => {
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl: imageFetch('<html>error</html>'), pollIntervalMs: 1 });
+    const requested = join(root, 'nova', 'candidates', 'images', 'run-z-img-01.jpg');
+    await expect(
+      atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: requested }),
+    ).rejects.toMatchObject({ kind: 'malformed_response' });
+    expect(existsSync(requested)).toBe(false);
+  });
+
+  it('pipeline records the TRUTHFUL output path the provider returns', async () => {
+    // A provider that (like the fixed adapter) returns a .png although .jpg was asked.
+    const provider = {
+      image: {
+        name: 'stub',
+        imageModel: 'stub-image',
+        estimateImageCost: () => 0.01,
+        async generateImage(req: { outputPath: string }) {
+          const out = req.outputPath.replace(/\.jpg$/, '.png');
+          writeFileSync(out, makePng(1056, 1888));
+          return { outputPath: out, provider: 'stub', model: 'stub-image', unit: 'image' as const, quantity: 1, unitCostUsd: 0.01, estimatedCostUsd: 0.01 };
+        },
+      },
+      video: mockProviders().video,
+    };
+    const pipeline = new MediaPipeline(root, 'nova', provider, new CostLedger(ledgerFile), 5, 'run-truthful');
+    const [written] = await pipeline.generateImageCandidates('p', 1);
+    expect(written!.endsWith('.png')).toBe(true);
+    const ev = pipeline.events().find((e) => e.action === 'generate_image')!;
+    expect(ev.file!.endsWith('.png')).toBe(true);
   });
 });
 

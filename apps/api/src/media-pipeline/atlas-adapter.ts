@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, extname } from 'node:path';
+import { sniffImageFormat, type ImageFormat } from './media-qa.js';
 import {
   ProviderError,
   type GenerationResult,
@@ -245,16 +246,42 @@ function extractOutputUrl(envelope: AtlasEnvelope): string | null {
   return null;
 }
 
-async function downloadTo(url: string, outputPath: string, fetchImpl: typeof fetch): Promise<void> {
+async function fetchBytes(url: string, fetchImpl: typeof fetch): Promise<Buffer> {
   const res = await fetchImpl(url);
   if (!res.ok) throw new ProviderError('http', `asset download returned HTTP ${res.status}`);
   const bytes = Buffer.from(await res.arrayBuffer());
   if (bytes.length === 0) throw new ProviderError('malformed_response', 'asset download was empty');
+  return bytes;
+}
+
+function writeBytes(outputPath: string, bytes: Buffer): void {
   mkdirSync(dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, bytes);
   if (!existsSync(outputPath) || statSync(outputPath).size === 0) {
     throw new ProviderError('output_missing', 'asset file was not written');
   }
+}
+
+async function downloadTo(url: string, outputPath: string, fetchImpl: typeof fetch): Promise<void> {
+  writeBytes(outputPath, await fetchBytes(url, fetchImpl));
+}
+
+const CANONICAL_IMAGE_EXT: Record<ImageFormat, string> = { jpeg: '.jpg', png: '.png', webp: '.webp' };
+const ACCEPTED_IMAGE_EXT: Record<ImageFormat, string[]> = { jpeg: ['.jpg', '.jpeg'], png: ['.png'], webp: ['.webp'] };
+
+/**
+ * Names a downloaded image by its ACTUAL format so the extension never lies.
+ * The pipeline requests a `.jpg` path by convention, but Atlas/Flux could serve
+ * PNG or WebP; saving those bytes as `.jpg` would produce a file whose name
+ * contradicts its content (breaking downstream tools that trust the extension).
+ * If the requested extension already fits the real format it is kept as-is;
+ * otherwise it is swapped for the format's canonical extension.
+ */
+function truthfulImagePath(requestedPath: string, format: ImageFormat): string {
+  const ext = extname(requestedPath).toLowerCase();
+  if (ACCEPTED_IMAGE_EXT[format].includes(ext)) return requestedPath;
+  const base = ext ? requestedPath.slice(0, requestedPath.length - ext.length) : requestedPath;
+  return base + CANONICAL_IMAGE_EXT[format];
 }
 
 export function createAtlasProviders(options: AtlasOptions = {}): { image: ImageProvider; video: VideoProvider } {
@@ -423,9 +450,19 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
         num_images: 1,
       });
       const url = await resolveOutput(envelope);
-      await downloadTo(url, request.outputPath, fetchImpl);
+      // Verify the downloaded BYTES are a real image and name the file by its
+      // ACTUAL format (magic bytes), never by the requested extension. Bytes
+      // that are not a recognized image (e.g. an error page or JSON slipping
+      // through) are refused — we never save a non-image as an image.
+      const bytes = await fetchBytes(url, fetchImpl);
+      const format = sniffImageFormat(bytes);
+      if (!format) {
+        throw new ProviderError('malformed_response', 'downloaded asset is not a recognized image (jpeg/png/webp)');
+      }
+      const outputPath = truthfulImagePath(request.outputPath, format);
+      writeBytes(outputPath, bytes);
       return {
-        outputPath: request.outputPath,
+        outputPath,
         provider: 'atlas',
         model: cfg.imageModel,
         unit: 'image',

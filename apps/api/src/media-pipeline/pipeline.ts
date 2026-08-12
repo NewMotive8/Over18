@@ -118,11 +118,14 @@ export class MediaPipeline {
           provider: result.provider,
           model: result.model,
           prompt,
-          file: outputPath,
+          // Use the provider's ACTUAL output path — the adapter may have named
+          // the file by its true format (e.g. .png) rather than the requested
+          // .jpg, so provenance must record where the asset really landed.
+          file: result.outputPath,
           estimatedCostUsd: result.estimatedCostUsd,
           cumulativeUsd: entry.cumulativeUsd,
         });
-        written.push(outputPath);
+        written.push(result.outputPath);
       } catch (err) {
         // Conservative accounting: a failed paid attempt still costs its estimate.
         const entry = this.ledger.record({
