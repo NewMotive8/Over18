@@ -32,3 +32,6 @@ _to_delete/
 llm-eval-openrouter.mjs
 llm-eval-out/
 SHIP-EVIDENCE.md
+
+# US-16E offline media pipeline output (candidates/approved/ledger) — never committed
+media-out/
