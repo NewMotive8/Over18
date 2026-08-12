@@ -62,7 +62,10 @@ const DEFAULTS = {
   timeoutMs: 300_000,
 };
 
-const CONTINUE_STATUSES = new Set(['processing', 'pending', 'queued', 'starting', 'running']);
+// Terminal states only; any other status re-polls until the deadline, which is
+// the documented client behavior ("any other status triggers a wait and
+// re-poll"). Known in-flight statuses observed/documented: processing,
+// pending, queued, starting, running.
 const SUCCESS_STATUSES = new Set(['succeeded', 'completed', 'success']);
 const FAILURE_STATUSES = new Set(['failed', 'canceled', 'cancelled', 'error']);
 
@@ -88,23 +91,58 @@ interface AtlasEnvelope {
   id?: unknown;
   status?: unknown;
   output?: unknown;
+  outputs?: unknown;
+  error?: unknown;
   urls?: { result?: unknown } | unknown;
   data?: unknown;
 }
 
 /**
- * SANITIZED shape summary for diagnostics: top-level key names, value types,
- * and array lengths ONLY — never values, so no credential, URL, or prompt
- * material can leak into errors, run-records, or the ledger.
+ * SANITIZED shape summary for diagnostics: key names, value types, and array
+ * lengths ONLY (one level of nesting for objects) — never values, so no
+ * credential, URL, or prompt material can leak into errors, run-records, or
+ * the ledger.
  */
-export function describeShape(value: unknown): string {
+export function describeShape(value: unknown, depth = 1): string {
   if (value === null || typeof value !== 'object') return typeof value;
   const parts = Object.entries(value as Record<string, unknown>).map(([key, v]) => {
     if (Array.isArray(v)) return `${key}:array(${v.length})`;
     if (v === null) return `${key}:null`;
+    if (typeof v === 'object' && depth > 0) return `${key}:${describeShape(v, depth - 1)}`;
     return `${key}:${typeof v}`;
   });
   return `{${parts.join(', ')}}`;
+}
+
+/**
+ * FLUX-family native size normalization (model capability knowledge lives in
+ * the ADAPTER, not the pipeline): the pipeline expresses TARGET dimensions
+ * (the approved-media 9:16 intent, e.g. 1080x1920); the adapter maps them to
+ * the nearest size the model actually supports. Per Black Forest Labs'
+ * published limits: dimensions must be MULTIPLES OF 16, minimum 64, maximum
+ * 4MP, with <=2MP recommended for quality/speed. Deterministic: scale down
+ * proportionally to fit maxPixels, then snap each dimension to the nearest
+ * multiple of 16. Aspect drift from snapping is <1% at our sizes — well
+ * inside the media-QA aspect band — and the generated file's true dimensions
+ * are always verified by qaImage afterwards.
+ */
+export function normalizeFluxSize(
+  width: number,
+  height: number,
+  maxPixels = 2_000_000,
+): { width: number; height: number } {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new ProviderError('malformed_response', `invalid requested image size ${width}x${height}`);
+  }
+  let w = width;
+  let h = height;
+  if (w * h > maxPixels) {
+    const scale = Math.sqrt(maxPixels / (w * h));
+    w *= scale;
+    h *= scale;
+  }
+  const snap = (v: number): number => Math.max(64, Math.round(v / 16) * 16);
+  return { width: snap(w), height: snap(h) };
 }
 
 /** Some gateways wrap the documented envelope in a {data: {...}} container. */
@@ -116,15 +154,21 @@ function unwrap(envelope: AtlasEnvelope): AtlasEnvelope {
 }
 
 
-/** Accepts the documented output variants; rejects anything else. */
-function extractOutputUrl(output: unknown): string | null {
-  if (Array.isArray(output)) {
-    const first = output[0];
-    return typeof first === 'string' && first.length > 0 ? first : null;
-  }
-  if (typeof output === 'string' && output.length > 0) return output;
-  if (output && typeof output === 'object' && typeof (output as { url?: unknown }).url === 'string') {
-    return (output as { url: string }).url;
+/**
+ * Accepts the documented result-field variants; rejects anything else.
+ * The LIVE API and the official polling examples use `outputs` (PLURAL,
+ * array of URLs, null while in progress); older doc pages show `output`.
+ */
+function extractOutputUrl(envelope: AtlasEnvelope): string | null {
+  for (const field of [envelope.outputs, envelope.output]) {
+    if (Array.isArray(field)) {
+      const first = field[0];
+      if (typeof first === 'string' && first.length > 0) return first;
+    }
+    if (typeof field === 'string' && field.length > 0) return field;
+    if (field && typeof field === 'object' && !Array.isArray(field) && typeof (field as { url?: unknown }).url === 'string') {
+      return (field as { url: string }).url;
+    }
   }
   return null;
 }
@@ -170,63 +214,73 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
   }
 
   /**
-   * Resolves a submit/poll envelope to the final output URL.
+   * Resolves a submit/poll envelope to the final output URL, following the
+   * ACTUAL documented+observed Atlas job lifecycle (established US-36):
    *
-   * The LIVE API has been observed returning envelopes WITHOUT the top-level
-   * `status` the docs show (US-36 probe #2), so `status` is now optional and
-   * every path stays verifiable — success is never inferred from an unknown
-   * shape:
-   * - `data`-wrapped envelopes are unwrapped first;
-   * - a success status requires a usable output URL;
-   * - a failure status aborts;
-   * - a continue status (or NO status) with `urls.result` → poll that ABSOLUTE
-   *   URL until a terminal state;
-   * - NO status and no poll URL but a usable output URL → treat as a sync
-   *   result; the subsequent download must produce non-empty bytes, which is
-   *   the actual success verification;
-   * - anything else → malformed, with a SANITIZED key/type shape summary so
-   *   the next live attempt is self-diagnosing without leaking values.
+   * 1. Submit responses are {data:{...}}-wrapped; unwrap first. The inner
+   *    envelope carries { id, status, outputs: null|[urls], urls, error, ... }.
+   * 2. Completion is detected by polling the CONSTRUCTED endpoint
+   *    GET {base}/model/prediction/{id} — the official client examples poll
+   *    exactly this path; the envelope's urls.result is NOT relied upon
+   *    (live envelopes carry no usable one). urls.result is used only as a
+   *    fallback when no id exists.
+   * 3. Poll responses are also data-wrapped: {data:{status, outputs, error}}.
+   *    status "completed" (+ variants) with a usable outputs URL → success;
+   *    "failed"/"canceled" (or a non-empty error string) → failure;
+   *    any other status → keep polling until the deadline (the documented
+   *    client behavior), never interpreted as success.
+   * 4. No status at all + a usable outputs URL → sync result; the download's
+   *    non-empty bytes remain the real success verification.
+   * 5. Anything unusable → malformed, with a SANITIZED nested shape summary
+   *    (key names/types only) so the next mismatch is actionable.
    */
   async function resolveOutput(rawEnvelope: AtlasEnvelope): Promise<string> {
     let envelope = unwrap(rawEnvelope);
+    const submitId = typeof envelope.id === 'string' && envelope.id.length > 0 ? envelope.id : undefined;
     let polled = false;
     const deadline = Date.now() + cfg.timeoutMs;
     for (;;) {
       const statusRaw = envelope.status;
       const status = typeof statusRaw === 'string' && statusRaw.length > 0 ? statusRaw.toLowerCase() : undefined;
-      const outputUrl = extractOutputUrl(envelope.output);
-      const resultUrl = (envelope.urls as { result?: unknown } | undefined)?.result;
-      const canPoll = typeof resultUrl === 'string' && resultUrl.length > 0;
+      const outputUrl = extractOutputUrl(envelope);
+      const providerError = typeof envelope.error === 'string' && envelope.error.trim().length > 0 ? envelope.error.trim() : undefined;
 
-      if (status !== undefined) {
-        if (SUCCESS_STATUSES.has(status)) {
-          if (outputUrl) return outputUrl;
-          throw new ProviderError('malformed_response', `Atlas reported success without a usable output URL (response shape: ${describeShape(envelope)})`);
-        }
-        if (FAILURE_STATUSES.has(status)) {
-          throw new ProviderError('http', `Atlas generation ended with status "${status}"`);
-        }
-        if (!CONTINUE_STATUSES.has(status)) {
-          throw new ProviderError('malformed_response', `Atlas returned unknown status "${status}" (response shape: ${describeShape(envelope)})`);
-        }
-        // continue status → fall through to polling below
-      } else if (!canPoll) {
-        // No status and nothing to poll: a sync result is acceptable ONLY if
-        // there is an output URL to download — bytes on disk verify success.
-        if (outputUrl) return outputUrl;
-        throw new ProviderError(
-          'malformed_response',
-          `Atlas response has no status, no urls.result, and no usable output (response shape: ${describeShape(envelope)})`,
-        );
+      if (providerError) {
+        throw new ProviderError('http', `Atlas reported a generation error: ${providerError.slice(0, 300)}`);
       }
-
-      if (!canPoll) {
-        throw new ProviderError('malformed_response', `Atlas response is in progress but has no urls.result to poll (response shape: ${describeShape(envelope)})`);
+      if (status !== undefined && SUCCESS_STATUSES.has(status)) {
+        if (outputUrl) return outputUrl;
+        throw new ProviderError('malformed_response', `Atlas reported success without a usable output URL (response shape: ${describeShape(envelope)})`);
+      }
+      if (status !== undefined && FAILURE_STATUSES.has(status)) {
+        throw new ProviderError('http', `Atlas generation ended with status "${status}"`);
+      }
+      if (status === undefined) {
+        // No status: a sync result is acceptable ONLY when there is an output
+        // URL to download — bytes on disk verify success. Otherwise, poll if
+        // possible; a shape with neither is malformed.
+        if (outputUrl) return outputUrl;
+        if (!submitId) {
+          throw new ProviderError(
+            'malformed_response',
+            `Atlas response has no status, no id to poll, and no usable output (response shape: ${describeShape(envelope)})`,
+          );
+        }
+      }
+      // In progress (documented statuses or any unknown non-terminal status:
+      // the official clients re-poll on anything that is not completed/failed).
+      const pollUrl = submitId
+        ? `${cfg.baseUrl}/model/prediction/${submitId}`
+        : typeof (envelope.urls as { result?: unknown } | undefined)?.result === 'string'
+          ? ((envelope.urls as { result: string }).result as string)
+          : undefined;
+      if (!pollUrl) {
+        throw new ProviderError('malformed_response', `Atlas response is in progress but has no id or urls.result to poll (response shape: ${describeShape(envelope)})`);
       }
       if (Date.now() > deadline) throw new ProviderError('network', 'Atlas result polling timed out');
       await new Promise((resolve) => setTimeout(resolve, polled ? cfg.pollIntervalMs : Math.min(cfg.pollIntervalMs, 1000)));
       polled = true;
-      envelope = unwrap(await atlasRequest('GET', resultUrl as string));
+      envelope = unwrap(await atlasRequest('GET', pollUrl));
     }
   }
 
@@ -236,11 +290,19 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
     estimateImageCost: () => cfg.imageUnitCostUsd,
     async generateImage(request: ImageGenerationRequest): Promise<GenerationResult> {
       requireConfirmed(cfg.contractConfirmed);
+      // Normalize the pipeline's TARGET size to the model's native constraints
+      // (multiples of 16, <=2MP recommended). e.g. 1080x1920 -> 1056x1888.
+      const native = normalizeFluxSize(request.width, request.height);
+      if (native.width !== request.width || native.height !== request.height) {
+        console.warn(
+          `! image size normalized to model-native ${native.width}x${native.height} (requested ${request.width}x${request.height}; FLUX requires multiples of 16, <=2MP recommended)`,
+        );
+      }
       const envelope = await atlasRequest('POST', `${cfg.baseUrl}/model/generateImage`, {
         model: cfg.imageModel,
         prompt: request.prompt,
         // Documented size format uses an ASTERISK separator, e.g. "1024*1024".
-        size: `${request.width}*${request.height}`,
+        size: `${native.width}*${native.height}`,
         num_images: 1,
       });
       const url = await resolveOutput(envelope);

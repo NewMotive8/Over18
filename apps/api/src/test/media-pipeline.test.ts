@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CostLedger } from '../media-pipeline/cost-ledger.js';
-import { createAtlasProviders } from '../media-pipeline/atlas-adapter.js';
+import { createAtlasProviders, normalizeFluxSize } from '../media-pipeline/atlas-adapter.js';
 import { createMockProviders } from '../media-pipeline/mock-adapter.js';
 import { qaImage, qaVideo } from '../media-pipeline/media-qa.js';
 import { MediaPipeline, PipelineRefusal } from '../media-pipeline/pipeline.js';
@@ -313,6 +313,28 @@ describe('atlas adapter contract guards', () => {
     expect(existsSync(join(root, 'x.jpg'))).toBe(false);
   });
 
+  it('normalizes requested sizes to FLUX-native dimensions (multiples of 16, <=2MP)', () => {
+    // The approved-media target 1080x1920 is NOT FLUX-valid (1080 % 16 != 0)
+    // and slightly exceeds the recommended 2MP: scaled + snapped.
+    expect(normalizeFluxSize(1080, 1920)).toEqual({ width: 1056, height: 1888 });
+    // Already-valid sizes pass through untouched.
+    expect(normalizeFluxSize(1024, 1024)).toEqual({ width: 1024, height: 1024 });
+    expect(normalizeFluxSize(1008, 1792)).toEqual({ width: 1008, height: 1792 });
+    // Oversized requests are scaled under the pixel cap, preserving aspect.
+    const big = normalizeFluxSize(4000, 8000);
+    expect(big.width % 16).toBe(0);
+    expect(big.height % 16).toBe(0);
+    expect(big.width * big.height).toBeLessThanOrEqual(2_100_000);
+    expect(Math.abs(big.width / big.height - 0.5)).toBeLessThan(0.01);
+    // Tiny inputs clamp to the model minimum.
+    expect(normalizeFluxSize(10, 10)).toEqual({ width: 64, height: 64 });
+    // Nonsense is rejected, never silently sent.
+    expect(() => normalizeFluxSize(0, 1920)).toThrow();
+    // Aspect drift from snapping stays under 1% for the target size.
+    const n = normalizeFluxSize(1080, 1920);
+    expect(Math.abs(n.width / n.height - 1080 / 1920)).toBeLessThan(0.01 * (1080 / 1920));
+  });
+
   it('REGRESSION (US-36 404): image submit hits the exact documented endpoint with the documented body', async () => {
     const calls: Array<{ url: string; body?: string }> = [];
     const fetchImpl: typeof fetch = async (input, init) => {
@@ -337,7 +359,7 @@ describe('atlas adapter contract guards', () => {
     const body = JSON.parse(calls[0]!.body!);
     expect(body.model).toBe('black-forest-labs/flux-kontext-dev');
     expect(body.prompt).toBe('probe');
-    expect(body.size).toBe('1080*1920'); // documented asterisk format
+    expect(body.size).toBe('1056*1888'); // FLUX-native normalization of the 1080x1920 target, asterisk format
     expect(body.num_images).toBe(1);
   });
 
@@ -413,15 +435,100 @@ describe('atlas adapter contract guards', () => {
     expect(existsSync(join(root, 'never.mp4'))).toBe(false);
   });
 
-  it('unknown status values are rejected as malformed — never treated as success or retried forever', async () => {
-    const atlas = createAtlasProviders({
-      contractConfirmed: true,
-      fetchImpl: async () =>
-        new Response(JSON.stringify({ id: 'x', status: 'transmogrifying', urls: { result: 'https://api.atlascloud.ai/api/v1/model/prediction/x' } }), { status: 200 }),
-    });
+  it('unknown non-terminal statuses re-poll (documented client behavior) and are never success by themselves', async () => {
+    let polls = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/model/generateImage')) {
+        return new Response(JSON.stringify({ data: { id: 'x', status: 'transmogrifying' } }), { status: 200 });
+      }
+      if (url.endsWith('/model/prediction/x')) {
+        polls += 1;
+        return polls < 2
+          ? new Response(JSON.stringify({ data: { id: 'x', status: 'still-transmogrifying' } }), { status: 200 })
+          : new Response(JSON.stringify({ data: { id: 'x', status: 'completed', outputs: ['https://cdn.example/u.jpg'] } }), { status: 200 });
+      }
+      if (url === 'https://cdn.example/u.jpg') return new Response(readFileSync(LUNA_JPG), { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1 });
+    const out = join(root, 'unknown-status.jpg');
+    await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: out });
+    expect(existsSync(out)).toBe(true);
+    expect(polls).toBe(2); // unknown statuses re-polled, success only on terminal completed
+  });
+
+  it('unknown non-terminal statuses time out at the deadline rather than looping forever', async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/model/generateImage')) {
+        return new Response(JSON.stringify({ data: { id: 'y', status: 'transmogrifying' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: { id: 'y', status: 'transmogrifying' } }), { status: 200 });
+    };
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1, timeoutMs: 50 });
     await expect(
-      atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'x.jpg') }),
-    ).rejects.toMatchObject({ kind: 'malformed_response' });
+      atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'never2.jpg') }),
+    ).rejects.toMatchObject({ kind: 'network' });
+  });
+
+  it('REGRESSION (US-36 probe #3): the exact live in-progress envelope polls the constructed prediction endpoint', async () => {
+    // Live evidence: data-wrapped envelope with outputs:null, an urls object
+    // WITHOUT a usable result URL, status in progress, empty error string.
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith('/model/generateImage')) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              id: 'live3',
+              model: 'black-forest-labs/flux-schnell',
+              outputs: null,
+              urls: { cancel: 'https://api.atlascloud.ai/api/v1/model/prediction/live3/cancel' },
+              has_nsfw_contents: null,
+              status: 'processing',
+              created_at: '2026-08-12T00:00:00Z',
+              error: '',
+              executionTime: 0,
+              timings: {},
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === 'https://api.atlascloud.ai/api/v1/model/prediction/live3') {
+        return new Response(JSON.stringify({ data: { id: 'live3', status: 'completed', outputs: ['https://cdn.example/live3.jpg'], error: '' } }), { status: 200 });
+      }
+      if (url === 'https://cdn.example/live3.jpg') return new Response(readFileSync(LUNA_JPG), { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1 });
+    const out = join(root, 'live3.jpg');
+    await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: out });
+    expect(existsSync(out)).toBe(true);
+    expect(calls[1]).toBe('https://api.atlascloud.ai/api/v1/model/prediction/live3'); // constructed, NOT urls.result
+  });
+
+  it('a non-empty provider error field fails the generation even mid-lifecycle', async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/model/generateImage')) {
+        return new Response(JSON.stringify({ data: { id: 'e1', status: 'processing', error: '' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: { id: 'e1', status: 'processing', error: 'NSFW content rejected by safety checker' } }), { status: 200 });
+    };
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1 });
+    try {
+      await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'err.jpg') });
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect((err as ProviderError).kind).toBe('http');
+      expect((err as Error).message).toContain('safety checker');
+      expect((err as Error).message).not.toContain(FAKE_KEY);
+    }
+    expect(existsSync(join(root, 'err.jpg'))).toBe(false);
   });
 
   it('REGRESSION (US-36 probe #2): a live envelope WITHOUT top-level status polls urls.result and completes', async () => {
