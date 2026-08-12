@@ -313,14 +313,47 @@ describe('atlas adapter contract guards', () => {
     expect(existsSync(join(root, 'x.jpg'))).toBe(false);
   });
 
-  it('happy path with injected fetch: submit → poll → download → bytes on disk', async () => {
+  it('REGRESSION (US-36 404): image submit hits the exact documented endpoint with the documented body', async () => {
+    const calls: Array<{ url: string; body?: string }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({ url, body: init?.body ? String(init.body) : undefined });
+      if (url === 'https://api.atlascloud.ai/api/v1/model/generateImage') {
+        // documented sync-ish variant: already completed with output array
+        return new Response(
+          JSON.stringify({ id: 'img-1', status: 'completed', output: ['https://cdn.example/img.jpg'], urls: { result: 'https://api.atlascloud.ai/api/v1/model/prediction/img-1' } }),
+          { status: 200 },
+        );
+      }
+      if (url === 'https://cdn.example/img.jpg') return new Response(readFileSync(LUNA_JPG), { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1 });
+    const out = join(root, 'atlas-img.jpg');
+    await atlas.image.generateImage({ prompt: 'probe', width: 1080, height: 1920, outputPath: out });
+    expect(existsSync(out)).toBe(true);
+    // The exact endpoint that previously 404'd:
+    expect(calls[0]!.url).toBe('https://api.atlascloud.ai/api/v1/model/generateImage');
+    const body = JSON.parse(calls[0]!.body!);
+    expect(body.model).toBe('black-forest-labs/flux-kontext-dev');
+    expect(body.prompt).toBe('probe');
+    expect(body.size).toBe('1080*1920'); // documented asterisk format
+    expect(body.num_images).toBe(1);
+  });
+
+  it('documented async flow: processing envelope → poll urls.result → output array → bytes on disk', async () => {
     const calls: string[] = [];
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
       calls.push(url);
-      if (url.endsWith('/generateVideo')) return new Response(JSON.stringify({ id: 'pred-1' }), { status: 200 });
-      if (url.endsWith('/prediction/pred-1')) {
-        return new Response(JSON.stringify({ status: 'succeeded', output: { url: 'https://cdn.example/clip.mp4' } }), { status: 200 });
+      if (url === 'https://api.atlascloud.ai/api/v1/model/generateVideo') {
+        return new Response(
+          JSON.stringify({ id: 'pred-1', status: 'processing', output: [], urls: { result: 'https://api.atlascloud.ai/api/v1/model/prediction/pred-1' } }),
+          { status: 200 },
+        );
+      }
+      if (url === 'https://api.atlascloud.ai/api/v1/model/prediction/pred-1') {
+        return new Response(JSON.stringify({ id: 'pred-1', status: 'completed', output: ['https://cdn.example/clip.mp4'] }), { status: 200 });
       }
       if (url === 'https://cdn.example/clip.mp4') return new Response(readFileSync(LUNA_MP4), { status: 200 });
       return new Response('not found', { status: 404 });
@@ -336,14 +369,36 @@ describe('atlas adapter contract guards', () => {
     });
     expect(existsSync(out)).toBe(true);
     expect(result.estimatedCostUsd).toBeCloseTo(0.5, 6); // 5s × $0.10
-    expect(calls[0]).toContain('/generateVideo');
+    expect(calls[0]).toBe('https://api.atlascloud.ai/api/v1/model/generateVideo');
+    expect(calls[1]).toBe('https://api.atlascloud.ai/api/v1/model/prediction/pred-1'); // polls the envelope's ABSOLUTE urls.result
   });
 
-  it('failed prediction status aborts without writing output', async () => {
+  it('HTTP 404 from Atlas surfaces as a clear http error with the path, never a success', async () => {
+    const atlas = createAtlasProviders({
+      contractConfirmed: true,
+      fetchImpl: async () => new Response('not found', { status: 404 }),
+    });
+    try {
+      await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'x.jpg') });
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      expect((err as ProviderError).kind).toBe('http');
+      expect((err as Error).message).toContain('404');
+      expect((err as Error).message).toContain('/model/generateImage');
+    }
+    expect(existsSync(join(root, 'x.jpg'))).toBe(false);
+  });
+
+  it('failed generation status aborts without writing output', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
-      if (url.endsWith('/generateVideo')) return new Response(JSON.stringify({ id: 'pred-2' }), { status: 200 });
-      return new Response(JSON.stringify({ status: 'failed' }), { status: 200 });
+      if (url.endsWith('/model/generateVideo')) {
+        return new Response(
+          JSON.stringify({ id: 'pred-2', status: 'processing', urls: { result: 'https://api.atlascloud.ai/api/v1/model/prediction/pred-2' } }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ id: 'pred-2', status: 'failed' }), { status: 200 });
     };
     const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1 });
     await expect(
@@ -356,6 +411,27 @@ describe('atlas adapter contract guards', () => {
       }),
     ).rejects.toMatchObject({ kind: 'http' });
     expect(existsSync(join(root, 'never.mp4'))).toBe(false);
+  });
+
+  it('unknown status values are rejected as malformed — never treated as success or retried forever', async () => {
+    const atlas = createAtlasProviders({
+      contractConfirmed: true,
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ id: 'x', status: 'transmogrifying', urls: { result: 'https://api.atlascloud.ai/api/v1/model/prediction/x' } }), { status: 200 }),
+    });
+    await expect(
+      atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'x.jpg') }),
+    ).rejects.toMatchObject({ kind: 'malformed_response' });
+  });
+
+  it('success status without a usable output URL is malformed, not success', async () => {
+    const atlas = createAtlasProviders({
+      contractConfirmed: true,
+      fetchImpl: async () => new Response(JSON.stringify({ id: 'x', status: 'completed', output: [] }), { status: 200 }),
+    });
+    await expect(
+      atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'x.jpg') }),
+    ).rejects.toMatchObject({ kind: 'malformed_response' });
   });
 });
 

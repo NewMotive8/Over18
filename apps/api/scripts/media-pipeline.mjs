@@ -47,4 +47,20 @@ if (result.error) {
   console.error(`ERROR: failed to launch the pipeline CLI (${result.error.code ?? result.error.message}). No command was executed.`);
   process.exit(1);
 }
-process.exit(result.status ?? 1);
+
+// Exit-code mapping hardened for Windows: after a provider error the tsx child
+// can abort during teardown (libuv "UV_HANDLE_CLOSING" assertion) with a
+// signal or a large NTSTATUS code. Raw NTSTATUS values truncate mod 256 on
+// exit and could masquerade as success. Rules: exact 0 = success; 1-255
+// preserved verbatim (usage=2, refusal=3, etc.); anything else — signal,
+// null, or out-of-range — is reported and mapped to failure. The child's real
+// error output has already been shown above via stdio: 'inherit'.
+if (result.signal) {
+  console.error(`NOTE: pipeline CLI terminated by signal ${result.signal} after the output above; treating as failure (exit 1).`);
+  process.exit(1);
+}
+const status = result.status;
+if (status === 0) process.exit(0);
+if (Number.isInteger(status) && status >= 1 && status <= 255) process.exit(status);
+console.error(`NOTE: pipeline CLI terminated abnormally (status ${status}) after the output above; treating as failure (exit 1).`);
+process.exit(1);

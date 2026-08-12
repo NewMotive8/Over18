@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   ProviderError,
@@ -12,17 +12,27 @@ import {
 /**
  * Atlas Cloud adapter — the ONLY file that knows Atlas exists.
  *
- * ⚠ CONTRACT STATUS: PARTIALLY VERIFIED (docs read 2026-08-12, no live call
- * has been made). What IS documented on atlascloud.ai model pages:
- *   - auth via the ATLASCLOUD_API_KEY environment variable (bearer);
- *   - async video flow: submit → poll a prediction id → result URL;
- *   - models/prices: image flux-kontext-dev $0.025/image; video
- *     wan-2.2-turbo-spicy $0.02/s, wan-2.7-spicy $0.10/s.
- * What is NOT yet verified: exact request/response field names. Therefore this
- * adapter REFUSES to run until a human passes --confirm-contract (after the
- * cheapest possible live probe in US-36), and it treats every response
- * defensively: any missing/unschema'd field aborts the generation — a success
- * is recorded ONLY when the asset bytes are on disk. NEVER invent results.
+ * CONTRACT (verified against the official docs, 2026-08-12, after the live
+ * probe returned HTTP 404 against the previous guessed paths):
+ *   - Base API:        https://api.atlascloud.ai/api/v1
+ *   - Image submit:    POST /model/generateImage
+ *                      body { model, prompt, size: "W*H" (asterisk!), num_images }
+ *   - Video submit:    POST /model/generateVideo  (same /model/ prefix pattern;
+ *                      wan model docs: submit → poll → result URL)
+ *   - Auth:            Authorization: Bearer $ATLASCLOUD_API_KEY
+ *   - Response envelope: { id, status, output: [urls...], urls: { result }, ... }
+ *     Generation is ASYNC: initial status "processing"; poll the ABSOLUTE
+ *     urls.result URL from the envelope (never a constructed path).
+ *   - Poll response: same envelope; success when status ∈ {succeeded, completed,
+ *     success} with a usable output; failure on {failed, canceled, cancelled,
+ *     error}; keep polling on {processing, pending, queued, starting, running}.
+ *     Any OTHER status or shape is rejected as malformed — never a success.
+ *   - output variants accepted (documented array-of-URLs, plus tolerated
+ *     url-string / {url} forms some model pages show): anything else rejected.
+ *
+ * Defensive rules unchanged: a success is recorded ONLY when the asset bytes
+ * are verified on disk; unexpected responses abort loudly. --confirm-contract
+ * remains the explicit human gate for live paid calls.
  *
  * SECRETS: the key is read from the environment at call time, used only in the
  * Authorization header, and never logged, thrown, or written anywhere.
@@ -34,7 +44,7 @@ export interface AtlasOptions {
   videoModel?: string;
   imageUnitCostUsd?: number;
   videoUnitCostPerSecondUsd?: number;
-  /** Human confirmation that the live contract has been probed (US-36 step 0). */
+  /** Human confirmation gate for live paid calls. */
   contractConfirmed?: boolean;
   pollIntervalMs?: number;
   timeoutMs?: number;
@@ -43,7 +53,7 @@ export interface AtlasOptions {
 }
 
 const DEFAULTS = {
-  baseUrl: 'https://api.atlascloud.ai/v1',
+  baseUrl: 'https://api.atlascloud.ai/api/v1',
   imageModel: 'black-forest-labs/flux-kontext-dev',
   videoModel: 'atlascloud/wan-2.7-spicy',
   imageUnitCostUsd: 0.025,
@@ -51,6 +61,10 @@ const DEFAULTS = {
   pollIntervalMs: 3000,
   timeoutMs: 300_000,
 };
+
+const CONTINUE_STATUSES = new Set(['processing', 'pending', 'queued', 'starting', 'running']);
+const SUCCESS_STATUSES = new Set(['succeeded', 'completed', 'success']);
+const FAILURE_STATUSES = new Set(['failed', 'canceled', 'cancelled', 'error']);
 
 function apiKey(): string {
   const key = process.env.ATLASCLOUD_API_KEY;
@@ -64,9 +78,37 @@ function requireConfirmed(confirmed: boolean | undefined): void {
   if (!confirmed) {
     throw new ProviderError(
       'not_verified',
-      'Atlas API contract is not yet verified by a live probe. Run the cheapest probe first (US-36 step 0), then pass --confirm-contract. Refusing to guess at a paid API.',
+      'Live Atlas calls require the explicit --confirm-contract gate. Refusing to spend without it.',
     );
   }
+}
+
+/** Envelope fields we rely on; everything is checked before use. */
+interface AtlasEnvelope {
+  id?: unknown;
+  status?: unknown;
+  output?: unknown;
+  urls?: { result?: unknown } | unknown;
+}
+
+function expectString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new ProviderError('malformed_response', `Atlas response missing expected field "${field}"`);
+  }
+  return value;
+}
+
+/** Accepts the documented output variants; rejects anything else. */
+function extractOutputUrl(output: unknown): string | null {
+  if (Array.isArray(output)) {
+    const first = output[0];
+    return typeof first === 'string' && first.length > 0 ? first : null;
+  }
+  if (typeof output === 'string' && output.length > 0) return output;
+  if (output && typeof output === 'object' && typeof (output as { url?: unknown }).url === 'string') {
+    return (output as { url: string }).url;
+  }
+  return null;
 }
 
 async function downloadTo(url: string, outputPath: string, fetchImpl: typeof fetch): Promise<void> {
@@ -81,77 +123,72 @@ async function downloadTo(url: string, outputPath: string, fetchImpl: typeof fet
   }
 }
 
-/** Defensive field access: unexpected shape → malformed_response, never success. */
-function expectString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new ProviderError('malformed_response', `Atlas response missing expected field "${field}"`);
-  }
-  return value;
-}
-
 export function createAtlasProviders(options: AtlasOptions = {}): { image: ImageProvider; video: VideoProvider } {
   const cfg = { ...DEFAULTS, ...options };
   const fetchImpl = options.fetchImpl ?? fetch;
 
-  async function atlasPost(path: string, body: unknown): Promise<unknown> {
+  async function atlasRequest(method: 'GET' | 'POST', url: string, body?: unknown): Promise<AtlasEnvelope> {
     let res: Response;
     try {
-      res = await fetchImpl(`${cfg.baseUrl}${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey()}` },
-        body: JSON.stringify(body),
+      res = await fetchImpl(url, {
+        method,
+        headers: {
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          Authorization: `Bearer ${apiKey()}`,
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(cfg.timeoutMs),
       });
     } catch (err) {
       if (err instanceof ProviderError) throw err;
       throw new ProviderError('network', 'could not reach Atlas Cloud');
     }
-    if (!res.ok) throw new ProviderError('http', `Atlas returned HTTP ${res.status}`);
+    if (!res.ok) throw new ProviderError('http', `Atlas returned HTTP ${res.status} for ${new URL(url).pathname}`);
     try {
-      return await res.json();
+      return (await res.json()) as AtlasEnvelope;
     } catch {
       throw new ProviderError('malformed_response', 'Atlas returned non-JSON output');
     }
   }
 
-  async function atlasGet(path: string): Promise<unknown> {
-    let res: Response;
-    try {
-      res = await fetchImpl(`${cfg.baseUrl}${path}`, {
-        headers: { Authorization: `Bearer ${apiKey()}` },
-        signal: AbortSignal.timeout(cfg.timeoutMs),
-      });
-    } catch (err) {
-      if (err instanceof ProviderError) throw err;
-      throw new ProviderError('network', 'could not reach Atlas Cloud');
+  /**
+   * Resolves a submit envelope to the final output URL:
+   * - already-successful envelope with usable output → done (sync mode);
+   * - otherwise poll the ABSOLUTE urls.result URL from the envelope.
+   */
+  async function resolveOutput(envelope: AtlasEnvelope): Promise<string> {
+    const status = expectString(envelope.status, 'status').toLowerCase();
+    if (SUCCESS_STATUSES.has(status)) {
+      const url = extractOutputUrl(envelope.output);
+      if (url) return url;
+      throw new ProviderError('malformed_response', 'Atlas reported success without a usable output URL');
     }
-    if (!res.ok) throw new ProviderError('http', `Atlas returned HTTP ${res.status}`);
-    try {
-      return await res.json();
-    } catch {
-      throw new ProviderError('malformed_response', 'Atlas returned non-JSON output');
+    if (FAILURE_STATUSES.has(status)) {
+      throw new ProviderError('http', `Atlas generation ended with status "${status}"`);
     }
-  }
+    if (!CONTINUE_STATUSES.has(status)) {
+      throw new ProviderError('malformed_response', `Atlas returned unknown status "${status}"`);
+    }
+    expectString(envelope.id, 'id'); // sanity: async envelope must carry an id
+    const resultUrl = expectString((envelope.urls as { result?: unknown } | undefined)?.result, 'urls.result');
 
-  /** Documented async pattern: submit → poll /prediction/{id} until a result URL. */
-  async function pollPrediction(id: string): Promise<string> {
     const deadline = Date.now() + cfg.timeoutMs;
     for (;;) {
-      if (Date.now() > deadline) throw new ProviderError('network', 'Atlas prediction polling timed out');
-      const body = (await atlasGet(`/prediction/${id}`)) as {
-        status?: unknown;
-        output?: { url?: unknown } | unknown;
-        error?: unknown;
-      };
-      const status = expectString(body.status, 'status');
-      if (status === 'failed' || status === 'canceled') {
-        throw new ProviderError('http', `Atlas prediction ended with status "${status}"`);
-      }
-      if (status === 'succeeded' || status === 'completed') {
-        const url = (body.output as { url?: unknown } | undefined)?.url;
-        return expectString(url, 'output.url');
-      }
+      if (Date.now() > deadline) throw new ProviderError('network', 'Atlas result polling timed out');
       await new Promise((resolve) => setTimeout(resolve, cfg.pollIntervalMs));
+      const poll = await atlasRequest('GET', resultUrl);
+      const pollStatus = expectString(poll.status, 'status').toLowerCase();
+      if (SUCCESS_STATUSES.has(pollStatus)) {
+        const url = extractOutputUrl(poll.output);
+        if (url) return url;
+        throw new ProviderError('malformed_response', 'Atlas reported success without a usable output URL');
+      }
+      if (FAILURE_STATUSES.has(pollStatus)) {
+        throw new ProviderError('http', `Atlas generation ended with status "${pollStatus}"`);
+      }
+      if (!CONTINUE_STATUSES.has(pollStatus)) {
+        throw new ProviderError('malformed_response', `Atlas returned unknown status "${pollStatus}"`);
+      }
     }
   }
 
@@ -161,15 +198,14 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
     estimateImageCost: () => cfg.imageUnitCostUsd,
     async generateImage(request: ImageGenerationRequest): Promise<GenerationResult> {
       requireConfirmed(cfg.contractConfirmed);
-      const body = (await atlasPost('/generateImage', {
+      const envelope = await atlasRequest('POST', `${cfg.baseUrl}/model/generateImage`, {
         model: cfg.imageModel,
         prompt: request.prompt,
-        width: request.width,
-        height: request.height,
-      })) as { id?: unknown; output?: { url?: unknown } };
-      // Either an immediate result URL or an async prediction id.
-      const direct = (body.output as { url?: unknown } | undefined)?.url;
-      const url = typeof direct === 'string' && direct.length > 0 ? direct : await pollPrediction(expectString(body.id, 'id'));
+        // Documented size format uses an ASTERISK separator, e.g. "1024*1024".
+        size: `${request.width}*${request.height}`,
+        num_images: 1,
+      });
+      const url = await resolveOutput(envelope);
       await downloadTo(url, request.outputPath, fetchImpl);
       return {
         outputPath: request.outputPath,
@@ -192,15 +228,16 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
       if (!existsSync(request.referenceImagePath)) {
         throw new ProviderError('output_missing', `reference image missing: ${request.referenceImagePath}`);
       }
-      const reference = Buffer.from(await import('node:fs').then((fs) => fs.readFileSync(request.referenceImagePath))).toString('base64');
-      const body = (await atlasPost('/generateVideo', {
+      const reference = readFileSync(request.referenceImagePath).toString('base64');
+      const envelope = await atlasRequest('POST', `${cfg.baseUrl}/model/generateVideo`, {
         model: cfg.videoModel,
         prompt: request.prompt,
         image: reference, // documented: Base64 or URL image inputs
         duration: request.durationSeconds,
-        resolution: request.resolution,
-      })) as { id?: unknown };
-      const url = await pollPrediction(expectString(body.id, 'id'));
+        // Wan model pages document uppercase resolution labels (720P/1080P).
+        resolution: request.resolution.toUpperCase(),
+      });
+      const url = await resolveOutput(envelope);
       await downloadTo(url, request.outputPath, fetchImpl);
       return {
         outputPath: request.outputPath,
