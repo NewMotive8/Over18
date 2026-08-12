@@ -89,14 +89,32 @@ interface AtlasEnvelope {
   status?: unknown;
   output?: unknown;
   urls?: { result?: unknown } | unknown;
+  data?: unknown;
 }
 
-function expectString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new ProviderError('malformed_response', `Atlas response missing expected field "${field}"`);
-  }
-  return value;
+/**
+ * SANITIZED shape summary for diagnostics: top-level key names, value types,
+ * and array lengths ONLY — never values, so no credential, URL, or prompt
+ * material can leak into errors, run-records, or the ledger.
+ */
+export function describeShape(value: unknown): string {
+  if (value === null || typeof value !== 'object') return typeof value;
+  const parts = Object.entries(value as Record<string, unknown>).map(([key, v]) => {
+    if (Array.isArray(v)) return `${key}:array(${v.length})`;
+    if (v === null) return `${key}:null`;
+    return `${key}:${typeof v}`;
+  });
+  return `{${parts.join(', ')}}`;
 }
+
+/** Some gateways wrap the documented envelope in a {data: {...}} container. */
+function unwrap(envelope: AtlasEnvelope): AtlasEnvelope {
+  if (envelope && typeof envelope === 'object' && envelope.data && typeof envelope.data === 'object' && !Array.isArray(envelope.data)) {
+    return envelope.data as AtlasEnvelope;
+  }
+  return envelope;
+}
+
 
 /** Accepts the documented output variants; rejects anything else. */
 function extractOutputUrl(output: unknown): string | null {
@@ -152,43 +170,63 @@ export function createAtlasProviders(options: AtlasOptions = {}): { image: Image
   }
 
   /**
-   * Resolves a submit envelope to the final output URL:
-   * - already-successful envelope with usable output → done (sync mode);
-   * - otherwise poll the ABSOLUTE urls.result URL from the envelope.
+   * Resolves a submit/poll envelope to the final output URL.
+   *
+   * The LIVE API has been observed returning envelopes WITHOUT the top-level
+   * `status` the docs show (US-36 probe #2), so `status` is now optional and
+   * every path stays verifiable — success is never inferred from an unknown
+   * shape:
+   * - `data`-wrapped envelopes are unwrapped first;
+   * - a success status requires a usable output URL;
+   * - a failure status aborts;
+   * - a continue status (or NO status) with `urls.result` → poll that ABSOLUTE
+   *   URL until a terminal state;
+   * - NO status and no poll URL but a usable output URL → treat as a sync
+   *   result; the subsequent download must produce non-empty bytes, which is
+   *   the actual success verification;
+   * - anything else → malformed, with a SANITIZED key/type shape summary so
+   *   the next live attempt is self-diagnosing without leaking values.
    */
-  async function resolveOutput(envelope: AtlasEnvelope): Promise<string> {
-    const status = expectString(envelope.status, 'status').toLowerCase();
-    if (SUCCESS_STATUSES.has(status)) {
-      const url = extractOutputUrl(envelope.output);
-      if (url) return url;
-      throw new ProviderError('malformed_response', 'Atlas reported success without a usable output URL');
-    }
-    if (FAILURE_STATUSES.has(status)) {
-      throw new ProviderError('http', `Atlas generation ended with status "${status}"`);
-    }
-    if (!CONTINUE_STATUSES.has(status)) {
-      throw new ProviderError('malformed_response', `Atlas returned unknown status "${status}"`);
-    }
-    expectString(envelope.id, 'id'); // sanity: async envelope must carry an id
-    const resultUrl = expectString((envelope.urls as { result?: unknown } | undefined)?.result, 'urls.result');
-
+  async function resolveOutput(rawEnvelope: AtlasEnvelope): Promise<string> {
+    let envelope = unwrap(rawEnvelope);
+    let polled = false;
     const deadline = Date.now() + cfg.timeoutMs;
     for (;;) {
+      const statusRaw = envelope.status;
+      const status = typeof statusRaw === 'string' && statusRaw.length > 0 ? statusRaw.toLowerCase() : undefined;
+      const outputUrl = extractOutputUrl(envelope.output);
+      const resultUrl = (envelope.urls as { result?: unknown } | undefined)?.result;
+      const canPoll = typeof resultUrl === 'string' && resultUrl.length > 0;
+
+      if (status !== undefined) {
+        if (SUCCESS_STATUSES.has(status)) {
+          if (outputUrl) return outputUrl;
+          throw new ProviderError('malformed_response', `Atlas reported success without a usable output URL (response shape: ${describeShape(envelope)})`);
+        }
+        if (FAILURE_STATUSES.has(status)) {
+          throw new ProviderError('http', `Atlas generation ended with status "${status}"`);
+        }
+        if (!CONTINUE_STATUSES.has(status)) {
+          throw new ProviderError('malformed_response', `Atlas returned unknown status "${status}" (response shape: ${describeShape(envelope)})`);
+        }
+        // continue status → fall through to polling below
+      } else if (!canPoll) {
+        // No status and nothing to poll: a sync result is acceptable ONLY if
+        // there is an output URL to download — bytes on disk verify success.
+        if (outputUrl) return outputUrl;
+        throw new ProviderError(
+          'malformed_response',
+          `Atlas response has no status, no urls.result, and no usable output (response shape: ${describeShape(envelope)})`,
+        );
+      }
+
+      if (!canPoll) {
+        throw new ProviderError('malformed_response', `Atlas response is in progress but has no urls.result to poll (response shape: ${describeShape(envelope)})`);
+      }
       if (Date.now() > deadline) throw new ProviderError('network', 'Atlas result polling timed out');
-      await new Promise((resolve) => setTimeout(resolve, cfg.pollIntervalMs));
-      const poll = await atlasRequest('GET', resultUrl);
-      const pollStatus = expectString(poll.status, 'status').toLowerCase();
-      if (SUCCESS_STATUSES.has(pollStatus)) {
-        const url = extractOutputUrl(poll.output);
-        if (url) return url;
-        throw new ProviderError('malformed_response', 'Atlas reported success without a usable output URL');
-      }
-      if (FAILURE_STATUSES.has(pollStatus)) {
-        throw new ProviderError('http', `Atlas generation ended with status "${pollStatus}"`);
-      }
-      if (!CONTINUE_STATUSES.has(pollStatus)) {
-        throw new ProviderError('malformed_response', `Atlas returned unknown status "${pollStatus}"`);
-      }
+      await new Promise((resolve) => setTimeout(resolve, polled ? cfg.pollIntervalMs : Math.min(cfg.pollIntervalMs, 1000)));
+      polled = true;
+      envelope = unwrap(await atlasRequest('GET', resultUrl as string));
     }
   }
 

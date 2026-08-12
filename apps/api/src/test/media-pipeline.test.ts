@@ -424,6 +424,85 @@ describe('atlas adapter contract guards', () => {
     ).rejects.toMatchObject({ kind: 'malformed_response' });
   });
 
+  it('REGRESSION (US-36 probe #2): a live envelope WITHOUT top-level status polls urls.result and completes', async () => {
+    // The live API returned an envelope missing the documented top-level
+    // "status"; the old adapter rejected it outright. Now: no status + a
+    // urls.result → poll until terminal state.
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith('/model/generateImage')) {
+        return new Response(
+          JSON.stringify({ id: 'live-1', urls: { result: 'https://api.atlascloud.ai/api/v1/model/prediction/live-1', cancel: 'https://x' }, output: [] }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith('/model/prediction/live-1')) {
+        return new Response(JSON.stringify({ id: 'live-1', status: 'succeeded', output: ['https://cdn.example/live.jpg'] }), { status: 200 });
+      }
+      if (url === 'https://cdn.example/live.jpg') return new Response(readFileSync(LUNA_JPG), { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1 });
+    const out = join(root, 'live.jpg');
+    await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: out });
+    expect(existsSync(out)).toBe(true);
+    expect(calls[1]).toContain('/model/prediction/live-1');
+  });
+
+  it('no status + no urls.result + populated output = sync result verified by the download', async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/model/generateImage')) {
+        return new Response(JSON.stringify({ id: 'sync-1', output: ['https://cdn.example/sync.jpg'] }), { status: 200 });
+      }
+      if (url === 'https://cdn.example/sync.jpg') return new Response(readFileSync(LUNA_JPG), { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1 });
+    const out = join(root, 'sync.jpg');
+    await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: out });
+    expect(existsSync(out)).toBe(true);
+  });
+
+  it('unwraps a {data: {...}} gateway envelope', async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/model/generateImage')) {
+        return new Response(
+          JSON.stringify({ code: 200, message: 'ok', data: { id: 'w-1', status: 'completed', output: ['https://cdn.example/w.jpg'] } }),
+          { status: 200 },
+        );
+      }
+      if (url === 'https://cdn.example/w.jpg') return new Response(readFileSync(LUNA_JPG), { status: 200 });
+      return new Response('not found', { status: 404 });
+    };
+    const atlas = createAtlasProviders({ contractConfirmed: true, fetchImpl, pollIntervalMs: 1 });
+    const out = join(root, 'wrapped.jpg');
+    await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: out });
+    expect(existsSync(out)).toBe(true);
+  });
+
+  it('malformed errors carry a SANITIZED shape summary — key names/types only, never values', async () => {
+    const secretish = 'sk-value-that-must-never-appear-1234567890';
+    const atlas = createAtlasProviders({
+      contractConfirmed: true,
+      fetchImpl: async () => new Response(JSON.stringify({ foo: secretish, bar: 7, baz: [1, 2] }), { status: 200 }),
+    });
+    try {
+      await atlas.image.generateImage({ prompt: 'p', width: 1080, height: 1920, outputPath: join(root, 'x.jpg') });
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toContain('foo:string');
+      expect(message).toContain('bar:number');
+      expect(message).toContain('baz:array(2)');
+      expect(message).not.toContain(secretish);
+      expect(message).not.toContain(FAKE_KEY);
+    }
+  });
+
   it('success status without a usable output URL is malformed, not success', async () => {
     const atlas = createAtlasProviders({
       contractConfirmed: true,
