@@ -173,14 +173,43 @@ export class MediaPipeline {
     return join(this.characterDir, 'canonical', 'reference.jpg');
   }
 
+  /**
+   * Generate I2V candidates from a reference still. By default the identity is
+   * anchored to the SELECTED canonical. An optional `referenceImagePath`
+   * overrides that for a single run WITHOUT promoting anything — the canonical
+   * on disk is never read, written, or replaced. This lets us drive a paid I2V
+   * call from a freshly generated candidate (e.g. a new wardrobe/pose still)
+   * while the reviewed canonical stays the backup until a human runs `select`.
+   *
+   * An override is held to the SAME technical image-QA gate the canonical
+   * clears at selection time: the canonical is trusted because `selectCanonical`
+   * already gated it, so an ad-hoc reference must be gated here — a garbage,
+   * undersized, or landscape image must never silently drive a paid call. The
+   * gate result is recorded in the run record for provenance, and the resolved
+   * reference (override or canonical) is what the provenance event cites.
+   */
   async generateVideoCandidates(
     prompt: string,
     count: number,
-    options: { durationSeconds?: number; resolution?: '480p' | '720p' | '1080p' } = {},
+    options: { durationSeconds?: number; resolution?: '480p' | '720p' | '1080p'; referenceImagePath?: string } = {},
   ): Promise<string[]> {
-    const reference = this.canonicalPath();
+    const usingOverride = options.referenceImagePath !== undefined;
+    const reference = options.referenceImagePath ?? this.canonicalPath();
     if (!existsSync(reference)) {
-      throw new PipelineRefusal('no canonical reference selected — run select-canonical first (video identity is anchored to the canonical still)');
+      throw new PipelineRefusal(
+        usingOverride
+          ? `reference image not found: ${reference}`
+          : 'no canonical reference selected — run select-canonical first (video identity is anchored to the canonical still)',
+      );
+    }
+    if (usingOverride) {
+      const refQa = qaImage(reference);
+      this.appendEvent({ action: 'qa', file: reference, qa: refQa });
+      if (!refQa.pass) {
+        throw new PipelineRefusal(
+          `reference image failed technical image QA — refusing before a paid call (${refQa.checks.filter((c) => !c.ok).map((c) => c.name).join(', ')})`,
+        );
+      }
     }
     const durationSeconds = options.durationSeconds ?? 5;
     const resolution = options.resolution ?? '1080p';

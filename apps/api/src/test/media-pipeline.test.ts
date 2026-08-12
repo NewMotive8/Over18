@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -208,6 +208,82 @@ describe('pipeline happy path (mock provider, real fixture media)', () => {
   it('refuses video generation before a canonical reference exists', async () => {
     const pipeline = makePipeline();
     await expect(pipeline.generateVideoCandidates('motion', 1)).rejects.toThrow(/canonical/);
+  });
+});
+
+// ───────── I2V reference override — use a still WITHOUT changing canonical ──
+
+describe('I2V reference override', () => {
+  it('drives video from an explicit reference WITHOUT changing the canonical, and records provenance', async () => {
+    const ledger = new CostLedger(ledgerFile);
+    const pipeline = makePipeline({ ledger, budget: 5 });
+    const images = await pipeline.generateImageCandidates('p', 1);
+    const canonical = pipeline.selectCanonical(images[0]!); // canonical = luna fixture bytes
+    const before = readFileSync(canonical);
+
+    // A DIFFERENT, valid portrait still as the override reference.
+    const override = join(root, 'nova', 'candidates', 'images', 'glamour.jpg');
+    copyFileSync(EMBER_JPG, override);
+
+    const videos = await pipeline.generateVideoCandidates('sensual glamour motion', 1, {
+      durationSeconds: 5,
+      referenceImagePath: override,
+    });
+    expect(videos).toHaveLength(1);
+    expect(existsSync(videos[0]!)).toBe(true);
+
+    // Canonical on disk is byte-for-byte unchanged — never promoted or replaced.
+    expect(readFileSync(canonical).equals(before)).toBe(true);
+    expect(pipeline.events().some((e) => e.action === 'select_canonical' && e.referenceImage === override)).toBe(false);
+
+    // Provenance cites the override, and the reference was QA-gated first.
+    const gen = pipeline.events().find((e) => e.action === 'generate_video')!;
+    expect(gen.referenceImage).toBe(override);
+    expect(gen.referenceImage).not.toContain('reference.jpg');
+    const refQa = pipeline.events().filter((e) => e.action === 'qa' && e.file === override);
+    expect(refQa).toHaveLength(1);
+    expect(refQa[0]!.qa!.pass).toBe(true);
+  });
+
+  it('refuses a reference override that fails technical image QA — before any paid call', async () => {
+    const ledger = new CostLedger(ledgerFile);
+    const pipeline = makePipeline({ ledger, budget: 5 });
+    const images = await pipeline.generateImageCandidates('p', 1);
+    const canonical = pipeline.selectCanonical(images[0]!);
+    const spentAfterImage = ledger.cumulativeUsd; // 0.025, image only
+
+    const junk = join(root, 'nova', 'candidates', 'images', 'not-an-image.jpg');
+    writeFileSync(junk, 'this is not a decodable image');
+
+    await expect(
+      pipeline.generateVideoCandidates('motion', 1, { referenceImagePath: junk }),
+    ).rejects.toThrow(/reference image failed technical image QA/);
+
+    // No paid call happened: no new spend, no candidate video, canonical intact.
+    expect(ledger.cumulativeUsd).toBeCloseTo(spentAfterImage, 6);
+    expect(readdirSync(join(root, 'nova', 'candidates', 'videos'))).toHaveLength(0);
+    expect(existsSync(canonical)).toBe(true);
+    expect(pipeline.events().at(-1)!.action).toBe('qa'); // the failing gate is recorded
+  });
+
+  it('refuses a reference override whose file is missing', async () => {
+    const pipeline = makePipeline({ budget: 5 });
+    await expect(
+      pipeline.generateVideoCandidates('motion', 1, { referenceImagePath: join(root, 'nope.jpg') }),
+    ).rejects.toThrow(/reference image not found/);
+  });
+
+  it('a reference override still honors the budget — refused before the paid call', async () => {
+    const ledger = new CostLedger(ledgerFile);
+    const pipeline = makePipeline({ ledger, budget: 0.01 }); // a 5s clip costs 0.10
+    const override = join(root, 'nova', 'candidates', 'images', 'ref.jpg');
+    copyFileSync(EMBER_JPG, override);
+    await expect(
+      pipeline.generateVideoCandidates('motion', 1, { referenceImagePath: override, durationSeconds: 5 }),
+    ).rejects.toThrow(PipelineRefusal);
+    expect(ledger.cumulativeUsd).toBe(0);
+    expect(readdirSync(join(root, 'nova', 'candidates', 'videos'))).toHaveLength(0);
+    expect(pipeline.events().at(-1)!.action).toBe('generation_refused');
   });
 });
 

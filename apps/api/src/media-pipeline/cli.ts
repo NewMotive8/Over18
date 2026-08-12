@@ -19,6 +19,11 @@ import type { MediaProviders } from './types.js';
  *   gen-videos     --character <slug> --prompt "<motion text>" --count N
  *                  [--duration 5] [--resolution 1080p] [--provider mock|atlas] [--budget USD]
  *                  [--video-model <id>] [--video-cost <usdPerSecond>]
+ *                  [--reference <imagePath>]  I2V reference override; uses this
+ *                                             still instead of the canonical
+ *                                             WITHOUT promoting it (canonical
+ *                                             untouched). Held to the same
+ *                                             technical image-QA as select.
  *   qa             --file <path> [--poster <path>]
  *   reject         --character <slug> --file <path> --reason "<why>"
  *   approve        --character <slug> --video <candidatePath> --approved-by "<name>"
@@ -124,9 +129,11 @@ try {
       break;
     }
     case 'gen-videos': {
+      const referenceOverride = arg('reference');
       const files = await pipeline().generateVideoCandidates(required('prompt'), Number(arg('count') ?? 1), {
         durationSeconds: Number(arg('duration') ?? 5),
         resolution: (arg('resolution') as '480p' | '720p' | '1080p') ?? '1080p',
+        ...(referenceOverride ? { referenceImagePath: referenceOverride } : {}),
       });
       files.forEach((f) => console.log(`candidate: ${f}`));
       break;
