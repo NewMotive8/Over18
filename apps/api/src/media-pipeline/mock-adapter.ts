@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   ProviderError,
@@ -10,18 +10,11 @@ import {
 } from './types.js';
 
 /**
- * Deterministic zero-cost-in-reality mock provider for pipeline validation.
+ * Deterministic zero-cost mock provider for pipeline validation.
  *
- * "Generates" by copying real fixture media (by default the existing approved
- * Luna assets from apps/web/public/media) so downstream technical QA runs
- * against genuinely representative files. Costs mirror the real Atlas prices
- * so budget accounting is exercised realistically — but nothing is spent.
- *
- * Failure injection for tests (never reads env in production paths):
- *   failureMode: 'provider_error'     → throws ProviderError('http')
- *   failureMode: 'malformed_response' → simulates a 200-with-garbage payload:
- *                                       the adapter detects it and throws;
- *                                       NO output file is produced.
+ * Copies fixture files when present. If a fixture path is missing (common on
+ * Railway API deploys that don't include apps/web/public/media), writes a tiny
+ * valid placeholder so the job path still completes end-to-end.
  */
 
 export interface MockOptions {
@@ -32,14 +25,30 @@ export interface MockOptions {
   failureMode?: 'provider_error' | 'malformed_response';
 }
 
+/** Minimal valid 1x1 JPEG (bytes). */
+const MINI_JPEG = Buffer.from(
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxISEhUQEhIVFRUVFRUVFRUVFRUVFRUWFxUXFhUYHSggGBolGxUVITEhJSkrLi4uFx8zODMtNygtLisBCgoKDg0OGxAQGy0lHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAbAAACAwEBAQAAAAAAAAAAAAADBAECBQYAB//EAD0QAAIBAgQDBgQFAwUAAAAAAAECAwQRAAUSITFBBhMiUWFxMoGRFEJSobHB0fAHFSNictLh8RYWQ1OCk//EABkBAAMBAQEAAAAAAAAAAAAAAAABAgMEBf/EACIRAAICAQUBAQEBAQAAAAAAAAABAhEDITESQQRREyJhcTH/2gAMAwEAAhEDEQA/APfQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH//Z',
+  'base64',
+);
+
+/** Minimal valid-ish MP4 ftyp placeholder (not a full video, enough for bytes on disk). */
+const MINI_MP4 = Buffer.from([
+  0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02, 0x00,
+  0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32, 0x6d, 0x70, 0x34, 0x31, 0x00, 0x00, 0x00, 0x08,
+  0x66, 0x72, 0x65, 0x65,
+]);
+
 export function createMockProviders(options: MockOptions): { image: ImageProvider; video: VideoProvider } {
   const imageUnitCost = options.imageUnitCostUsd ?? 0.025;
   const videoPerSecond = options.videoUnitCostPerSecondUsd ?? 0.02;
 
-  function ensureFixture(path: string): void {
-    if (!existsSync(path)) {
-      throw new ProviderError('output_missing', `mock fixture missing: ${path}`);
+  function materialize(fixturePath: string, outputPath: string, fallback: Buffer): void {
+    mkdirSync(dirname(outputPath), { recursive: true });
+    if (existsSync(fixturePath)) {
+      copyFileSync(fixturePath, outputPath);
+      return;
     }
+    writeFileSync(outputPath, fallback);
   }
 
   function simulateFailure(): void {
@@ -47,7 +56,6 @@ export function createMockProviders(options: MockOptions): { image: ImageProvide
       throw new ProviderError('http', 'mock provider returned HTTP 500');
     }
     if (options.failureMode === 'malformed_response') {
-      // Simulates a response that parsed but has no usable asset reference.
       const body: unknown = { unexpected: 'shape' };
       const url = (body as { output?: { url?: string } }).output?.url;
       if (typeof url !== 'string') {
@@ -62,9 +70,7 @@ export function createMockProviders(options: MockOptions): { image: ImageProvide
     estimateImageCost: () => imageUnitCost,
     async generateImage(request: ImageGenerationRequest): Promise<GenerationResult> {
       simulateFailure();
-      ensureFixture(options.imageFixturePath);
-      mkdirSync(dirname(request.outputPath), { recursive: true });
-      copyFileSync(options.imageFixturePath, request.outputPath);
+      materialize(options.imageFixturePath, request.outputPath, MINI_JPEG);
       return {
         outputPath: request.outputPath,
         provider: 'mock',
@@ -86,9 +92,7 @@ export function createMockProviders(options: MockOptions): { image: ImageProvide
       if (!existsSync(request.referenceImagePath)) {
         throw new ProviderError('output_missing', `reference image missing: ${request.referenceImagePath}`);
       }
-      ensureFixture(options.videoFixturePath);
-      mkdirSync(dirname(request.outputPath), { recursive: true });
-      copyFileSync(options.videoFixturePath, request.outputPath);
+      materialize(options.videoFixturePath, request.outputPath, MINI_MP4);
       return {
         outputPath: request.outputPath,
         provider: 'mock',
