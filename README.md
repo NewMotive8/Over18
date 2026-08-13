@@ -178,6 +178,32 @@ Swipey owns each character's **visual identity**: a versioned **Visual DNA** rec
 
 US-16A is the **data/architecture foundation only**: no image generation, provider/model, `ImageProvider` seam, object storage, uploads, endpoints, or UI. The `content_rating` column (`sfw` default) is a **structural 18+ readiness plug-point** — no adult generation, policy, moderation, or access control is implemented. Generation, the provider seam (to mirror `LlmClient`), storage, benchmarking, and identity QA are later US-16 stories; the model/provider is chosen by benchmark, not hardcoded.
 
+## Media generation jobs (US-36)
+
+An end-to-end media generation job that drives the **Atlas Cloud** provider from our own API and persists the result on a character — without using the Atlas website. The provider stays behind the existing `media-pipeline/` adapter seam (`ImageProvider` / `VideoProvider`); the app never learns the vendor. `selectMediaProviders(env)` picks the implementation the same way the LLM seam does: the **real Atlas adapter** only when `MEDIA_LIVE_CONFIRM=true` *and* `ATLASCLOUD_API_KEY` is set, otherwise a **zero-spend mock** that “generates” by copying a fixture — so a misconfigured deploy never makes a paid call by accident.
+
+A job resolves the character's active visual identity, runs the provider, saves the bytes under `MEDIA_STORAGE_DIR/<characterId>/generated/<jobId>.<ext>`, and writes a `character_visual_assets` row: `kind='generated'`, `status='generated'` (or `under_review`), `is_canonical=false` (never auto-promoted), `content_rating` carried through from the request as data, and `provenance` recording the prompt/model/provider/cost/timestamps. Cost is authorized before the call and recorded after (failures still cost) via the shared `cost-ledger`. A failed Atlas call is caught, its reason returned, and the process never crashes — exactly one attempt per request, so retry is a new request (no unbounded retry loop).
+
+Two internal endpoints trigger the jobs. They are **disabled until `INTERNAL_MEDIA_TOKEN` is set** and require it as an `x-internal-token` header (these endpoints can spend real money, so they are not exposed to ordinary users). Prompts are passed through the request body — no content is baked into the server.
+
+```bash
+# Generate an image for a character (prompt from the request, not the code)
+curl -X POST http://localhost:3001/internal/media/generate-image \
+  -H "x-internal-token: $INTERNAL_MEDIA_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"characterId":"<uuid>","prompt":"a calm studio portrait, neutral lighting","contentRating":"sfw"}'
+# → 201 { "jobId", "asset": { "id", "status":"generated", "contentRating", "isCanonical":false, "storageKey", ... }, "cost": {...} }
+
+# Generate a short clip from a generated image asset (image-to-video, ~5–8s)
+curl -X POST http://localhost:3001/internal/media/generate-video \
+  -H "x-internal-token: $INTERNAL_MEDIA_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"characterId":"<uuid>","sourceImageAssetId":"<image-asset-uuid>","motionPrompt":"slow gentle head turn","durationSeconds":5}'
+# → 201 { "jobId", "asset": { "mediaType":"video", "contentRating", ... }, "cost": {...} }
+```
+
+Failures return a structured reason (`4xx` for bad input/precondition — e.g. `source_not_found`, `no_active_identity`, `budget_refused`; `502` for provider errors) with the `jobId` for correlation. See the `# Media generation (US-36)` block in `apps/api/.env.example` for all variables. Going live is configuration only: set `ATLASCLOUD_API_KEY` + `MEDIA_LIVE_CONFIRM=true` (no code change). Out of scope for this PoC: the Generation Studio UI, a prompt-library product, other providers, public exposure of explicit assets, and self-hosted GPU infra.
+
 ## Out of scope so far
 
 Response streaming, payments/credits/subscriptions, image/voice/video generation, swipe algorithm, recommendations, moderation, and admin tooling are intentionally **not** implemented yet. LLM replies (US-08) use a provider-agnostic OpenAI-compatible adapter configured entirely via `LLM_*` env vars — no vendor, model, or GPU host is hardcoded. Without configuration, development falls back to deterministic replies, while production fails message sends with a clear `503 ai_not_configured` rather than faking AI. Within auth, US-02 deliberately excludes social login, email verification, password reset, MFA, OAuth, account deletion, and role systems.

@@ -9,8 +9,10 @@ import authRoutes from './routes/auth.js';
 import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
+import internalMediaRoutes from './routes/internal-media.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
+import type { MediaProviders } from './media-pipeline/types.js';
 
 export interface BuildAppOptions {
   /** Reply provider for chat messages. Defaults to the deterministic fallback. */
@@ -20,6 +22,12 @@ export interface BuildAppOptions {
    * unchanged unless one is injected (server.ts selects from the env).
    */
   memoryExtractor?: MemoryExtractor;
+  /**
+   * US-36 media providers (image + video). When provided, the internal media
+   * endpoints are registered. Tests inject the mock adapter; server.ts injects
+   * the env-selected providers.
+   */
+  mediaProviders?: MediaProviders;
 }
 
 /**
@@ -66,6 +74,18 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
     memoryMaxStored: env.memory.maxStored,
   });
+
+  // US-36 internal media endpoints — registered only when providers are
+  // injected (server.ts wires the env-selected adapter; tests inject the mock).
+  if (options.mediaProviders) {
+    await app.register(internalMediaRoutes, {
+      db,
+      providers: options.mediaProviders,
+      storage: { storageDir: env.media.storageDir, publicBaseUrl: env.media.publicBaseUrl },
+      ledgerPath: env.media.ledgerPath,
+      internalToken: env.media.internalToken,
+    });
+  }
 
   return app;
 }

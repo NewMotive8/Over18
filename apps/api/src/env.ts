@@ -30,6 +30,32 @@ export interface MemoryEnv {
   maxStored: number;
 }
 
+/**
+ * Media generation config (US-36 PoC). Always present (defaults apply). Mirrors
+ * the LLM seam: the provider vendor lives behind an adapter and is selected by
+ * configuration, never hardcoded. `atlas.live` is the explicit paid-call gate —
+ * true ONLY when an Atlas key is present AND MEDIA_LIVE_CONFIRM=true, so a
+ * misconfigured deploy defaults to the zero-spend mock provider rather than
+ * silently hitting a paid API. Model ids and the base URL are configuration.
+ */
+export interface MediaEnv {
+  /** Directory generated media bytes are written to. */
+  storageDir: string;
+  /** Optional URL prefix; when set, storage_key = `${publicBaseUrl}/<relpath>`. */
+  publicBaseUrl: string | null;
+  /** Shared secret required on /internal/media/* requests. Null = unconfigured. */
+  internalToken: string | null;
+  /** Cost ledger file path (JSON, cumulative spend across runs). */
+  ledgerPath: string;
+  atlas: {
+    baseUrl: string;
+    imageModel: string;
+    videoModel: string;
+    /** True only when a key is present AND live calls are explicitly confirmed. */
+    live: boolean;
+  };
+}
+
 export interface Env {
   databaseUrl: string;
   port: number;
@@ -44,6 +70,8 @@ export interface Env {
   llm: LlmEnv | null;
   /** US-12 memory bounds (defaults apply when env vars are unset). */
   memory: MemoryEnv;
+  /** US-36 media generation (defaults apply when env vars are unset). */
+  media: MediaEnv;
 }
 
 export function loadEnv(): Env {
@@ -108,6 +136,19 @@ export function loadEnv(): Env {
       maxInjected: Number(process.env.MEMORY_MAX_INJECTED ?? 10),
       maxInjectedChars: Number(process.env.MEMORY_MAX_INJECTED_CHARS ?? 2_000),
       maxStored: Number(process.env.MEMORY_MAX_STORED ?? 100),
+    },
+    media: {
+      storageDir: process.env.MEDIA_STORAGE_DIR ?? 'var/media',
+      publicBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL || null,
+      internalToken: process.env.INTERNAL_MEDIA_TOKEN || null,
+      ledgerPath: process.env.MEDIA_LEDGER_PATH ?? 'var/media/cost-ledger.json',
+      atlas: {
+        baseUrl: process.env.ATLAS_BASE_URL ?? 'https://api.atlascloud.ai/api/v1',
+        imageModel: process.env.ATLAS_IMAGE_MODEL ?? 'black-forest-labs/flux-kontext-dev',
+        videoModel: process.env.ATLAS_VIDEO_MODEL ?? 'atlascloud/wan-2.7-spicy/image-to-video',
+        // Paid calls require BOTH a key and an explicit confirmation flag.
+        live: process.env.MEDIA_LIVE_CONFIRM === 'true' && Boolean(process.env.ATLASCLOUD_API_KEY),
+      },
     },
   };
 }
