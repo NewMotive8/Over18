@@ -5,7 +5,8 @@ import {
   createRunPodImageOnlyProviders,
   createUnavailableVideoProvider,
 } from '../media-pipeline/runpod-adapter.js';
-import type { MediaProviders } from '../media-pipeline/types.js';
+import { createRunPodPublicVideoProvider } from '../media-pipeline/runpod-video-public.js';
+import type { MediaProviders, VideoProvider } from '../media-pipeline/types.js';
 
 export function selectMediaProviders(env: Env): MediaProviders {
   const mock = () =>
@@ -33,6 +34,22 @@ export function selectMediaProviders(env: Env): MediaProviders {
       })
     : null;
 
+  // Public Wan I2V (default wan-2-1-i2v-720). Wan 2.7 Spicy is not on RunPod.
+  const videoEndpoint =
+    (process.env.RUNPOD_VIDEO_ENDPOINT_ID ?? '').trim() || 'wan-2-1-i2v-720';
+  const runpodVideoEnabled =
+    envFlagTrue('MEDIA_RUNPOD_CONFIRM') &&
+    Boolean((process.env.RUNPOD_API_KEY ?? '').trim()) &&
+    envFlagTrue('MEDIA_RUNPOD_VIDEO');
+
+  let runpodVideo: VideoProvider | null = null;
+  if (runpodVideoEnabled) {
+    runpodVideo = createRunPodPublicVideoProvider({
+      endpointId: videoEndpoint,
+      contractConfirmed: true,
+    });
+  }
+
   if (runpodImages) {
     const endpointId = env.media.runpod.endpointId;
     if (!endpointId) {
@@ -47,11 +64,11 @@ export function selectMediaProviders(env: Env): MediaProviders {
       }
     }
     const video =
+      runpodVideo ??
       atlas?.video ??
       createUnavailableVideoProvider(
-        'Video requires Atlas live (MEDIA_LIVE_CONFIRM=true + ATLASCLOUD_API_KEY). RunPod is image-only in US-87.',
+        'Video requires MEDIA_RUNPOD_VIDEO=true (RunPod public Wan I2V) or Atlas live.',
       );
-    // Official host is api.runpod.ai. Some UI snippets show api1 — set RUNPOD_BASE_URL if needed.
     const baseUrl = (process.env.RUNPOD_BASE_URL ?? 'https://api.runpod.ai/v2').replace(/\/+$/, '');
     return createRunPodImageOnlyProviders(
       {
@@ -65,6 +82,15 @@ export function selectMediaProviders(env: Env): MediaProviders {
     );
   }
 
-  if (atlas) return atlas;
+  if (atlas) {
+    if (runpodVideo) {
+      return { image: atlas.image, video: runpodVideo };
+    }
+    return atlas;
+  }
   return mock();
+}
+
+function envFlagTrue(name: string): boolean {
+  return (process.env[name] ?? '').trim().toLowerCase() === 'true';
 }
