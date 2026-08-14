@@ -12,7 +12,7 @@ import {
 
 /**
  * RunPod Serverless ComfyUI adapter (US-87).
- * Default workflow matches ComfyUI 5.8.7 endpoint Quick Start (Flux + FluxGuidance).
+ * Submits via /run, polls /status until COMPLETED (handles cold start).
  * SECRETS: RUNPOD_API_KEY at call time only; never logged.
  */
 
@@ -33,11 +33,11 @@ const DEFAULTS = {
   imageUnitCostUsd: 0.05,
   promptNodeId: '6',
   timeoutMs: 600_000,
+  pollIntervalMs: 3_000,
 };
 
 const ALT_BASE = 'https://api1.runpod.ai/v2';
 
-/** Matches RunPod ComfyUI Quick Start graph (KSampler positive = FluxGuidance 35). */
 export const DEFAULT_COMFY_WORKFLOW: Record<string, unknown> = {
   '6': {
     inputs: { text: 'PROMPT_PLACEHOLDER', clip: ['30', 1] },
@@ -168,6 +168,24 @@ function extractBase64Images(payload: unknown): string[] {
   return found;
 }
 
+function jobStatus(payload: unknown): string {
+  if (payload && typeof payload === 'object' && typeof (payload as { status?: unknown }).status === 'string') {
+    return String((payload as { status: string }).status).toUpperCase();
+  }
+  return '';
+}
+
+function jobIdOf(payload: unknown): string | null {
+  if (payload && typeof payload === 'object' && typeof (payload as { id?: unknown }).id === 'string') {
+    return (payload as { id: string }).id;
+  }
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 function candidateBases(preferred: string): string[] {
   const p = preferred.replace(/\/+$/, '');
   const alt = p.includes('api1.') ? DEFAULTS.baseUrl : ALT_BASE;
@@ -214,22 +232,21 @@ export function createRunPodImageProvider(options: RunPodImageOptions): ImagePro
         },
       });
 
+      const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey()}` };
       const bases = candidateBases(cfg.baseUrl);
       let lastNet = '';
       let res: Response | null = null;
       let usedBase = bases[0]!;
 
+      // Prefer /run (async) so we can poll through cold starts; fall back hosts on 404.
       for (const base of bases) {
-        const url = `${base}/${options.endpointId}/runsync`;
+        const url = `${base}/${options.endpointId}/run`;
         try {
           res = await fetchImpl(url, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${apiKey()}`,
-            },
+            headers: auth,
             body,
-            signal: AbortSignal.timeout(cfg.timeoutMs),
+            signal: AbortSignal.timeout(60_000),
           });
           usedBase = base;
           if (res.status === 404 && bases.length > 1 && base === bases[0]) {
@@ -271,16 +288,55 @@ export function createRunPodImageProvider(options: RunPodImageOptions): ImagePro
         throw new ProviderError('malformed_response', 'RunPod returned non-JSON');
       }
 
-      const status =
-        typeof (payload as { status?: unknown })?.status === 'string'
-          ? String((payload as { status: string }).status).toUpperCase()
-          : '';
+      let status = jobStatus(payload);
+      const id = jobIdOf(payload);
+
+      // Poll until done (cold start + Flux can take minutes).
+      if (
+        id &&
+        (status === 'IN_QUEUE' ||
+          status === 'IN_PROGRESS' ||
+          status === '' ||
+          status === 'COMPLETED' ||
+          status === 'SUCCESS')
+      ) {
+        const deadline = Date.now() + cfg.timeoutMs;
+        while (status === 'IN_QUEUE' || status === 'IN_PROGRESS' || status === '') {
+          if (Date.now() > deadline) {
+            throw new ProviderError('http', `RunPod job timed out after ${cfg.timeoutMs}ms (${status || 'unknown'})`);
+          }
+          await sleep(DEFAULTS.pollIntervalMs);
+          const stUrl = `${usedBase}/${options.endpointId}/status/${id}`;
+          let stRes: Response;
+          try {
+            stRes = await fetchImpl(stUrl, {
+              method: 'GET',
+              headers: { Authorization: `Bearer ${apiKey()}` },
+              signal: AbortSignal.timeout(30_000),
+            });
+          } catch (err) {
+            lastNet = err instanceof Error ? err.message : String(err);
+            continue;
+          }
+          if (!stRes.ok) continue;
+          try {
+            payload = await stRes.json();
+            status = jobStatus(payload);
+          } catch {
+            continue;
+          }
+          if (status === 'COMPLETED' || status === 'SUCCESS') break;
+          if (status === 'FAILED' || status === 'CANCELLED' || status === 'TIMED_OUT') {
+            throw new ProviderError('http', `RunPod job ${status}`);
+          }
+        }
+      } else if (status && status !== 'COMPLETED' && status !== 'SUCCESS') {
+        throw new ProviderError('http', `RunPod job did not complete: ${status}`);
+      }
+
+      status = jobStatus(payload);
       if (status && status !== 'COMPLETED' && status !== 'SUCCESS') {
-        const errMsg =
-          typeof (payload as { error?: unknown }).error === 'string'
-            ? (payload as { error: string }).error
-            : status;
-        throw new ProviderError('http', `RunPod job did not complete: ${errMsg.slice(0, 300)}`);
+        throw new ProviderError('http', `RunPod job did not complete: ${status}`);
       }
 
       const b64s = extractBase64Images(payload);
