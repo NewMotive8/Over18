@@ -8,6 +8,10 @@ import {
 import { createRunPodPublicVideoProvider } from '../media-pipeline/runpod-video-public.js';
 import type { MediaProviders, VideoProvider } from '../media-pipeline/types.js';
 
+function envFlagTrue(name: string): boolean {
+  return (process.env[name] ?? '').trim().toLowerCase() === 'true';
+}
+
 export function selectMediaProviders(env: Env): MediaProviders {
   const mock = () =>
     createMockProviders({
@@ -34,16 +38,15 @@ export function selectMediaProviders(env: Env): MediaProviders {
       })
     : null;
 
-  // Public Wan I2V (default wan-2-1-i2v-720). Wan 2.7 Spicy is not on RunPod.
+  // Public Wan I2V. Wan 2.7 Spicy is not on RunPod — use wan-2-1-i2v-720 or wan-2-6-i2v.
   const videoEndpoint =
     (process.env.RUNPOD_VIDEO_ENDPOINT_ID ?? '').trim() || 'wan-2-1-i2v-720';
-  const runpodVideoEnabled =
-    envFlagTrue('MEDIA_RUNPOD_CONFIRM') &&
-    Boolean((process.env.RUNPOD_API_KEY ?? '').trim()) &&
-    envFlagTrue('MEDIA_RUNPOD_VIDEO');
+  const wantRunpodVideo =
+    envFlagTrue('MEDIA_RUNPOD_VIDEO') ||
+    (envFlagTrue('MEDIA_RUNPOD_CONFIRM') && Boolean((process.env.RUNPOD_API_KEY ?? '').trim()));
 
   let runpodVideo: VideoProvider | null = null;
-  if (runpodVideoEnabled) {
+  if (wantRunpodVideo && envFlagTrue('MEDIA_RUNPOD_CONFIRM') && (process.env.RUNPOD_API_KEY ?? '').trim()) {
     runpodVideo = createRunPodPublicVideoProvider({
       endpointId: videoEndpoint,
       contractConfirmed: true,
@@ -63,12 +66,17 @@ export function selectMediaProviders(env: Env): MediaProviders {
         throw new Error('RUNPOD_WORKFLOW_JSON is set but is not valid JSON');
       }
     }
-    const video =
+    // Prefer RunPod public I2V; do NOT fall back to broken Atlas video when user asked for RunPod.
+    const video: VideoProvider =
       runpodVideo ??
-      atlas?.video ??
-      createUnavailableVideoProvider(
-        'Video requires MEDIA_RUNPOD_VIDEO=true (RunPod public Wan I2V) or Atlas live.',
-      );
+      (envFlagTrue('MEDIA_RUNPOD_VIDEO')
+        ? createUnavailableVideoProvider(
+            'MEDIA_RUNPOD_VIDEO=true but RUNPOD_API_KEY / MEDIA_RUNPOD_CONFIRM missing — refusing Atlas video fallback.',
+          )
+        : (atlas?.video ??
+          createUnavailableVideoProvider(
+            'Video requires MEDIA_RUNPOD_VIDEO=true + RUNPOD_API_KEY or Atlas live.',
+          )));
     const baseUrl = (process.env.RUNPOD_BASE_URL ?? 'https://api.runpod.ai/v2').replace(/\/+$/, '');
     return createRunPodImageOnlyProviders(
       {
@@ -89,8 +97,4 @@ export function selectMediaProviders(env: Env): MediaProviders {
     return atlas;
   }
   return mock();
-}
-
-function envFlagTrue(name: string): boolean {
-  return (process.env[name] ?? '').trim().toLowerCase() === 'true';
 }
