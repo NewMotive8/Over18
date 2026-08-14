@@ -22,7 +22,6 @@ app.log.info(
       : 'AI replies: no LLM configured — using deterministic fallback provider (development only)',
 );
 
-// Media generation mode (never logs keys).
 const mediaMode =
   env.media.runpod.live && env.media.runpod.preferForImages
     ? 'Media generation: RunPod ComfyUI LIVE for images' +
@@ -31,6 +30,10 @@ const mediaMode =
       ? 'Media generation: Atlas LIVE (paid calls enabled via MEDIA_LIVE_CONFIRM)'
       : 'Media generation: mock provider (set MEDIA_RUNPOD_CONFIRM or MEDIA_LIVE_CONFIRM to go live)';
 app.log.info(mediaMode);
+// Booleans only — never keys or endpoint ids.
+app.log.info(
+  `Media flags: atlas.live=${env.media.atlas.live} runpod.live=${env.media.runpod.live} runpod.preferForImages=${env.media.runpod.preferForImages} runpod.endpointSet=${Boolean(env.media.runpod.endpointId)}`,
+);
 
 app.log.info(
   env.media.internalToken
