@@ -12,12 +12,8 @@ import {
 
 /**
  * RunPod Serverless ComfyUI adapter (US-87).
- *
- * Calls POST https://api.runpod.ai/v2/{endpointId}/runsync with a ComfyUI
- * workflow JSON. Optional reference images are sent as base64 under input.images
- * (worker-comfyui convention). Output images are taken from nested base64 fields.
- *
- * SECRETS: RUNPOD_API_KEY is read at call time only; never logged.
+ * Tries baseUrl, then the alternate official host if the first fails at network layer.
+ * SECRETS: RUNPOD_API_KEY at call time only; never logged.
  */
 
 export interface RunPodImageOptions {
@@ -39,7 +35,8 @@ const DEFAULTS = {
   timeoutMs: 600_000,
 };
 
-/** Minimal txt2img-style workflow; replace via RUNPOD_WORKFLOW_JSON. Node "6" = prompt. */
+const ALT_BASE = 'https://api1.runpod.ai/v2';
+
 export const DEFAULT_COMFY_WORKFLOW: Record<string, unknown> = {
   '6': {
     inputs: { text: 'PROMPT_PLACEHOLDER', clip: ['30', 1] },
@@ -95,10 +92,8 @@ export const DEFAULT_COMFY_WORKFLOW: Record<string, unknown> = {
 };
 
 function apiKey(): string {
-  const key = process.env.RUNPOD_API_KEY;
-  if (!key) {
-    throw new ProviderError('auth', 'RUNPOD_API_KEY is not set.');
-  }
+  const key = (process.env.RUNPOD_API_KEY ?? '').trim();
+  if (!key) throw new ProviderError('auth', 'RUNPOD_API_KEY is not set.');
   return key;
 }
 
@@ -172,6 +167,12 @@ function extractBase64Images(payload: unknown): string[] {
   return found;
 }
 
+function candidateBases(preferred: string): string[] {
+  const p = preferred.replace(/\/+$/, '');
+  const alt = p.includes('api1.') ? DEFAULTS.baseUrl : ALT_BASE;
+  return p === alt ? [p] : [p, alt];
+}
+
 export function createRunPodImageProvider(options: RunPodImageOptions): ImageProvider {
   const cfg = {
     baseUrl: options.baseUrl ?? DEFAULTS.baseUrl,
@@ -190,7 +191,6 @@ export function createRunPodImageProvider(options: RunPodImageOptions): ImagePro
       requireConfirmed(options.contractConfirmed);
 
       const workflow = patchPrompt(workflowTemplate, cfg.promptNodeId, request.prompt);
-
       const images: Array<{ name: string; image: string }> = [];
       if (request.referenceImagePath) {
         if (!existsSync(request.referenceImagePath)) {
@@ -200,39 +200,68 @@ export function createRunPodImageProvider(options: RunPodImageOptions): ImagePro
           );
         }
         const bytes = readFileSync(request.referenceImagePath);
-        const b64 = bytes.toString('base64');
         images.push({
           name: 'reference.png',
-          image: `data:image/png;base64,${b64}`,
+          image: `data:image/png;base64,${bytes.toString('base64')}`,
         });
       }
 
-      const body = {
+      const body = JSON.stringify({
         input: {
           workflow,
           ...(images.length ? { images } : {}),
         },
-      };
+      });
 
-      const url = `${cfg.baseUrl.replace(/\/+$/, '')}/${options.endpointId}/runsync`;
-      let res: Response;
-      try {
-        res = await fetchImpl(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey()}`,
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(cfg.timeoutMs),
-        });
-      } catch (err) {
-        if (err instanceof ProviderError) throw err;
-        throw new ProviderError('network', 'could not reach RunPod serverless endpoint');
+      const bases = candidateBases(cfg.baseUrl);
+      let lastNet = '';
+      let res: Response | null = null;
+      let usedBase = bases[0]!;
+
+      for (const base of bases) {
+        const url = `${base}/${options.endpointId}/runsync`;
+        try {
+          res = await fetchImpl(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey()}`,
+            },
+            body,
+            signal: AbortSignal.timeout(cfg.timeoutMs),
+          });
+          usedBase = base;
+          // 404 on first host → try alternate before giving up
+          if (res.status === 404 && bases.length > 1 && base === bases[0]) {
+            lastNet = `HTTP 404 from ${base}`;
+            continue;
+          }
+          break;
+        } catch (err) {
+          if (err instanceof ProviderError) throw err;
+          lastNet = err instanceof Error ? err.message : String(err);
+          res = null;
+        }
+      }
+
+      if (!res) {
+        throw new ProviderError(
+          'network',
+          `could not reach RunPod (tried ${bases.join(', ')}): ${lastNet.slice(0, 180)}`,
+        );
       }
 
       if (!res.ok) {
-        throw new ProviderError('http', `RunPod returned HTTP ${res.status}`);
+        let detail = '';
+        try {
+          detail = (await res.text()).slice(0, 200);
+        } catch {
+          /* ignore */
+        }
+        throw new ProviderError(
+          'http',
+          `RunPod HTTP ${res.status} via ${usedBase}${detail ? `: ${detail}` : ''}`,
+        );
       }
 
       let payload: unknown;
@@ -268,9 +297,6 @@ export function createRunPodImageProvider(options: RunPodImageOptions): ImagePro
       }
       mkdirSync(dirname(request.outputPath), { recursive: true });
       writeFileSync(request.outputPath, outBytes);
-      if (!existsSync(request.outputPath)) {
-        throw new ProviderError('output_missing', 'failed to write RunPod output image');
-      }
 
       return {
         outputPath: request.outputPath,
@@ -285,7 +311,6 @@ export function createRunPodImageProvider(options: RunPodImageOptions): ImagePro
   };
 }
 
-/** Image from RunPod; video still provided by another adapter (e.g. Atlas). */
 export function createRunPodImageOnlyProviders(
   imageOpts: RunPodImageOptions,
   video: VideoProvider,
@@ -296,7 +321,6 @@ export function createRunPodImageOnlyProviders(
   };
 }
 
-/** Fails clearly if video is requested without Atlas live. */
 export function createUnavailableVideoProvider(reason: string): VideoProvider {
   return {
     name: 'unavailable',
