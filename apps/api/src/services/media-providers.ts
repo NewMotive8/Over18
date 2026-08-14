@@ -1,41 +1,74 @@
 import type { Env } from '../env.js';
 import { createAtlasProviders } from '../media-pipeline/atlas-adapter.js';
 import { createMockProviders } from '../media-pipeline/mock-adapter.js';
+import {
+  createRunPodImageOnlyProviders,
+  createUnavailableVideoProvider,
+} from '../media-pipeline/runpod-adapter.js';
 import type { MediaProviders } from '../media-pipeline/types.js';
 
 /**
- * Media provider selection (US-36) — the app-side mirror of the LLM reply-
- * provider seam. The vendor (Atlas) stays entirely behind the adapter; this
- * function only decides WHICH implementation the media-generation service runs
- * against, based on configuration:
+ * Media provider selection (US-36 + US-87).
  *
- *   env.media.atlas.live === true  → the real Atlas adapter, with the paid-call
- *                                    contract gate confirmed (live === true is
- *                                    reached only when a key is present AND
- *                                    MEDIA_LIVE_CONFIRM=true).
- *   otherwise                      → the deterministic, zero-spend mock adapter,
- *                                    which "generates" by copying local fixture
- *                                    media so the whole store-to-DB path is
- *                                    exercised without touching a paid API.
- *
- * Tests inject their own providers directly into buildApp/the service and never
- * go through this function, so the mock fixtures here only matter for a local
- * dev server run without live credentials.
+ * - Mock when nothing live.
+ * - RunPod live + preferForImages → ComfyUI images; Atlas video if Atlas live.
+ * - Else Atlas live → Atlas image+video.
  */
 export function selectMediaProviders(env: Env): MediaProviders {
-  if (env.media.atlas.live) {
-    return createAtlasProviders({
-      baseUrl: env.media.atlas.baseUrl,
-      imageModel: env.media.atlas.imageModel,
-      videoModel: env.media.atlas.videoModel,
-      // Reaching this branch already required MEDIA_LIVE_CONFIRM=true.
-      contractConfirmed: true,
+  const mock = () =>
+    createMockProviders({
+      imageFixturePath:
+        process.env.MEDIA_MOCK_IMAGE_FIXTURE ?? 'apps/web/public/media/luna/profile-04.jpg',
+      videoFixturePath:
+        process.env.MEDIA_MOCK_VIDEO_FIXTURE ?? 'apps/web/public/media/luna/profile-04.mp4',
     });
+
+  const atlasLive = env.media.atlas.live;
+  const runpodLive = env.media.runpod.live;
+  const runpodImages = runpodLive && env.media.runpod.preferForImages;
+
+  if (!atlasLive && !runpodLive) {
+    return mock();
   }
-  return createMockProviders({
-    imageFixturePath:
-      process.env.MEDIA_MOCK_IMAGE_FIXTURE ?? 'apps/web/public/media/luna/profile-04.jpg',
-    videoFixturePath:
-      process.env.MEDIA_MOCK_VIDEO_FIXTURE ?? 'apps/web/public/media/luna/profile-04.mp4',
-  });
+
+  const atlas = atlasLive
+    ? createAtlasProviders({
+        baseUrl: env.media.atlas.baseUrl,
+        imageModel: env.media.atlas.imageModel,
+        videoModel: env.media.atlas.videoModel,
+        contractConfirmed: true,
+      })
+    : null;
+
+  if (runpodImages) {
+    const endpointId = env.media.runpod.endpointId;
+    if (!endpointId) {
+      throw new Error('RUNPOD_ENDPOINT_ID missing despite runpod.live');
+    }
+    let workflow: Record<string, unknown> | undefined;
+    if (process.env.RUNPOD_WORKFLOW_JSON) {
+      try {
+        workflow = JSON.parse(process.env.RUNPOD_WORKFLOW_JSON) as Record<string, unknown>;
+      } catch {
+        throw new Error('RUNPOD_WORKFLOW_JSON is set but is not valid JSON');
+      }
+    }
+    const video =
+      atlas?.video ??
+      createUnavailableVideoProvider(
+        'Video requires Atlas live (MEDIA_LIVE_CONFIRM=true + ATLASCLOUD_API_KEY). RunPod is image-only in US-87.',
+      );
+    return createRunPodImageOnlyProviders(
+      {
+        endpointId,
+        workflow,
+        promptNodeId: process.env.RUNPOD_PROMPT_NODE_ID ?? '6',
+        contractConfirmed: true,
+      },
+      video,
+    );
+  }
+
+  if (atlas) return atlas;
+  return mock();
 }
