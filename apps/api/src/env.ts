@@ -31,12 +31,8 @@ export interface MemoryEnv {
 }
 
 /**
- * Media generation config (US-36 PoC). Always present (defaults apply). Mirrors
- * the LLM seam: the provider vendor lives behind an adapter and is selected by
- * configuration, never hardcoded. `atlas.live` is the explicit paid-call gate —
- * true ONLY when an Atlas key is present AND MEDIA_LIVE_CONFIRM=true, so a
- * misconfigured deploy defaults to the zero-spend mock provider rather than
- * silently hitting a paid API. Model ids and the base URL are configuration.
+ * Media generation config (US-36 PoC + US-87 RunPod). Always present (defaults apply).
+ * `atlas.live` / `runpod.live` are explicit paid-call gates.
  */
 export interface MediaEnv {
   /** Directory generated media bytes are written to. */
@@ -53,6 +49,14 @@ export interface MediaEnv {
     videoModel: string;
     /** True only when a key is present AND live calls are explicitly confirmed. */
     live: boolean;
+  };
+  /** US-87 RunPod Serverless ComfyUI for uncensored stills. */
+  runpod: {
+    endpointId: string | null;
+    /** True when key + endpoint + MEDIA_RUNPOD_CONFIRM=true. */
+    live: boolean;
+    /** Prefer RunPod for images when live (Atlas remains for video if live). */
+    preferForImages: boolean;
   };
 }
 
@@ -77,7 +81,6 @@ export interface Env {
 export function loadEnv(): Env {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
-    // Deliberately does NOT print any connection details — there are none to print.
     console.error(
       'FATAL: DATABASE_URL is not set. ' +
         'Provide a PostgreSQL connection string via the DATABASE_URL environment variable ' +
@@ -92,15 +95,10 @@ export function loadEnv(): Env {
     process.exit(1);
   }
 
-  // LLM inference endpoint (US-08). Configured entirely through env vars so
-  // the model/provider can be selected later without code changes. Unset:
-  // development falls back to deterministic replies; production refuses to
-  // fake AI and answers sends with a clear ai_not_configured error.
   let llm: LlmEnv | null = null;
   if (process.env.LLM_BASE_URL) {
     const model = process.env.LLM_MODEL;
     if (!model) {
-      // Values are never logged — only which variable is missing.
       console.error('FATAL: LLM_BASE_URL is set but LLM_MODEL is missing.');
       process.exit(1);
     }
@@ -146,8 +144,15 @@ export function loadEnv(): Env {
         baseUrl: process.env.ATLAS_BASE_URL ?? 'https://api.atlascloud.ai/api/v1',
         imageModel: process.env.ATLAS_IMAGE_MODEL ?? 'black-forest-labs/flux-kontext-dev',
         videoModel: process.env.ATLAS_VIDEO_MODEL ?? 'atlascloud/wan-2.7-spicy/image-to-video',
-        // Paid calls require BOTH a key and an explicit confirmation flag.
         live: process.env.MEDIA_LIVE_CONFIRM === 'true' && Boolean(process.env.ATLASCLOUD_API_KEY),
+      },
+      runpod: {
+        endpointId: process.env.RUNPOD_ENDPOINT_ID || null,
+        live:
+          process.env.MEDIA_RUNPOD_CONFIRM === 'true' &&
+          Boolean(process.env.RUNPOD_API_KEY) &&
+          Boolean(process.env.RUNPOD_ENDPOINT_ID),
+        preferForImages: (process.env.MEDIA_IMAGE_PROVIDER ?? 'runpod') !== 'atlas',
       },
     },
   };
