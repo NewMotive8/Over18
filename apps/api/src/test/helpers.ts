@@ -43,6 +43,12 @@ export const testEnv: Env = {
       videoModel: 'test-video-model',
       live: false,
     },
+    // US-87: default off in tests (providers injected explicitly).
+    runpod: {
+      endpointId: null,
+      live: false,
+      preferForImages: true,
+    },
   },
 };
 
