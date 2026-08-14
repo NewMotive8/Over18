@@ -7,9 +7,6 @@ import {
 } from '../media-pipeline/runpod-adapter.js';
 import type { MediaProviders } from '../media-pipeline/types.js';
 
-/**
- * Media provider selection (US-36 + US-87).
- */
 export function selectMediaProviders(env: Env): MediaProviders {
   const mock = () =>
     createMockProviders({
@@ -54,9 +51,8 @@ export function selectMediaProviders(env: Env): MediaProviders {
       createUnavailableVideoProvider(
         'Video requires Atlas live (MEDIA_LIVE_CONFIRM=true + ATLASCLOUD_API_KEY). RunPod is image-only in US-87.',
       );
-    // Match RunPod ComfyUI Quick Start host (api1...). Override with RUNPOD_BASE_URL if needed.
-    const baseUrl =
-      (process.env.RUNPOD_BASE_URL ?? 'https://api1.runpod.ai/v2').replace(/\/+$/, '');
+    // Official host is api.runpod.ai. Some UI snippets show api1 — set RUNPOD_BASE_URL if needed.
+    const baseUrl = (process.env.RUNPOD_BASE_URL ?? 'https://api.runpod.ai/v2').replace(/\/+$/, '');
     return createRunPodImageOnlyProviders(
       {
         endpointId,
