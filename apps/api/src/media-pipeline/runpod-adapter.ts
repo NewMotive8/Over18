@@ -12,7 +12,7 @@ import {
 
 /**
  * RunPod Serverless ComfyUI adapter (US-87).
- * Tries baseUrl, then the alternate official host if the first fails at network layer.
+ * Default workflow matches ComfyUI 5.8.7 endpoint Quick Start (Flux + FluxGuidance).
  * SECRETS: RUNPOD_API_KEY at call time only; never logged.
  */
 
@@ -37,6 +37,7 @@ const DEFAULTS = {
 
 const ALT_BASE = 'https://api1.runpod.ai/v2';
 
+/** Matches RunPod ComfyUI Quick Start graph (KSampler positive = FluxGuidance 35). */
 export const DEFAULT_COMFY_WORKFLOW: Record<string, unknown> = {
   '6': {
     inputs: { text: 'PROMPT_PLACEHOLDER', clip: ['30', 1] },
@@ -72,7 +73,7 @@ export const DEFAULT_COMFY_WORKFLOW: Record<string, unknown> = {
       scheduler: 'simple',
       denoise: 1,
       model: ['30', 0],
-      positive: ['6', 0],
+      positive: ['35', 0],
       negative: ['33', 0],
       latent_image: ['27', 0],
     },
@@ -231,7 +232,6 @@ export function createRunPodImageProvider(options: RunPodImageOptions): ImagePro
             signal: AbortSignal.timeout(cfg.timeoutMs),
           });
           usedBase = base;
-          // 404 on first host → try alternate before giving up
           if (res.status === 404 && bases.length > 1 && base === bases[0]) {
             lastNet = `HTTP 404 from ${base}`;
             continue;
