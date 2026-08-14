@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import { createReadStream, existsSync } from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Db } from '../db/client.js';
 import type { CharacterVisualAssetRow } from '../db/schema.js';
@@ -10,6 +11,7 @@ import {
   type MediaJobResult,
   type MediaStorageConfig,
 } from '../services/media-generation-service.js';
+import { getVisualAssetById } from '../services/visual-asset-service.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RATINGS = ['sfw', 'explicit'] as const;
@@ -81,6 +83,16 @@ function respond(reply: FastifyReply, result: MediaJobResult) {
   }
   const status = CLIENT_ERROR_KINDS.has(result.error.kind) ? 400 : 502;
   return reply.code(status).send({ jobId: result.jobId, error: result.error });
+}
+
+function contentTypeForPath(filePath: string): string {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.mp4')) return 'video/mp4';
+  if (lower.endsWith('.webm')) return 'video/webm';
+  return 'image/jpeg';
 }
 
 /**
@@ -172,6 +184,33 @@ export default async function internalMediaRoutes(
       });
       request.log.info({ jobId: result.jobId, ok: result.ok, op: 'generate-video' }, 'media job');
       return respond(reply, result);
+    },
+  );
+
+  /** Download a generated asset file (same internal token). */
+  app.get<{ Params: { assetId: string } }>(
+    '/internal/media/assets/:assetId',
+    { preHandler: requireInternalToken },
+    async (request, reply) => {
+      const { assetId } = request.params;
+      if (!UUID_RE.test(assetId)) {
+        return reply.code(400).send({ error: 'invalid_request', message: 'assetId must be a UUID.' });
+      }
+      const row = await getVisualAssetById(opts.db, assetId);
+      if (!row || !row.storageKey) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      const filePath = row.storageKey;
+      if (!existsSync(filePath)) {
+        return reply.code(404).send({
+          error: 'file_missing',
+          message: 'Asset row exists but file is missing on disk (redeploy may have wiped /tmp).',
+          storageKey: row.storageKey,
+        });
+      }
+      reply.header('content-type', contentTypeForPath(filePath));
+      reply.header('cache-control', 'private, max-age=60');
+      return reply.send(createReadStream(filePath));
     },
   );
 }
