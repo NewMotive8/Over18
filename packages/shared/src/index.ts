@@ -23,6 +23,12 @@ export interface ApiError {
 export interface AuthUser {
   id: string;
   email: string;
+  /**
+   * Authorization role. The API already returns this (users.role, shipped with
+   * US-103); this only mirrors the existing response so the client can gate the
+   * admin entry point. Server-side checks remain the security boundary.
+   */
+  role: 'user' | 'admin';
 }
 
 /** Request body for POST /api/auth/register and POST /api/auth/login. */

@@ -11,6 +11,10 @@ import ProfilePage from './pages/ProfilePage';
 import SubscriptionPage from './pages/SubscriptionPage';
 import ChatPage from './pages/ChatPage';
 import NotFoundPage from './pages/NotFoundPage';
+import AdminShell from './admin/AdminShell';
+import RequireAdmin from './admin/RequireAdmin';
+import AdminPlaceholder from './admin/AdminPlaceholder';
+import AdminHomePage from './pages/admin/AdminHomePage';
 
 /**
  * Application routes (US-18).
@@ -24,6 +28,28 @@ import NotFoundPage from './pages/NotFoundPage';
 export default function App() {
   return (
     <Routes>
+      {/*
+        US-99 — the single /admin operator shell. It sits OUTSIDE AppShell
+        because AppShell is a max-w-lg consumer frame; admin work is desktop
+        work. This is one admin product, not a second SPA: every Epic 11 area
+        plugs in as a child route here.
+      */}
+      <Route
+        path="/admin"
+        element={
+          <RequireAdmin>
+            <AdminShell />
+          </RequireAdmin>
+        }
+      >
+        <Route index element={<AdminHomePage />} />
+        <Route path="content/review" element={<AdminPlaceholder destination="review" />} />
+        <Route path="content/library" element={<AdminPlaceholder destination="library" />} />
+        <Route path="characters" element={<AdminPlaceholder destination="characters" />} />
+        <Route path="publishing" element={<AdminPlaceholder destination="publishing" />} />
+        <Route path="generation" element={<AdminPlaceholder destination="generation" />} />
+      </Route>
+
       <Route element={<AppShell />}>
         {/* Discover is the primary entry point */}
         <Route path="/" element={<Navigate to="/characters" replace />} />
