@@ -323,8 +323,9 @@ describe('US-100 content library', () => {
   });
 
   it('surfaces recent content without any filter being applied', async () => {
-    await seedAsset('jpg');
+    const a = await seedAsset('jpg');
     const cookie = await adminCookie();
+    await approve(cookie, a.id); // the library begins at approval
     const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -334,31 +335,42 @@ describe('US-100 content library', () => {
     expect(Object.keys(body)[0]).toBe('recent'); // recent is presented first
   });
 
-  it('orders recent content by the correct timestamp for each item', async () => {
-    const older = await seedAsset('jpg');
-    const newer = await seedAsset('jpg');
+  it('orders recent content by approval time, not creation time', async () => {
+    const createdFirst = await seedAsset('jpg');
+    const createdSecond = await seedAsset('jpg');
     const cookie = await adminCookie();
 
-    // Approving `older` makes it the most recent EVENT, even though it was
-    // created first — recency follows approvedAt for approved content.
-    await approve(cookie, older.id);
+    // Approve in the OPPOSITE order to creation: the item created first is
+    // approved last, so it must lead the library even though it is older.
+    await approve(cookie, createdSecond.id);
+    await approve(cookie, createdFirst.id);
 
     const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
     const recent = res.json().recent;
-    expect(recent[0].assetId).toBe(older.id);
-    expect(recent[0].recencyBasis).toBe('approved');
-    expect(recent.find((a: { assetId: string }) => a.assetId === newer.id).recencyBasis).toBe('added');
+    expect(recent.map((a: { assetId: string }) => a.assetId)).toEqual([
+      createdFirst.id,
+      createdSecond.id,
+    ]);
+    expect(recent.every((a: { recencyBasis: string }) => a.recencyBasis === 'approved')).toBe(true);
+    // The recency timestamp is the approval, not the creation.
+    expect(recent[0].recentAt).toBe(recent[0].approvedAt);
   });
 
   it('carries character, media type, status and Primary for each item', async () => {
-    await seedAsset('jpg');
-    await seedAsset('mp4');
+    const img = await seedAsset('jpg');
+    const vid = await seedAsset('mp4');
     const cookie = await adminCookie();
+    await approve(cookie, img.id);
+    await approve(cookie, vid.id);
     const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
     const assets = res.json().assets;
     expect(assets.every((a: { characterName: string }) => a.characterName === 'luna')).toBe(true);
     expect(assets.map((a: { mediaType: string }) => a.mediaType).sort()).toEqual(['image', 'video']);
-    expect(assets.every((a: { status: string }) => a.status === 'under_review')).toBe(true);
+    // Everything in the ACTIVE library is approved — never an upstream
+    // generation state.
+    expect(assets.every((a: { status: string }) => a.status === 'approved')).toBe(true);
+    expect(assets.every((a: { status: string }) => a.status !== 'generated')).toBe(true);
+    expect(assets.every((a: { recencyBasis: string }) => a.recencyBasis === 'approved')).toBe(true);
     // Product terminology only.
     expect(assets[0]).toHaveProperty('isPrimary');
     expect(assets[0]).not.toHaveProperty('isCanonical');
@@ -368,6 +380,7 @@ describe('US-100 content library', () => {
     const kept = await seedAsset('jpg');
     const gone = await seedAsset('jpg');
     const cookie = await adminCookie();
+    await approve(cookie, kept.id);
     await ctx.app.inject({ method: 'POST', url: `/admin/content/assets/${gone.id}/reject`, headers: { cookie } });
 
     const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
@@ -376,9 +389,11 @@ describe('US-100 content library', () => {
   });
 
   it('filters by media type and by character', async () => {
-    await seedAsset('jpg');
-    await seedAsset('mp4');
+    const img = await seedAsset('jpg');
+    const vid = await seedAsset('mp4');
     const cookie = await adminCookie();
+    await approve(cookie, img.id);
+    await approve(cookie, vid.id);
 
     const video = await ctx.app.inject({
       method: 'GET',
@@ -411,15 +426,37 @@ describe('US-100 content library', () => {
     expect(item).not.toHaveProperty('categories');
   });
 
-  it('leaves the US-106 review queue behaviour intact', async () => {
+  it('leaves the US-106 review queue behaviour intact, and the two are disjoint', async () => {
     const a = await seedAsset('jpg');
     await seedAsset('jpg');
     const cookie = await adminCookie();
     await approve(cookie, a.id);
+
+    // Approved content leaves the review queue and enters the library; content
+    // still awaiting review is in the queue and NOT in the active library.
     const queue = await ctx.app.inject({ method: 'GET', url: '/admin/content/review', headers: { cookie } });
-    // Approved content leaves the review queue but stays in the library.
     expect(queue.json().assets).toHaveLength(1);
+    expect(queue.json().assets[0].assetId).not.toBe(a.id);
+
     const lib = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
-    expect(lib.json().assets).toHaveLength(2);
+    expect(lib.json().assets.map((x: { assetId: string }) => x.assetId)).toEqual([a.id]);
+  });
+
+  it('never presents an upstream generation state as a library status', async () => {
+    const a = await seedAsset('jpg');
+    await seedAsset('jpg'); // left awaiting review
+    const cookie = await adminCookie();
+    await approve(cookie, a.id);
+
+    const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    const body = res.json();
+    for (const item of [...body.recent, ...body.assets]) {
+      expect(item.status).toBe('approved');
+      expect(item.recencyBasis).toBe('approved');
+      expect(item.approvedAt).toBeTruthy(); // "Approved · X ago" has a real timestamp
+    }
+    // Nothing pre-approval leaks into the library payload.
+    expect(JSON.stringify(body)).not.toContain('under_review');
+    expect(JSON.stringify(body)).not.toContain('"status":"generated"');
   });
 });

@@ -40,12 +40,10 @@ function Tile({ a, onOpen, dense }: { a: LibraryAssetView; onOpen: () => void; d
       <div className="space-y-0.5 px-2 py-1.5">
         <p className="truncate text-xs capitalize text-zinc-200">{a.characterName}</p>
         <div className="flex items-center gap-1.5">
-          <span
-            className={`rounded px-1 py-0.5 text-[10px] uppercase tracking-wide ${
-              a.status === 'approved' ? 'bg-emerald-950 text-emerald-400' : 'bg-zinc-800 text-zinc-400'
-            }`}
-          >
-            {a.status.replace('_', ' ')}
+          {/* Library items are approved by definition; never echo an upstream
+              generation term such as "Generated" as a library status. */}
+          <span className="rounded bg-emerald-950 px-1 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
+            Approved
           </span>
           {a.isPrimary && (
             <span className="rounded bg-rose-950 px-1 py-0.5 text-[10px] uppercase tracking-wide text-rose-400">
@@ -54,7 +52,7 @@ function Tile({ a, onOpen, dense }: { a: LibraryAssetView; onOpen: () => void; d
           )}
         </div>
         <p className="text-[10px] text-zinc-600">
-          {a.recencyBasis === 'approved' ? 'Approved' : 'Added'} {relative(a.recentAt)}
+          {a.recencyBasis === 'approved' ? 'Approved' : 'Added'} · {relative(a.recentAt)}
         </p>
       </div>
     </button>
@@ -91,7 +89,7 @@ export default function ContentLibraryPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <h1 className="text-xl font-semibold text-white">Content Library</h1>
-      <p className="mt-1 text-sm text-zinc-400">All content that has been through review.</p>
+      <p className="mt-1 text-sm text-zinc-400">Approved content, ready for categories and publishing.</p>
 
       {error && (
         <p role="alert" className="mt-4 rounded-md border border-rose-900 bg-rose-950/40 px-4 py-2 text-sm text-rose-300">
@@ -101,15 +99,15 @@ export default function ContentLibraryPage() {
 
       {/* Recent first — always, never behind a filter. */}
       <section className="mt-6">
-        <h2 className="text-sm font-medium text-zinc-200">Recently approved &amp; added</h2>
+        <h2 className="text-sm font-medium text-zinc-200">Recently Added</h2>
         {loading ? (
           <p className="mt-3 text-sm text-zinc-500">Loading…</p>
         ) : recent.length === 0 ? (
           <div className="mt-3 rounded-lg border border-dashed border-zinc-800 bg-zinc-900/40 px-6 py-8 text-center">
             <p className="text-sm text-zinc-300">Nothing new yet</p>
             <p className="mx-auto mt-1 max-w-sm text-sm text-zinc-500">
-              Content appears here once it has been generated or approved. Everything already in the
-              library is listed below.
+              Content appears here once it is approved in Review. Everything already in the library
+              is listed below.
             </p>
           </div>
         ) : (
@@ -175,8 +173,7 @@ export default function ContentLibraryPage() {
               <div>
                 <p className="text-sm font-medium capitalize text-white">{selected.characterName}</p>
                 <p className="text-xs text-zinc-500">
-                  {selected.mediaType} · {selected.status.replace('_', ' ')}
-                  {selected.isPrimary ? ' · Primary' : ''}
+                  {selected.mediaType} · Approved{selected.isPrimary ? ' · Primary' : ''}
                 </p>
               </div>
               <button type="button" onClick={() => setSelected(null)} className="text-sm text-zinc-400 hover:text-white">

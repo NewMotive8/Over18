@@ -134,11 +134,16 @@ export async function updateAssetMetadata(
  * ------------------------------------------------------------------ */
 
 /**
- * Content that has passed review and lives in the library. Rejected content is
- * excluded by default because the EPIC 7 lifecycle treats it as removed from
- * the active workflow — the same rule US-106's queue relies on.
+ * The ACTIVE Content Library begins at approval.
+ *
+ * Content awaiting review is not library content — it belongs to the US-106
+ * review queue — and rejected content has left the active workflow entirely.
+ * Keeping pre-approval statuses out is what stops an upstream generation term
+ * like "Generated" ever surfacing as the status of a library item.
+ *
+ * An explicit ?status= filter still reaches other states for auditing.
  */
-export const LIBRARY_STATUSES = ['generated', 'under_review', 'approved'] as const satisfies readonly VisualAssetStatus[];
+export const LIBRARY_STATUSES = ['approved'] as const satisfies readonly VisualAssetStatus[];
 
 export interface LibraryFilter {
   characterId?: string;
@@ -163,7 +168,9 @@ export interface LibraryAsset extends ReviewAsset {
 }
 
 function toLibraryAsset(asset: ReviewAsset): LibraryAsset {
-  // An approved asset is "recently approved"; anything else is "recently added".
+  // Approval is what puts an item in the library, so approvedAt is its library
+  // event. The 'added' basis stays for any future non-approval addition (e.g. a
+  // direct upload), which would legitimately be recent by createdAt.
   const approved = asset.status === 'approved' && asset.approvedAt !== null;
   return {
     ...asset,
