@@ -57,6 +57,13 @@
       "when": 1786795324255,
       "tag": "0007_silky_bulldozer",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786803700675,
+      "tag": "0008_brief_vulcan",
+      "breakpoints": true
     }
   ]
 }

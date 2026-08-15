@@ -18,8 +18,12 @@ import {
   MAX_RETRIES,
   retryGenerationJob,
   submitGenerationJob,
+  enqueueGenerationJob,
+  recoverStaleJobs,
+  retryGenerationResult,
 } from '../generation/jobs.js';
 import { createSequence } from '../generation/sequences.js';
+import { executeResult, listResults, MAX_RESULT_ATTEMPTS } from '../generation/results.js';
 import { runSequence } from '../generation/sequence-runner.js';
 import {
   createTestContext,
@@ -212,8 +216,11 @@ describe('US-103 job execution', () => {
     expect(job.succeededCount).toBeLessThan(3);
     // Whatever succeeded is still persisted and reviewable.
     for (const a of assets) expect(a.status).toBe('under_review');
-    // The budget refusal is recorded, not swallowed.
-    expect((job.failures as unknown[]).length).toBeGreaterThan(0);
+    // The budget refusal is recorded on the RESULT rows, not swallowed.
+    const rows = await listResults(ctx.db, job.id);
+    expect(rows).toHaveLength(3);
+    expect(rows.filter((r) => r.status === 'failed').length).toBeGreaterThan(0);
+    expect(rows.find((r) => r.status === 'failed')!.error).toBeTruthy();
   });
 
   it('does not let fan-out bypass cost control', async () => {
@@ -372,5 +379,145 @@ describe('US-103 sequence execution', () => {
     if (!result.ok) return;
     const ordinals = result.value.steps.map((s) => s.ordinal);
     expect(ordinals).toEqual([...ordinals].sort((a, b) => a - b));
+  });
+});
+
+describe('US-103 Generation Results — per-result identity and retry', () => {
+  /**
+   * Deps with a budget too small to authorize even one attempt, so the attempt
+   * fails deterministically before any provider work — the cheapest reliable
+   * failure available without stubbing the provider seam.
+   */
+  function brokenDeps(): MediaJobDeps {
+    return { ...deps(), characterBudgetUsd: 0.0000001 };
+  }
+
+  it('creates one result row per expected output, before anything runs', async () => {
+    const created = await createGenerationJob(ctx.db, imageConfig({ quantity: 5 }));
+    if (!created.ok) return;
+    const rows = await listResults(ctx.db, created.value.id);
+    expect(rows).toHaveLength(5);
+    expect(rows.map((r) => r.ordinal)).toEqual([1, 2, 3, 4, 5]);
+    expect(rows.every((r) => r.status === 'pending')).toBe(true);
+    expect(rows.every((r) => r.assetId === null)).toBe(true);
+  });
+
+  it('retrying result 3 regenerates ONLY result 3', async () => {
+    const created = await createGenerationJob(ctx.db, imageConfig({ quantity: 5 }));
+    if (!created.ok) return;
+    const job = created.value;
+    const rows = await listResults(ctx.db, job.id);
+    const effective = job.effectiveConfig as never;
+
+    for (const row of rows) {
+      await executeResult(ctx.db, row.ordinal === 3 ? brokenDeps() : deps(), effective, row);
+    }
+
+    const afterFirstPass = await listResults(ctx.db, job.id);
+    expect(afterFirstPass.filter((r) => r.status === 'succeeded').map((r) => r.ordinal)).toEqual([
+      1, 2, 4, 5,
+    ]);
+    expect(afterFirstPass.filter((r) => r.status === 'failed').map((r) => r.ordinal)).toEqual([3]);
+
+    const untouchedBefore = afterFirstPass
+      .filter((r) => r.ordinal !== 3)
+      .map((r) => ({ ordinal: r.ordinal, assetId: r.assetId }));
+
+    const retried = await retryGenerationResult(ctx.db, deps(), afterFirstPass[2].id);
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+
+    expect(retried.value.result.ordinal).toBe(3);
+    expect(retried.value.result.status).toBe('succeeded');
+    expect(retried.value.asset).not.toBeNull();
+    expect(retried.value.asset!.status).toBe('under_review');
+
+    const after = await listResults(ctx.db, job.id);
+    const untouchedAfter = after
+      .filter((r) => r.ordinal !== 3)
+      .map((r) => ({ ordinal: r.ordinal, assetId: r.assetId }));
+    expect(untouchedAfter).toEqual(untouchedBefore);
+
+    const finalJob = await getGenerationJob(ctx.db, job.id);
+    expect(finalJob!.status).toBe('completed');
+    expect(finalJob!.succeededCount).toBe(5);
+    expect(finalJob!.failedCount).toBe(0);
+  });
+
+  it('refuses to retry a result that already succeeded', async () => {
+    const submitted = await submitGenerationJob(ctx.db, deps(), imageConfig());
+    if (!submitted.ok) return;
+    const [row] = await listResults(ctx.db, submitted.value.job.id);
+    expect(row.status).toBe('succeeded');
+    expect((await retryGenerationResult(ctx.db, deps(), row.id)).ok).toBe(false);
+  });
+
+  it('bounds attempts on a single result', async () => {
+    const created = await createGenerationJob(ctx.db, imageConfig());
+    if (!created.ok) return;
+    const effective = created.value.effectiveConfig as never;
+    for (let i = 0; i < MAX_RESULT_ATTEMPTS; i += 1) {
+      const current = (await listResults(ctx.db, created.value.id))[0];
+      await executeResult(ctx.db, brokenDeps(), effective, current);
+    }
+    const exhausted = (await listResults(ctx.db, created.value.id))[0];
+    expect(exhausted.attempts).toBe(MAX_RESULT_ATTEMPTS);
+    const retried = await retryGenerationResult(ctx.db, deps(), exhausted.id);
+    expect(retried.ok).toBe(false);
+    if (retried.ok) return;
+    expect(retried.errors[0].message).toContain('attempt limit');
+  });
+
+  it('links each succeeded result to its own distinct asset', async () => {
+    const submitted = await submitGenerationJob(ctx.db, deps(), imageConfig({ quantity: 3 }));
+    if (!submitted.ok) return;
+    const assetIds = (await listResults(ctx.db, submitted.value.job.id)).map((r) => r.assetId);
+    expect(assetIds.every(Boolean)).toBe(true);
+    expect(new Set(assetIds).size).toBe(3);
+  });
+});
+
+describe('US-103 asynchronous execution contract', () => {
+  it('returns a job id immediately and completes in the background', async () => {
+    const enqueued = await enqueueGenerationJob(ctx.db, deps(), imageConfig({ quantity: 2 }));
+    expect(enqueued.ok).toBe(true);
+    if (!enqueued.ok) return;
+    expect(enqueued.value.id).toBeTruthy();
+    expect(enqueued.value.status).toBe('queued');
+
+    const deadline = Date.now() + 15_000;
+    let status = enqueued.value.status;
+    while (
+      Date.now() < deadline &&
+      status !== 'completed' &&
+      status !== 'partial' &&
+      status !== 'failed'
+    ) {
+      await new Promise((r) => setTimeout(r, 100));
+      status = (await getGenerationJob(ctx.db, enqueued.value.id))!.status;
+    }
+    expect(status).toBe('completed');
+    const rows = await listResults(ctx.db, enqueued.value.id);
+    expect(rows.filter((r) => r.status === 'succeeded')).toHaveLength(2);
+  });
+
+  it('re-queues jobs left running by a crash, without losing finished results', async () => {
+    const created = await createGenerationJob(ctx.db, imageConfig({ quantity: 2 }));
+    if (!created.ok) return;
+    const rows = await listResults(ctx.db, created.value.id);
+    await executeResult(ctx.db, deps(), created.value.effectiveConfig as never, rows[0]);
+    await ctx.db
+      .update(generationJobs)
+      .set({ status: 'running' })
+      .where(eq(generationJobs.id, created.value.id));
+
+    const recovered = await recoverStaleJobs(ctx.db);
+    expect(recovered.map((j) => j.id)).toContain(created.value.id);
+    expect((await getGenerationJob(ctx.db, created.value.id))!.status).toBe('queued');
+
+    const resumed = await executeGenerationJob(ctx.db, deps(), created.value.id);
+    expect(resumed!.assets).toHaveLength(1);
+    expect(resumed!.job.status).toBe('completed');
+    expect(resumed!.job.succeededCount).toBe(2);
   });
 });

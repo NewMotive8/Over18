@@ -19,6 +19,7 @@ import {
   generationJobs,
   type CharacterVisualAssetRow,
   type GenerationJobRow,
+  type GenerationResultRow,
 } from '../db/schema.js';
 import type { MediaJobDeps, MediaJobResult } from '../services/media-generation-service.js';
 import { getActiveVisualIdentity } from '../services/visual-identity-service.js';
@@ -28,7 +29,14 @@ import type {
   GenerationConfiguration,
 } from './config.js';
 import { resolveGenerationConfiguration } from './resolve.js';
-import { runGenerationJob } from './run-job.js';
+import {
+  createResultRows,
+  executeResult,
+  getResult,
+  listResults,
+  MAX_RESULT_ATTEMPTS,
+  pendingResults,
+} from './results.js';
 
 /** Bounded so a retry loop can never run away (ticket section 8). */
 export const MAX_RETRIES = 3;
@@ -101,6 +109,10 @@ export async function createGenerationJob(
     })
     .returning();
 
+  // Result rows exist BEFORE execution, so every expected output has an
+  // identity from the moment the job is created.
+  await createResultRows(db, row.id, effective.quantity);
+
   return { ok: true, value: row };
 }
 
@@ -123,67 +135,178 @@ export async function executeGenerationJob(
   if (!job) return null;
 
   const effective = job.effectiveConfig as EffectiveGenerationConfiguration;
-  const alreadyDone = job.succeededCount;
-  const remaining = Math.max(0, job.requestedQuantity - alreadyDone);
+  let rows = await listResults(db, jobId);
+  // Jobs created before generation_results existed have no rows; backfill so
+  // the runtime has one code path.
+  if (rows.length === 0) rows = await createResultRows(db, jobId, job.requestedQuantity);
 
-  await db
-    .update(generationJobs)
-    .set({ status: 'running' })
-    .where(eq(generationJobs.id, jobId));
+  const outstanding = pendingResults(rows).filter((r) => r.attempts < MAX_RESULT_ATTEMPTS);
 
-  if (remaining === 0) {
-    const [done] = await db
-      .update(generationJobs)
-      .set({ status: 'completed', completedAt: new Date() })
-      .where(eq(generationJobs.id, jobId))
-      .returning();
-    return { job: done, assets: [] };
+  await db.update(generationJobs).set({ status: 'running' }).where(eq(generationJobs.id, jobId));
+
+  const assets: CharacterVisualAssetRow[] = [];
+  let costUsd = Number(job.estimatedCostUsd ?? 0);
+
+  // Sequential on purpose: the CostLedger is file-backed, so parallel
+  // authorize+record would race and could corrupt budget accounting.
+  for (const row of outstanding) {
+    const outcome = await executeResult(db, deps, effective, row);
+    if (outcome.asset) assets.push(outcome.asset);
+    costUsd += outcome.estimatedCostUsd;
+
+    await syncJobCounts(db, jobId, costUsd);
+    // A refused budget is terminal for the run; remaining results stay pending
+    // rather than being burned through a wall of guaranteed refusals.
+    if (outcome.budgetRefused) break;
   }
 
-  const run = await runGenerationJob(db, deps, effective, {
-    remaining,
-    // Persist progress mid-flight so a crash leaves an accurate row and a UI
-    // can poll "5 / 8 completed" without waiting for the run to finish.
-    onAttempt: async (p) => {
-      await db
-        .update(generationJobs)
-        .set({
-          succeededCount: alreadyDone + p.succeeded,
-          failedCount: p.failed,
-          estimatedCostUsd: String(p.estimatedCostUsd),
-        })
-        .where(eq(generationJobs.id, jobId));
-    },
-  });
-
-  const succeeded = alreadyDone + run.succeeded;
-  const status = terminalStatusFor(succeeded, job.requestedQuantity, run.failed);
-
+  const finalRows = await listResults(db, jobId);
   const [updated] = await db
     .update(generationJobs)
     .set({
-      status,
-      succeededCount: succeeded,
-      failedCount: run.failed,
-      estimatedCostUsd: String(run.estimatedCostUsd),
-      actualCostUsd: String(run.estimatedCostUsd),
-      failures: run.failures,
+      status: terminalStatusFor(finalRows),
+      succeededCount: finalRows.filter((r) => r.status === 'succeeded').length,
+      failedCount: finalRows.filter((r) => r.status === 'failed').length,
+      estimatedCostUsd: String(costUsd),
+      actualCostUsd: String(costUsd),
       completedAt: new Date(),
     })
     .where(eq(generationJobs.id, jobId))
     .returning();
 
-  return { job: updated, assets: run.assets };
+  return { job: updated, assets };
+}
+
+async function syncJobCounts(db: Db, jobId: string, costUsd: number): Promise<void> {
+  const rows = await listResults(db, jobId);
+  await db
+    .update(generationJobs)
+    .set({
+      succeededCount: rows.filter((r) => r.status === 'succeeded').length,
+      failedCount: rows.filter((r) => r.status === 'failed').length,
+      estimatedCostUsd: String(costUsd),
+    })
+    .where(eq(generationJobs.id, jobId));
 }
 
 function terminalStatusFor(
-  succeeded: number,
-  requested: number,
-  failed: number,
+  rows: readonly GenerationResultRow[],
 ): 'completed' | 'partial' | 'failed' {
-  if (succeeded >= requested) return 'completed';
+  const succeeded = rows.filter((r) => r.status === 'succeeded').length;
+  if (succeeded === rows.length) return 'completed';
   if (succeeded > 0) return 'partial';
-  return failed > 0 ? 'failed' : 'partial';
+  return 'failed';
+}
+
+/**
+ * US-103 async contract: persist the job, hand back the id immediately, and run
+ * it in the background. The HTTP caller does not wait for a 10-video job.
+ *
+ * SMALLEST DURABLE MECHANISM for this PoC, chosen because the repository has no
+ * queue, worker, broker or scheduler of any kind: the database IS the queue.
+ * The job row is durable before execution starts, progress is written per
+ * result, and `recoverStaleJobs` re-queues anything left `running` by a crash.
+ *
+ * Honest limitation: execution is in-process, so it is single-instance only.
+ * Running two API instances would need a real worker — that is a deliberate
+ * follow-up, not an oversight.
+ */
+export async function enqueueGenerationJob(
+  db: Db,
+  deps: MediaJobDeps,
+  config: GenerationConfiguration,
+  options: CreateJobOptions = {},
+): Promise<JobResult<GenerationJobRow>> {
+  const created = await createGenerationJob(db, config, options);
+  if (!created.ok) return created;
+
+  setImmediate(() => {
+    void executeGenerationJob(db, deps, created.value.id).catch(() => {
+      // Never let a background failure take the process down; the job row and
+      // its result rows already record what happened.
+    });
+  });
+
+  return { ok: true, value: created.value };
+}
+
+/**
+ * Re-queue jobs left `running` by a crash or restart. Their result rows are
+ * intact, so re-execution resumes only the outstanding ones.
+ */
+export async function recoverStaleJobs(db: Db): Promise<GenerationJobRow[]> {
+  const stale = await db
+    .select()
+    .from(generationJobs)
+    .where(eq(generationJobs.status, 'running'));
+  if (stale.length === 0) return [];
+  await db
+    .update(generationJobs)
+    .set({ status: 'queued' })
+    .where(eq(generationJobs.status, 'running'));
+  return stale;
+}
+
+/**
+ * Retry ONE result. Regenerates exactly that output and touches no other.
+ */
+export async function retryGenerationResult(
+  db: Db,
+  deps: MediaJobDeps,
+  resultId: string,
+): Promise<JobResult<{ result: GenerationResultRow; asset: CharacterVisualAssetRow | null }>> {
+  const result = await getResult(db, resultId);
+  if (!result) {
+    return { ok: false, errors: [{ code: 'unknown_model', field: 'resultId', message: 'result not found' }] };
+  }
+  if (result.status === 'succeeded') {
+    return {
+      ok: false,
+      errors: [
+        { code: 'invalid_quantity', field: 'resultId', message: 'result already succeeded; nothing to retry' },
+      ],
+    };
+  }
+  if (result.attempts >= MAX_RESULT_ATTEMPTS) {
+    return {
+      ok: false,
+      errors: [
+        {
+          code: 'invalid_quantity',
+          field: 'resultId',
+          message: `attempt limit of ${MAX_RESULT_ATTEMPTS} reached for this result`,
+        },
+      ],
+    };
+  }
+
+  const job = await getGenerationJob(db, result.jobId);
+  if (!job) {
+    return { ok: false, errors: [{ code: 'unknown_model', field: 'jobId', message: 'job not found' }] };
+  }
+
+  const outcome = await executeResult(
+    db,
+    deps,
+    job.effectiveConfig as EffectiveGenerationConfiguration,
+    result,
+  );
+
+  const rows = await listResults(db, job.id);
+  const cost = Number(job.estimatedCostUsd ?? 0) + outcome.estimatedCostUsd;
+  await db
+    .update(generationJobs)
+    .set({
+      status: terminalStatusFor(rows),
+      succeededCount: rows.filter((r) => r.status === 'succeeded').length,
+      failedCount: rows.filter((r) => r.status === 'failed').length,
+      estimatedCostUsd: String(cost),
+      actualCostUsd: String(cost),
+      retryCount: job.retryCount + 1,
+    })
+    .where(eq(generationJobs.id, job.id));
+
+  return { ok: true, value: { result: outcome.result, asset: outcome.asset } };
 }
 
 /** Create and immediately run. The single entry point both automated
@@ -325,7 +448,11 @@ export async function submitAsMediaJobResult(
   const { job, assets } = submitted.value;
   const asset = assets[0];
   if (!asset) {
-    const failure = (job.failures as { kind?: string; message?: string }[])[0];
+    // Failure detail lives on the RESULT row now, which is what preserves the
+    // provider error kind (and therefore the 4xx/5xx distinction) end to end.
+    const rows = await listResults(db, job.id);
+    const failed = rows.find((r) => r.status === 'failed');
+    const failure = (failed?.error ?? null) as { kind?: string; message?: string } | null;
     return {
       ok: false,
       jobId: job.id,

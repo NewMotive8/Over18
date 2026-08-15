@@ -412,6 +412,53 @@ export const generationSequences = pgTable(
   (table) => [index('generation_sequences_character_idx').on(table.characterId)],
 );
 
+/** US-103 — lifecycle of ONE expected output within a job. */
+export const generationResultStatus = pgEnum('generation_result_status', [
+  'pending',
+  'running',
+  'succeeded',
+  'failed',
+]);
+
+/**
+ * generation_results — one row per EXPECTED output of a job.
+ *
+ * A job with quantity 5 gets five rows at creation time, before anything runs.
+ * That is what gives a failed output an identity: "retry result 3" addresses a
+ * durable row, so retrying regenerates exactly that output and leaves results
+ * 1, 2, 4 and 5 untouched. Counting successes cannot express this.
+ *
+ * A succeeded result points at the character_visual_assets row it produced;
+ * the asset remains the reviewable artefact, so no duplicate asset concept is
+ * introduced here.
+ */
+export const generationResults = pgTable(
+  'generation_results',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => generationJobs.id, { onDelete: 'cascade' }),
+    /** 1-based position within the job. Stable for the life of the job. */
+    ordinal: integer('ordinal').notNull(),
+    status: generationResultStatus('status').notNull().default('pending'),
+    assetId: uuid('asset_id').references(() => characterVisualAssets.id, {
+      onDelete: 'set null',
+    }),
+    /** Structured provider/validation error; never raw provider payloads. */
+    error: jsonb('error'),
+    /** Attempts spent on THIS result, so retry can be bounded per result. */
+    attempts: integer('attempts').notNull().default(0),
+    estimatedCostUsd: text('estimated_cost_usd'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('generation_results_job_ordinal_idx').on(table.jobId, table.ordinal),
+    index('generation_results_status_idx').on(table.status),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -424,3 +471,4 @@ export type GenerationJobRow = typeof generationJobs.$inferSelect;
 export type GenerationPresetRow = typeof generationPresets.$inferSelect;
 export type GenerationSequenceRow = typeof generationSequences.$inferSelect;
 export type GenerationSequenceRunRow = typeof generationSequenceRuns.$inferSelect;
+export type GenerationResultRow = typeof generationResults.$inferSelect;

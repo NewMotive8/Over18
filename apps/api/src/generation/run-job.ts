@@ -72,6 +72,38 @@ export interface RunOptions {
   remaining?: number;
 }
 
+/**
+ * THE single provider-call site. Both the fan-out loop below and the
+ * per-result executor in results.ts go through here, so exactly one place
+ * translates an effective configuration into a provider call.
+ */
+export async function runSingleAttempt(
+  db: Db,
+  deps: MediaJobDeps,
+  effective: EffectiveGenerationConfiguration,
+) {
+  return       effective.type === 'image'
+    ? generateImageJob(db, deps, {
+            characterId: effective.characterId,
+            prompt: effective.prompt,
+            referenceAssetId: effective.primaryReferenceAssetId ?? undefined,
+            contentRating: effective.contentRating ?? 'sfw',
+            status: effective.resultStatus,
+            width: numberParam(effective, 'width'),
+            height: numberParam(effective, 'height'),
+          })
+    : generateVideoJob(db, deps, {
+            characterId: effective.characterId,
+            sourceImageAssetId: effective.sourceImageAssetId ?? '',
+            motionPrompt: effective.prompt,
+            durationSeconds: numberParam(effective, 'durationSeconds'),
+            resolution: resolutionParam(effective),
+            // undefined => the service inherits the source asset's rating.
+            contentRating: effective.contentRating ?? undefined,
+            status: effective.resultStatus,
+          });
+}
+
 export async function runGenerationJob(
   db: Db,
   deps: MediaJobDeps,
@@ -91,27 +123,7 @@ export async function runGenerationJob(
   // becomes transactional.
   const target = options.remaining ?? effective.quantity;
   for (let attempt = 1; attempt <= target; attempt += 1) {
-    const result =
-      effective.type === 'image'
-        ? await generateImageJob(db, deps, {
-            characterId: effective.characterId,
-            prompt: effective.prompt,
-            referenceAssetId: effective.primaryReferenceAssetId ?? undefined,
-            contentRating: effective.contentRating ?? 'sfw',
-            status: effective.resultStatus,
-            width: numberParam(effective, 'width'),
-            height: numberParam(effective, 'height'),
-          })
-        : await generateVideoJob(db, deps, {
-            characterId: effective.characterId,
-            sourceImageAssetId: effective.sourceImageAssetId ?? '',
-            motionPrompt: effective.prompt,
-            durationSeconds: numberParam(effective, 'durationSeconds'),
-            resolution: resolutionParam(effective),
-            // undefined => the service inherits the source asset's rating.
-            contentRating: effective.contentRating ?? undefined,
-            status: effective.resultStatus,
-          });
+    const result = await runSingleAttempt(db, deps, effective);
 
     if (result.ok) {
       assets.push(result.asset);
