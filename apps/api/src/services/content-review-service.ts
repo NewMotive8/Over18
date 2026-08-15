@@ -128,3 +128,98 @@ export async function updateAssetMetadata(
     .returning();
   return updated ?? null;
 }
+
+/* ------------------------------------------------------------------ *
+ * US-100 — Content Library
+ * ------------------------------------------------------------------ */
+
+/**
+ * Content that has passed review and lives in the library. Rejected content is
+ * excluded by default because the EPIC 7 lifecycle treats it as removed from
+ * the active workflow — the same rule US-106's queue relies on.
+ */
+export const LIBRARY_STATUSES = ['generated', 'under_review', 'approved'] as const satisfies readonly VisualAssetStatus[];
+
+export interface LibraryFilter {
+  characterId?: string;
+  status?: VisualAssetStatus;
+  mediaType?: MediaType;
+  /** Free-text match on character name — the only search the model supports cheaply. */
+  search?: string;
+  limit?: number;
+}
+
+/**
+ * Why an item is "recent", so the UI can say "Approved 2h ago" rather than
+ * conflating it with when the file was produced. approvedAt and createdAt are
+ * genuinely different events and the ticket asks for both.
+ */
+export type RecencyBasis = 'approved' | 'added';
+
+export interface LibraryAsset extends ReviewAsset {
+  recencyBasis: RecencyBasis;
+  /** The timestamp the recency ordering actually used. */
+  recentAt: Date;
+}
+
+function toLibraryAsset(asset: ReviewAsset): LibraryAsset {
+  // An approved asset is "recently approved"; anything else is "recently added".
+  const approved = asset.status === 'approved' && asset.approvedAt !== null;
+  return {
+    ...asset,
+    recencyBasis: approved ? 'approved' : 'added',
+    recentAt: approved ? asset.approvedAt! : asset.createdAt,
+  };
+}
+
+/** Deterministic ordering: newest recency event first, id as a stable tiebreak. */
+export function orderByRecency(assets: readonly LibraryAsset[]): LibraryAsset[] {
+  return [...assets].sort((a, b) => {
+    const diff = b.recentAt.getTime() - a.recentAt.getTime();
+    return diff !== 0 ? diff : a.id.localeCompare(b.id);
+  });
+}
+
+async function selectLibrary(db: Db, filter: LibraryFilter): Promise<LibraryAsset[]> {
+  const conditions = [eq(characterVisualAssets.kind, 'generated')];
+  if (filter.characterId) conditions.push(eq(characterVisualAssets.characterId, filter.characterId));
+  if (filter.status) {
+    // An explicit status filter is honoured even for rejected, so an operator
+    // can still audit it — it simply never appears by default.
+    conditions.push(eq(characterVisualAssets.status, filter.status));
+  } else {
+    conditions.push(inArray(characterVisualAssets.status, [...LIBRARY_STATUSES]));
+  }
+
+  const rows = await db
+    .select({ asset: characterVisualAssets, characterName: characters.name })
+    .from(characterVisualAssets)
+    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+    .where(and(...conditions))
+    .limit(Math.min(filter.limit ?? 200, 500));
+
+  const search = filter.search?.trim().toLowerCase();
+  return rows
+    .map((r) =>
+      toLibraryAsset({
+        ...r.asset,
+        characterName: r.characterName,
+        mediaType: mediaTypeOf(r.asset.storageKey),
+      }),
+    )
+    .filter((a) => !filter.mediaType || a.mediaType === filter.mediaType)
+    .filter((a) => !search || a.characterName.toLowerCase().includes(search));
+}
+
+/** The full library, newest recency event first. */
+export async function listLibrary(db: Db, filter: LibraryFilter = {}): Promise<LibraryAsset[]> {
+  return orderByRecency(await selectLibrary(db, filter));
+}
+
+/**
+ * What changed lately — the first thing the operator sees on entering the
+ * library, so newly approved content never has to be searched for.
+ */
+export async function listRecentLibrary(db: Db, limit = 12): Promise<LibraryAsset[]> {
+  return orderByRecency(await selectLibrary(db, {})).slice(0, limit);
+}

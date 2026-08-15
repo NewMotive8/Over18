@@ -21,7 +21,8 @@ describe('US-99 admin navigation model', () => {
       expect(dest.owner).toMatch(/US-\d{3}/);
     }
     expect(adminDestination('review').status).toBe('available');
-    for (const key of ['library', 'characters', 'publishing', 'generation'] as const) {
+    expect(adminDestination('library').status).toBe('available');
+    for (const key of ['characters', 'publishing', 'generation'] as const) {
       expect(adminDestination(key).status).toBe('not-implemented');
     }
   });

@@ -146,6 +146,24 @@ export interface CharacterReviewSummary {
   pendingCount: number;
 }
 
+export interface LibraryAssetView extends ReviewAssetView {
+  recencyBasis: 'approved' | 'added';
+  recentAt: string;
+}
+
+export const contentLibraryApi = {
+  list: (params: { characterId?: string; mediaType?: 'image' | 'video'; search?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.characterId) q.set('characterId', params.characterId);
+    if (params.mediaType) q.set('mediaType', params.mediaType);
+    if (params.search) q.set('search', params.search);
+    const suffix = q.toString() ? `?${q}` : '';
+    return request<{ recent: LibraryAssetView[]; assets: LibraryAssetView[]; filtered: boolean }>(
+      `/admin/content/library${suffix}`,
+    );
+  },
+};
+
 export const contentReviewApi = {
   summary: () =>
     request<{ characters: CharacterReviewSummary[] }>('/admin/content/review/summary'),

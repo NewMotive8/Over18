@@ -304,3 +304,122 @@ describe('US-106 revision — reject removes content from the active workflow', 
     expect(row.status).toBe('approved');
   });
 });
+
+describe('US-100 content library', () => {
+  async function approve(cookie: string, assetId: string) {
+    return ctx.app.inject({
+      method: 'POST',
+      url: `/admin/content/assets/${assetId}/approve`,
+      headers: { cookie },
+    });
+  }
+
+  it('requires admin', async () => {
+    const anon = await ctx.app.inject({ method: 'GET', url: '/admin/content/library' });
+    expect(anon.statusCode).toBe(401);
+    const cookie = await signUp('lurker@example.com');
+    const user = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    expect(user.statusCode).toBe(403);
+  });
+
+  it('surfaces recent content without any filter being applied', async () => {
+    await seedAsset('jpg');
+    const cookie = await adminCookie();
+    const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // The operator does not have to search to see what just changed.
+    expect(body.filtered).toBe(false);
+    expect(body.recent.length).toBeGreaterThan(0);
+    expect(Object.keys(body)[0]).toBe('recent'); // recent is presented first
+  });
+
+  it('orders recent content by the correct timestamp for each item', async () => {
+    const older = await seedAsset('jpg');
+    const newer = await seedAsset('jpg');
+    const cookie = await adminCookie();
+
+    // Approving `older` makes it the most recent EVENT, even though it was
+    // created first — recency follows approvedAt for approved content.
+    await approve(cookie, older.id);
+
+    const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    const recent = res.json().recent;
+    expect(recent[0].assetId).toBe(older.id);
+    expect(recent[0].recencyBasis).toBe('approved');
+    expect(recent.find((a: { assetId: string }) => a.assetId === newer.id).recencyBasis).toBe('added');
+  });
+
+  it('carries character, media type, status and Primary for each item', async () => {
+    await seedAsset('jpg');
+    await seedAsset('mp4');
+    const cookie = await adminCookie();
+    const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    const assets = res.json().assets;
+    expect(assets.every((a: { characterName: string }) => a.characterName === 'luna')).toBe(true);
+    expect(assets.map((a: { mediaType: string }) => a.mediaType).sort()).toEqual(['image', 'video']);
+    expect(assets.every((a: { status: string }) => a.status === 'under_review')).toBe(true);
+    // Product terminology only.
+    expect(assets[0]).toHaveProperty('isPrimary');
+    expect(assets[0]).not.toHaveProperty('isCanonical');
+  });
+
+  it('excludes rejected content from the active library', async () => {
+    const kept = await seedAsset('jpg');
+    const gone = await seedAsset('jpg');
+    const cookie = await adminCookie();
+    await ctx.app.inject({ method: 'POST', url: `/admin/content/assets/${gone.id}/reject`, headers: { cookie } });
+
+    const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    expect(res.json().assets.map((a: { assetId: string }) => a.assetId)).toEqual([kept.id]);
+    expect(res.json().recent.map((a: { assetId: string }) => a.assetId)).toEqual([kept.id]);
+  });
+
+  it('filters by media type and by character', async () => {
+    await seedAsset('jpg');
+    await seedAsset('mp4');
+    const cookie = await adminCookie();
+
+    const video = await ctx.app.inject({
+      method: 'GET',
+      url: '/admin/content/library?mediaType=video',
+      headers: { cookie },
+    });
+    expect(video.json().assets).toHaveLength(1);
+    expect(video.json().filtered).toBe(true);
+    // Recent stays visible even while a filter is applied.
+    expect(video.json().recent.length).toBe(2);
+
+    const byCharacter = await ctx.app.inject({
+      method: 'GET',
+      url: `/admin/content/library?characterId=${LUNA.id}`,
+      headers: { cookie },
+    });
+    expect(byCharacter.json().assets).toHaveLength(2);
+  });
+
+  it('never treats approved as published', async () => {
+    const a = await seedAsset('jpg');
+    const cookie = await adminCookie();
+    await approve(cookie, a.id);
+    const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    const item = res.json().assets[0];
+    expect(item.status).toBe('approved');
+    // No publishing concept exists yet — US-102 owns it.
+    expect(item).not.toHaveProperty('published');
+    expect(item).not.toHaveProperty('publishedAt');
+    expect(item).not.toHaveProperty('categories');
+  });
+
+  it('leaves the US-106 review queue behaviour intact', async () => {
+    const a = await seedAsset('jpg');
+    await seedAsset('jpg');
+    const cookie = await adminCookie();
+    await approve(cookie, a.id);
+    const queue = await ctx.app.inject({ method: 'GET', url: '/admin/content/review', headers: { cookie } });
+    // Approved content leaves the review queue but stays in the library.
+    expect(queue.json().assets).toHaveLength(1);
+    const lib = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    expect(lib.json().assets).toHaveLength(2);
+  });
+});

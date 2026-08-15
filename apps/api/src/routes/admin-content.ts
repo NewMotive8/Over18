@@ -10,9 +10,12 @@ import {
 } from '../services/visual-asset-service.js';
 import {
   getReviewAsset,
+  listLibrary,
+  listRecentLibrary,
   listReviewQueue,
   summariseReviewByCharacter,
   updateAssetMetadata,
+  type LibraryAsset,
   type MediaType,
 } from '../services/content-review-service.js';
 
@@ -55,8 +58,41 @@ function assetView(a: Awaited<ReturnType<typeof getReviewAsset>>) {
   };
 }
 
+/** Library view = the review view plus why the item counts as recent. */
+function libraryView(a: LibraryAsset) {
+  return { ...assetView(a)!, recencyBasis: a.recencyBasis, recentAt: a.recentAt };
+}
+
 export default async function adminContentRoutes(app: FastifyInstance, opts: { db: Db }) {
   const adminOnly = { preHandler: [app.requireAuth, app.requireAdmin] };
+
+  /**
+   * US-100 — the Content Library. One request returns BOTH the recent strip and
+   * the filtered library, so the operator sees what just changed without
+   * searching, and the UI needs no second round trip to render its default view.
+   */
+  app.get<{
+    Querystring: { characterId?: string; status?: string; mediaType?: string; search?: string };
+  }>('/admin/content/library', adminOnly, async (request, reply) => {
+    const q = request.query;
+    const filtered = Object.keys(q).length > 0;
+    const [recent, all] = await Promise.all([
+      listRecentLibrary(opts.db),
+      listLibrary(opts.db, {
+        characterId: q.characterId,
+        status: q.status as never,
+        mediaType: q.mediaType as MediaType | undefined,
+        search: q.search,
+      }),
+    ]);
+    return reply.send({
+      // Recent is always present and always first — it is the default view, not
+      // a filter the operator has to discover.
+      recent: recent.map(libraryView),
+      assets: all.map(libraryView),
+      filtered,
+    });
+  });
 
   /** Character-first entry: who has content waiting. */
   app.get('/admin/content/review/summary', adminOnly, async (_request, reply) => {

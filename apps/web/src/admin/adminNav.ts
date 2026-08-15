@@ -53,7 +53,7 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
     path: '/admin/content/library',
     matchPrefixes: ['/admin/content/library', '/admin/content'],
     description: 'Browse and manage all media',
-    status: 'not-implemented',
+    status: 'available',
     owner: 'US-100 — Content Library & Media Management',
   },
   {

@@ -16,6 +16,7 @@ import RequireAdmin from './admin/RequireAdmin';
 import AdminPlaceholder from './admin/AdminPlaceholder';
 import AdminHomePage from './pages/admin/AdminHomePage';
 import ContentReviewPage from './pages/admin/ContentReviewPage';
+import ContentLibraryPage from './pages/admin/ContentLibraryPage';
 
 /**
  * Application routes (US-18).
@@ -45,7 +46,7 @@ export default function App() {
       >
         <Route index element={<AdminHomePage />} />
         <Route path="content/review" element={<ContentReviewPage />} />
-        <Route path="content/library" element={<AdminPlaceholder destination="library" />} />
+        <Route path="content/library" element={<ContentLibraryPage />} />
         <Route path="characters" element={<AdminPlaceholder destination="characters" />} />
         <Route path="publishing" element={<AdminPlaceholder destination="publishing" />} />
         <Route path="generation" element={<AdminPlaceholder destination="generation" />} />
