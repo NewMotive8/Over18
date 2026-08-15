@@ -8,7 +8,7 @@ import {
 import { createRunPodPublicVideoProvider } from '../media-pipeline/runpod-video-public.js';
 import type { MediaProviders, VideoProvider } from '../media-pipeline/types.js';
 import { ProviderError } from '../media-pipeline/types.js';
-import { findModel } from '../generation/model-registry.js';
+import { findModel, listModels } from '../generation/model-registry.js';
 
 function envFlagTrue(name: string): boolean {
   return (process.env[name] ?? '').trim().toLowerCase() === 'true';
@@ -127,4 +127,18 @@ export function providersForModel(modelId: string, env: Env): MediaProviders {
     );
   }
   return providers;
+}
+
+/**
+ * US-103 — the registry model id matching the provider the environment has
+ * currently selected, so existing automated generation keeps its exact current
+ * behaviour while running through the shared configuration contract. The
+ * environment still decides; it is simply expressed as a model id now.
+ */
+export function modelIdForProviders(
+  type: 'image' | 'video',
+  providers: MediaProviders,
+): string | undefined {
+  const providerName = type === 'image' ? providers.image.name : providers.video.name;
+  return listModels(type).find((m) => m.provider === providerName)?.id;
 }

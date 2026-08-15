@@ -6,11 +6,11 @@ import type { CharacterVisualAssetRow } from '../db/schema.js';
 import { CostLedger } from '../media-pipeline/cost-ledger.js';
 import type { MediaProviders } from '../media-pipeline/types.js';
 import {
-  generateImageJob,
-  generateVideoJob,
   type MediaJobResult,
   type MediaStorageConfig,
 } from '../services/media-generation-service.js';
+import { submitAsMediaJobResult } from '../generation/jobs.js';
+import { modelIdForProviders } from '../services/media-providers.js';
 import { getVisualAssetById } from '../services/visual-asset-service.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -20,6 +20,7 @@ const RESOLUTIONS = ['480p', '720p', '1080p'] as const;
 
 /** Input-validation / precondition failures map to 400; everything else 502. */
 const CLIENT_ERROR_KINDS = new Set([
+  'invalid_configuration',
   'no_active_identity',
   'reference_not_found',
   'reference_not_local',
@@ -148,15 +149,17 @@ export default async function internalMediaRoutes(
       if (b.referenceAssetId && !UUID_RE.test(b.referenceAssetId)) {
         return reply.code(400).send({ error: 'invalid_request', message: 'referenceAssetId must be a UUID.' });
       }
-      const result = await generateImageJob(opts.db, deps(), {
+      // US-103: routed through the SHARED job path — the same one the future
+      // Generation Studio uses. One execution path, no duplicated provider logic.
+      const result = await submitAsMediaJobResult(opts.db, deps(), {
+        type: 'image',
         characterId: b.characterId,
         prompt: b.prompt,
-        referenceAssetId: b.referenceAssetId,
+        primaryReferenceAssetId: b.referenceAssetId,
         contentRating: b.contentRating,
-        status: b.status,
         width: b.width,
         height: b.height,
-      });
+      }, modelIdForProviders('image', opts.providers));
       request.log.info({ jobId: result.jobId, ok: result.ok, op: 'generate-image' }, 'media job');
       return respond(reply, result);
     },
@@ -173,15 +176,15 @@ export default async function internalMediaRoutes(
       if (!UUID_RE.test(b.sourceImageAssetId)) {
         return reply.code(400).send({ error: 'invalid_request', message: 'sourceImageAssetId must be a UUID.' });
       }
-      const result = await generateVideoJob(opts.db, deps(), {
+      const result = await submitAsMediaJobResult(opts.db, deps(), {
+        type: 'video',
         characterId: b.characterId,
         sourceImageAssetId: b.sourceImageAssetId,
         motionPrompt: b.motionPrompt,
         durationSeconds: b.durationSeconds,
         resolution: b.resolution,
         contentRating: b.contentRating,
-        status: b.status,
-      });
+      }, modelIdForProviders('video', opts.providers));
       request.log.info({ jobId: result.jobId, ok: result.ok, op: 'generate-video' }, 'media job');
       return respond(reply, result);
     },

@@ -78,6 +78,25 @@ describe('US-105 generation configuration', () => {
       expect(GENERATED_ASSET_STATUS).toBe('under_review');
     });
 
+    it('leaves video rating to be inherited from the source, but defaults images', () => {
+      // Regression guard: defaulting video to 'sfw' would silently relabel an
+      // explicit source still as safe. Images have no source to inherit from.
+      const image = resolveGenerationConfiguration(imageConfig(), ctx);
+      expect(image.ok).toBe(true);
+      if (image.ok) expect(image.effective.contentRating).toBe('sfw');
+
+      const video = resolveGenerationConfiguration(videoConfig(), ctx);
+      expect(video.ok).toBe(true);
+      if (video.ok) expect(video.effective.contentRating).toBeNull();
+
+      const explicitVideo = resolveGenerationConfiguration(
+        videoConfig({ contentRating: 'explicit' }),
+        ctx,
+      );
+      expect(explicitVideo.ok).toBe(true);
+      if (explicitVideo.ok) expect(explicitVideo.effective.contentRating).toBe('explicit');
+    });
+
     it('never carries a credential in the effective configuration', () => {
       const result = resolveGenerationConfiguration(imageConfig(), ctx);
       expect(result.ok).toBe(true);

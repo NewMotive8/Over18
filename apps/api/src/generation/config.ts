@@ -82,7 +82,14 @@ export interface EffectiveGenerationConfiguration {
   primaryReferenceAssetId: string | null;
   sourceImageAssetId: string | null;
   quantity: number;
-  contentRating: ContentRating;
+  /**
+   * NULL means "inherit from the source asset" and is only valid for video,
+   * where the still being animated already carries a rating. Defaulting video
+   * to 'sfw' here would silently relabel an explicit source as safe — a
+   * content-safety bug, not a cosmetic one. Images have no source to inherit
+   * from, so they always resolve to a concrete rating.
+   */
+  contentRating: ContentRating | null;
   /** Fully resolved model parameters — declared defaults merged with requests. */
   parameters: GenerationParameters;
   /** Where the produced asset lands. Always `under_review`. */

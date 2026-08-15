@@ -278,7 +278,9 @@ export function resolveGenerationConfiguration(
       primaryReferenceAssetId,
       sourceImageAssetId,
       quantity,
-      contentRating: config.contentRating ?? 'sfw',
+      // Image: no source to inherit from, so a concrete default is right.
+      // Video: null preserves the existing inherit-from-source behaviour.
+      contentRating: config.contentRating ?? (config.type === 'image' ? 'sfw' : null),
       parameters,
       resultStatus: GENERATED_ASSET_STATUS,
     },

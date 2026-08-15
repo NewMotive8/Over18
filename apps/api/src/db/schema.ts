@@ -283,9 +283,39 @@ export const generationJobStatus = pgEnum('generation_job_status', [
   'queued',
   'running',
   'completed',
+  /** Some outputs succeeded and some failed — successes are never discarded. */
   'partial',
   'failed',
+  'cancelled',
+  /** US-103: a sequence step whose required input never materialised. */
+  'blocked',
 ]);
+
+/**
+ * generation_sequence_runs — one execution of a saved sequence (US-103).
+ *
+ * A sequence is an ordered list of steps; a RUN is one pass through it. Each
+ * step becomes a generation_jobs row carrying `sequence_run_id` + `step_ordinal`,
+ * so "which sequence produced this asset?" is answerable by joining job -> run.
+ */
+export const generationSequenceRuns = pgTable(
+  'generation_sequence_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sequenceId: uuid('sequence_id').references(() => generationSequences.id, {
+      onDelete: 'set null',
+    }),
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    status: generationJobStatus('status').notNull().default('queued'),
+    totalSteps: integer('total_steps').notNull(),
+    completedSteps: integer('completed_steps').notNull().default(0),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => [index('generation_sequence_runs_character_idx').on(table.characterId)],
+);
 
 /**
  * generation_jobs — "what generation request did we actually submit?"
@@ -321,6 +351,13 @@ export const generationJobs = pgTable(
     /** Set when this job is a step of a sequence run. */
     sequenceRunId: uuid('sequence_run_id'),
     stepOrdinal: integer('step_ordinal'),
+    /** Bounded so a retry loop can never run away. */
+    retryCount: integer('retry_count').notNull().default(0),
+    /**
+     * Set by the caller so a resubmitted HTTP request cannot silently start a
+     * second paid generation. Unique when present.
+     */
+    idempotencyKey: text('idempotency_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp('completed_at', { withTimezone: true }),
   },
@@ -328,6 +365,7 @@ export const generationJobs = pgTable(
     index('generation_jobs_character_idx').on(table.characterId),
     index('generation_jobs_status_idx').on(table.status),
     index('generation_jobs_sequence_run_idx').on(table.sequenceRunId, table.stepOrdinal),
+    uniqueIndex('generation_jobs_idempotency_idx').on(table.idempotencyKey),
   ],
 );
 
@@ -385,3 +423,4 @@ export type MemoryRow = typeof memories.$inferSelect;
 export type GenerationJobRow = typeof generationJobs.$inferSelect;
 export type GenerationPresetRow = typeof generationPresets.$inferSelect;
 export type GenerationSequenceRow = typeof generationSequences.$inferSelect;
+export type GenerationSequenceRunRow = typeof generationSequenceRuns.$inferSelect;

@@ -56,10 +56,27 @@ export interface GenerationRunResult {
  * bad response should not discard the rest of a 3-video request. */
 const TERMINAL_FAILURE_KINDS = new Set(['budget_refused']);
 
+export interface RunOptions {
+  /**
+   * Called after every attempt so the caller can persist progress WHILE the run
+   * is in flight — that is what lets a UI show "5 / 8 completed" and what makes
+   * a crash mid-run leave an accurate record instead of a lie.
+   */
+  onAttempt?: (progress: {
+    attempt: number;
+    succeeded: number;
+    failed: number;
+    estimatedCostUsd: number;
+  }) => Promise<void> | void;
+  /** How many outputs still need producing; defaults to the full quantity. */
+  remaining?: number;
+}
+
 export async function runGenerationJob(
   db: Db,
   deps: MediaJobDeps,
   effective: EffectiveGenerationConfiguration,
+  options: RunOptions = {},
 ): Promise<GenerationRunResult> {
   const jobId = randomUUID();
   const assets: CharacterVisualAssetRow[] = [];
@@ -67,14 +84,20 @@ export async function runGenerationJob(
   let estimatedCostUsd = 0;
   let stoppedAt: number | null = null;
 
-  for (let attempt = 1; attempt <= effective.quantity; attempt += 1) {
+  // Deliberately SEQUENTIAL, not parallel. The CostLedger is file-backed, so
+  // concurrent authorize+record calls would race and could corrupt the ledger —
+  // and losing budget accounting is far worse than a slower run. Concurrency
+  // limit 1 is the honest bounded strategy here; raise it only if the ledger
+  // becomes transactional.
+  const target = options.remaining ?? effective.quantity;
+  for (let attempt = 1; attempt <= target; attempt += 1) {
     const result =
       effective.type === 'image'
         ? await generateImageJob(db, deps, {
             characterId: effective.characterId,
             prompt: effective.prompt,
             referenceAssetId: effective.primaryReferenceAssetId ?? undefined,
-            contentRating: effective.contentRating,
+            contentRating: effective.contentRating ?? 'sfw',
             status: effective.resultStatus,
             width: numberParam(effective, 'width'),
             height: numberParam(effective, 'height'),
@@ -85,31 +108,39 @@ export async function runGenerationJob(
             motionPrompt: effective.prompt,
             durationSeconds: numberParam(effective, 'durationSeconds'),
             resolution: resolutionParam(effective),
-            contentRating: effective.contentRating,
+            // undefined => the service inherits the source asset's rating.
+            contentRating: effective.contentRating ?? undefined,
             status: effective.resultStatus,
           });
 
     if (result.ok) {
       assets.push(result.asset);
       estimatedCostUsd += result.cost.estimatedCostUsd;
-      continue;
+    } else {
+      failures.push({ attempt, kind: result.error.kind, message: result.error.message });
     }
 
-    failures.push({ attempt, kind: result.error.kind, message: result.error.message });
-    if (TERMINAL_FAILURE_KINDS.has(result.error.kind)) {
+    await options.onAttempt?.({
+      attempt,
+      succeeded: assets.length,
+      failed: failures.length,
+      estimatedCostUsd,
+    });
+
+    if (!result.ok && TERMINAL_FAILURE_KINDS.has(result.error.kind)) {
       stoppedAt = attempt;
       break;
     }
   }
 
-  const attempted = stoppedAt ?? effective.quantity;
+  const attempted = stoppedAt ?? target;
   return {
     jobId,
     effective,
-    requested: effective.quantity,
+    requested: target,
     succeeded: assets.length,
     failed: failures.length,
-    skipped: effective.quantity - attempted,
+    skipped: target - attempted,
     assets,
     failures,
     estimatedCostUsd,

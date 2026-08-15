@@ -50,6 +50,13 @@
       "when": 1786775669590,
       "tag": "0006_short_thena",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786795324255,
+      "tag": "0007_silky_bulldozer",
+      "breakpoints": true
     }
   ]
 }
