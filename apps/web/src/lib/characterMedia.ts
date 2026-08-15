@@ -24,10 +24,15 @@ export interface CharacterVideo {
 }
 
 /**
- * The six APPROVED PoC clips only (US-16H set), mapped by role. Luna has a
- * single approved clip (Profile 04), which serves as her featured/hero media;
- * Ember and Sage use their approved Hero clip plus their profile clips. No
- * unapproved or invented media.
+ * The APPROVED PoC clips only, mapped by role. Luna has a single approved clip
+ * (Profile 04), which serves as her featured/hero media; Ember and Sage use
+ * their approved Hero clip plus their profile clips. No unapproved or invented
+ * media.
+ *
+ * US-88 adds Maria's three approved clips and PRESERVES Sage's entry: Sage is
+ * retired at the product level (characters.status = 'inactive'), so the
+ * data-driven surfaces stop asking for her media on their own. Her shipped
+ * files stay on disk and stay mapped, exactly as the story requires.
  */
 const MANIFEST: Record<string, CharacterVideo[]> = {
   luna: [
@@ -42,6 +47,14 @@ const MANIFEST: Record<string, CharacterVideo[]> = {
   sage: [
     { role: 'hero', src: '/media/sage/hero.mp4', poster: '/media/sage/hero.jpg', label: 'Cabin evenings' },
     { role: 'profile', src: '/media/sage/profile-02.mp4', poster: '/media/sage/profile-02.jpg', label: 'Unwinding' },
+  ],
+  // US-88 — Maria's approved supplied media (Content/Site, product name Maria,
+  // source name Sigal), copied byte-identical. Posters are first frames
+  // extracted technically from the clips themselves: no new visual content.
+  maria: [
+    { role: 'hero', src: '/media/maria/hero.mp4', poster: '/media/maria/hero.jpg', label: 'Maria' },
+    { role: 'profile', src: '/media/maria/profile-02.mp4', poster: '/media/maria/profile-02.jpg', label: 'Maria' },
+    { role: 'profile', src: '/media/maria/profile-03.mp4', poster: '/media/maria/profile-03.jpg', label: 'Maria' },
   ],
 };
 

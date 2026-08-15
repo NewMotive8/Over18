@@ -22,6 +22,7 @@ import {
 const LUNA = SEED_CHARACTERS.find((c) => c.name === 'luna')!;
 const EMBER = SEED_CHARACTERS.find((c) => c.name === 'ember')!;
 const SAGE = SEED_CHARACTERS.find((c) => c.name === 'sage')!;
+const MARIA = SEED_CHARACTERS.find((c) => c.name === 'maria')!;
 
 let ctx: TestContext;
 
@@ -95,17 +96,74 @@ describe('GET /api/characters/:id/visual-identity (seeded)', () => {
     expect(Object.keys(asset).sort()).toEqual(['id', 'imageUrl', 'position']);
   });
 
-  it('isolates identities per character (Luna ≠ Ember ≠ Sage)', async () => {
+  // US-88: Sage is retired, so the public surface no longer reaches her
+  // identity — the active roster is Luna, Ember and Maria.
+  it('isolates identities per character (Luna ≠ Ember ≠ Maria)', async () => {
     const luna = (await getVisual(LUNA.id)).json();
     const ember = (await getVisual(EMBER.id)).json();
-    const sage = (await getVisual(SAGE.id)).json();
+    const maria = (await getVisual(MARIA.id)).json();
     expect(luna.identity.characterId).toBe(LUNA.id);
     expect(ember.identity.characterId).toBe(EMBER.id);
-    expect(sage.identity.characterId).toBe(SAGE.id);
+    expect(maria.identity.characterId).toBe(MARIA.id);
     // Each gallery belongs to its own character (distinct placeholder labels).
     expect(luna.canonicalAssets[0].imageUrl).toContain('Luna');
     expect(ember.canonicalAssets[0].imageUrl).toContain('Ember');
     expect(luna.canonicalAssets[0].imageUrl).not.toContain('Ember');
+  });
+
+  /**
+   * ── US-88 — Maria's visual identity ───────────────────────────────────
+   */
+  it('AC2/AC4 — Maria exposes her approved Visual DNA and her one real canonical portrait', async () => {
+    const res = await getVisual(MARIA.id);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.identity).not.toBeNull();
+    expect(body.identity.characterId).toBe(MARIA.id);
+    expect(body.identity.version).toBe(1);
+
+    const attr = (label: string) =>
+      body.identity.attributes.find((a: { label: string }) => a.label === label);
+
+    // Adult age band via the existing mechanism, with no invented number.
+    expect(attr('Apparent age').value).toBe('adult');
+    expect(attr('Apparent age').value).not.toMatch(/\d/);
+    // Approved identity attributes are present and are Maria's own.
+    expect(attr('Eyes').value).toContain('brown');
+    expect(attr('Eyes').value).toContain('almond');
+    expect(attr('Hair').value).toContain('dark brown');
+    expect(attr('Hair').value).toContain('waves');
+    expect(attr('Skin').value).toContain('warm-neutral');
+    expect(attr('Lips').value).toContain('full');
+    expect(attr('Face').value).toContain('oval');
+    // No body attributes were supplied, so none were invented.
+    expect(attr('Body')).toBeUndefined();
+
+    // Exactly ONE canonical reference — the real supplied portrait. No
+    // fabricated Selfie/Mirror shots padding the usual three slots.
+    expect(body.canonicalAssets).toHaveLength(1);
+    expect(body.canonicalAssets[0].position).toBe(1);
+    expect(body.canonicalAssets[0].imageUrl).toBe('/media/maria/portrait.png');
+  });
+
+  it('AC6 — Sage\'s visual identity and canonical assets survive her retirement', async () => {
+    // The public route correctly refuses a retired character...
+    expect((await getVisual(SAGE.id)).statusCode).toBe(404);
+    // ...but the underlying records are all still there, untouched.
+    const identities = await ctx.pool.query(
+      `SELECT id, status, visual_dna FROM character_visual_identities WHERE character_id = $1`,
+      [SAGE.id],
+    );
+    expect(identities.rowCount).toBe(1);
+    expect(identities.rows[0].visual_dna).toBeTruthy();
+    const assets = await ctx.pool.query(
+      `SELECT id, is_canonical, storage_key, provenance FROM character_visual_assets WHERE character_id = $1`,
+      [SAGE.id],
+    );
+    expect(assets.rowCount).toBe(3);
+    expect(assets.rows.every((r) => r.is_canonical === true)).toBe(true);
+    expect(assets.rows.every((r) => String(r.storage_key).length > 0)).toBe(true);
+    expect(assets.rows.every((r) => r.provenance && Object.keys(r.provenance).length > 0)).toBe(true);
   });
 });
 

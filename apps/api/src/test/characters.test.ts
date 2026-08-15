@@ -71,22 +71,27 @@ describe('characters schema / migration', () => {
 });
 
 describe('seed data', () => {
-  it('creates exactly the 3 deterministic seed characters with fixed UUIDs', async () => {
+  it('creates exactly the 4 deterministic seed characters with fixed UUIDs', async () => {
     const count = await seedCharacters(ctx.db);
-    expect(count).toBe(3);
+    expect(count).toBe(4);
     const rows = await ctx.db.select().from(characters);
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     expect(rows.map((r) => r.id).sort()).toEqual(SEED_CHARACTERS.map((s) => s.id).sort());
-    // Complete realistic data: every seeded field is non-empty.
+    // Every seeded character is identifiable and has a display image.
     for (const row of rows) {
       expect(row.displayName.length).toBeGreaterThan(0);
+      expect(row.profileImage).toBeTruthy();
+    }
+    // US-88: the AUTHORED characters still carry complete realistic copy.
+    // Maria is excluded here on purpose — the PO approved neutral placeholders
+    // for her text rather than an invented biography (asserted separately
+    // below), so holding her to the authored-copy bar would be wrong.
+    for (const row of rows.filter((r) => r.name !== 'maria')) {
       expect(row.shortBio.length).toBeGreaterThan(10);
       expect(row.personality.length).toBeGreaterThan(10);
       expect(row.conversationStyle.length).toBeGreaterThan(10);
       expect(row.systemPrompt.length).toBeGreaterThan(10);
       expect(row.interests.length).toBeGreaterThanOrEqual(3);
-      expect(row.profileImage).toBeTruthy();
-      expect(row.status).toBe('active');
     }
   });
 
@@ -94,7 +99,103 @@ describe('seed data', () => {
     await seedCharacters(ctx.db);
     await seedCharacters(ctx.db);
     const rows = await ctx.db.select().from(characters);
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
+  });
+});
+
+/**
+ * ── US-88 — Retire Sage, add Maria ──────────────────────────────────────
+ *
+ * The active product roster is Luna, Ember and Maria. Sage is retired at the
+ * product level ONLY: her row, her identity, her assets and her provenance all
+ * survive, and her UUID is never reused.
+ */
+describe('US-88 roster: Maria active, Sage retired but preserved', () => {
+  const SAGE_SEED = SEED_CHARACTERS.find((c) => c.name === 'sage')!;
+  const MARIA_SEED = SEED_CHARACTERS.find((c) => c.name === 'maria')!;
+
+  it('AC1 — Maria exists and is active', async () => {
+    await seedCharacters(ctx.db);
+    const rows = await ctx.db.select().from(characters);
+    const maria = rows.find((r) => r.name === 'maria');
+    expect(maria).toBeDefined();
+    expect(maria!.displayName).toBe('Maria');
+    expect(maria!.status).toBe('active');
+  });
+
+  it('AC5 — Sage is inactive', async () => {
+    await seedCharacters(ctx.db);
+    const rows = await ctx.db.select().from(characters);
+    const sage = rows.find((r) => r.name === 'sage');
+    expect(sage).toBeDefined();
+    expect(sage!.status).toBe('inactive');
+  });
+
+  it('AC6 — Sage\'s row survives retirement with her content and UUID intact', async () => {
+    await seedCharacters(ctx.db);
+    // Re-seeding must never delete or blank a retired character.
+    await seedCharacters(ctx.db);
+    const rows = await ctx.db.select().from(characters);
+    const sage = rows.find((r) => r.name === 'sage')!;
+    expect(sage.id).toBe(SAGE_SEED.id);
+    expect(sage.displayName).toBe('Sage');
+    expect(sage.shortBio.length).toBeGreaterThan(10);
+    expect(sage.personality.length).toBeGreaterThan(10);
+    expect(sage.systemPrompt.length).toBeGreaterThan(10);
+    expect(sage.interests.length).toBeGreaterThanOrEqual(3);
+    expect(sage.profileImage).toBeTruthy();
+  });
+
+  it('Maria never reuses Sage\'s UUID', () => {
+    expect(MARIA_SEED.id).not.toBe(SAGE_SEED.id);
+    const ids = SEED_CHARACTERS.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('Maria carries the approved neutral placeholders — no invented biography', () => {
+    expect(MARIA_SEED.shortBio).toBe('');
+    expect(MARIA_SEED.personality).toBe('Not specified.');
+    expect(MARIA_SEED.conversationStyle).toBe('Default.');
+    expect(MARIA_SEED.systemPrompt).toBe('');
+    expect(MARIA_SEED.interests).toEqual([]);
+  });
+
+  it('AC3 — Maria\'s profile image is the approved supplied portrait', () => {
+    expect(MARIA_SEED.profileImage).toBe('/media/maria/portrait.png');
+  });
+
+  it('AC7 — Luna and Ember are untouched by US-88', async () => {
+    await seedCharacters(ctx.db);
+    const rows = await ctx.db.select().from(characters);
+    for (const name of ['luna', 'ember']) {
+      const seed = SEED_CHARACTERS.find((c) => c.name === name)!;
+      const row = rows.find((r) => r.name === name)!;
+      expect(row.id).toBe(seed.id);
+      expect(row.status).toBe('active');
+      expect(row.displayName).toBe(seed.displayName);
+      expect(row.shortBio).toBe(seed.shortBio);
+      expect(row.personality).toBe(seed.personality);
+      expect(row.conversationStyle).toBe(seed.conversationStyle);
+      expect(row.systemPrompt).toBe(seed.systemPrompt);
+      expect(row.interests).toEqual(seed.interests);
+      expect(row.profileImage).toBe(seed.profileImage);
+    }
+  });
+
+  it('AC5/AC12 — the public active-character API returns Maria and not Sage', async () => {
+    await seedCharacters(ctx.db);
+    const res = await ctx.app.inject({ method: 'GET', url: '/api/characters' });
+    expect(res.statusCode).toBe(200);
+    const names = res.json().map((c: { name: string }) => c.name);
+    expect(names).toContain('maria');
+    expect(names).not.toContain('sage');
+    expect(names.sort()).toEqual(['ember', 'luna', 'maria']);
+  });
+
+  it('a retired character reads as not-found through the public detail route', async () => {
+    await seedCharacters(ctx.db);
+    const res = await ctx.app.inject({ method: 'GET', url: `/api/characters/${SAGE_SEED.id}` });
+    expect(res.statusCode).toBe(404);
   });
 });
 
@@ -104,9 +205,10 @@ describe('GET /api/characters', () => {
     const res = await ctx.app.inject({ method: 'GET', url: '/api/characters' });
     expect(res.statusCode).toBe(200);
     const body = res.json();
+    // US-88: the active roster is Ember, Luna, Maria — Sage is retired.
     expect(body).toHaveLength(3);
-    // Ordered by display name: Ember, Luna, Sage.
-    expect(body.map((c: { displayName: string }) => c.displayName)).toEqual(['Ember', 'Luna', 'Sage']);
+    // Ordered by display name: Ember, Luna, Maria.
+    expect(body.map((c: { displayName: string }) => c.displayName)).toEqual(['Ember', 'Luna', 'Maria']);
   });
 
   it('never exposes system_prompt or status', async () => {
@@ -134,7 +236,9 @@ describe('GET /api/characters', () => {
     await ctx.pool.query(`UPDATE characters SET status = 'inactive' WHERE name = 'ember'`);
     const res = await ctx.app.inject({ method: 'GET', url: '/api/characters' });
     const names = res.json().map((c: { name: string }) => c.name);
-    expect(names).toEqual(['luna', 'sage']);
+    // Sage is already inactive from US-88, so deactivating Ember leaves Luna
+    // and Maria — the mechanism is the same soft-hide in both cases.
+    expect(names).toEqual(['luna', 'maria']);
   });
 
   it('returns an empty array when no characters exist (empty state)', async () => {
