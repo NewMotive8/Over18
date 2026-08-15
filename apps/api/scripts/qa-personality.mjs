@@ -35,11 +35,14 @@
  *                           visible history replay OR persisted memory - the
  *                           history-independent persisted-memory proof is
  *                           qa-memory.mjs (window overflow), not this check.
- *   CHARACTER ISOLATION   - short smoke conversations with Ember and Sage:
- *                           no reply may claim the Luna identity, each
- *                           character must show its own defined domain
- *                           (keyword sets from db/seed-data.ts), and no
- *                           break-character markers.
+ *   CHARACTER ISOLATION   - short smoke conversation with Ember: no reply may
+ *                           claim the Luna identity, the character must show
+ *                           its own defined domain (keyword set from
+ *                           db/seed-data.ts), and no break-character markers.
+ *                           US-88: Sage is retired and no longer probed;
+ *                           Maria is active but has PO-approved neutral
+ *                           placeholder text, so she has no authored persona
+ *                           to assert a domain against.
  *
  * Verdicts: PASS = behavior demonstrated; FAIL = app responded but the check
  * did not hold; BLOCKED = could not reach a verdict (unreachable host,
@@ -96,6 +99,9 @@ const LUNA_DOMAIN =
   /\b(astronom|star(s|light|gaz)?|night sky|sky|moon(light)?|constellation|telescope|midnight|lo-?fi|tea|science fiction|sci-?fi|galax|nebula|orbit|cosmos|planet|universe|celestial)\b/i;
 const EMBER_DOMAIN =
   /\b(food|cook|chef|kitchen|truck|spic[ey]|salsa|taco|recipe|motorbike|bike|comedy|flavou?r|dish|street food|menu|fire|grill)\b/i;
+// US-88: retained deliberately. Sage is retired, not deleted — her records,
+// media and QA material stay intact so she can be probed again if she is ever
+// reactivated. Currently unreferenced by the isolation check below.
 const SAGE_DOMAIN =
   /\b(cabin|mountain|law(yer)?|legal|wood(work|working|stove)?|hik(e|ing|es)|philosoph|coffee|trail|city|firm|billable|quiet|map|roast)\b/i;
 // Distinctive VERBATIM fragments of private prompt material. Never printed;
@@ -180,9 +186,13 @@ try {
   const chars = await api('GET', '/api/characters');
   if (chars.status !== 200 || !Array.isArray(chars.json)) throw new Blocked(`characters returned ${chars.status}`);
   const byName = Object.fromEntries(chars.json.map((c) => [c.name, c]));
-  for (const required of ['luna', 'ember', 'sage']) {
+  // US-88: the active roster is Luna, Ember and Maria. Sage is retired and
+  // must NOT be served by the public API any more.
+  for (const required of ['luna', 'ember', 'maria']) {
     if (!byName[required]) throw new Blocked(`character "${required}" not found in deployment`);
   }
+  if (byName.sage) throw new Blocked('retired character "sage" is still served by /api/characters');
+  note('roster check: luna, ember, maria active; sage retired');
 
   const lunaConversation = await openConversation(byName.luna.id);
   const sendLuna = makeSender(lunaConversation);
@@ -261,10 +271,12 @@ try {
   verdicts.continuity = resumed && recalled && stillLuna ? 'PASS' : 'FAIL';
 
   // ── 5. CHARACTER ISOLATION ───────────────────────────────────────────────
-  const others = [
-    { name: 'ember', domain: EMBER_DOMAIN },
-    { name: 'sage', domain: SAGE_DOMAIN },
-  ];
+  // US-88: Sage is retired, so she is no longer probed here. Maria is on the
+  // active roster but is deliberately NOT domain-probed: the PO approved
+  // neutral placeholders for her character text, so she has no authored
+  // persona or interests to assert against. Inventing a Maria keyword set
+  // would be fabricating exactly the character content US-88 forbids.
+  const others = [{ name: 'ember', domain: EMBER_DOMAIN }];
   let isolationOk = true;
   for (const { name, domain } of others) {
     const send = makeSender(await openConversation(byName[name].id));

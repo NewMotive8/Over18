@@ -6,7 +6,6 @@
  */
 
 export interface LlmEnv {
-  /** Adapter selection; only 'openai-compatible' exists today. */
   provider: 'openai-compatible';
   baseUrl: string;
   model: string;
@@ -14,20 +13,32 @@ export interface LlmEnv {
   timeoutMs: number;
   maxTokens: number;
   temperature: number;
-  /** US-10 context window: max prior messages sent to the model. */
   contextMaxMessages: number;
-  /** US-10 context window: max total chars of prior-message content sent. */
   contextMaxChars: number;
 }
 
-/** US-12 basic user memory tuning. Always present (defaults apply). */
 export interface MemoryEnv {
-  /** Max memories injected into a single prompt. */
   maxInjected: number;
-  /** Max total characters of memory content injected into a single prompt. */
   maxInjectedChars: number;
-  /** Max memories stored per (user, character); oldest are evicted beyond this. */
   maxStored: number;
+}
+
+export interface MediaEnv {
+  storageDir: string;
+  publicBaseUrl: string | null;
+  internalToken: string | null;
+  ledgerPath: string;
+  atlas: {
+    baseUrl: string;
+    imageModel: string;
+    videoModel: string;
+    live: boolean;
+  };
+  runpod: {
+    endpointId: string | null;
+    live: boolean;
+    preferForImages: boolean;
+  };
 }
 
 export interface Env {
@@ -38,18 +49,24 @@ export interface Env {
   cookieSecure: boolean;
   cookieSameSite: 'lax' | 'strict' | 'none';
   sessionTtlDays: number;
-  /** True when NODE_ENV=production — deterministic fallback replies are forbidden there. */
   isProduction: boolean;
-  /** Null when no inference endpoint is configured. */
   llm: LlmEnv | null;
-  /** US-12 memory bounds (defaults apply when env vars are unset). */
   memory: MemoryEnv;
+  media: MediaEnv;
+}
+
+/** True for "true" / "TRUE" / " true " — ignores accidental whitespace. */
+function envFlagTrue(name: string): boolean {
+  return (process.env[name] ?? '').trim().toLowerCase() === 'true';
+}
+
+function envNonEmpty(name: string): boolean {
+  return (process.env[name] ?? '').trim().length > 0;
 }
 
 export function loadEnv(): Env {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
-    // Deliberately does NOT print any connection details — there are none to print.
     console.error(
       'FATAL: DATABASE_URL is not set. ' +
         'Provide a PostgreSQL connection string via the DATABASE_URL environment variable ' +
@@ -64,15 +81,10 @@ export function loadEnv(): Env {
     process.exit(1);
   }
 
-  // LLM inference endpoint (US-08). Configured entirely through env vars so
-  // the model/provider can be selected later without code changes. Unset:
-  // development falls back to deterministic replies; production refuses to
-  // fake AI and answers sends with a clear ai_not_configured error.
   let llm: LlmEnv | null = null;
   if (process.env.LLM_BASE_URL) {
     const model = process.env.LLM_MODEL;
     if (!model) {
-      // Values are never logged — only which variable is missing.
       console.error('FATAL: LLM_BASE_URL is set but LLM_MODEL is missing.');
       process.exit(1);
     }
@@ -94,12 +106,16 @@ export function loadEnv(): Env {
     };
   }
 
+  const runpodEndpointId = (process.env.RUNPOD_ENDPOINT_ID ?? '').trim() || null;
+
   return {
     databaseUrl,
     port: Number(process.env.PORT ?? 3001),
     host: process.env.HOST ?? '0.0.0.0',
     corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
-    cookieSecure: (process.env.COOKIE_SECURE ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')) === 'true',
+    cookieSecure:
+      (process.env.COOKIE_SECURE ?? (process.env.NODE_ENV === 'production' ? 'true' : 'false')).trim() ===
+      'true',
     cookieSameSite: sameSite,
     sessionTtlDays: Number(process.env.SESSION_TTL_DAYS ?? 30),
     isProduction: process.env.NODE_ENV === 'production',
@@ -108,6 +124,26 @@ export function loadEnv(): Env {
       maxInjected: Number(process.env.MEMORY_MAX_INJECTED ?? 10),
       maxInjectedChars: Number(process.env.MEMORY_MAX_INJECTED_CHARS ?? 2_000),
       maxStored: Number(process.env.MEMORY_MAX_STORED ?? 100),
+    },
+    media: {
+      storageDir: process.env.MEDIA_STORAGE_DIR ?? 'var/media',
+      publicBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL || null,
+      internalToken: process.env.INTERNAL_MEDIA_TOKEN || null,
+      ledgerPath: process.env.MEDIA_LEDGER_PATH ?? 'var/media/cost-ledger.json',
+      atlas: {
+        baseUrl: process.env.ATLAS_BASE_URL ?? 'https://api.atlascloud.ai/api/v1',
+        imageModel: process.env.ATLAS_IMAGE_MODEL ?? 'black-forest-labs/flux-kontext-dev',
+        videoModel: process.env.ATLAS_VIDEO_MODEL ?? 'atlascloud/wan-2.7-spicy/image-to-video',
+        live: envFlagTrue('MEDIA_LIVE_CONFIRM') && envNonEmpty('ATLASCLOUD_API_KEY'),
+      },
+      runpod: {
+        endpointId: runpodEndpointId,
+        live:
+          envFlagTrue('MEDIA_RUNPOD_CONFIRM') &&
+          envNonEmpty('RUNPOD_API_KEY') &&
+          Boolean(runpodEndpointId),
+        preferForImages: (process.env.MEDIA_IMAGE_PROVIDER ?? 'runpod').trim().toLowerCase() !== 'atlas',
+      },
     },
   };
 }

@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../db/client.js';
 import { buildApp, type BuildAppOptions } from '../app.js';
@@ -29,6 +30,26 @@ export const testEnv: Env = {
   isProduction: false,
   llm: null, // tests always inject providers explicitly — no real endpoint
   memory: { maxInjected: 10, maxInjectedChars: 2_000, maxStored: 100 },
+  media: {
+    // US-36: media tests inject the mock provider; these paths are a writable
+    // scratch area, and the internal token is fixed so tests can present it.
+    storageDir: `${tmpdir()}/over18-test-media`,
+    publicBaseUrl: null,
+    internalToken: 'test-internal-token',
+    ledgerPath: `${tmpdir()}/over18-test-media/cost-ledger.json`,
+    atlas: {
+      baseUrl: 'https://example.invalid/api/v1',
+      imageModel: 'test-image-model',
+      videoModel: 'test-video-model',
+      live: false,
+    },
+    // US-87: default off in tests (providers injected explicitly).
+    runpod: {
+      endpointId: null,
+      live: false,
+      preferForImages: true,
+    },
+  },
 };
 
 export function migrateTestDb(): void {
