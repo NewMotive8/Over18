@@ -10,6 +10,7 @@ import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import internalMediaRoutes from './routes/internal-media.js';
+import generationRoutes from './routes/generation.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 import type { MediaProviders } from './media-pipeline/types.js';
@@ -84,6 +85,15 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
       storage: { storageDir: env.media.storageDir, publicBaseUrl: env.media.publicBaseUrl },
       ledgerPath: env.media.ledgerPath,
       internalToken: env.media.internalToken,
+    });
+
+    // US-103 admin generation API — same providers/ledger/storage, but gated by
+    // session auth + admin role rather than the shared internal token.
+    await app.register(generationRoutes, {
+      db,
+      providers: options.mediaProviders,
+      storage: { storageDir: env.media.storageDir, publicBaseUrl: env.media.publicBaseUrl },
+      ledgerPath: env.media.ledgerPath,
     });
   }
 

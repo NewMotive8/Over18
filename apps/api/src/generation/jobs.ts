@@ -13,10 +13,11 @@
  * independent `character_visual_assets` rows, each individually reviewable.
  */
 
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, ne } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
   generationJobs,
+  generationResults,
   type CharacterVisualAssetRow,
   type GenerationJobRow,
   type GenerationResultRow,
@@ -142,7 +143,14 @@ export async function executeGenerationJob(
 
   const outstanding = pendingResults(rows).filter((r) => r.attempts < MAX_RESULT_ATTEMPTS);
 
-  await db.update(generationJobs).set({ status: 'running' }).where(eq(generationJobs.id, jobId));
+  // ATOMIC CLAIM: only one process can move this job out of a non-running
+  // state. The loser gets no row back and returns without executing.
+  const [claimedJob] = await db
+    .update(generationJobs)
+    .set({ status: 'running' })
+    .where(and(eq(generationJobs.id, jobId), ne(generationJobs.status, 'running')))
+    .returning();
+  if (!claimedJob) return null;
 
   const assets: CharacterVisualAssetRow[] = [];
   let costUsd = Number(job.estimatedCostUsd ?? 0);
@@ -151,6 +159,8 @@ export async function executeGenerationJob(
   // authorize+record would race and could corrupt budget accounting.
   for (const row of outstanding) {
     const outcome = await executeResult(db, deps, effective, row);
+    // Another process had already claimed this result — skip, never double-pay.
+    if (!outcome.claimed) continue;
     if (outcome.asset) assets.push(outcome.asset);
     costUsd += outcome.estimatedCostUsd;
 
@@ -244,6 +254,15 @@ export async function recoverStaleJobs(db: Db): Promise<GenerationJobRow[]> {
     .update(generationJobs)
     .set({ status: 'queued' })
     .where(eq(generationJobs.status, 'running'));
+  // Results left mid-flight are returned to 'pending' so they are eligible
+  // again; the atomic claim above still guarantees only one process picks
+  // each one up.
+  for (const job of stale) {
+    await db
+      .update(generationResults)
+      .set({ status: 'pending' })
+      .where(and(eq(generationResults.jobId, job.id), eq(generationResults.status, 'running')));
+  }
   return stale;
 }
 

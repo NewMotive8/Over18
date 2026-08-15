@@ -11,7 +11,7 @@
  * the character_visual_assets row it produced. No duplicate asset concept.
  */
 
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
   generationResults,
@@ -53,6 +53,8 @@ export interface ResultOutcome {
   estimatedCostUsd: number;
   /** Terminal for the whole run — later attempts would be refused too. */
   budgetRefused: boolean;
+  /** False when another process already held this result; nothing was run. */
+  claimed: boolean;
 }
 
 /**
@@ -65,10 +67,27 @@ export async function executeResult(
   effective: EffectiveGenerationConfiguration,
   result: GenerationResultRow,
 ): Promise<ResultOutcome> {
-  await db
+  // ATOMIC CLAIM. A conditional UPDATE ... RETURNING is the whole mechanism:
+  // Postgres serialises the row update, so if two processes race, exactly one
+  // sees a row back and the other sees none. Without this, stale-job recovery
+  // could have two processes generating (and paying for) the same result.
+  const [claimed] = await db
     .update(generationResults)
     .set({ status: 'running', attempts: result.attempts + 1 })
-    .where(eq(generationResults.id, result.id));
+    // Claim ONLY outstanding work. `!= running` was too weak: a result that had
+    // already finished could be claimed a second time, which is exactly the
+    // double-generation (and double-spend) this guard exists to prevent.
+    .where(
+      and(
+        eq(generationResults.id, result.id),
+        inArray(generationResults.status, ['pending', 'failed']),
+      ),
+    )
+    .returning();
+
+  if (!claimed) {
+    return { result, asset: null, estimatedCostUsd: 0, budgetRefused: false, claimed: false };
+  }
 
   const attempt = await runSingleAttempt(db, deps, effective);
 
@@ -89,6 +108,7 @@ export async function executeResult(
       asset: attempt.asset,
       estimatedCostUsd: attempt.cost.estimatedCostUsd,
       budgetRefused: false,
+      claimed: true,
     };
   }
 
@@ -108,6 +128,7 @@ export async function executeResult(
     asset: null,
     estimatedCostUsd: 0,
     budgetRefused: attempt.error.kind === 'budget_refused',
+    claimed: true,
   };
 }
 

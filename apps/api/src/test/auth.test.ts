@@ -122,7 +122,11 @@ describe('GET /api/auth/me', () => {
       cookies: { [cookie.name]: cookie.value },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ id: reg.json().id, email: NORMALIZED });
+    // US-103 added `role` to the safe profile. It is still an explicit
+    // allow-list — password_hash must never appear here.
+    expect(res.json()).toEqual({ id: reg.json().id, email: NORMALIZED, role: 'user' });
+    expect(res.json()).not.toHaveProperty('password_hash');
+    expect(res.json()).not.toHaveProperty('passwordHash');
   });
 
   it('returns 401 without authentication', async () => {

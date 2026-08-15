@@ -20,10 +20,19 @@ import type { VisualDna } from '@over18/shared';
  * password_hash holds a bcrypt hash, never plaintext, and is never
  * returned through the API.
  */
+/**
+ * US-103 CROSS-SPRINT: the smallest possible authorization concept.
+ * Two values, no RBAC, no groups, no permission matrix — its only job is to
+ * stop an ordinary authenticated app user invoking generation operations that
+ * spend real money. Defaults to 'user', so every existing row is unprivileged.
+ */
+export const userRole = pgEnum('user_role', ['user', 'admin']);
+
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
+  role: userRole('role').notNull().default('user'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

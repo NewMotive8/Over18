@@ -17,15 +17,17 @@ const BCRYPT_COST = 12;
 export interface SafeUser {
   id: string;
   email: string;
+  /** 'user' | 'admin'. Still an allow-listed field — never the password hash. */
+  role: UserRow['role'];
 }
 
 export type RegisterResult =
   | { ok: true; user: SafeUser }
   | { ok: false; error: 'email_taken' };
 
-export function toSafeUser(row: Pick<UserRow, 'id' | 'email'>): SafeUser {
+export function toSafeUser(row: Pick<UserRow, 'id' | 'email' | 'role'>): SafeUser {
   // Explicit allow-list — password_hash can never leak through here.
-  return { id: row.id, email: row.email };
+  return { id: row.id, email: row.email, role: row.role };
 }
 
 export function normalizeEmail(email: string): string {
@@ -43,7 +45,7 @@ export async function registerUser(db: Db, email: string, password: string): Pro
     const [row] = await db
       .insert(users)
       .values({ email: normalized, passwordHash })
-      .returning({ id: users.id, email: users.email });
+      .returning({ id: users.id, email: users.email, role: users.role });
     return { ok: true, user: toSafeUser(row!) };
   } catch (err) {
     // Unique-violation on users.email → duplicate registration.
@@ -85,7 +87,7 @@ export async function createSession(
 /** Returns the user for a valid, unexpired session token, or null. */
 export async function getUserForToken(db: Db, rawToken: string): Promise<SafeUser | null> {
   const row = await db
-    .select({ id: users.id, email: users.email })
+    .select({ id: users.id, email: users.email, role: users.role })
     .from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
     .where(and(eq(sessions.tokenHash, hashToken(rawToken)), gt(sessions.expiresAt, new Date())))

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
-import { generationJobs } from '../db/schema.js';
+import { generationJobs, generationResults } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
 import { createMockProviders } from '../media-pipeline/mock-adapter.js';
@@ -519,5 +519,57 @@ describe('US-103 asynchronous execution contract', () => {
     expect(resumed!.assets).toHaveLength(1);
     expect(resumed!.job.status).toBe('completed');
     expect(resumed!.job.succeededCount).toBe(2);
+  });
+});
+
+describe('US-103 atomic claiming (database-as-queue safety)', () => {
+  it('lets only one of two concurrent executions claim the same result', async () => {
+    const created = await createGenerationJob(ctx.db, imageConfig());
+    if (!created.ok) return;
+    const [row] = await listResults(ctx.db, created.value.id);
+    const effective = created.value.effectiveConfig as never;
+
+    // Two processes race for the same result row.
+    const [a, b] = await Promise.all([
+      executeResult(ctx.db, deps(), effective, row),
+      executeResult(ctx.db, deps(), effective, row),
+    ]);
+
+    const claimed = [a, b].filter((o) => o.claimed);
+    expect(claimed).toHaveLength(1);
+    // Exactly one asset was produced — the loser never called the provider,
+    // so the same output is never paid for twice.
+    expect([a, b].filter((o) => o.asset !== null)).toHaveLength(1);
+    expect(await listResults(ctx.db, created.value.id)).toHaveLength(1);
+  });
+
+  it('lets only one of two concurrent executions claim the same job', async () => {
+    const created = await createGenerationJob(ctx.db, imageConfig({ quantity: 2 }));
+    if (!created.ok) return;
+    const [a, b] = await Promise.all([
+      executeGenerationJob(ctx.db, deps(), created.value.id),
+      executeGenerationJob(ctx.db, deps(), created.value.id),
+    ]);
+    // The loser gets null rather than running the job a second time.
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+    const rows = await listResults(ctx.db, created.value.id);
+    expect(rows.filter((r) => r.status === 'succeeded')).toHaveLength(2);
+  });
+
+  it('returns mid-flight results to pending on recovery so they can be reclaimed', async () => {
+    const created = await createGenerationJob(ctx.db, imageConfig({ quantity: 2 }));
+    if (!created.ok) return;
+    await ctx.db
+      .update(generationJobs)
+      .set({ status: 'running' })
+      .where(eq(generationJobs.id, created.value.id));
+    await ctx.db
+      .update(generationResults)
+      .set({ status: 'running' })
+      .where(eq(generationResults.jobId, created.value.id));
+
+    await recoverStaleJobs(ctx.db);
+    const rows = await listResults(ctx.db, created.value.id);
+    expect(rows.every((r) => r.status === 'pending')).toBe(true);
   });
 });

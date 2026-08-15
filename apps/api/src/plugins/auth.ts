@@ -13,6 +13,12 @@ declare module 'fastify' {
   interface FastifyInstance {
     /** preHandler that rejects unauthenticated requests with 401. */
     requireAuth: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /**
+     * preHandler that rejects non-admins with 403. Runs AFTER requireAuth and
+     * reuses the same session — it is not a second authentication system, only
+     * an authorization check on the user the session already resolved.
+     */
+    requireAdmin: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
 
@@ -42,6 +48,21 @@ export default fp(async function authPlugin(app, opts: { db: Db }) {
   app.decorate('requireAuth', async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.currentUser) {
       await reply.code(401).send({ error: 'unauthorized', message: 'Authentication required.' });
+    }
+  });
+
+  app.decorate('requireAdmin', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.currentUser) {
+      await reply.code(401).send({ error: 'unauthorized', message: 'Authentication required.' });
+      return;
+    }
+    if (request.currentUser.role !== 'admin') {
+      // 403, not 404: the caller is authenticated, just not permitted. Money
+      // can be spent through these routes, so ordinary users are refused here
+      // rather than deeper in the stack.
+      await reply
+        .code(403)
+        .send({ error: 'forbidden', message: 'Administrator access required.' });
     }
   });
 });
