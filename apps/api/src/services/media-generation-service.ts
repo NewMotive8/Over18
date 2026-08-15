@@ -12,6 +12,7 @@ import {
   type VisualAssetStatus,
 } from './visual-asset-service.js';
 import { getActiveVisualIdentity } from './visual-identity-service.js';
+import { GENERATED_ASSET_STATUS } from '../generation/config.js';
 
 /**
  * Media generation job service (US-36 PoC).
@@ -55,7 +56,8 @@ export interface GenerateImageInput {
   /** Optional identity-consistent reference (must be a locally-stored asset). */
   referenceAssetId?: string;
   contentRating?: ContentRating;
-  /** Initial lifecycle status; defaults to 'generated'. Never canonical. */
+  /** Initial lifecycle status; defaults to `under_review` (US-105 / EPIC 11:
+   * generation never makes content live). Never canonical. */
   status?: Extract<VisualAssetStatus, 'generated' | 'under_review'>;
   width?: number;
   height?: number;
@@ -172,7 +174,7 @@ export async function generateImageJob(
       characterId: input.characterId,
       visualIdentityId: identity.id,
       kind: 'generated',
-      status: input.status ?? 'generated',
+      status: input.status ?? GENERATED_ASSET_STATUS,
       contentRating: input.contentRating ?? 'sfw',
       storageKey,
       provenance: {
@@ -261,7 +263,7 @@ export async function generateVideoJob(
       characterId: input.characterId,
       visualIdentityId: source.visualIdentityId,
       kind: 'generated',
-      status: input.status ?? 'generated',
+      status: input.status ?? GENERATED_ASSET_STATUS,
       contentRating: input.contentRating ?? (source.contentRating as ContentRating),
       storageKey,
       provenance: {

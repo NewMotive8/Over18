@@ -278,6 +278,102 @@ export const characterVisualAssets = pgTable(
   ],
 );
 
+/** US-105 — lifecycle of a submitted generation job. */
+export const generationJobStatus = pgEnum('generation_job_status', [
+  'queued',
+  'running',
+  'completed',
+  'partial',
+  'failed',
+]);
+
+/**
+ * generation_jobs — "what generation request did we actually submit?"
+ *
+ * Distinct from the configuration ("what do we want?") and from the produced
+ * assets ("what came out?"). `effective_config` is the resolved, validated
+ * configuration and is what makes a job reproducible and retryable. It carries
+ * provider and model BY NAME only — never an API key, endpoint secret or
+ * authorization header.
+ */
+export const generationJobs = pgTable(
+  'generation_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    visualIdentityId: uuid('visual_identity_id').references(
+      () => characterVisualIdentities.id,
+      { onDelete: 'set null' },
+    ),
+    type: text('type').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    status: generationJobStatus('status').notNull().default('queued'),
+    effectiveConfig: jsonb('effective_config').notNull(),
+    requestedQuantity: integer('requested_quantity').notNull().default(1),
+    succeededCount: integer('succeeded_count').notNull().default(0),
+    failedCount: integer('failed_count').notNull().default(0),
+    estimatedCostUsd: text('estimated_cost_usd'),
+    actualCostUsd: text('actual_cost_usd'),
+    failures: jsonb('failures').notNull().default(sql`'[]'::jsonb`),
+    /** Set when this job is a step of a sequence run. */
+    sequenceRunId: uuid('sequence_run_id'),
+    stepOrdinal: integer('step_ordinal'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('generation_jobs_character_idx').on(table.characterId),
+    index('generation_jobs_status_idx').on(table.status),
+    index('generation_jobs_sequence_run_idx').on(table.sequenceRunId, table.stepOrdinal),
+  ],
+);
+
+/**
+ * generation_presets — a saved, valid generation configuration.
+ *
+ * A preset is NOT a generation engine. It is re-validated against current model
+ * capabilities every time it is loaded, so a preset saved before a model changed
+ * fails loudly instead of silently generating something else.
+ */
+export const generationPresets = pgTable(
+  'generation_presets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    /** NULL = reusable across characters. */
+    characterId: uuid('character_id').references(() => characters.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    config: jsonb('config').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('generation_presets_name_idx').on(table.name)],
+);
+
+/**
+ * generation_sequences — an ORDERED LIST of generation configurations.
+ *
+ * Deliberately a jsonb array and not a graph: EPIC 11 explicitly excludes
+ * branching, conditions, loops, parallel branches, scheduling and triggers. The
+ * only dataflow permitted is a step consuming the immediately prior step's
+ * output, expressed as `usePreviousStepOutput` on a step.
+ */
+export const generationSequences = pgTable(
+  'generation_sequences',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    characterId: uuid('character_id').references(() => characters.id, { onDelete: 'cascade' }),
+    steps: jsonb('steps').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('generation_sequences_character_idx').on(table.characterId)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -286,3 +382,6 @@ export type MessageRow = typeof messages.$inferSelect;
 export type CharacterVisualIdentityRow = typeof characterVisualIdentities.$inferSelect;
 export type CharacterVisualAssetRow = typeof characterVisualAssets.$inferSelect;
 export type MemoryRow = typeof memories.$inferSelect;
+export type GenerationJobRow = typeof generationJobs.$inferSelect;
+export type GenerationPresetRow = typeof generationPresets.$inferSelect;
+export type GenerationSequenceRow = typeof generationSequences.$inferSelect;

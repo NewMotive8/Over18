@@ -84,7 +84,9 @@ describe('POST /internal/media/generate-image', () => {
     const { jobId, asset, cost } = res.json();
     expect(jobId).toMatch(/[0-9a-f-]{36}/);
     expect(asset.kind).toBe('generated');
-    expect(asset.status).toBe('generated');
+    // US-105 / EPIC 11 lifecycle: generation NEVER makes content live. A new
+    // asset lands in review and becomes visible only through explicit approval.
+    expect(asset.status).toBe('under_review');
     expect(asset.isCanonical).toBe(false); // never auto-canonical
     expect(asset.contentRating).toBe('sfw');
     expect(asset.mediaType).toBe('image');

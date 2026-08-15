@@ -43,6 +43,13 @@
       "when": 1786306366714,
       "tag": "0005_young_tomorrow_man",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786775669590,
+      "tag": "0006_short_thena",
+      "breakpoints": true
     }
   ]
 }

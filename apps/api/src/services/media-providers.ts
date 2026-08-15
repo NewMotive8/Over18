@@ -7,6 +7,8 @@ import {
 } from '../media-pipeline/runpod-adapter.js';
 import { createRunPodPublicVideoProvider } from '../media-pipeline/runpod-video-public.js';
 import type { MediaProviders, VideoProvider } from '../media-pipeline/types.js';
+import { ProviderError } from '../media-pipeline/types.js';
+import { findModel } from '../generation/model-registry.js';
 
 function envFlagTrue(name: string): boolean {
   return (process.env[name] ?? '').trim().toLowerCase() === 'true';
@@ -97,4 +99,32 @@ export function selectMediaProviders(env: Env): MediaProviders {
     return atlas;
   }
   return mock();
+}
+
+/**
+ * US-105 — resolve the provider bundle for an explicitly chosen model.
+ *
+ * Per-request model selection (the Studio's model picker) must not silently run
+ * on whatever provider the environment happens to have enabled: asking for
+ * Atlas FLUX and quietly getting RunPod would make the persisted effective
+ * configuration a lie. When the chosen model's provider is not the configured
+ * one, this refuses LOCALLY with `unsupported_request` — before any paid call —
+ * which is the same contract the capability validation uses.
+ *
+ * Adapters and the ImageProvider/VideoProvider interfaces are untouched.
+ */
+export function providersForModel(modelId: string, env: Env): MediaProviders {
+  const model = findModel(modelId);
+  if (!model) {
+    throw new ProviderError('unsupported_request', `"${modelId}" is not a registered model`);
+  }
+  const providers = selectMediaProviders(env);
+  const active = model.type === 'image' ? providers.image.name : providers.video.name;
+  if (active !== model.provider) {
+    throw new ProviderError(
+      'unsupported_request',
+      `${model.label} requires the "${model.provider}" provider, but "${active}" is currently configured for ${model.type} generation`,
+    );
+  }
+  return providers;
 }
