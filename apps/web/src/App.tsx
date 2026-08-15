@@ -15,6 +15,7 @@ import AdminShell from './admin/AdminShell';
 import RequireAdmin from './admin/RequireAdmin';
 import AdminPlaceholder from './admin/AdminPlaceholder';
 import AdminHomePage from './pages/admin/AdminHomePage';
+import ContentReviewPage from './pages/admin/ContentReviewPage';
 
 /**
  * Application routes (US-18).
@@ -43,7 +44,7 @@ export default function App() {
         }
       >
         <Route index element={<AdminHomePage />} />
-        <Route path="content/review" element={<AdminPlaceholder destination="review" />} />
+        <Route path="content/review" element={<ContentReviewPage />} />
         <Route path="content/library" element={<AdminPlaceholder destination="library" />} />
         <Route path="characters" element={<AdminPlaceholder destination="characters" />} />
         <Route path="publishing" element={<AdminPlaceholder destination="publishing" />} />

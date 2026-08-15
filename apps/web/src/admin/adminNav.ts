@@ -44,7 +44,7 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
     path: '/admin/content/review',
     matchPrefixes: ['/admin/content/review'],
     description: 'Approve or reject newly generated content',
-    status: 'not-implemented',
+    status: 'available',
     owner: 'US-106 — Generated Content Review & Approval',
   },
   {

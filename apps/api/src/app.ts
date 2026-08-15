@@ -11,6 +11,7 @@ import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
+import adminContentRoutes from './routes/admin-content.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 import type { MediaProviders } from './media-pipeline/types.js';
@@ -66,6 +67,9 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     };
   });
 
+  // US-106 admin content review — reads existing assets, so it does not
+  // depend on media providers being configured.
+  await app.register(adminContentRoutes, { db });
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
   await app.register(conversationRoutes, { db });

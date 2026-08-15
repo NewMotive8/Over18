@@ -119,3 +119,50 @@ export const authApi = {
     return request<AuthUser>('/api/auth/me');
   },
 };
+
+/** US-106 — admin content review. Uses the same session-cookie request helper. */
+export interface ReviewAssetView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  status: 'generated' | 'under_review' | 'approved' | 'rejected';
+  contentRating: 'sfw' | 'explicit';
+  isPrimary: boolean;
+  storageKey: string | null;
+  createdAt: string;
+  approvedAt: string | null;
+  provenance: {
+    jobId: string | null;
+    provider: string | null;
+    model: string | null;
+    generatedAt: string | null;
+  };
+}
+
+export interface CharacterReviewSummary {
+  characterId: string;
+  characterName: string;
+  pendingCount: number;
+}
+
+export const contentReviewApi = {
+  summary: () =>
+    request<{ characters: CharacterReviewSummary[] }>('/admin/content/review/summary'),
+  queue: (params: { characterId?: string; mediaType?: 'image' | 'video' } = {}) => {
+    const q = new URLSearchParams();
+    if (params.characterId) q.set('characterId', params.characterId);
+    if (params.mediaType) q.set('mediaType', params.mediaType);
+    const suffix = q.toString() ? `?${q}` : '';
+    return request<{ assets: ReviewAssetView[] }>(`/admin/content/review${suffix}`);
+  },
+  approve: (assetId: string) =>
+    request<ReviewAssetView>(`/admin/content/assets/${assetId}/approve`, { method: 'POST' }),
+  reject: (assetId: string) =>
+    request<ReviewAssetView>(`/admin/content/assets/${assetId}/reject`, { method: 'POST' }),
+  setRating: (assetId: string, contentRating: 'sfw' | 'explicit') =>
+    request<ReviewAssetView>(`/admin/content/assets/${assetId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ contentRating }),
+    }),
+};
