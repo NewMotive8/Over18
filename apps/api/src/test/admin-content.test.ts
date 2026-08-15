@@ -230,3 +230,77 @@ describe('US-106 asset detail and metadata', () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+describe('US-106 revision — reject removes content from the active workflow', () => {
+  it('a rejected asset leaves the queue while other pending assets stay pending', async () => {
+    const a = await seedAsset('jpg');
+    const b = await seedAsset('jpg');
+    const cookie = await adminCookie();
+
+    // Both are visible while awaiting review.
+    const before = await ctx.app.inject({ method: 'GET', url: '/admin/content/review', headers: { cookie } });
+    expect(before.json().assets).toHaveLength(2);
+
+    await ctx.app.inject({ method: 'POST', url: `/admin/content/assets/${a.id}/reject`, headers: { cookie } });
+
+    const after = await ctx.app.inject({ method: 'GET', url: '/admin/content/review', headers: { cookie } });
+    const ids = after.json().assets.map((x: { assetId: string }) => x.assetId);
+    expect(ids).toEqual([b.id]);
+
+    // ...and the per-character count drops with it.
+    const summary = await ctx.app.inject({
+      method: 'GET',
+      url: '/admin/content/review/summary',
+      headers: { cookie },
+    });
+    expect(summary.json().characters[0].pendingCount).toBe(1);
+  });
+
+  it('a rejected asset can never proceed through approval', async () => {
+    const a = await seedAsset('jpg');
+    const cookie = await adminCookie();
+    await ctx.app.inject({ method: 'POST', url: `/admin/content/assets/${a.id}/reject`, headers: { cookie } });
+
+    const retried = await ctx.app.inject({
+      method: 'POST',
+      url: `/admin/content/assets/${a.id}/approve`,
+      headers: { cookie },
+    });
+    expect(retried.statusCode).toBe(409);
+
+    const [row] = await ctx.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, a.id));
+    expect(row.status).toBe('rejected');
+    expect(row.isCanonical).toBe(false); // never publishable, never Primary
+  });
+
+  it('rejection uses the EXISTING lifecycle — no new status is introduced', async () => {
+    const a = await seedAsset('jpg');
+    const cookie = await adminCookie();
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/admin/content/assets/${a.id}/reject`,
+      headers: { cookie },
+    });
+    // EPIC 7's enum only. Nothing like 'deleted' or 'removed' may appear.
+    expect(['generated', 'under_review', 'approved', 'rejected']).toContain(res.json().status);
+    expect(res.json().status).toBe('rejected');
+  });
+
+  it('leaves already-approved content untouched', async () => {
+    const approved = await seedAsset('jpg');
+    const doomed = await seedAsset('jpg');
+    const cookie = await adminCookie();
+
+    await ctx.app.inject({ method: 'POST', url: `/admin/content/assets/${approved.id}/approve`, headers: { cookie } });
+    await ctx.app.inject({ method: 'POST', url: `/admin/content/assets/${doomed.id}/reject`, headers: { cookie } });
+
+    const [row] = await ctx.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, approved.id));
+    expect(row.status).toBe('approved');
+  });
+});

@@ -160,9 +160,4 @@ export const contentReviewApi = {
     request<ReviewAssetView>(`/admin/content/assets/${assetId}/approve`, { method: 'POST' }),
   reject: (assetId: string) =>
     request<ReviewAssetView>(`/admin/content/assets/${assetId}/reject`, { method: 'POST' }),
-  setRating: (assetId: string, contentRating: 'sfw' | 'explicit') =>
-    request<ReviewAssetView>(`/admin/content/assets/${assetId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ contentRating }),
-    }),
 };

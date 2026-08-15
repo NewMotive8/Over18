@@ -5,6 +5,16 @@ import {
   type ReviewAssetView,
   API_URL,
 } from '../../lib/api';
+import {
+  cancel,
+  canReject,
+  IDLE,
+  REJECT_ACTION_LABEL,
+  REJECT_CONFIRM_BODY,
+  REJECT_CONFIRM_TITLE,
+  requestReject,
+  type DecisionIntent,
+} from '../../admin/reviewDecisions';
 
 /**
  * US-106 — the operator's morning review, character first.
@@ -24,6 +34,7 @@ export default function ContentReviewPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [intent, setIntent] = useState<DecisionIntent>(IDLE);
 
   const refresh = useCallback(async (nextCharacterId?: string | null) => {
     setLoading(true);
@@ -47,6 +58,10 @@ export default function ContentReviewPage() {
   }, [characterId, refresh]);
 
   async function decide(asset: ReviewAssetView, decision: 'approve' | 'reject') {
+    // Rejection is destructive from the operator's point of view, so it may
+    // only proceed for the exact asset they confirmed.
+    if (decision === 'reject' && !canReject(intent, asset.assetId)) return;
+    setIntent(IDLE);
     setBusyId(asset.assetId);
     setError(null);
     try {
@@ -129,7 +144,10 @@ export default function ContentReviewPage() {
                 <li key={a.assetId}>
                   <button
                     type="button"
-                    onClick={() => setSelected(a)}
+                    onClick={() => {
+                      setSelected(a);
+                      setIntent(IDLE);
+                    }}
                     className={`w-full overflow-hidden rounded-lg border text-left transition-colors ${
                       selected?.assetId === a.assetId
                         ? 'border-rose-600'
@@ -195,27 +213,58 @@ export default function ContentReviewPage() {
                 )}
               </dl>
 
-              <div className="mt-4 flex gap-2">
-                <button
-                  type="button"
-                  disabled={busyId === selected.assetId}
-                  onClick={() => void decide(selected, 'approve')}
-                  className="flex-1 rounded-md bg-rose-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+              {canReject(intent, selected.assetId) ? (
+                <div
+                  role="alertdialog"
+                  aria-label={REJECT_CONFIRM_TITLE}
+                  className="mt-4 rounded-md border border-rose-900 bg-rose-950/30 p-3"
                 >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  disabled={busyId === selected.assetId}
-                  onClick={() => void decide(selected, 'reject')}
-                  className="flex-1 rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300 disabled:opacity-50"
-                >
-                  Reject
-                </button>
-              </div>
-              <p className="mt-2 text-[11px] leading-snug text-zinc-600">
-                Rejecting retires the asset. Its record and media are preserved.
-              </p>
+                  <p className="text-sm font-medium text-white">{REJECT_CONFIRM_TITLE}</p>
+                  <p className="mt-1 text-xs leading-snug text-zinc-400">{REJECT_CONFIRM_BODY}</p>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIntent(cancel())}
+                      className="flex-1 rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyId === selected.assetId}
+                      onClick={() => void decide(selected, 'reject')}
+                      className="flex-1 rounded-md bg-rose-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      {REJECT_ACTION_LABEL}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      type="button"
+                      disabled={busyId === selected.assetId}
+                      onClick={() => void decide(selected, 'approve')}
+                      className="flex-1 rounded-md bg-rose-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyId === selected.assetId}
+                      onClick={() => setIntent(requestReject(selected.assetId))}
+                      className="flex-1 rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300 disabled:opacity-50"
+                    >
+                      {REJECT_ACTION_LABEL}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-[11px] leading-snug text-zinc-600">
+                    Approving keeps content in the workflow for publishing later. Rejecting removes
+                    it from the active workflow.
+                  </p>
+                </>
+              )}
             </div>
           ) : (
             <p className="text-sm text-zinc-500">Select an item to inspect it.</p>
