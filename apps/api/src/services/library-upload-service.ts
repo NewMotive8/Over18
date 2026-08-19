@@ -49,6 +49,15 @@ const ACCEPTED: Record<string, { ext: string; media: 'image' | 'video' }> = {
 
 export const ACCEPTED_MIME_TYPES = Object.keys(ACCEPTED);
 
+/**
+ * 'image' | 'video' for an accepted MIME type, else null. Exported so callers
+ * can reject a file BEFORE creating any database rows, rather than discovering
+ * the problem half-way through a multi-step operation.
+ */
+export function acceptedMediaTypeOf(mimeType: string): 'image' | 'video' | null {
+  return ACCEPTED[mimeType]?.media ?? null;
+}
+
 export type LibraryUploadErrorKind = 'unsupported_type' | 'empty_file' | 'no_active_identity';
 
 export class LibraryUploadError extends Error {
@@ -71,6 +80,27 @@ export interface LibraryUploadInput {
   contentRating?: ContentRating;
   /** Admin user id, recorded as the approver of this manual addition. */
   uploadedBy?: string;
+  /**
+   * US-101. 'generated' (the default, and every pre-existing caller) is an
+   * ordinary Library item. 'reference' makes this a PRIMARY REFERENCE for the
+   * character's visual identity: approveVisualAsset promotes only references
+   * to canonical, so the same upload path produces the identity's reference
+   * set without a second storage mechanism or a duplicated file.
+   */
+  kind?: 'reference' | 'generated';
+  /**
+   * Which identity VERSION this asset belongs to. Defaults to the character's
+   * active identity (the pre-existing behaviour). Naming it explicitly is what
+   * lets a reference be attached to a draft version before it is activated.
+   */
+  visualIdentityId?: string;
+  /**
+   * Optional label tying this asset to a content requirement. Passed straight
+   * through, never defaulted: until the requirements model exists there is no
+   * correct default, and inventing one here would hard-code a vocabulary the
+   * next slice has to undo.
+   */
+  requirementKey?: string | null;
 }
 
 export interface LibraryUploadStorage {
@@ -121,21 +151,29 @@ export async function uploadLibraryAsset(
     throw new LibraryUploadError('empty_file', 'The selected file is empty.');
   }
 
-  // An upload attaches to the character's ACTIVE identity version — the same
+  // An upload attaches to a specific identity VERSION. Unless one is named it
+  // is the character's ACTIVE version — the pre-existing behaviour, and the
   // version the rest of the visual system treats as current.
-  const identity = await getActiveVisualIdentity(db, input.characterId);
-  if (!identity) {
-    throw new LibraryUploadError(
-      'no_active_identity',
-      'That character has no active visual identity to attach an upload to.',
-    );
+  let visualIdentityId = input.visualIdentityId;
+  if (!visualIdentityId) {
+    const identity = await getActiveVisualIdentity(db, input.characterId);
+    if (!identity) {
+      throw new LibraryUploadError(
+        'no_active_identity',
+        'That character has no active visual identity to attach an upload to.',
+      );
+    }
+    visualIdentityId = identity.id;
   }
 
   const created = await createVisualAsset(db, {
     characterId: input.characterId,
-    visualIdentityId: identity.id,
-    kind: 'generated',
+    visualIdentityId,
+    // createVisualAsset enforces that the version belongs to this character,
+    // so a mismatched pair is rejected rather than silently cross-linked.
+    kind: input.kind ?? 'generated',
     contentRating: input.contentRating ?? 'sfw',
+    requirementKey: input.requirementKey ?? null,
     provenance: {
       source: 'manual-upload',
       originalName: input.originalName ?? null,

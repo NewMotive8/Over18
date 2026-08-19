@@ -60,6 +60,12 @@ export interface CreateVisualAssetInput {
   contentRating?: ContentRating;
   position?: number | null;
   storageKey?: string | null;
+  /**
+   * Optional join point to a content requirement (see schema.ts). Never
+   * defaulted here: an asset no caller labelled stays unlabelled, so no
+   * requirement vocabulary is baked into this service.
+   */
+  requirementKey?: string | null;
 }
 
 /**
@@ -105,6 +111,7 @@ export async function createVisualAsset(
       storageKey: input.storageKey ?? null,
       provenance: input.provenance ?? {},
       contentRating: input.contentRating ?? 'sfw',
+      requirementKey: input.requirementKey ?? null,
     })
     .returning();
 

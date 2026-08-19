@@ -15,14 +15,16 @@ describe('US-99 admin navigation model', () => {
 
   it('does not pretend unimplemented areas work', () => {
     // Every area names the ticket that delivers it, and only areas that are
-    // genuinely built may claim 'available'. US-106 shipped Review; the rest
-    // must still declare themselves unbuilt.
+    // genuinely built may claim 'available'. Review (US-106), Library (US-100)
+    // and now Characters (US-101) are built; the rest must still declare
+    // themselves unbuilt rather than presenting dead links as features.
     for (const dest of ADMIN_DESTINATIONS) {
       expect(dest.owner).toMatch(/US-\d{3}/);
     }
-    expect(adminDestination('review').status).toBe('available');
-    expect(adminDestination('library').status).toBe('available');
-    for (const key of ['characters', 'publishing', 'generation'] as const) {
+    for (const key of ['review', 'library', 'characters'] as const) {
+      expect(adminDestination(key).status).toBe('available');
+    }
+    for (const key of ['publishing', 'generation'] as const) {
       expect(adminDestination(key).status).toBe('not-implemented');
     }
   });

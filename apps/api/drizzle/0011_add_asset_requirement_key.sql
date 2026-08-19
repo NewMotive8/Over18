@@ -1,0 +1,1 @@
+ALTER TABLE "character_visual_assets" ADD COLUMN "requirement_key" text;

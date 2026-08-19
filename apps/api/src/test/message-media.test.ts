@@ -563,6 +563,7 @@ describe('resolveMediaFile', () => {
     isCanonical: false,
     position: null,
     contentRating: 'sfw' as const,
+    requirementKey: null,
     approvedBy: null,
     approvedAt: null,
     createdAt: new Date(),

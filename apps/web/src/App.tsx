@@ -17,6 +17,8 @@ import AdminPlaceholder from './admin/AdminPlaceholder';
 import AdminHomePage from './pages/admin/AdminHomePage';
 import ContentReviewPage from './pages/admin/ContentReviewPage';
 import ContentLibraryPage from './pages/admin/ContentLibraryPage';
+import AdminCharactersPage from './pages/admin/AdminCharactersPage';
+import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
 
 /**
  * Application routes (US-18).
@@ -47,7 +49,9 @@ export default function App() {
         <Route index element={<AdminHomePage />} />
         <Route path="content/review" element={<ContentReviewPage />} />
         <Route path="content/library" element={<ContentLibraryPage />} />
-        <Route path="characters" element={<AdminPlaceholder destination="characters" />} />
+        {/* US-101 — character identity management. */}
+        <Route path="characters" element={<AdminCharactersPage />} />
+        <Route path="characters/:characterId" element={<AdminCharacterDetailPage />} />
         <Route path="publishing" element={<AdminPlaceholder destination="publishing" />} />
         <Route path="generation" element={<AdminPlaceholder destination="generation" />} />
       </Route>

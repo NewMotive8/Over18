@@ -13,12 +13,17 @@ import conversationMediaRoutes from './routes/conversation-media.js';
 import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
 import adminContentRoutes from './routes/admin-content.js';
+import adminCharacterRoutes from './routes/admin-characters.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 import {
   createDeterministicMediaSelector,
   type MediaSelector,
 } from './services/message-media-service.js';
+import {
+  unconfiguredProfileAuthor,
+  type ProfileAuthor,
+} from './services/character-profile-service.js';
 import type { MediaProviders } from './media-pipeline/types.js';
 
 export interface BuildAppOptions {
@@ -40,6 +45,12 @@ export interface BuildAppOptions {
    * env.chatMedia.enabled — injecting one cannot switch the feature on.
    */
   mediaSelector?: MediaSelector;
+  /**
+   * Character profile Autofill. Defaults to the unconfigured author, which
+   * reports Autofill as unavailable rather than inventing a profile — the same
+   * "fail clearly, never fake" rule the reply provider follows.
+   */
+  profileAuthor?: ProfileAuthor;
 }
 
 /**
@@ -87,6 +98,17 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
       storageDir: env.media.storageDir,
       servePathPrefix: '/admin/content/uploads',
     },
+  });
+  // US-101 character / visual identity / primary reference management.
+  // Registered alongside the content routes but as its OWN plugin: identity
+  // management and content review are deliberately separate surfaces.
+  await app.register(adminCharacterRoutes, {
+    db,
+    uploadStorage: {
+      storageDir: env.media.storageDir,
+      servePathPrefix: '/admin/content/uploads',
+    },
+    profileAuthor: options.profileAuthor ?? unconfiguredProfileAuthor,
   });
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });

@@ -227,3 +227,192 @@ export const contentReviewApi = {
   reject: (assetId: string) =>
     request<ReviewAssetView>(`/admin/content/assets/${assetId}/reject`, { method: 'POST' }),
 };
+
+/* ------------------------------------------------------------------ *
+ * US-101 — character, visual identity and primary reference management
+ * ------------------------------------------------------------------ */
+
+export interface AdminCharacterView {
+  id: string;
+  name: string;
+  displayName: string;
+  profileImage: string | null;
+  shortBio: string;
+  personality: string;
+  interests: string[];
+  conversationStyle: string;
+  systemPrompt: string;
+  status: 'active' | 'inactive';
+  createdAt: string;
+  updatedAt: string;
+  /** False while any descriptive field is still blank (quick-created draft). */
+  profileComplete: boolean;
+  /** The still-blank fields, named, so the UI can be specific rather than vague. */
+  missingProfileFields: string[];
+}
+
+export interface AdminCharacterListItem extends AdminCharacterView {
+  activeIdentityVersion: number | null;
+  identityVersionCount: number;
+  primaryReferenceCount: number;
+}
+
+export interface VisualIdentityView {
+  id: string;
+  characterId: string;
+  version: number;
+  status: 'draft' | 'active' | 'retired';
+  label: string | null;
+  visualDna: Record<string, unknown>;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PrimaryReferenceView {
+  assetId: string;
+  characterId: string;
+  visualIdentityId: string;
+  kind: 'reference' | 'generated';
+  status: string;
+  isPrimary: boolean;
+  position: number | null;
+  contentRating: 'sfw' | 'explicit';
+  mediaType: 'image' | 'video';
+  fileUrl: string | null;
+  createdAt: string;
+}
+
+export interface AdminCharacterDetail {
+  character: AdminCharacterView;
+  identities: VisualIdentityView[];
+  activeIdentity: VisualIdentityView | null;
+  primaryReferences: PrimaryReferenceView[];
+}
+
+/** Fields an operator may set. Exactly the columns the schema already has. */
+export interface CharacterDraft {
+  name: string;
+  displayName: string;
+  shortBio: string;
+  personality: string;
+  conversationStyle: string;
+  systemPrompt: string;
+  interests: string[];
+  status?: 'active' | 'inactive';
+}
+
+/** What Autofill proposes. A DRAFT — nothing is saved until the operator says so. */
+export interface CharacterProfileDraft {
+  displayName: string;
+  shortBio: string;
+  personality: string;
+  conversationStyle: string;
+  systemPrompt: string;
+  interests: string[];
+}
+
+export interface QuickCreatedCharacter {
+  character: AdminCharacterView;
+  identity: VisualIdentityView;
+  primaryReference: PrimaryReferenceView;
+}
+
+/**
+ * Multipart POST. Separate from `request` because the browser must set
+ * Content-Type itself (it alone knows the boundary), but the error handling is
+ * identical, so it is shared rather than copied a third time.
+ */
+async function postMultipart<T>(path: string, form: FormData, failure: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  });
+  if (!res.ok) {
+    let code = 'request_failed';
+    let message = `${failure} (${res.status}).`;
+    try {
+      const body = (await res.json()) as Partial<ApiError>;
+      if (body.error) code = body.error;
+      if (body.message) message = body.message;
+    } catch {
+      // Non-JSON error body — keep the generic message.
+    }
+    throw new ApiRequestError(res.status, code, message);
+  }
+  return (await res.json()) as T;
+}
+
+export const adminCharactersApi = {
+  list: () => request<AdminCharacterListItem[]>('/admin/characters'),
+  /**
+   * Name + one image is enough to create a character: the server also creates
+   * visual identity v1, activates it, and files the image as her primary
+   * reference. The persona is filled in afterwards, by hand or by Autofill.
+   */
+  quickCreate: (input: { name: string; displayName?: string; file: File }) => {
+    const form = new FormData();
+    form.append('name', input.name);
+    if (input.displayName) form.append('displayName', input.displayName);
+    form.append('file', input.file);
+    return postMultipart<QuickCreatedCharacter>(
+      '/admin/characters/quick',
+      form,
+      "Couldn't create the character",
+    );
+  },
+  /** Proposes a persona. Returns a draft only — call `update` to save it. */
+  autofill: (characterId: string) =>
+    request<{ draft: CharacterProfileDraft }>(
+      `/admin/characters/${encodeURIComponent(characterId)}/autofill`,
+      { method: 'POST' },
+    ),
+  get: (id: string) => request<AdminCharacterDetail>(`/admin/characters/${encodeURIComponent(id)}`),
+  create: (draft: CharacterDraft) =>
+    request<AdminCharacterView>('/admin/characters', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    }),
+  update: (id: string, patch: Partial<CharacterDraft>) =>
+    request<AdminCharacterView>(`/admin/characters/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  listIdentities: (characterId: string) =>
+    request<VisualIdentityView[]>(`/admin/characters/${encodeURIComponent(characterId)}/identities`),
+  createIdentity: (
+    characterId: string,
+    body: { visualDna?: Record<string, unknown>; label?: string; fromIdentityId?: string },
+  ) =>
+    request<VisualIdentityView>(
+      `/admin/characters/${encodeURIComponent(characterId)}/identities`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  activateIdentity: (identityId: string) =>
+    request<VisualIdentityView>(`/admin/identities/${encodeURIComponent(identityId)}/activate`, {
+      method: 'POST',
+    }),
+  listReferences: (identityId: string) =>
+    request<PrimaryReferenceView[]>(
+      `/admin/identities/${encodeURIComponent(identityId)}/references`,
+    ),
+  /** Multipart, so the browser must set the boundary — see postMultipart. */
+  uploadReference: (identityId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return postMultipart<PrimaryReferenceView>(
+      `/admin/identities/${encodeURIComponent(identityId)}/references`,
+      form,
+      'Upload failed',
+    );
+  },
+  removePrimary: (assetId: string) =>
+    request<PrimaryReferenceView>(`/admin/references/${encodeURIComponent(assetId)}/primary`, {
+      method: 'DELETE',
+    }),
+  makePrimary: (assetId: string) =>
+    request<PrimaryReferenceView>(`/admin/references/${encodeURIComponent(assetId)}/primary`, {
+      method: 'POST',
+    }),
+};

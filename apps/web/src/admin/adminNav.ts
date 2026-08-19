@@ -62,7 +62,7 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
     path: '/admin/characters',
     matchPrefixes: ['/admin/characters'],
     description: 'Characters, visual identity and Primary references',
-    status: 'not-implemented',
+    status: 'available',
     owner: 'US-101 — Visual Identity & Primary Reference Management',
   },
   {

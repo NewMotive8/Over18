@@ -292,6 +292,28 @@ export const characterVisualAssets = pgTable(
     storageKey: text('storage_key'),
     provenance: jsonb('provenance').$type<Record<string, unknown>>().notNull().default({}),
     contentRating: contentRating('content_rating').notNull().default('sfw'),
+    /**
+     * Which CONFIGURED content requirement this asset satisfies, if any.
+     *
+     * Deliberately a nullable free-text KEY, not an enum and not a foreign key,
+     * and this slice never writes a value to it. It exists so the configurable
+     * content-requirements work lands as a pure ADDITION rather than a
+     * migration that re-shapes assets:
+     *
+     *  - free text, so new categories are CONFIGURATION rows, not schema
+     *    changes — an enum would need a migration per new requirement type;
+     *  - nullable, so every existing asset stays valid and uncategorised
+     *    content reads as "needs triage" rather than being silently miscounted;
+     *  - a loose key rather than an FK to a requirement ROW, so requirements
+     *    can be re-versioned, renamed or re-scoped without rewriting assets.
+     *    Matching is by key at read time, which is what makes "existing
+     *    approved content counts toward changed requirements" free, and what
+     *    guarantees a requirements change never deletes or regenerates media.
+     *
+     * NOTE: this is a join point, not a requirement definition. No category
+     * names are hard-coded anywhere in this slice.
+     */
+    requirementKey: text('requirement_key'),
     approvedBy: uuid('approved_by'),
     approvedAt: timestamp('approved_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
