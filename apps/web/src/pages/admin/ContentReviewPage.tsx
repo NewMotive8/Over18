@@ -5,6 +5,7 @@ import {
   type ReviewAssetView,
   API_URL,
 } from '../../lib/api';
+import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
 import {
   cancel,
   canReject,
@@ -154,12 +155,15 @@ export default function ContentReviewPage() {
                         : 'border-zinc-800 hover:border-zinc-700'
                     }`}
                   >
-                    <div className="aspect-[3/4] bg-zinc-900">
+                    {/* Same fixed frame and the same fitting rule as the
+                        Library grid — see lib/mediaTile. Contain, not cover:
+                        a reviewer must judge the whole asset, not a crop. */}
+                    <div className={tileFrameClass()}>
                       {a.storageKey && a.mediaType === 'image' ? (
                         <img
                           src={`${API_URL}${a.storageKey}`}
                           alt=""
-                          className="h-full w-full object-cover"
+                          className={TILE_MEDIA_CLASS}
                           loading="lazy"
                         />
                       ) : (

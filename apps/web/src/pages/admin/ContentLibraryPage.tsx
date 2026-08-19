@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PublicCharacter } from '@over18/shared';
 import { API_URL, charactersApi, contentLibraryApi, type LibraryAssetView } from '../../lib/api';
+import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
 
 /**
  * US-100 — Content Library.
@@ -22,21 +23,18 @@ function relative(iso: string): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-function Tile({ a, onOpen, dense }: { a: LibraryAssetView; onOpen: () => void; dense?: boolean }) {
+export function Tile({ a, onOpen, dense }: { a: LibraryAssetView; onOpen: () => void; dense?: boolean }) {
   return (
     <button
       type="button"
       onClick={onOpen}
       className="w-full overflow-hidden rounded-lg border border-zinc-800 text-left transition-colors hover:border-zinc-700"
     >
-      {/* Fixed-ratio frame, unchanged. Both media types now fill it the same
-          way: object-cover preserves the source aspect ratio and crops only
-          the overflow — this design is edge-to-edge, so nothing is letterboxed
-          and nothing is stretched. Video previously rendered a text
-          placeholder, which is why videos looked inconsistent with images. */}
-      <div className={`${dense ? 'aspect-square' : 'aspect-[3/4]'} relative bg-zinc-900`}>
+      {/* Fixed-ratio frame. Images and video are fitted IDENTICALLY — see
+          TILE_MEDIA_CLASS for why this is contain rather than cover. */}
+      <div className={tileFrameClass(dense)}>
         {a.storageKey && a.mediaType === 'image' ? (
-          <img src={`${API_URL}${a.storageKey}`} alt="" loading="lazy" className="h-full w-full object-cover" />
+          <img src={`${API_URL}${a.storageKey}`} alt="" loading="lazy" className={TILE_MEDIA_CLASS} />
         ) : a.storageKey && a.mediaType === 'video' ? (
           <>
             <video
@@ -44,7 +42,7 @@ function Tile({ a, onOpen, dense }: { a: LibraryAssetView; onOpen: () => void; d
               muted
               playsInline
               preload="metadata"
-              className="h-full w-full object-cover"
+              className={TILE_MEDIA_CLASS}
             />
             <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 py-0.5 text-[10px] uppercase tracking-wide text-zinc-200">
               video
