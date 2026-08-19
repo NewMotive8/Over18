@@ -22,11 +22,27 @@ export const PENDING_STATUSES = ['generated', 'under_review'] as const satisfies
 export type MediaType = 'image' | 'video';
 
 /**
- * Media type is derived from the stored file extension. The schema has no
- * media_type column, and inventing one would be a schema change this ticket
- * does not need — so the derivation is explicit and in one place.
+ * Media type, resolved in one place. The schema has no media_type column, and
+ * inventing one would be a schema change this ticket does not need.
+ *
+ * Provenance FIRST, extension second. A manual upload's storage_key is a route
+ * path ending in `/file` with no extension, so extension sniffing classified
+ * every upload as an image — an uploaded video then vanished from the video
+ * filter and rendered through the <img> branch. The upload service already
+ * records `provenance.mediaType` from the VALIDATED MIME type, which is
+ * authoritative; it was simply never read.
+ *
+ * The extension fallback is unchanged, so generated assets (whose keys do end
+ * in .mp4/.png) behave exactly as before, and any row without a recorded
+ * mediaType keeps the old behaviour. Existing uploads already carry the
+ * provenance field, so they reclassify correctly with no migration or backfill.
  */
-export function mediaTypeOf(storageKey: string | null): MediaType {
+export function mediaTypeOf(
+  storageKey: string | null,
+  provenance?: Record<string, unknown> | null,
+): MediaType {
+  const recorded = provenance?.mediaType;
+  if (recorded === 'video' || recorded === 'image') return recorded;
   return /\.(mp4|webm|mov|m4v)$/i.test(storageKey ?? '') ? 'video' : 'image';
 }
 
@@ -61,7 +77,7 @@ export async function listReviewQueue(
     .limit(Math.min(filter.limit ?? 100, 200));
 
   return rows
-    .map((r) => ({ ...r.asset, characterName: r.characterName, mediaType: mediaTypeOf(r.asset.storageKey) }))
+    .map((r) => ({ ...r.asset, characterName: r.characterName, mediaType: mediaTypeOf(r.asset.storageKey, r.asset.provenance) }))
     .filter((a) => !filter.mediaType || a.mediaType === filter.mediaType);
 }
 
@@ -99,7 +115,7 @@ export async function getReviewAsset(db: Db, assetId: string): Promise<ReviewAss
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
     .where(eq(characterVisualAssets.id, assetId));
   if (!row) return null;
-  return { ...row.asset, characterName: row.characterName, mediaType: mediaTypeOf(row.asset.storageKey) };
+  return { ...row.asset, characterName: row.characterName, mediaType: mediaTypeOf(row.asset.storageKey, row.asset.provenance) };
 }
 
 /**
@@ -211,7 +227,7 @@ async function selectLibrary(db: Db, filter: LibraryFilter): Promise<LibraryAsse
       toLibraryAsset({
         ...r.asset,
         characterName: r.characterName,
-        mediaType: mediaTypeOf(r.asset.storageKey),
+        mediaType: mediaTypeOf(r.asset.storageKey, r.asset.provenance),
       }),
     )
     .filter((a) => !filter.mediaType || a.mediaType === filter.mediaType)

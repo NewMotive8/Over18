@@ -49,6 +49,16 @@ function multipart(characterId: string, filename: string, contentType: string, b
   };
 }
 
+
+/** Minimal real-shaped MP4 (ftyp box). Enough to be a genuine video/mp4 part. */
+const MP4 = Buffer.concat([
+  Buffer.from([0x00, 0x00, 0x00, 0x18]),
+  Buffer.from('ftypmp42'),
+  Buffer.from([0x00, 0x00, 0x00, 0x00]),
+  Buffer.from('mp42isom'),
+  Buffer.alloc(32, 0x21),
+]);
+
 beforeAll(async () => {
   migrateTestDb();
   ctx = await createTestContext();
@@ -202,5 +212,74 @@ describe('library asset delete', () => {
   it('requires admin', async () => {
     const res = await ctx.app.inject({ method: 'DELETE', url: `/admin/content/assets/${LUNA.id}` });
     expect([401, 403]).toContain(res.statusCode);
+  });
+});
+
+describe('uploaded video media type (regression: /file storage keys have no extension)', () => {
+  it('reports mediaType "video", appears under the video filter, and not under image', async () => {
+    const cookie = await adminCookie();
+    const { payload, headers } = multipart(LUNA.id, 'clip.mp4', 'video/mp4', MP4);
+
+    const up = await ctx.app.inject({ method: 'POST', url: '/admin/content/uploads', headers: { ...headers, cookie }, payload });
+    expect(up.statusCode).toBe(201);
+    const asset = up.json();
+
+    // The storage key is a route path with NO extension — the exact shape that
+    // used to defeat extension sniffing and misclassify every upload as image.
+    expect(asset.storageKey).toMatch(/\/file$/);
+    expect(asset.storageKey).not.toMatch(/\.(mp4|webm|mov|m4v)$/i);
+
+    expect(asset.mediaType).toBe('video');
+
+    const video = await ctx.app.inject({ method: 'GET', url: '/admin/content/library?mediaType=video', headers: { cookie } });
+    expect(video.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(asset.assetId);
+
+    const image = await ctx.app.inject({ method: 'GET', url: '/admin/content/library?mediaType=image', headers: { cookie } });
+    expect(image.json().assets.map((a: { assetId: string }) => a.assetId)).not.toContain(asset.assetId);
+  });
+
+  it('classifies an uploaded image as image (the fallback path is not broken)', async () => {
+    const cookie = await adminCookie();
+    const { payload, headers } = multipart(LUNA.id, 'luna.png', 'image/png', PNG);
+    const up = await ctx.app.inject({ method: 'POST', url: '/admin/content/uploads', headers: { ...headers, cookie }, payload });
+    expect(up.json().mediaType).toBe('image');
+
+    const image = await ctx.app.inject({ method: 'GET', url: '/admin/content/library?mediaType=image', headers: { cookie } });
+    expect(image.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(up.json().assetId);
+  });
+
+  it('classifies an ALREADY-STORED video row from provenance alone — no migration or backfill', async () => {
+    const cookie = await adminCookie();
+    const identityId = (await getActiveVisualIdentity(ctx.db, LUNA.id))!.id;
+    // Simulates a row uploaded BEFORE this fix: extensionless key, but the
+    // provenance the upload service has always written is already present.
+    const existing = await createVisualAsset(ctx.db, {
+      characterId: LUNA.id,
+      visualIdentityId: identityId,
+      kind: 'generated',
+      status: 'approved',
+      storageKey: '/admin/content/uploads/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/file',
+      provenance: { source: 'manual-upload', mediaType: 'video', mimeType: 'video/mp4' },
+    });
+
+    const asset = await ctx.app.inject({ method: 'GET', url: `/admin/content/assets/${existing.id}`, headers: { cookie } });
+    expect(asset.json().mediaType).toBe('video');
+  });
+
+  it('still falls back to the storage-key extension when provenance says nothing', async () => {
+    const cookie = await adminCookie();
+    const identityId = (await getActiveVisualIdentity(ctx.db, LUNA.id))!.id;
+    // A generated (non-upload) asset: no provenance.mediaType, key ends .mp4.
+    const generated = await createVisualAsset(ctx.db, {
+      characterId: LUNA.id,
+      visualIdentityId: identityId,
+      kind: 'generated',
+      status: 'approved',
+      storageKey: 'https://example.invalid/clip.mp4',
+      provenance: { jobId: 'job-1', provider: 'mock', model: 'mock:video' },
+    });
+
+    const asset = await ctx.app.inject({ method: 'GET', url: `/admin/content/assets/${generated.id}`, headers: { cookie } });
+    expect(asset.json().mediaType).toBe('video');
   });
 });
