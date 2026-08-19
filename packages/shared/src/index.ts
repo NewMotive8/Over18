@@ -6,7 +6,14 @@
  * here in later stories so that web and api never drift apart.
  */
 
-export { detectMediaRequest, type MediaRequestType } from './mediaRequest.js';
+export {
+  detectMediaRequest,
+  deriveMediaContext,
+  FOLLOW_UP_WINDOW_MESSAGES,
+  type MediaContextMessage,
+  type MediaRequestContext,
+  type MediaRequestType,
+} from './mediaRequest.js';
 
 /** Response shape of GET /health on the API. */
 export interface HealthResponse {

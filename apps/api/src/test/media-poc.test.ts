@@ -2,7 +2,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
-import { detectMediaRequest, type PublicCharacter } from '@over18/shared';
+import {
+  deriveMediaContext,
+  detectMediaRequest,
+  type ChatMessage,
+  type PublicCharacter,
+} from '@over18/shared';
 import { characterVisualAssets, messages } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
@@ -102,17 +107,31 @@ async function setupUser(email: string) {
   return { cookies, conversationId: conv.json().id as string };
 }
 
+async function history(
+  cookies: Record<string, string>,
+  conversationId: string,
+): Promise<ChatMessage[]> {
+  const res = await on.app.inject({
+    method: 'GET',
+    url: `/api/conversations/${conversationId}/messages`,
+    cookies,
+  });
+  return res.json() as ChatMessage[];
+}
+
 /**
- * Sends the way the real client does: the text is detected, and whatever the
- * detector returns is what goes on the wire. No hand-set flag — so these
- * exercise detection and the send flow together.
+ * Sends exactly the way the real client does: read the conversation, derive
+ * media context from it, detect against the typed text, and put whatever comes
+ * out on the wire. No hand-set flag — so these exercise detection, context
+ * derivation and the send flow together, including follow-ups.
  */
-function sendAsClient(
+async function sendAsClient(
   cookies: Record<string, string>,
   conversationId: string,
   content: string,
 ) {
-  const requestMedia = detectMediaRequest(content);
+  const context = deriveMediaContext(await history(cookies, conversationId));
+  const requestMedia = detectMediaRequest(content, context);
   return on.app.inject({
     method: 'POST',
     url: `/api/conversations/${conversationId}/messages`,
@@ -203,6 +222,137 @@ describe('POC: plain-language request attaches media', () => {
 
     const second = await sendAsClient(user.cookies, user.conversationId, 'send me another picture');
     expect('media' in second.json().characterMessage).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Conversational follow-ups, driven by real conversation history
+ * ------------------------------------------------------------------ */
+
+describe('POC: follow-up requests', () => {
+  it('"what about a video?" after a picture sends a video', async () => {
+    const user = await setupUser('poc.follow.switch@example.com');
+    await makeAsset('image');
+    await makeAsset('video');
+
+    const first = await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    expect(first.json().characterMessage.media.type).toBe('image');
+
+    const second = await sendAsClient(user.cookies, user.conversationId, 'what about a video?');
+    expect(second.json().characterMessage.media.type).toBe('video');
+  });
+
+  it('"send me another one" after a picture sends another picture', async () => {
+    const user = await setupUser('poc.follow.another@example.com');
+    await makeAsset('image');
+    await makeAsset('image');
+
+    const first = await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    const second = await sendAsClient(user.cookies, user.conversationId, 'send me another one');
+
+    expect(second.json().characterMessage.media.type).toBe('image');
+    // A different asset — the no-repeat rule still holds across the follow-up.
+    const rows = await on.db.select().from(messages);
+    const attached = rows.map((r) => r.mediaAssetId).filter(Boolean);
+    expect(attached).toHaveLength(2);
+    expect(new Set(attached).size).toBe(2);
+    expect(first.json().characterMessage.media.url).not.toBe(
+      second.json().characterMessage.media.url,
+    );
+  });
+
+  it('"another picture?" works as a follow-up', async () => {
+    const user = await setupUser('poc.follow.noun@example.com');
+    await makeAsset('image');
+    await makeAsset('image');
+
+    await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    const second = await sendAsClient(user.cookies, user.conversationId, 'another picture?');
+    expect(second.json().characterMessage.media.type).toBe('image');
+  });
+
+  it('"show me a different photo" works as a direct request', async () => {
+    const user = await setupUser('poc.follow.different@example.com');
+    await makeAsset('image');
+    await makeAsset('image');
+
+    await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    const second = await sendAsClient(
+      user.cookies,
+      user.conversationId,
+      'show me a different photo',
+    );
+    expect(second.json().characterMessage.media.type).toBe('image');
+  });
+
+  it('a follow-up after ordinary chat in between still resolves', async () => {
+    const user = await setupUser('poc.follow.gap@example.com');
+    await makeAsset('image');
+    await makeAsset('image');
+
+    await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    await sendAsClient(user.cookies, user.conversationId, 'nice, thank you');
+    const third = await sendAsClient(user.cookies, user.conversationId, 'another one?');
+    expect(third.json().characterMessage.media.type).toBe('image');
+  });
+
+  it('a follow-up with NO prior media attaches nothing', async () => {
+    const user = await setupUser('poc.follow.cold@example.com');
+    await makeAsset('image');
+
+    // Cold open — "another one?" refers to nothing.
+    const res = await sendAsClient(user.cookies, user.conversationId, 'another one?');
+    expect(res.statusCode).toBe(201);
+    expect('media' in res.json().characterMessage).toBe(false);
+  });
+
+  it('ordinary conversation after media attaches nothing', async () => {
+    const user = await setupUser('poc.follow.plain@example.com');
+    await makeAsset('image');
+    await makeAsset('image');
+
+    await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    for (const text of ['tell me more', 'what about you?', 'how was your day?']) {
+      const res = await sendAsClient(user.cookies, user.conversationId, text);
+      expect('media' in res.json().characterMessage).toBe(false);
+    }
+  });
+
+  it('a negated follow-up attaches nothing', async () => {
+    const user = await setupUser('poc.follow.negated@example.com');
+    await makeAsset('image');
+    await makeAsset('image');
+
+    await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    const res = await sendAsClient(user.cookies, user.conversationId, "don't send another one");
+    expect('media' in res.json().characterMessage).toBe(false);
+  });
+
+  it('switches back and forth between image and video', async () => {
+    const user = await setupUser('poc.follow.pingpong@example.com');
+    await makeAsset('image');
+    await makeAsset('video');
+
+    const a = await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    expect(a.json().characterMessage.media.type).toBe('image');
+
+    const b = await sendAsClient(user.cookies, user.conversationId, 'what about a video?');
+    expect(b.json().characterMessage.media.type).toBe('video');
+
+    // Back to image — but both assets are now used, so it degrades to text
+    // rather than repeating one. The no-repeat rule outranks the follow-up.
+    const c = await sendAsClient(user.cookies, user.conversationId, 'how about a picture?');
+    expect('media' in c.json().characterMessage).toBe(false);
+  });
+
+  it('a follow-up whose kind has no eligible asset degrades to text', async () => {
+    const user = await setupUser('poc.follow.nokind@example.com');
+    await makeAsset('image'); // images only
+
+    await sendAsClient(user.cookies, user.conversationId, 'send me a picture');
+    const res = await sendAsClient(user.cookies, user.conversationId, 'what about a video?');
+    expect(res.statusCode).toBe(201);
+    expect('media' in res.json().characterMessage).toBe(false);
   });
 });
 

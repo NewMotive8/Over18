@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
+  deriveMediaContext,
   detectMediaRequest,
   MESSAGE_MAX_LENGTH,
   type ChatMessage,
@@ -30,6 +31,11 @@ export default function ChatPage() {
   const [imageFailed, setImageFailed] = useState(false);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Latest history for the media-context read inside the memoised send
+  // closure. A ref, not a dependency: rebuilding the controller on every new
+  // message would discard its in-flight timers and break the 2s/5s pacing.
+  const messagesRef = useRef<ChatMessage[]>(messages);
+  messagesRef.current = messages;
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -112,15 +118,25 @@ export default function ChatPage() {
   const controller = useMemo(
     () =>
       createChatSendController({
-        // POC media trigger. Detection is a pure function over the text the
-        // user just typed (lib: @over18/shared detectMediaRequest) and only
-        // ever decides the TYPE asked for — the server still chooses the
-        // asset, and ignores this entirely unless CHAT_MEDIA_ENABLED is on.
-        // Undefined for ordinary messages, so the request is byte-identical
-        // to before. chatSend.ts is untouched: the 2s/5s timing and the
-        // scroll anchor never see this.
+        // POC media trigger. Pure functions over the text just typed plus the
+        // recent conversation (@over18/shared): the context lets follow-ups
+        // like "what about a video?" or "another one?" resolve, and only ever
+        // decides the TYPE asked for — the server still chooses the asset, and
+        // ignores this entirely unless CHAT_MEDIA_ENABLED is on. Undefined for
+        // ordinary messages, so the request is byte-identical to before.
+        //
+        // Context is read through a ref because this closure is memoised on
+        // conversationId; reading `messages` directly would capture the list as
+        // it was when the conversation loaded and follow-ups would never fire.
+        //
+        // chatSend.ts is untouched: the 2s indicator, the 5s reveal floor and
+        // the scroll anchor never see any of this.
         send: (content: string) =>
-          messagesApi.send(conversationId!, content, detectMediaRequest(content) ?? undefined),
+          messagesApi.send(
+            conversationId!,
+            content,
+            detectMediaRequest(content, deriveMediaContext(messagesRef.current)) ?? undefined,
+          ),
         onState: setSend,
         onResult: (result) => {
           // The canonical rows replace the optimistic bubble in one render.
