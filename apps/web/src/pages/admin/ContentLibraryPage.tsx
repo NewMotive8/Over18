@@ -29,9 +29,27 @@ function Tile({ a, onOpen, dense }: { a: LibraryAssetView; onOpen: () => void; d
       onClick={onOpen}
       className="w-full overflow-hidden rounded-lg border border-zinc-800 text-left transition-colors hover:border-zinc-700"
     >
-      <div className={`${dense ? 'aspect-square' : 'aspect-[3/4]'} bg-zinc-900`}>
+      {/* Fixed-ratio frame, unchanged. Both media types now fill it the same
+          way: object-cover preserves the source aspect ratio and crops only
+          the overflow — this design is edge-to-edge, so nothing is letterboxed
+          and nothing is stretched. Video previously rendered a text
+          placeholder, which is why videos looked inconsistent with images. */}
+      <div className={`${dense ? 'aspect-square' : 'aspect-[3/4]'} relative bg-zinc-900`}>
         {a.storageKey && a.mediaType === 'image' ? (
           <img src={`${API_URL}${a.storageKey}`} alt="" loading="lazy" className="h-full w-full object-cover" />
+        ) : a.storageKey && a.mediaType === 'video' ? (
+          <>
+            <video
+              src={`${API_URL}${a.storageKey}`}
+              muted
+              playsInline
+              preload="metadata"
+              className="h-full w-full object-cover"
+            />
+            <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1 py-0.5 text-[10px] uppercase tracking-wide text-zinc-200">
+              video
+            </span>
+          </>
         ) : (
           <div className="flex h-full items-center justify-center text-xs uppercase tracking-wide text-zinc-600">
             {a.mediaType}
@@ -77,6 +95,11 @@ export default function ContentLibraryPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
+  // Delete: two-step confirmation, reset whenever a different asset is opened.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -105,6 +128,30 @@ export default function ContentLibraryPage() {
       })
       .catch(() => setCharacters([]));
   }, []);
+
+  // Closing or switching assets must never leave a primed confirmation behind.
+  const openAsset = useCallback((a: LibraryAssetView | null) => {
+    setSelected(a);
+    setConfirmingDelete(false);
+    setDeleteError(null);
+  }, []);
+
+  const onDelete = useCallback(
+    async (assetId: string) => {
+      setDeleting(true);
+      setDeleteError(null);
+      try {
+        await contentLibraryApi.remove(assetId);
+        openAsset(null); // close the modal
+        await load(); // refresh in place — no page reload
+      } catch (err) {
+        setDeleteError(err instanceof Error ? err.message : 'Could not delete this asset.');
+      } finally {
+        setDeleting(false);
+      }
+    },
+    [load, openAsset],
+  );
 
   const onFilePicked = useCallback(
     async (file: File | undefined) => {
@@ -199,7 +246,7 @@ export default function ContentLibraryPage() {
           <ul className="mt-3 grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
             {recent.map((a) => (
               <li key={`recent-${a.assetId}`}>
-                <Tile a={a} dense onOpen={() => setSelected(a)} />
+                <Tile a={a} dense onOpen={() => openAsset(a)} />
               </li>
             ))}
           </ul>
@@ -244,7 +291,7 @@ export default function ContentLibraryPage() {
           <ul className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
             {assets.map((a) => (
               <li key={a.assetId}>
-                <Tile a={a} onOpen={() => setSelected(a)} />
+                <Tile a={a} onOpen={() => openAsset(a)} />
               </li>
             ))}
           </ul>
@@ -261,7 +308,7 @@ export default function ContentLibraryPage() {
                   {selected.mediaType} · Approved{selected.isPrimary ? ' · Primary' : ''}
                 </p>
               </div>
-              <button type="button" onClick={() => setSelected(null)} className="text-sm text-zinc-400 hover:text-white">
+              <button type="button" onClick={() => openAsset(null)} className="text-sm text-zinc-400 hover:text-white">
                 Close
               </button>
             </div>
@@ -298,6 +345,53 @@ export default function ContentLibraryPage() {
                 </div>
               )}
             </dl>
+
+            {/* Delete lives in the detail view, not the tile: the tile is
+                already a <button> and nesting one inside it is invalid HTML.
+                Two-step confirmation, inline rather than window.confirm so it
+                never blocks the page. */}
+            <div className="mt-5 flex items-center justify-between gap-3 border-t border-zinc-800 pt-3">
+              {deleteError ? (
+                <p role="alert" className="text-xs text-rose-300">
+                  {deleteError}
+                </p>
+              ) : (
+                <p className="text-xs text-zinc-500">
+                  {confirmingDelete ? 'This permanently removes the record and its file.' : ''}
+                </p>
+              )}
+              {confirmingDelete ? (
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                    disabled={deleting}
+                    className="rounded-md px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onDelete(selected.assetId)}
+                    disabled={deleting}
+                    className="rounded-md bg-rose-700 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {deleting ? 'Deleting…' : 'Confirm delete'}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteError(null);
+                    setConfirmingDelete(true);
+                  }}
+                  className="shrink-0 rounded-md border border-rose-900 px-3 py-1.5 text-xs font-semibold text-rose-300 transition-colors hover:bg-rose-950/50"
+                >
+                  Delete
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { existsSync, rmSync } from 'node:fs';
 import { eq } from 'drizzle-orm';
-import { users } from '../db/schema.js';
+import { characterVisualAssets, users } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
+import { getActiveVisualIdentity } from '../services/visual-identity-service.js';
+import { createVisualAsset } from '../services/visual-asset-service.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -131,6 +134,73 @@ describe('manual library upload', () => {
       url: '/admin/content/uploads',
       ...multipart(LUNA.id, 'luna.png', 'image/png', PNG),
     });
+    expect([401, 403]).toContain(res.statusCode);
+  });
+});
+
+describe('library asset delete', () => {
+  it('removes the DB row and the stored file', async () => {
+    const cookie = await adminCookie();
+    const { payload, headers } = multipart(LUNA.id, 'luna.png', 'image/png', PNG);
+    const up = await ctx.app.inject({ method: 'POST', url: '/admin/content/uploads', headers: { ...headers, cookie }, payload });
+    const assetId = up.json().assetId;
+
+    const [row] = await ctx.db.select().from(characterVisualAssets).where(eq(characterVisualAssets.id, assetId));
+    const filePath = (row!.provenance as Record<string, unknown>).storagePath as string;
+    expect(existsSync(filePath)).toBe(true);
+
+    const del = await ctx.app.inject({ method: 'DELETE', url: `/admin/content/assets/${assetId}`, headers: { cookie } });
+    expect(del.statusCode).toBe(200);
+    expect(del.json()).toMatchObject({ assetId, fileRemoved: true, fileWasMissing: false });
+
+    // file gone
+    expect(existsSync(filePath)).toBe(false);
+    // row gone
+    const after = await ctx.db.select().from(characterVisualAssets).where(eq(characterVisualAssets.id, assetId));
+    expect(after).toHaveLength(0);
+    // and it has left the library listing
+    const lib = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
+    expect(lib.json().assets.map((a: { assetId: string }) => a.assetId)).not.toContain(assetId);
+  });
+
+  it('still removes the row cleanly when the file is already missing', async () => {
+    const cookie = await adminCookie();
+    const { payload, headers } = multipart(LUNA.id, 'luna.png', 'image/png', PNG);
+    const up = await ctx.app.inject({ method: 'POST', url: '/admin/content/uploads', headers: { ...headers, cookie }, payload });
+    const assetId = up.json().assetId;
+
+    const [row] = await ctx.db.select().from(characterVisualAssets).where(eq(characterVisualAssets.id, assetId));
+    const filePath = (row!.provenance as Record<string, unknown>).storagePath as string;
+    rmSync(filePath); // simulate an ephemeral-disk redeploy having wiped it
+
+    const del = await ctx.app.inject({ method: 'DELETE', url: `/admin/content/assets/${assetId}`, headers: { cookie } });
+    expect(del.statusCode).toBe(200);
+    expect(del.json()).toMatchObject({ assetId, fileRemoved: false, fileWasMissing: true });
+    const after = await ctx.db.select().from(characterVisualAssets).where(eq(characterVisualAssets.id, assetId));
+    expect(after).toHaveLength(0);
+  });
+
+  it('refuses to delete a canonical (public gallery) asset', async () => {
+    const cookie = await adminCookie();
+    const identityId = (await getActiveVisualIdentity(ctx.db, LUNA.id))!.id;
+    const canonical = await createVisualAsset(ctx.db, {
+      characterId: LUNA.id,
+      visualIdentityId: identityId,
+      kind: 'reference',
+      status: 'approved',
+      storageKey: 'https://example.invalid/canonical.png',
+    });
+    await ctx.db.update(characterVisualAssets).set({ isCanonical: true }).where(eq(characterVisualAssets.id, canonical.id));
+
+    const del = await ctx.app.inject({ method: 'DELETE', url: `/admin/content/assets/${canonical.id}`, headers: { cookie } });
+    expect(del.statusCode).toBe(409);
+    expect(del.json().error).toBe('canonical_refused');
+    const after = await ctx.db.select().from(characterVisualAssets).where(eq(characterVisualAssets.id, canonical.id));
+    expect(after).toHaveLength(1); // untouched
+  });
+
+  it('requires admin', async () => {
+    const res = await ctx.app.inject({ method: 'DELETE', url: `/admin/content/assets/${LUNA.id}` });
     expect([401, 403]).toContain(res.statusCode);
   });
 });

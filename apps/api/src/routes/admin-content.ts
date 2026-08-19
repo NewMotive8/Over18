@@ -12,6 +12,8 @@ import {
   type VisualAssetStatus,
 } from '../services/visual-asset-service.js';
 import {
+  deleteLibraryAsset,
+  LibraryDeleteError,
   LibraryUploadError,
   uploadLibraryAsset,
   uploadedMimeTypeOf,
@@ -197,6 +199,42 @@ export default async function adminContentRoutes(
       reply.header('content-type', uploadedMimeTypeOf(asset));
       reply.header('cache-control', 'private, max-age=60');
       return reply.send(createReadStream(path));
+    },
+  );
+
+  /**
+   * Permanently deletes a Library asset and the file it owns.
+   *
+   * Distinct from reject (which preserves the row for the review workflow):
+   * this is the Library's "get rid of it". Canonical assets are refused, so
+   * the public gallery can never be changed here, and a missing file still
+   * leaves the row removable — an orphaned entry can always be cleaned up.
+   */
+  app.delete<{ Params: { assetId: string } }>(
+    '/admin/content/assets/:assetId',
+    adminOnly,
+    async (request, reply) => {
+      if (!opts.uploadStorage) {
+        return reply.code(503).send({
+          error: 'uploads_unavailable',
+          message: 'Media storage is not configured for this environment.',
+        });
+      }
+      const { assetId } = request.params;
+      if (!UUID_RE.test(assetId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      try {
+        const result = await deleteLibraryAsset(opts.db, opts.uploadStorage, assetId);
+        return reply.send(result);
+      } catch (err) {
+        if (err instanceof LibraryDeleteError) {
+          return reply
+            .code(err.kind === 'not_found' ? 404 : 409)
+            .send({ error: err.kind, message: err.message });
+        }
+        throw err;
+      }
     },
   );
 

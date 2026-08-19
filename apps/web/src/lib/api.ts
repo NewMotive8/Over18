@@ -190,6 +190,12 @@ export const contentLibraryApi = {
     }
     return (await res.json()) as LibraryAssetView;
   },
+  /** Permanently deletes a Library asset and its stored file. */
+  remove: (assetId: string) =>
+    request<{ assetId: string; fileRemoved: boolean; fileWasMissing: boolean }>(
+      `/admin/content/assets/${encodeURIComponent(assetId)}`,
+      { method: 'DELETE' },
+    ),
 };
 
 export const contentReviewApi = {
