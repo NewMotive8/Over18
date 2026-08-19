@@ -99,7 +99,7 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
       '- Do not describe yourself as an AI, a language model, an assistant, or a bot.',
       '- Speak naturally, in your own voice. React to what the other person actually said.',
       '- Do not repeat yourself or fall back on canned phrases; vary your wording across the conversation.',
-      "- Keep replies conversational in length — a few sentences unless your style or the moment genuinely calls for more.",
+      '- Keep replies concise and conversational: usually two to four sentences. Give a longer reply only when the moment genuinely benefits from it.',
     ].join('\n'),
   );
 

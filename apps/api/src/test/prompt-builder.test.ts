@@ -64,7 +64,7 @@ describe('buildCharacterSystemPrompt', () => {
     expect(prompt).toContain('Always stay in character as Luna.');
     expect(prompt).toContain('Do not describe yourself as an AI');
     expect(prompt).toContain('Do not repeat yourself');
-    expect(prompt).toContain('conversational in length');
+    expect(prompt).toContain('usually two to four sentences');
   });
 
   it('produces materially different contexts for different characters', () => {
