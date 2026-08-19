@@ -1,5 +1,6 @@
+import { stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, notInArray } from 'drizzle-orm';
 import type { ChatMediaType } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import {
@@ -12,12 +13,10 @@ import { mediaTypeOf } from './content-review-service.js';
 import { uploadedMimeTypeOf, uploadedPathOf } from './library-upload-service.js';
 
 /**
- * Character Media Messages — the read/serve half (commit 1).
+ * Character Media Messages — selection (commit 2) and serving (commit 1).
  *
- * This module is the ONLY place a message's media is turned into something a
- * client can fetch, and it is deliberately inert for now: nothing in this
- * commit ever WRITES messages.media_asset_id, so every code path here returns
- * "no media" until a later commit adds selection.
+ * This module is the ONLY place a message's media is chosen, and the ONLY place
+ * it is turned into something a client can fetch.
  *
  * Three invariants it exists to hold:
  *
@@ -164,4 +163,120 @@ export async function getAuthorisedMessageMedia(
  */
 export function mediaUrlFor(conversationId: string, messageId: string): string {
   return `/api/conversations/${conversationId}/messages/${messageId}/media`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Selection (commit 2)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Minimal connection contract, following memory-service's MemoryDb: satisfied
+ * by both the pool and a transaction handle, so selection can run inside
+ * sendMessage's transaction and see a consistent "already sent" set.
+ */
+export type MediaSelectionDb = Pick<Db, 'select'>;
+
+/**
+ * What the selector returns: a REFERENCE, plus the type needed to render it.
+ * Never a URL, a path or a storage key — the caller stores the id and the wire
+ * mapper derives the message-scoped URL. Nothing leaks by construction.
+ */
+export interface SelectedMedia {
+  assetId: string;
+  mediaType: ChatMediaType;
+}
+
+export interface MediaSelectionContext {
+  /** The character in THIS conversation. Assets are scoped to it, always. */
+  characterId: string;
+  /** Scopes the "already sent" exclusion. */
+  conversationId: string;
+  /** Which kind the request asked for. There is no "any" — see below. */
+  requested: ChatMediaType;
+}
+
+/** The seam sendMessage depends on. Null return = send text only. */
+export type MediaSelector = (
+  db: MediaSelectionDb,
+  context: MediaSelectionContext,
+) => Promise<SelectedMedia | null>;
+
+/**
+ * The deterministic Phase 1 selector.
+ *
+ * NO model involvement of any kind. The LLM cannot name, hint at or influence
+ * which asset is chosen — it is not consulted, and its reply text is not read
+ * here. The eligibility rules are the whole policy:
+ *
+ *   character_id = the conversation's character   (A can never send B's asset)
+ *   kind         = 'generated'                    (the Library's own filter)
+ *   status       = 'approved'                     (never unreviewed/rejected)
+ *   is_canonical = false                          (never the public gallery)
+ *   content_rating = 'sfw'                        (explicit is never eligible)
+ *   media type   = exactly what was requested
+ *   not already sent in this conversation
+ *   the file actually exists inside MEDIA_STORAGE_DIR
+ *
+ * The first five are SQL, so nothing outside them is ever loaded. Media type is
+ * resolved with mediaTypeOf, which reads provenance.mediaType first — a manual
+ * upload's storage_key is an extensionless `/file` route, so extension sniffing
+ * would misclassify every upload as an image.
+ *
+ * Deterministic ordering: oldest first, id as a stable tiebreak. The same
+ * conversation asking the same thing twice gets the next asset, not a random
+ * one, which is what makes this testable and repeatable during QA.
+ *
+ * Existence is checked LAST and per-candidate, because it is the only I/O: the
+ * first candidate whose bytes are actually readable wins. A row orphaned by an
+ * ephemeral-disk redeploy is skipped rather than producing a broken bubble.
+ */
+export function createDeterministicMediaSelector(storageDir: string): MediaSelector {
+  return async (db, context) => {
+    // Assets already used in this conversation. A subquery would be tidier,
+    // but this stays a plain value so the exclusion is obvious and testable.
+    const alreadySent = await db
+      .select({ assetId: messages.mediaAssetId })
+      .from(messages)
+      .where(and(eq(messages.conversationId, context.conversationId), isNotNull(messages.mediaAssetId)));
+    const usedIds = alreadySent
+      .map((row) => row.assetId)
+      .filter((id): id is string => id !== null);
+
+    const conditions = [
+      eq(characterVisualAssets.characterId, context.characterId),
+      eq(characterVisualAssets.kind, 'generated'),
+      eq(characterVisualAssets.status, 'approved'),
+      eq(characterVisualAssets.isCanonical, false),
+      eq(characterVisualAssets.contentRating, 'sfw'),
+      isNotNull(characterVisualAssets.storageKey),
+    ];
+    if (usedIds.length > 0) {
+      conditions.push(notInArray(characterVisualAssets.id, usedIds));
+    }
+
+    const candidates = await db
+      .select()
+      .from(characterVisualAssets)
+      .where(and(...conditions))
+      .orderBy(asc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
+
+    for (const asset of candidates) {
+      if (mediaTypeOf(asset.storageKey, asset.provenance) !== context.requested) continue;
+
+      // Resolution enforces MEDIA_STORAGE_DIR containment, so an asset with a
+      // stray path is skipped here as well as refused at serve time.
+      const resolved = resolveMediaFile(asset, storageDir);
+      if ('failure' in resolved) continue;
+
+      const exists = await stat(resolved.path).then(
+        (s) => s.isFile(),
+        () => false,
+      );
+      if (!exists) continue;
+
+      return { assetId: asset.id, mediaType: resolved.mediaType };
+    }
+
+    return null; // nothing eligible — the character simply replies with text
+  };
 }

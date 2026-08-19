@@ -91,10 +91,24 @@ export const messagesApi = {
       `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
     );
   },
-  send(conversationId: string, content: string): Promise<SendMessageResult> {
+  /**
+   * `requestMedia` is the explicit, deliberate trigger for a character to send
+   * media. It is OMITTED for ordinary sends — including every send the chat UI
+   * makes today — so normal conversation is never altered. The server ignores
+   * it unless CHAT_MEDIA_ENABLED is on, and the server, never the model,
+   * decides which asset is sent.
+   */
+  send(
+    conversationId: string,
+    content: string,
+    requestMedia?: 'image' | 'video',
+  ): Promise<SendMessageResult> {
     return request<SendMessageResult>(
       `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
-      { method: 'POST', body: JSON.stringify({ content }) },
+      {
+        method: 'POST',
+        body: JSON.stringify(requestMedia ? { content, requestMedia } : { content }),
+      },
     );
   },
 };

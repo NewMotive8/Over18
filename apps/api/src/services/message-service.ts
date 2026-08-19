@@ -9,7 +9,11 @@ import {
   type MessageRow,
 } from '../db/schema.js';
 import { mediaTypeOf } from './content-review-service.js';
-import { mediaUrlFor } from './message-media-service.js';
+import {
+  mediaUrlFor,
+  type MediaSelector,
+  type SelectedMedia,
+} from './message-media-service.js';
 import { getConversationForUser } from './conversation-service.js';
 import { deterministicReplyProvider, type ReplyProvider } from './character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './memory-extractor.js';
@@ -36,10 +40,36 @@ export const DEFAULT_MEMORY_HOOK: MemoryHookOptions = {
 };
 
 /**
- * Wire mapper. Media-aware, but additive: when a row carries no media asset —
- * which is EVERY row today, since nothing in this commit writes the column —
- * the `media` key is omitted entirely rather than set to null/undefined, so
- * existing messages serialise byte-for-byte as they did before.
+ * Character Media Messages hook (commit 2) — the seam through which a character
+ * reply may carry media. Modelled on the memory hook above deliberately: an
+ * optional capability injected into sendMessage, not a change to how replies
+ * are produced.
+ *
+ * The ReplyProvider contract is UNCHANGED and stays a plain
+ * `(context) => Promise<string>`. The model does not choose the asset, is not
+ * told one was chosen, and cannot emit an id, URL or path. Selection is a
+ * separate server-side decision made from `requested`, which comes from an
+ * explicit API flag — never from parsing the user's text.
+ *
+ * Media is attached ONLY when BOTH are present: a selector (absent when the
+ * feature flag is off) and a `requested` type (absent unless the request
+ * explicitly asked). Either missing → the exact prior text-only behaviour.
+ */
+export interface MediaHookOptions {
+  /** Null when CHAT_MEDIA_ENABLED is off — no selection is even attempted. */
+  selector?: MediaSelector | null;
+  /** Which media the caller explicitly asked for; null for an ordinary send. */
+  requested?: ChatMediaType | null;
+  /** Called when selection fails. The exchange proceeds as text-only. */
+  onError?: (error: unknown) => void;
+}
+
+export const DEFAULT_MEDIA_HOOK: MediaHookOptions = { selector: null, requested: null };
+
+/**
+ * Wire mapper. Media-aware and additive: when a row carries no media asset the
+ * `media` key is omitted entirely rather than set to null/undefined, so a
+ * text-only message serialises byte-for-byte as it did before this feature.
  *
  * `mediaType` is resolved by the caller from the joined asset row; this mapper
  * never sees the asset id, storage key or provenance, and emits only an opaque
@@ -103,6 +133,7 @@ export async function sendMessage(
   content: string,
   replyProvider: ReplyProvider = deterministicReplyProvider,
   memory: MemoryHookOptions = DEFAULT_MEMORY_HOOK,
+  media: MediaHookOptions = DEFAULT_MEDIA_HOOK,
 ): Promise<SendMessageResult | null> {
   const conversation = await getConversationForUser(db, userId, conversationId);
   if (!conversation) return null;
@@ -143,9 +174,36 @@ export async function sendMessage(
       memories: rememberedFacts,
     });
 
+    // Media selection. Runs INSIDE the transaction so the "already sent in this
+    // conversation" exclusion sees a consistent view, and so an attached asset
+    // is written in the SAME insert as the reply — there is no window in which
+    // a character message exists without the media it was chosen with.
+    //
+    // Both conditions are required: a selector (null when the feature flag is
+    // off) and an explicit requested type. Neither can be produced by the model.
+    let selected: SelectedMedia | null = null;
+    if (media.selector && media.requested) {
+      try {
+        selected = await media.selector(tx, {
+          characterId: conversation.character.id,
+          conversationId,
+          requested: media.requested,
+        });
+      } catch (error) {
+        // Never fail a chat exchange over media. Degrade to text and report.
+        media.onError?.(error);
+        selected = null;
+      }
+    }
+
     const [characterRow] = await tx
       .insert(messages)
-      .values({ conversationId, sender: 'character', content: replyText })
+      .values({
+        conversationId,
+        sender: 'character',
+        content: replyText,
+        mediaAssetId: selected?.assetId ?? null,
+      })
       .returning();
 
     await tx
@@ -155,7 +213,9 @@ export async function sendMessage(
 
     return {
       userMessage: toChatMessage(userRow!),
-      characterMessage: toChatMessage(characterRow!),
+      // Text and media are one response: the same message row carries both, so
+      // the client reveals them together under the existing timing rules.
+      characterMessage: toChatMessage(characterRow!, selected?.mediaType ?? null),
     };
   });
 

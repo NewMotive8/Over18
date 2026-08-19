@@ -4,16 +4,31 @@ import type { Db } from '../db/client.js';
 import { LlmError } from '../llm/types.js';
 import type { ReplyProvider } from '../services/character-reply.js';
 import type { MemoryExtractor } from '../services/memory-extractor.js';
+import type { MediaSelector } from '../services/message-media-service.js';
 import { listMessages, sendMessage } from '../services/message-service.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * `requestMedia` is the EXPLICIT, deliberate trigger for Character Media
+ * Messages — the whole reason it is an API field and not a text heuristic.
+ *
+ * The server never guesses. It does not parse "send me a picture" out of the
+ * message body, and the model is never asked whether to send media, so ordinary
+ * conversation can never start attaching pictures on its own. A caller has to
+ * ask, in the request, for exactly one of 'image' or 'video'.
+ *
+ * Omitted (the normal case, and every existing client) → text-only, unchanged.
+ * The enum plus additionalProperties:false means anything else is a 400 before
+ * a handler runs.
+ */
 const sendBodySchema = {
   type: 'object',
   required: ['content'],
   additionalProperties: false,
   properties: {
     content: { type: 'string', minLength: 1, maxLength: MESSAGE_MAX_LENGTH },
+    requestMedia: { type: 'string', enum: ['image', 'video'] },
   },
 } as const;
 
@@ -29,6 +44,11 @@ export default async function messageRoutes(
     /** US-12 memory hook (extractor + storage cap). */
     memoryExtractor: MemoryExtractor;
     memoryMaxStored: number;
+    /**
+     * Character Media Messages selector, or null when the feature is disabled.
+     * Null is the structural kill switch — see app.ts.
+     */
+    mediaSelector: MediaSelector | null;
   },
 ) {
   app.get<{ Params: { conversationId: string } }>(
@@ -47,7 +67,10 @@ export default async function messageRoutes(
     },
   );
 
-  app.post<{ Params: { conversationId: string }; Body: { content: string } }>(
+  app.post<{
+    Params: { conversationId: string };
+    Body: { content: string; requestMedia?: 'image' | 'video' };
+  }>(
     '/api/conversations/:conversationId/messages',
     { preHandler: app.requireAuth, schema: { body: sendBodySchema } },
     async (request, reply) => {
@@ -81,6 +104,20 @@ export default async function messageRoutes(
                   memoryErrorStatus: error instanceof LlmError ? error.status : undefined,
                 },
                 'memory extraction failed (chat exchange unaffected)',
+              );
+            },
+          },
+          {
+            // Null when CHAT_MEDIA_ENABLED is off: no selector exists, so no
+            // eligibility query runs and media_asset_id is never written.
+            selector: opts.mediaSelector,
+            requested: request.body.requestMedia ?? null,
+            // Media must never break a chat exchange. Log the kind only —
+            // never asset ids, storage keys, provenance or paths.
+            onError: (error) => {
+              request.log.warn(
+                { mediaErrorKind: error instanceof Error ? error.name : 'unexpected' },
+                'media selection failed (reply sent as text only)',
               );
             },
           },

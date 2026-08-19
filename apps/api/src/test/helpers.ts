@@ -30,6 +30,10 @@ export const testEnv: Env = {
   isProduction: false,
   llm: null, // tests always inject providers explicitly — no real endpoint
   memory: { maxInjected: 10, maxInjectedChars: 2_000, maxStored: 100 },
+  // Matches production's default: OFF. Tests that exercise Character Media
+  // Messages opt in explicitly via createTestContext({ chatMediaEnabled: true }),
+  // so every other suite proves the feature is genuinely inert when disabled.
+  chatMedia: { enabled: false },
   media: {
     // US-36: media tests inject the mock provider; these paths are a writable
     // scratch area, and the internal token is fixed so tests can present it.
@@ -66,9 +70,15 @@ export interface TestContext {
   pool: ReturnType<typeof createDb>['pool'];
 }
 
-export async function createTestContext(options: BuildAppOptions = {}): Promise<TestContext> {
+export async function createTestContext(
+  options: BuildAppOptions & { chatMediaEnabled?: boolean } = {},
+): Promise<TestContext> {
+  const { chatMediaEnabled, ...appOptions } = options;
   const { db, pool } = createDb(TEST_DATABASE_URL);
-  const app = await buildApp(testEnv, db, options);
+  const env: Env = chatMediaEnabled
+    ? { ...testEnv, chatMedia: { enabled: true } }
+    : testEnv;
+  const app = await buildApp(env, db, appOptions);
   return { app, db, pool };
 }
 

@@ -41,6 +41,17 @@ export interface MediaEnv {
   };
 }
 
+/**
+ * Character Media Messages. OFF unless CHAT_MEDIA_ENABLED is exactly "true".
+ *
+ * "Off" does not mean "select an asset then hide it" — it means no selector is
+ * constructed at all (see app.ts), so the eligibility query never runs and
+ * media_asset_id is never written. The kill switch is structural, not cosmetic.
+ */
+export interface ChatMediaEnv {
+  enabled: boolean;
+}
+
 export interface Env {
   databaseUrl: string;
   port: number;
@@ -53,6 +64,7 @@ export interface Env {
   llm: LlmEnv | null;
   memory: MemoryEnv;
   media: MediaEnv;
+  chatMedia: ChatMediaEnv;
 }
 
 /** True for "true" / "TRUE" / " true " — ignores accidental whitespace. */
@@ -125,6 +137,8 @@ export function loadEnv(): Env {
       maxInjectedChars: Number(process.env.MEMORY_MAX_INJECTED_CHARS ?? 2_000),
       maxStored: Number(process.env.MEMORY_MAX_STORED ?? 100),
     },
+    // Default OFF: anything other than exactly "true" leaves chat text-only.
+    chatMedia: { enabled: envFlagTrue('CHAT_MEDIA_ENABLED') },
     media: {
       storageDir: process.env.MEDIA_STORAGE_DIR ?? 'var/media',
       publicBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL || null,

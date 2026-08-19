@@ -4,6 +4,7 @@ import { MESSAGE_MAX_LENGTH, type ChatMessage, type ConversationSummary } from '
 import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
 import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
 import { createScrollFollower, scrollBehaviorFor } from '../lib/chatScroll';
+import MessageMedia from '../components/MessageMedia';
 
 type ChatState =
   | { status: 'loading' }
@@ -256,6 +257,15 @@ export default function ChatPage() {
                 }`}
               >
                 {message.content}
+                {/* Attached media is part of the SAME message, so it is
+                    revealed by the same transition as the text — the existing
+                    2s/5s timing needs no change. The bubble itself is
+                    unchanged; this only adds a child when media is present. */}
+                {message.media && (
+                  <div className="mt-1.5">
+                    <MessageMedia media={message.media} characterName={character.displayName} />
+                  </div>
+                )}
               </li>
             ))}
             {pending !== null && (

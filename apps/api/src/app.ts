@@ -15,6 +15,10 @@ import generationRoutes from './routes/generation.js';
 import adminContentRoutes from './routes/admin-content.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
+import {
+  createDeterministicMediaSelector,
+  type MediaSelector,
+} from './services/message-media-service.js';
 import type { MediaProviders } from './media-pipeline/types.js';
 
 export interface BuildAppOptions {
@@ -31,6 +35,11 @@ export interface BuildAppOptions {
    * the env-selected providers.
    */
   mediaProviders?: MediaProviders;
+  /**
+   * Character Media Messages selector override, for tests. Still gated by
+   * env.chatMedia.enabled — injecting one cannot switch the feature on.
+   */
+  mediaSelector?: MediaSelector;
 }
 
 /**
@@ -82,11 +91,20 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
   await app.register(conversationRoutes, { db });
+  // Character Media Messages (commit 2). The flag is a STRUCTURAL kill switch:
+  // when it is off no selector object exists, so the eligibility query cannot
+  // run and media_asset_id can never be written — rather than selecting an
+  // asset and then declining to show it.
+  const mediaSelector = env.chatMedia.enabled
+    ? (options.mediaSelector ?? createDeterministicMediaSelector(env.media.storageDir))
+    : null;
+
   await app.register(messageRoutes, {
     db,
     replyProvider: options.replyProvider ?? deterministicReplyProvider,
     memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
     memoryMaxStored: env.memory.maxStored,
+    mediaSelector,
   });
 
   // Character Media Messages (commit 1) — serves the media attached to a
