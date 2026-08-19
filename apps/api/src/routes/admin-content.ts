@@ -1,13 +1,23 @@
+import { createReadStream, existsSync } from 'node:fs';
+import multipart from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/client.js';
 import {
   approveVisualAsset,
+  getVisualAssetById,
   rejectVisualAsset,
   VisualAssetNotFoundError,
   VisualAssetTransitionError,
   type ContentRating,
   type VisualAssetStatus,
 } from '../services/visual-asset-service.js';
+import {
+  LibraryUploadError,
+  uploadLibraryAsset,
+  uploadedMimeTypeOf,
+  uploadedPathOf,
+  type LibraryUploadStorage,
+} from '../services/library-upload-service.js';
 import {
   getReviewAsset,
   listLibrary,
@@ -28,6 +38,7 @@ import {
  * provenance survives.
  */
 const RATINGS: ContentRating[] = ['sfw', 'explicit'];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function assetView(a: Awaited<ReturnType<typeof getReviewAsset>>) {
   if (!a) return null;
@@ -63,8 +74,17 @@ function libraryView(a: LibraryAsset) {
   return { ...assetView(a)!, recencyBasis: a.recencyBasis, recentAt: a.recentAt };
 }
 
-export default async function adminContentRoutes(app: FastifyInstance, opts: { db: Db }) {
+/** Max bytes accepted for one manual upload (videos need real headroom). */
+const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
+
+export default async function adminContentRoutes(
+  app: FastifyInstance,
+  opts: { db: Db; uploadStorage?: LibraryUploadStorage },
+) {
   const adminOnly = { preHandler: [app.requireAuth, app.requireAdmin] };
+
+  // Scoped to this plugin: multipart parsing exists only where uploads land.
+  await app.register(multipart, { limits: { fileSize: UPLOAD_MAX_BYTES, files: 1 } });
 
   /**
    * US-100 — the Content Library. One request returns BOTH the recent strip and
@@ -93,6 +113,92 @@ export default async function adminContentRoutes(app: FastifyInstance, opts: { d
       filtered,
     });
   });
+
+  /**
+   * Manual Library upload. NOT generation: no provider, model, cost or job is
+   * involved. `characterId` is REQUIRED because character_visual_assets cannot
+   * hold an unattached row; the upload lands on that character's active visual
+   * identity, approved into the Library but never canonical, so the public
+   * gallery rules are untouched.
+   */
+  app.post('/admin/content/uploads', adminOnly, async (request, reply) => {
+    if (!opts.uploadStorage) {
+      return reply.code(503).send({
+        error: 'uploads_unavailable',
+        message: 'Media storage is not configured for this environment.',
+      });
+    }
+    const file = await request.file();
+    if (!file) {
+      return reply
+        .code(400)
+        .send({ error: 'invalid_request', message: 'A file part is required.' });
+    }
+    // Multipart fields arrive alongside the file part.
+    const characterId = (file.fields.characterId as { value?: string } | undefined)?.value;
+    if (typeof characterId !== 'string' || !UUID_RE.test(characterId)) {
+      return reply
+        .code(400)
+        .send({ error: 'invalid_request', message: 'characterId must be a character UUID.' });
+    }
+    const rating = (file.fields.contentRating as { value?: string } | undefined)?.value;
+    if (rating !== undefined && !RATINGS.includes(rating as ContentRating)) {
+      return reply
+        .code(400)
+        .send({ error: 'invalid_request', message: 'contentRating must be sfw or explicit.' });
+    }
+
+    const bytes = await file.toBuffer();
+    if (file.file.truncated) {
+      return reply.code(413).send({
+        error: 'file_too_large',
+        message: `That file exceeds the ${Math.round(UPLOAD_MAX_BYTES / (1024 * 1024))}MB upload limit.`,
+      });
+    }
+
+    try {
+      const asset = await uploadLibraryAsset(opts.db, opts.uploadStorage, {
+        characterId,
+        mimeType: file.mimetype,
+        bytes,
+        originalName: file.filename,
+        contentRating: rating as ContentRating | undefined,
+        uploadedBy: request.currentUser?.id,
+      });
+      return reply.code(201).send(assetView(await getReviewAsset(opts.db, asset.id)));
+    } catch (err) {
+      if (err instanceof LibraryUploadError) {
+        return reply.code(400).send({ error: err.kind, message: err.message });
+      }
+      throw err;
+    }
+  });
+
+  /** Streams an uploaded asset's bytes. Admin-only, like the rest of this API. */
+  app.get<{ Params: { assetId: string } }>(
+    '/admin/content/uploads/:assetId/file',
+    adminOnly,
+    async (request, reply) => {
+      const { assetId } = request.params;
+      if (!UUID_RE.test(assetId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      const asset = await getVisualAssetById(opts.db, assetId);
+      const path = asset ? uploadedPathOf(asset) : null;
+      if (!asset || !path) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      if (!existsSync(path)) {
+        return reply.code(404).send({
+          error: 'file_missing',
+          message: 'Upload row exists but the file is missing (storage may not be persistent).',
+        });
+      }
+      reply.header('content-type', uploadedMimeTypeOf(asset));
+      reply.header('cache-control', 'private, max-age=60');
+      return reply.send(createReadStream(path));
+    },
+  );
 
   /** Character-first entry: who has content waiting. */
   app.get('/admin/content/review/summary', adminOnly, async (_request, reply) => {

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
-import { API_URL, contentLibraryApi, type LibraryAssetView } from '../../lib/api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PublicCharacter } from '@over18/shared';
+import { API_URL, charactersApi, contentLibraryApi, type LibraryAssetView } from '../../lib/api';
 
 /**
  * US-100 — Content Library.
@@ -68,6 +69,14 @@ export default function ContentLibraryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Manual upload. characterId is REQUIRED: a library asset cannot exist
+  // without a character, so the operator picks one — nothing is inferred.
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [characters, setCharacters] = useState<PublicCharacter[]>([]);
+  const [uploadCharacterId, setUploadCharacterId] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -86,10 +95,86 @@ export default function ContentLibraryPage() {
     void load();
   }, [load]);
 
+  // Character choices for the upload target, from the existing public endpoint.
+  useEffect(() => {
+    charactersApi
+      .list()
+      .then((list) => {
+        setCharacters(list);
+        setUploadCharacterId((current) => current || (list[0]?.id ?? ''));
+      })
+      .catch(() => setCharacters([]));
+  }, []);
+
+  const onFilePicked = useCallback(
+    async (file: File | undefined) => {
+      if (!file || !uploadCharacterId) return;
+      setUploading(true);
+      setUploadError(null);
+      try {
+        await contentLibraryApi.upload(file, uploadCharacterId);
+        await load(); // the new asset is library content immediately
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : 'Upload failed.');
+      } finally {
+        setUploading(false);
+        if (fileRef.current) fileRef.current.value = ''; // allow re-picking the same file
+      }
+    },
+    [uploadCharacterId, load],
+  );
+
   return (
     <div className="mx-auto max-w-6xl">
-      <h1 className="text-xl font-semibold text-white">Content Library</h1>
-      <p className="mt-1 text-sm text-zinc-400">Approved content, ready for categories and publishing.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-white">Content Library</h1>
+          <p className="mt-1 text-sm text-zinc-400">
+            Approved content, ready for categories and publishing.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor="upload-character" className="sr-only">
+            Upload to character
+          </label>
+          <select
+            id="upload-character"
+            value={uploadCharacterId}
+            onChange={(e) => setUploadCharacterId(e.target.value)}
+            className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200"
+          >
+            {characters.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.displayName}
+              </option>
+            ))}
+          </select>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+            onChange={(e) => void onFilePicked(e.target.files?.[0])}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading || !uploadCharacterId}
+            className="rounded-md bg-rose-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {uploading ? 'Uploading…' : 'Upload'}
+          </button>
+        </div>
+      </div>
+
+      {uploadError && (
+        <p
+          role="alert"
+          className="mt-4 rounded-md border border-rose-900 bg-rose-950/40 px-4 py-2 text-sm text-rose-300"
+        >
+          {uploadError}
+        </p>
+      )}
 
       {error && (
         <p role="alert" className="mt-4 rounded-md border border-rose-900 bg-rose-950/40 px-4 py-2 text-sm text-rose-300">

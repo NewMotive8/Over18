@@ -69,7 +69,15 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
 
   // US-106 admin content review — reads existing assets, so it does not
   // depend on media providers being configured.
-  await app.register(adminContentRoutes, { db });
+  await app.register(adminContentRoutes, {
+    db,
+    // Manual Library upload writes under the same MEDIA_STORAGE_DIR the media
+    // pipeline uses; it needs no provider, so it is always available.
+    uploadStorage: {
+      storageDir: env.media.storageDir,
+      servePathPrefix: '/admin/content/uploads',
+    },
+  });
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
   await app.register(conversationRoutes, { db });

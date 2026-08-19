@@ -17,6 +17,7 @@
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^10.0.1",
+    "@fastify/multipart": "^10.1.1",
     "@over18/shared": "*",
     "bcryptjs": "^3.0.3",
     "drizzle-orm": "^0.45.2",

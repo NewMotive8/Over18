@@ -162,6 +162,34 @@ export const contentLibraryApi = {
       `/admin/content/library${suffix}`,
     );
   },
+  /**
+   * Manual upload of one existing image/video file. Sent as multipart/form-data,
+   * so the Content-Type header is left to the browser (it must supply the
+   * boundary) — that is why this cannot use the JSON `request` helper.
+   */
+  upload: async (file: File, characterId: string): Promise<LibraryAssetView> => {
+    const form = new FormData();
+    form.append('characterId', characterId);
+    form.append('file', file);
+    const res = await fetch(`${API_URL}/admin/content/uploads`, {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!res.ok) {
+      let code = 'request_failed';
+      let message = `Upload failed (${res.status}).`;
+      try {
+        const body = (await res.json()) as Partial<ApiError>;
+        if (body.error) code = body.error;
+        if (body.message) message = body.message;
+      } catch {
+        // Non-JSON error body — keep the generic message.
+      }
+      throw new ApiRequestError(res.status, code, message);
+    }
+    return (await res.json()) as LibraryAssetView;
+  },
 };
 
 export const contentReviewApi = {
