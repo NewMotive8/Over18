@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { MESSAGE_MAX_LENGTH, type ChatMessage, type ConversationSummary } from '@over18/shared';
 import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
 import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
+import { createScrollFollower, scrollBehaviorFor } from '../lib/chatScroll';
 
 type ChatState =
   | { status: 'loading' }
@@ -24,7 +25,10 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  // Follow-the-bottom policy (lib/chatScroll.ts). A ref, not state: scrolling
+  // must never trigger a re-render of the conversation.
+  const follower = useRef(createScrollFollower()).current;
 
   // Optimistic send + delayed typing indicator. `pending` is held OUTSIDE
   // `messages` on purpose: `messages` only ever contains server-persisted
@@ -58,10 +62,24 @@ export default function ChatPage() {
     };
   }, [conversationId, attempt]);
 
-  // Keep the newest message (or typing indicator) in view.
+  /**
+   * Keep the newest message (or typing indicator) in view — but only while the
+   * user is actually following the conversation.
+   *
+   * Scrolls the message list ITSELF rather than calling scrollIntoView on a
+   * sentinel: scrollIntoView scrolls the nearest scrollable ancestor, which can
+   * be the page, and that is what moved the viewport somewhere unintended.
+   */
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, pending, showTyping]);
+    const list = listRef.current;
+    if (!list || !follower.shouldAutoScroll()) return;
+    const metrics = {
+      scrollTop: list.scrollTop,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+    };
+    list.scrollTo({ top: list.scrollHeight, behavior: scrollBehaviorFor(metrics) });
+  }, [messages.length, pending, showTyping, follower]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
@@ -109,6 +127,7 @@ export default function ChatPage() {
     const content = draft.trim();
     if (!content) return;
     setDraft(''); // composer clears immediately; `pending` now holds the text
+    follower.resume(); // sending is an explicit "take me to the newest message"
     await sendContent(content);
   }
 
@@ -207,7 +226,17 @@ export default function ChatPage() {
         </Link>
       </header>
 
-      <div className="flex-1 overflow-y-auto py-4">
+      <div
+        ref={listRef}
+        onScroll={(e) =>
+          follower.handleScroll({
+            scrollTop: e.currentTarget.scrollTop,
+            scrollHeight: e.currentTarget.scrollHeight,
+            clientHeight: e.currentTarget.clientHeight,
+          })
+        }
+        className="flex-1 overflow-y-auto py-4"
+      >
         {messages.length === 0 && pending === null ? (
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <p className="text-sm text-zinc-400">
@@ -244,7 +273,6 @@ export default function ChatPage() {
             )}
           </ul>
         )}
-        <div ref={bottomRef} />
       </div>
 
       {sendError && (
