@@ -52,12 +52,35 @@ export interface ConversationSummary {
   createdAt: string;
 }
 
-/** A single chat message inside a conversation (US-07). */
+/**
+ * Media a character message can carry (Character Media Messages, commit 1).
+ *
+ * Deliberately just a type and an opaque locator. It carries NO asset id, NO
+ * storage key, NO provenance and NO filesystem path — `url` is a
+ * message-scoped API route, and reading it is authorised by the caller owning
+ * the conversation that message belongs to. Nothing about the underlying
+ * Library asset is inferable from it.
+ */
+export type ChatMediaType = 'image' | 'video';
+
+export interface ChatMessageMedia {
+  type: ChatMediaType;
+  /** Opaque display locator: GET it to receive the bytes. */
+  url: string;
+}
+
+/**
+ * A single chat message inside a conversation (US-07).
+ *
+ * `media` is OPTIONAL and is OMITTED entirely when a message carries none, so
+ * every message that exists today serialises byte-for-byte as it did before.
+ */
 export interface ChatMessage {
   id: string;
   sender: 'user' | 'character';
   content: string;
   createdAt: string;
+  media?: ChatMessageMedia;
 }
 
 /** Result of sending a message: both persisted messages, in order. */

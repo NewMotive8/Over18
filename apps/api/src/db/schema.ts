@@ -132,6 +132,26 @@ export const messages = pgTable(
     seq: bigserial('seq', { mode: 'number' }).notNull(),
     sender: messageSender('sender').notNull(),
     content: text('content').notNull(),
+    /**
+     * Character Media Messages (commit 1) — the OPTIONAL library asset this
+     * message carries. Null for every message that exists today AND for every
+     * message the current code path writes: nothing in this commit ever sets
+     * it, so the column is inert until a later commit adds media selection.
+     *
+     * A REFERENCE, never a URL and never a path. The client is handed a
+     * message-scoped route instead, so the asset id, its storage key and its
+     * provenance never leave the server.
+     *
+     * ON DELETE SET NULL mirrors generation_results.asset_id: deleting a
+     * Library asset must degrade one bubble, never cascade into a user's
+     * conversation history.
+     *
+     * The forward reference to characterVisualAssets (declared below) is safe —
+     * Drizzle stores the callback and resolves it lazily, not at module load.
+     */
+    mediaAssetId: uuid('media_asset_id').references(() => characterVisualAssets.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index('messages_conversation_seq_idx').on(table.conversationId, table.seq)],

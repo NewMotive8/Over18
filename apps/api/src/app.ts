@@ -9,6 +9,7 @@ import authRoutes from './routes/auth.js';
 import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
+import conversationMediaRoutes from './routes/conversation-media.js';
 import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
 import adminContentRoutes from './routes/admin-content.js';
@@ -86,6 +87,15 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     replyProvider: options.replyProvider ?? deterministicReplyProvider,
     memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
     memoryMaxStored: env.memory.maxStored,
+  });
+
+  // Character Media Messages (commit 1) — serves the media attached to a
+  // message. Registered unconditionally: it reads existing rows and files, so
+  // like the admin content routes it needs no media provider. Inert until a
+  // later commit writes messages.media_asset_id.
+  await app.register(conversationMediaRoutes, {
+    db,
+    storageDir: env.media.storageDir,
   });
 
   // US-36 internal media endpoints — registered only when providers are

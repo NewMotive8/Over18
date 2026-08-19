@@ -1,7 +1,15 @@
 import { asc, eq } from 'drizzle-orm';
-import type { ChatMessage, SendMessageResult } from '@over18/shared';
+import type { ChatMediaType, ChatMessage, SendMessageResult } from '@over18/shared';
 import type { Db } from '../db/client.js';
-import { characters, conversations, messages, type MessageRow } from '../db/schema.js';
+import {
+  characters,
+  characterVisualAssets,
+  conversations,
+  messages,
+  type MessageRow,
+} from '../db/schema.js';
+import { mediaTypeOf } from './content-review-service.js';
+import { mediaUrlFor } from './message-media-service.js';
 import { getConversationForUser } from './conversation-service.js';
 import { deterministicReplyProvider, type ReplyProvider } from './character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './memory-extractor.js';
@@ -27,16 +35,38 @@ export const DEFAULT_MEMORY_HOOK: MemoryHookOptions = {
   maxStored: DEFAULT_MEMORY_MAX_STORED,
 };
 
-function toChatMessage(row: MessageRow): ChatMessage {
-  return {
+/**
+ * Wire mapper. Media-aware, but additive: when a row carries no media asset —
+ * which is EVERY row today, since nothing in this commit writes the column —
+ * the `media` key is omitted entirely rather than set to null/undefined, so
+ * existing messages serialise byte-for-byte as they did before.
+ *
+ * `mediaType` is resolved by the caller from the joined asset row; this mapper
+ * never sees the asset id, storage key or provenance, and emits only an opaque
+ * message-scoped URL.
+ */
+function toChatMessage(row: MessageRow, mediaType?: ChatMediaType | null): ChatMessage {
+  const message: ChatMessage = {
     id: row.id,
     sender: row.sender,
     content: row.content,
     createdAt: row.createdAt.toISOString(),
   };
+  if (row.mediaAssetId !== null && mediaType) {
+    message.media = { type: mediaType, url: mediaUrlFor(row.conversationId, row.id) };
+  }
+  return message;
 }
 
-/** Full message history, oldest first. Null when the conversation isn't the caller's. */
+/**
+ * Full message history, oldest first. Null when the conversation isn't the
+ * caller's.
+ *
+ * LEFT JOIN, deliberately: a message whose media asset was deleted from the
+ * Library (media_asset_id is ON DELETE SET NULL) — or which never had one, i.e.
+ * all of them today — must still return its text. Media can never make a
+ * message disappear from history.
+ */
 export async function listMessages(
   db: Db,
   userId: string,
@@ -45,11 +75,17 @@ export async function listMessages(
   const conversation = await getConversationForUser(db, userId, conversationId);
   if (!conversation) return null;
   const rows = await db
-    .select()
+    .select({ message: messages, asset: characterVisualAssets })
     .from(messages)
+    .leftJoin(characterVisualAssets, eq(characterVisualAssets.id, messages.mediaAssetId))
     .where(eq(messages.conversationId, conversationId))
     .orderBy(asc(messages.seq));
-  return rows.map(toChatMessage);
+  return rows.map((row) =>
+    toChatMessage(
+      row.message,
+      row.asset ? mediaTypeOf(row.asset.storageKey, row.asset.provenance) : null,
+    ),
+  );
 }
 
 /**
@@ -98,7 +134,10 @@ export async function sendMessage(
     const replyText = await replyProvider({
       character: conversation.character,
       systemPrompt: personaRow!.systemPrompt,
-      history: historyRows.map(toChatMessage),
+      // Explicit arrow, NOT a point-free `.map(toChatMessage)`: map passes the
+      // index as the second argument, which is now the media-type parameter.
+      // The model's history is text-only in this commit regardless.
+      history: historyRows.map((row) => toChatMessage(row)),
       priorMessageCount: historyRows.length,
       userMessage: content,
       memories: rememberedFacts,

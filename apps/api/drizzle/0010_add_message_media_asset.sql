@@ -1,0 +1,2 @@
+ALTER TABLE "messages" ADD COLUMN "media_asset_id" uuid;--> statement-breakpoint
+ALTER TABLE "messages" ADD CONSTRAINT "messages_media_asset_id_character_visual_assets_id_fk" FOREIGN KEY ("media_asset_id") REFERENCES "public"."character_visual_assets"("id") ON DELETE set null ON UPDATE no action;
