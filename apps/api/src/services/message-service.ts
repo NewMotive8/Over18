@@ -162,22 +162,16 @@ export async function sendMessage(
       .values({ conversationId, sender: 'user', content })
       .returning();
 
-    const replyText = await replyProvider({
-      character: conversation.character,
-      systemPrompt: personaRow!.systemPrompt,
-      // Explicit arrow, NOT a point-free `.map(toChatMessage)`: map passes the
-      // index as the second argument, which is now the media-type parameter.
-      // The model's history is text-only in this commit regardless.
-      history: historyRows.map((row) => toChatMessage(row)),
-      priorMessageCount: historyRows.length,
-      userMessage: content,
-      memories: rememberedFacts,
-    });
-
-    // Media selection. Runs INSIDE the transaction so the "already sent in this
-    // conversation" exclusion sees a consistent view, and so an attached asset
-    // is written in the SAME insert as the reply — there is no window in which
-    // a character message exists without the media it was chosen with.
+    // Media selection runs BEFORE the reply is generated.
+    //
+    // The order matters and was wrong at first: generating text first meant the
+    // model wrote blind and could refuse ("I don't send pics…") while the
+    // server attached a picture regardless. Selecting first lets the outcome be
+    // passed into the reply context, so the words and the attachment agree.
+    //
+    // Still INSIDE the transaction, so the "already sent in this conversation"
+    // exclusion sees a consistent view and the asset is written in the SAME
+    // insert as the reply — no window where a message exists without its media.
     //
     // Both conditions are required: a selector (null when the feature flag is
     // off) and an explicit requested type. Neither can be produced by the model.
@@ -195,6 +189,22 @@ export async function sendMessage(
         selected = null;
       }
     }
+
+    const replyText = await replyProvider({
+      character: conversation.character,
+      systemPrompt: personaRow!.systemPrompt,
+      // Explicit arrow, NOT a point-free `.map(toChatMessage)`: map passes the
+      // index as the second argument, which is the media-type parameter.
+      // The model's history is text-only.
+      history: historyRows.map((row) => toChatMessage(row)),
+      priorMessageCount: historyRows.length,
+      userMessage: content,
+      memories: rememberedFacts,
+      // Null unless an asset was actually selected — so "asked but nothing
+      // eligible" reads exactly like an ordinary turn and the character never
+      // promises media that is not attached.
+      sendingMedia: selected?.mediaType ?? null,
+    });
 
     const [characterRow] = await tx
       .insert(messages)

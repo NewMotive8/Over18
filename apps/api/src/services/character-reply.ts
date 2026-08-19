@@ -29,6 +29,20 @@ export interface ReplyContext {
    * Optional so existing ReplyProvider callers/fixtures stay source-compatible.
    */
   memories?: string[];
+  /**
+   * Set when the server has ALREADY decided to attach media to this reply, and
+   * to which kind. Null/absent on every ordinary turn.
+   *
+   * This exists to stop the reply contradicting the action. Selection now runs
+   * BEFORE the reply is generated, so without this the model writes blind and
+   * can refuse ("I don't send pics to guys I haven't met…") while the server
+   * attaches a picture anyway — exactly what the first POC test produced.
+   *
+   * Strictly one-way: the model is TOLD what is being sent. It cannot choose
+   * the asset, cannot see its id, storage key, path or URL, and cannot ask for
+   * media that was not already selected by the server's own rules.
+   */
+  sendingMedia?: 'image' | 'video' | null;
 }
 
 export type ReplyProvider = (context: ReplyContext) => Promise<string> | string;
@@ -39,9 +53,21 @@ export type ReplyProvider = (context: ReplyContext) => Promise<string> | string;
  * conversation style). Same inputs → same reply, which keeps tests stable
  * and the demo predictable.
  */
-export const deterministicReplyProvider: ReplyProvider = ({ character, priorMessageCount }) => {
+export const deterministicReplyProvider: ReplyProvider = ({
+  character,
+  priorMessageCount,
+  sendingMedia,
+}) => {
   const interests = character.interests.length > 0 ? character.interests : ['getting to know you'];
   const interest = interests[Math.floor(priorMessageCount / 2) % interests.length]!;
+
+  // When the server has already decided to attach media, the text must AGREE
+  // with that. A refusal here would contradict a picture the user can see.
+  if (sendingMedia) {
+    return sendingMedia === 'video'
+      ? `Okay — here's a little video, just for you.`
+      : `Okay — here's a picture of me, just for you.`;
+  }
 
   const templates = [
     `Hey, I'm ${character.displayName}. ${character.shortBio} I'm really glad you're here — tell me something about yourself?`,

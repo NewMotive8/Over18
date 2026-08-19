@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { MESSAGE_MAX_LENGTH, type ChatMessage, type ConversationSummary } from '@over18/shared';
+import {
+  detectMediaRequest,
+  MESSAGE_MAX_LENGTH,
+  type ChatMessage,
+  type ConversationSummary,
+} from '@over18/shared';
 import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
 import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
 import { createScrollFollower } from '../lib/chatScroll';
@@ -107,7 +112,15 @@ export default function ChatPage() {
   const controller = useMemo(
     () =>
       createChatSendController({
-        send: (content: string) => messagesApi.send(conversationId!, content),
+        // POC media trigger. Detection is a pure function over the text the
+        // user just typed (lib: @over18/shared detectMediaRequest) and only
+        // ever decides the TYPE asked for — the server still chooses the
+        // asset, and ignores this entirely unless CHAT_MEDIA_ENABLED is on.
+        // Undefined for ordinary messages, so the request is byte-identical
+        // to before. chatSend.ts is untouched: the 2s/5s timing and the
+        // scroll anchor never see this.
+        send: (content: string) =>
+          messagesApi.send(conversationId!, content, detectMediaRequest(content) ?? undefined),
         onState: setSend,
         onResult: (result) => {
           // The canonical rows replace the optimistic bubble in one render.

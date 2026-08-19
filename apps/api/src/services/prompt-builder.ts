@@ -90,7 +90,31 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
     );
   }
 
-  // 5. Conduct rules (US-09)
+  // 5. Media the server has ALREADY decided to attach to this reply.
+  //
+  // Last thing the model reads about this specific turn. This is NOT a policy
+  // or permission statement and NOT a content instruction — it reports a
+  // decision the server has already made and committed to, so the words can
+  // match the picture the person is about to see. Without it the model writes
+  // blind and can refuse while an image is attached anyway, which is exactly
+  // what the first POC test produced.
+  //
+  // The model is told the KIND only. It never receives the asset id, storage
+  // key, path or URL, and nothing it writes can change which asset is sent.
+  if (context.sendingMedia) {
+    const noun = context.sendingMedia === 'video' ? 'a short video' : 'a photo';
+    sections.push(
+      [
+        'For THIS reply only:',
+        `- You are attaching ${noun} of yourself to this message. It is already attached, and they will see it with your reply.`,
+        '- Write the line that goes with it, in your own voice — short and natural, as if handing it over.',
+        '- Do NOT refuse, deflect, or say you would rather not send it. That would contradict what they can already see.',
+        '- Do NOT describe what is in it, and do not mention files, links, attachments or uploads.',
+      ].join('\n'),
+    );
+  }
+
+  // 6. Conduct rules (US-09)
   sections.push(
     [
       'Conversation rules:',
