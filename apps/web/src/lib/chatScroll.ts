@@ -85,3 +85,74 @@ export function createScrollFollower(threshold = FOLLOW_THRESHOLD_PX): ScrollFol
     shouldAutoScroll: () => following,
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Finding the element that actually scrolls
+ * ------------------------------------------------------------------ */
+
+/**
+ * WHY THIS EXISTS — measured, not assumed.
+ *
+ * The message list carries `flex-1 overflow-y-auto`, which reads like a scroll
+ * container. In the real shell it is not one. Measured in Chromium at a 412x500
+ * viewport with 30 messages:
+ *
+ *   #list  scrollHeight=2109  clientHeight=2109  -> NOT scrollable
+ *   main   scrollHeight=2277  clientHeight=2277  -> NOT scrollable
+ *   doc    scrollHeight=2395  clientHeight= 500  -> the real scroller
+ *
+ * The cause is a chain of indefinite heights: the shell root is `min-h-dvh`
+ * (a MINIMUM, so it grows with content), `main` is a flex item whose default
+ * `min-height: auto` stops it shrinking below its content, ChatPage's section
+ * is `h-full` against that indefinite parent, and the list is another
+ * `min-height: auto` flex item. Nothing is ever bounded, so no overflow
+ * engages and the document scrolls instead.
+ *
+ * Two consequences, both of which are the reported bug:
+ *   - `list.scrollTo(...)` moved nothing at all. Verified: scrollTop stayed 0.
+ *   - `scrollHeight - clientHeight - scrollTop` is 0 on a non-scrolling
+ *     element, so the follower read "at the bottom" ALWAYS — while the real
+ *     scroller sat 1575px away from it — and its scroll handler never fired,
+ *     because a non-scrolling element emits no scroll events.
+ *
+ * So instead of assuming which element scrolls, find it. This is also why the
+ * fix survives the layout being bounded properly later: if the list becomes a
+ * real scroll container, it is found first and used.
+ */
+
+/** Sub-pixel slack; a 1px difference is rounding, not scrollable content. */
+export const SCROLLABLE_EPSILON_PX = 1;
+
+/** Structural shape of a scroll candidate — no DOM types, so node can test it. */
+export interface ScrollCandidate {
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+/** True when this box can actually scroll vertically right now. */
+export function isScrollableBox(el: ScrollCandidate, overflowY: string): boolean {
+  const overflows = el.scrollHeight > el.clientHeight + SCROLLABLE_EPSILON_PX;
+  return overflows && (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay');
+}
+
+/**
+ * Walks from `start` up through `getParent` and returns the first box that
+ * genuinely scrolls; falls back to the document scroller when none does.
+ *
+ * Deliberately re-run rather than cached forever: which element scrolls depends
+ * on content height, so an empty conversation and a long one can legitimately
+ * differ.
+ */
+export function findScrollContainer<T extends ScrollCandidate>(
+  start: T | null | undefined,
+  getOverflowY: (el: T) => string,
+  getParent: (el: T) => T | null | undefined,
+  fallback: T | null,
+): T | null {
+  let node = start ?? null;
+  while (node) {
+    if (isScrollableBox(node, getOverflowY(node))) return node;
+    node = getParent(node) ?? null;
+  }
+  return fallback;
+}

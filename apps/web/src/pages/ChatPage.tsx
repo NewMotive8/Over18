@@ -3,7 +3,8 @@ import { Link, useParams } from 'react-router-dom';
 import { MESSAGE_MAX_LENGTH, type ChatMessage, type ConversationSummary } from '@over18/shared';
 import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
 import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
-import { createScrollFollower, scrollBehaviorFor } from '../lib/chatScroll';
+import { createScrollFollower } from '../lib/chatScroll';
+import { createViewportAnchor, type ViewportAnchor } from '../lib/chatViewport';
 import MessageMedia from '../components/MessageMedia';
 
 type ChatState =
@@ -64,23 +65,38 @@ export default function ChatPage() {
   }, [conversationId, attempt]);
 
   /**
-   * Keep the newest message (or typing indicator) in view — but only while the
-   * user is actually following the conversation.
+   * Keeps the conversation pinned to its newest content.
    *
-   * Scrolls the message list ITSELF rather than calling scrollIntoView on a
-   * sentinel: scrollIntoView scrolls the nearest scrollable ancestor, which can
-   * be the page, and that is what moved the viewport somewhere unintended.
+   * The previous version scrolled `listRef` itself. Measured in Chromium, that
+   * element is not a scroll container at all (scrollHeight === clientHeight),
+   * so the call moved nothing and the follower always read "at the bottom"
+   * while the real scroller — the document — sat over a thousand pixels away.
+   * chatViewport resolves whatever actually scrolls and drives that instead.
    */
+  const anchor = useRef<ViewportAnchor | null>(null);
+  if (anchor.current === null) {
+    anchor.current = createViewportAnchor({
+      getList: () => listRef.current,
+      shouldFollow: () => follower.shouldAutoScroll(),
+      onScroll: (metrics) => follower.handleScroll(metrics),
+    });
+  }
+
+  // Bind once the list exists (i.e. once the conversation has rendered), and
+  // tear every listener down on unmount.
   useEffect(() => {
-    const list = listRef.current;
-    if (!list || !follower.shouldAutoScroll()) return;
-    const metrics = {
-      scrollTop: list.scrollTop,
-      scrollHeight: list.scrollHeight,
-      clientHeight: list.clientHeight,
-    };
-    list.scrollTo({ top: list.scrollHeight, behavior: scrollBehaviorFor(metrics) });
-  }, [messages.length, pending, showTyping, follower]);
+    if (state.status !== 'ready') return;
+    const current = anchor.current!;
+    current.attach();
+    current.pin();
+    return () => current.dispose();
+  }, [state.status, conversationId]);
+
+  // One effect, one mechanism: content changes re-pin through the same guarded
+  // path as resizes, so nothing competes to move the viewport.
+  useEffect(() => {
+    anchor.current?.pin();
+  }, [messages.length, pending, showTyping]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
@@ -227,17 +243,12 @@ export default function ChatPage() {
         </Link>
       </header>
 
-      <div
-        ref={listRef}
-        onScroll={(e) =>
-          follower.handleScroll({
-            scrollTop: e.currentTarget.scrollTop,
-            scrollHeight: e.currentTarget.scrollHeight,
-            clientHeight: e.currentTarget.clientHeight,
-          })
-        }
-        className="flex-1 overflow-y-auto py-4"
-      >
+      {/* No onScroll here on purpose. This element does not scroll (measured:
+          scrollHeight === clientHeight), so its scroll handler never fired and
+          the metrics it would report always read as "at the bottom". The
+          listener now lives on the element that really scrolls — see
+          chatViewport.createViewportAnchor. */}
+      <div ref={listRef} className="flex-1 overflow-y-auto py-4">
         {messages.length === 0 && pending === null ? (
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <p className="text-sm text-zinc-400">

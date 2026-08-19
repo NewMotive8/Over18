@@ -2,7 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      interactive-widget=resizes-content makes the on-screen keyboard resize the
+      LAYOUT viewport, not just the visual one. Without it Android Chrome can
+      leave the layout viewport (and every dvh unit) at full height while the
+      keyboard covers the bottom of the screen, so "scrolled to the bottom" and
+      "the newest message is visible" stop meaning the same thing — which is
+      exactly the post-send symptom. With it, the keyboard opening and closing
+      each fire a real resize the chat viewport anchor can respond to.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
+    />
     <title>Over18</title>
   </head>
   <body>
