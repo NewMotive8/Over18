@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createChatSendController, IDLE_SEND_STATE, TYPING_INDICATOR_DELAY_MS } from './chatSend';
+import {
+  createChatSendController,
+  IDLE_SEND_STATE,
+  TYPING_INDICATOR_DELAY_MS,
+  REPLY_REVEAL_FLOOR_MS,
+} from './chatSend';
 
 /**
  * Timing behaviour of the chat composer. These run in the repo's existing
@@ -70,27 +75,42 @@ describe('chat send lifecycle', () => {
     expect(h.last()).toEqual({ pending: 'hi', showTyping: true, sending: true });
   });
 
-  it('(c) a fast response never shows the typing indicator, even later', async () => {
+  it('(c) a response before 2s still shows typing at 2s, and reveals at 5s', async () => {
     const h = harness();
     const p = h.controller.send('hi');
 
+    vi.advanceTimersByTime(1000);
     h.resolve({ ok: true });
     await p;
 
-    expect(h.states.some((s) => s.showTyping)).toBe(false);
+    // Buffered, not revealed: 1s in, the reply must not be on screen.
+    expect(h.results).toHaveLength(0);
+    expect(h.last().pending).toBe('hi');
 
-    // The timer must have been cancelled: advancing well past it changes nothing.
-    vi.advanceTimersByTime(TYPING_INDICATOR_DELAY_MS * 5);
-    expect(h.states.some((s) => s.showTyping)).toBe(false);
+    // The indicator still appears on schedule at 2s.
+    await vi.advanceTimersByTimeAsync(TYPING_INDICATOR_DELAY_MS - 1000);
+    expect(h.last().showTyping).toBe(true);
+    expect(h.results).toHaveLength(0);
+
+    // Revealed exactly at the 5s floor.
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS - TYPING_INDICATOR_DELAY_MS - 1);
+    expect(h.results).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.results).toHaveLength(1);
     expect(h.last()).toEqual(IDLE_SEND_STATE);
   });
 
-  it('(d) a slow response removes the typing indicator when it arrives', async () => {
+  it('(d) a slow response reveals when it lands, with no extra delay', async () => {
     const h = harness();
     const p = h.controller.send('hi');
 
-    vi.advanceTimersByTime(TYPING_INDICATOR_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(TYPING_INDICATOR_DELAY_MS);
     expect(h.last().showTyping).toBe(true);
+
+    // Past the floor with nothing to reveal — the indicator stays up.
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS - TYPING_INDICATOR_DELAY_MS + 2000);
+    expect(h.last().showTyping).toBe(true);
+    expect(h.results).toHaveLength(0);
 
     h.resolve({ ok: true });
     await p;
@@ -117,17 +137,25 @@ describe('chat send lifecycle', () => {
     expect(h.last().showTyping).toBe(false);
   });
 
-  it('(f) the optimistic message is dropped exactly once on success, never duplicated', async () => {
+  it('(f) the optimistic message is dropped exactly once on reveal, never duplicated', async () => {
     const h = harness();
     const p = h.controller.send('hello');
     h.resolve({ ok: true });
     await p;
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS); // reveal is floored
 
     // pending returns to null in the SAME transition that reports the result,
     // so the caller appends the canonical rows while the bubble disappears.
     expect(h.last().pending).toBeNull();
     expect(h.results).toHaveLength(1);
-    expect(h.states.filter((s) => s.pending === 'hello')).toHaveLength(1);
+
+    // The bubble text is only ever this one message (never a second copy),
+    // and it is cleared exactly once — counting transitions would be wrong,
+    // since `pending` legitimately persists across the typing transition.
+    const pendings = h.states.map((s) => s.pending);
+    expect(pendings.filter((p) => p !== null)).toEqual(pendings.filter((p) => p === 'hello'));
+    const clears = pendings.filter((p, i) => p === null && pendings[i - 1] === 'hello');
+    expect(clears).toHaveLength(1);
   });
 
   it('a second send never inherits the first send timer', async () => {
@@ -150,6 +178,7 @@ describe('chat send lifecycle', () => {
 
     h.resolve({ ok: 'second' });
     await p2;
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS);
 
     expect(h.last()).toEqual(IDLE_SEND_STATE);
     expect(h.results).toEqual([{ ok: 'second' }]);
@@ -165,6 +194,13 @@ describe('chat send lifecycle', () => {
     expect(h.states.some((s) => s.showTyping)).toBe(false);
   });
 
+  it('the request is issued at once, never gated by either delay', async () => {
+    const h = harness();
+    void h.controller.send('immediate');
+    // Zero timers advanced: the network call has already been made.
+    expect(h.sendCalls).toEqual(['immediate']);
+  });
+
   it('clearPending() drops the optimistic message after a dismissed failure', async () => {
     const h = harness();
     const p = h.controller.send('hi');
@@ -174,5 +210,103 @@ describe('chat send lifecycle', () => {
     expect(h.last().pending).toBe('hi');
     h.controller.clearPending();
     expect(h.last().pending).toBeNull();
+  });
+});
+
+describe('reply reveal floor (never before 5s)', () => {
+  it('response at 1s is held until 5s', async () => {
+    const h = harness();
+    const p = h.controller.send('hi');
+    await vi.advanceTimersByTimeAsync(1000);
+    h.resolve({ ok: true });
+    await p;
+
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS - 1000 - 1);
+    expect(h.results).toHaveLength(0); // 4999ms: still hidden
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.results).toHaveLength(1); // 5000ms: revealed
+  });
+
+  it('response at 4s is held until 5s', async () => {
+    const h = harness();
+    const p = h.controller.send('hi');
+    await vi.advanceTimersByTimeAsync(4000);
+    h.resolve({ ok: true });
+    await p;
+
+    expect(h.results).toHaveLength(0);
+    expect(h.last().showTyping).toBe(true); // typing still up at 4s
+    await vi.advanceTimersByTimeAsync(999);
+    expect(h.results).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.results).toHaveLength(1);
+  });
+
+  it('response at 7s appears at 7s, not later', async () => {
+    const h = harness();
+    const p = h.controller.send('hi');
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(h.results).toHaveLength(0);
+    expect(h.last().showTyping).toBe(true);
+
+    h.resolve({ ok: true });
+    await p;
+    expect(h.results).toHaveLength(1); // immediately, no extra wait
+    expect(h.last()).toEqual(IDLE_SEND_STATE);
+  });
+
+  it('the typing indicator disappears in the same transition that reveals', async () => {
+    const h = harness();
+    const p = h.controller.send('hi');
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(h.last().showTyping).toBe(true);
+    h.resolve({ ok: true });
+    await p;
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS - 2500);
+
+    expect(h.last().showTyping).toBe(false);
+    expect(h.last().pending).toBeNull();
+    expect(h.results).toHaveLength(1);
+  });
+
+  it('a failure is surfaced immediately and is not held to 5s', async () => {
+    const h = harness();
+    const p = h.controller.send('hi');
+    await vi.advanceTimersByTimeAsync(1000);
+    h.reject(new Error('502'));
+    await p;
+
+    expect(h.errors).toHaveLength(1); // at 1s, not 5s
+    expect(h.last()).toEqual({ pending: 'hi', showTyping: false, sending: false });
+
+    // No floor or typing timer may fire afterwards.
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS * 2);
+    expect(h.last().showTyping).toBe(false);
+    expect(h.results).toHaveLength(0);
+  });
+
+  it('a buffered reply from a superseded send can never be revealed', async () => {
+    const h = harness();
+    void h.controller.send('first');
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const p2 = h.controller.send('second'); // supersedes; floor restarts
+    h.resolve({ ok: 'second' });
+    await p2;
+
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS);
+    expect(h.results).toEqual([{ ok: 'second' }]); // exactly one, the newer one
+    expect(h.last()).toEqual(IDLE_SEND_STATE);
+  });
+
+  it('dispose() cancels the floor timer too', async () => {
+    const h = harness();
+    const p = h.controller.send('hi');
+    h.resolve({ ok: true });
+    await p;
+
+    h.controller.dispose();
+    await vi.advanceTimersByTimeAsync(REPLY_REVEAL_FLOOR_MS * 2);
+    expect(h.results).toHaveLength(0); // never revealed after unmount
   });
 });

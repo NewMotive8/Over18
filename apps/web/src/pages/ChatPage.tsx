@@ -264,11 +264,26 @@ export default function ChatPage() {
               </li>
             )}
             {showTyping && (
+              /* The SAME indicator element as before — same bubble, position and
+                 aria-live — with the ellipsis replaced by three animating dots.
+                 Tailwind's animate-bounce is already used elsewhere in the app,
+                 so this needs no new CSS or keyframes. The label stays for
+                 screen readers, which get no benefit from motion. */
               <li
                 aria-live="polite"
-                className="max-w-[80%] self-start rounded-2xl rounded-bl-md bg-zinc-800/70 px-3.5 py-2 text-sm italic text-zinc-400"
+                aria-label={`${character.displayName} is typing`}
+                className="flex max-w-[80%] items-center gap-2 self-start rounded-2xl rounded-bl-md bg-zinc-800/70 px-3.5 py-2 text-sm italic text-zinc-400"
               >
-                {character.displayName} is typing…
+                <span>{character.displayName} is typing</span>
+                <span aria-hidden className="flex items-end gap-1 pb-0.5">
+                  {[0, 150, 300].map((delay) => (
+                    <span
+                      key={delay}
+                      className="inline-block h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-400"
+                      style={{ animationDelay: `${delay}ms` }}
+                    />
+                  ))}
+                </span>
               </li>
             )}
           </ul>
