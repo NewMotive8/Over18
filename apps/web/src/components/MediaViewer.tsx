@@ -14,11 +14,21 @@ export default function MediaViewer({
   startIndex,
   label,
   onClose,
+  fit = 'cover',
 }: {
   items: CharacterMediaItem[];
   startIndex: number;
   label: string;
   onClose: () => void;
+  /**
+   * 'cover' — the default, and what the character gallery gets — shows the
+   * media in a fixed 4/5 frame, cropping to fill.
+   *
+   * 'contain' drops the fixed frame and shows the whole asset letterboxed
+   * against the backdrop. Opt-in, used by chat: a photo the character
+   * deliberately sent has to be seen whole, at its own aspect ratio.
+   */
+  fit?: 'cover' | 'contain';
 }) {
   const [index, setIndex] = useState(startIndex);
   const clamped = Math.max(0, Math.min(index, items.length - 1));
@@ -54,10 +64,20 @@ export default function MediaViewer({
       </button>
 
       <div
-        className="relative aspect-[4/5] w-full max-w-md overflow-hidden rounded-2xl"
+        className={
+          fit === 'contain'
+            ? // A DEFINITE height, not max-h: HeroMedia's inner element is
+              // `h-full`, which only resolves against a definite parent. With
+              // max-h alone the height is indefinite, h-full collapses to auto
+              // and the image sizes unpredictably. No fixed ratio and no
+              // overflow clipping, so object-contain letterboxes inside these
+              // bounds and nothing is ever cut off.
+              'relative h-[85vh] w-full max-w-3xl'
+            : 'relative aspect-[4/5] w-full max-w-md overflow-hidden rounded-2xl'
+        }
         onClick={(e) => e.stopPropagation()}
       >
-        <HeroMedia media={item.media} alt={label} />
+        <HeroMedia media={item.media} alt={label} fit={fit} />
       </div>
 
       {items.length > 1 && (

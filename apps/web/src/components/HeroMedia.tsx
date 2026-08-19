@@ -16,14 +16,37 @@ import type { HeroMedia as HeroMediaModel } from '../lib/media';
  * `resolveHeroMedia`, so a future real video provider drops in with no change
  * here.
  */
+/**
+ * Full class names, never interpolated. Tailwind scans source text for literal
+ * class strings, so `object-${fit}` would be invisible to it and could be
+ * purged from the build.
+ */
+const FIT_CLASS = {
+  cover: 'h-full w-full object-cover',
+  contain: 'h-full w-full object-contain',
+} as const;
+
 export default function HeroMedia({
   media,
   alt,
   className,
+  fit = 'cover',
 }: {
   media: HeroMediaModel;
   alt: string;
   className?: string;
+  /**
+   * How the media fills its frame.
+   *
+   * 'cover' — the default, and what every pre-existing caller gets — crops to
+   * fill, which is right for the edge-to-edge discovery cards this component
+   * was built for.
+   *
+   * 'contain' shows the whole asset, letterboxed. Opt-in, added for the chat
+   * full-screen viewer, where a photo someone was deliberately sent has to be
+   * seen whole rather than cropped to a card's shape.
+   */
+  fit?: 'cover' | 'contain';
 }) {
   const [videoFailed, setVideoFailed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
@@ -66,7 +89,7 @@ export default function HeroMedia({
           onCanPlay={() => setReady(true)}
           onLoadedData={() => setReady(true)}
           onError={() => setVideoFailed(true)}
-          className="h-full w-full object-cover"
+          className={FIT_CLASS[fit]}
         />
       ) : showImage && effectiveImage ? (
         <img
@@ -76,7 +99,7 @@ export default function HeroMedia({
           loading="lazy"
           onLoad={() => setReady(true)}
           onError={() => setImageFailed(true)}
-          className="h-full w-full object-cover"
+          className={FIT_CLASS[fit]}
         />
       ) : (
         <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-zinc-800 to-zinc-950">
