@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { MESSAGE_MAX_LENGTH, type ChatMessage, type ConversationSummary } from '@over18/shared';
 import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
+import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
 
 type ChatState =
   | { status: 'loading' }
@@ -22,9 +23,16 @@ export default function ChatPage() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Optimistic send + delayed typing indicator. `pending` is held OUTSIDE
+  // `messages` on purpose: `messages` only ever contains server-persisted
+  // rows, so when the response arrives the canonical userMessage is appended
+  // and the optimistic one is dropped in the same render — the bubble can
+  // never duplicate. See lib/chatSend.ts for the timing rules.
+  const [send, setSend] = useState<ChatSendState>(IDLE_SEND_STATE);
+  const { pending, showTyping, sending } = send;
 
   // Load the conversation and its full history together.
   useEffect(() => {
@@ -53,49 +61,62 @@ export default function ChatPage() {
   // Keep the newest message (or typing indicator) in view.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, sending]);
+  }, [messages.length, pending, showTyping]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
   // US-14: one send path shared by the form and the Retry button. On failure
-  // nothing is appended and the draft is preserved, so a retry re-sends the
-  // exact same content — the server's atomic transaction guarantees the failed
-  // attempt persisted no user (or character) message, so no duplicates arise.
+  // the optimistic message stays visible and Retry re-sends that exact content
+  // — the server's atomic transaction guarantees the failed attempt persisted
+  // no user (or character) message, so no duplicates arise.
+  const controller = useMemo(
+    () =>
+      createChatSendController({
+        send: (content: string) => messagesApi.send(conversationId!, content),
+        onState: setSend,
+        onResult: (result) => {
+          // The canonical rows replace the optimistic bubble in one render.
+          setMessages((prev) => [...prev, result.userMessage, result.characterMessage]);
+        },
+        onError: (err) => {
+          // Prefer the API's understandable message (timeout / unavailable /
+          // not-configured); fall back for a network error with no response.
+          setSendError(
+            err instanceof ApiRequestError
+              ? err.message
+              : "Couldn't reach the server. Check your connection and try again.",
+          );
+        },
+      }),
+    [conversationId],
+  );
+
+  // No timer may outlive the screen, or a superseded conversation.
+  useEffect(() => () => controller.dispose(), [controller]);
+
   const sendContent = useCallback(
     async (content: string) => {
       if (!content || !conversationId) return;
-      setSending(true);
       setSendError(null);
-      try {
-        const result = await messagesApi.send(conversationId, content);
-        setMessages((prev) => [...prev, result.userMessage, result.characterMessage]);
-        setDraft(''); // clear only on success — errors keep the draft for retry
-      } catch (err) {
-        // Prefer the API's understandable message (timeout / unavailable /
-        // not-configured); fall back for a network error with no response.
-        setSendError(
-          err instanceof ApiRequestError
-            ? err.message
-            : "Couldn't reach the server. Check your connection and try again.",
-        );
-      } finally {
-        setSending(false);
-      }
+      await controller.send(content);
     },
-    [conversationId],
+    [conversationId, controller],
   );
 
   async function handleSend(event: FormEvent) {
     event.preventDefault();
     if (sending) return;
-    await sendContent(draft.trim());
+    const content = draft.trim();
+    if (!content) return;
+    setDraft(''); // composer clears immediately; `pending` now holds the text
+    await sendContent(content);
   }
 
-  // Retry re-sends the preserved draft — no retyping required.
+  // Retry re-sends the preserved pending message — no retyping required.
   const retrySend = useCallback(() => {
-    if (sending) return;
-    void sendContent(draft.trim());
-  }, [sending, draft, sendContent]);
+    if (sending || !pending) return;
+    void sendContent(pending);
+  }, [sending, pending, sendContent]);
 
   if (state.status === 'loading') {
     return (
@@ -187,7 +208,7 @@ export default function ChatPage() {
       </header>
 
       <div className="flex-1 overflow-y-auto py-4">
-        {messages.length === 0 && !sending ? (
+        {messages.length === 0 && pending === null ? (
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <p className="text-sm text-zinc-400">
               This is the beginning of your conversation with {character.displayName}.
@@ -208,7 +229,12 @@ export default function ChatPage() {
                 {message.content}
               </li>
             ))}
-            {sending && (
+            {pending !== null && (
+              <li className="max-w-[80%] self-end rounded-2xl rounded-br-md bg-rose-600 px-3.5 py-2 text-sm leading-relaxed text-white">
+                {pending}
+              </li>
+            )}
+            {showTyping && (
               <li
                 aria-live="polite"
                 className="max-w-[80%] self-start rounded-2xl rounded-bl-md bg-zinc-800/70 px-3.5 py-2 text-sm italic text-zinc-400"
@@ -230,7 +256,7 @@ export default function ChatPage() {
           <button
             type="button"
             onClick={retrySend}
-            disabled={sending || draft.trim().length === 0}
+            disabled={sending || pending === null}
             className="shrink-0 rounded-md bg-red-800/70 px-3 py-1 text-xs font-semibold text-red-50 transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {sending ? 'Retrying…' : 'Retry'}
