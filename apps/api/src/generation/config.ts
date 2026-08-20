@@ -43,6 +43,16 @@ export interface ImageGenerationConfiguration {
   height?: number;
   quantity?: number;
   contentRating?: ContentRating;
+  /**
+   * Which CONFIGURED content requirement this generation is meant to satisfy.
+   *
+   * Optional and never defaulted. When set, it rides through the job's
+   * effective config onto every produced asset, so generated content arrives in
+   * Review already filed under its category — the same field a manual upload
+   * carries. This is the whole integration point for "Generate Missing
+   * Content"; no category name or quantity is known here.
+   */
+  requirementKey?: string;
   parameters?: GenerationParameters;
 }
 
@@ -57,6 +67,8 @@ export interface VideoGenerationConfiguration {
   resolution?: string;
   quantity?: number;
   contentRating?: ContentRating;
+  /** See ImageGenerationConfiguration.requirementKey. */
+  requirementKey?: string;
   parameters?: GenerationParameters;
 }
 
@@ -90,6 +102,11 @@ export interface EffectiveGenerationConfiguration {
    * from, so they always resolve to a concrete rating.
    */
   contentRating: ContentRating | null;
+  /**
+   * The target content requirement, persisted with the job so a retry produces
+   * an asset filed under the same category as the original attempt.
+   */
+  requirementKey: string | null;
   /** Fully resolved model parameters — declared defaults merged with requests. */
   parameters: GenerationParameters;
   /** Where the produced asset lands. Always `under_review`. */

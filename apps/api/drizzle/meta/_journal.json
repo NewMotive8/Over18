@@ -85,6 +85,13 @@
       "when": 1787177407413,
       "tag": "0011_add_asset_requirement_key",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787182206729,
+      "tag": "0012_add_content_requirements_and_inbox",
+      "breakpoints": true
     }
   ]
 }

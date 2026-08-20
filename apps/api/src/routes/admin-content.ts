@@ -1,6 +1,6 @@
 import { createReadStream, existsSync } from 'node:fs';
 import multipart from '@fastify/multipart';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Db } from '../db/client.js';
 import {
   approveVisualAsset,
@@ -12,6 +12,7 @@ import {
   type VisualAssetStatus,
 } from '../services/visual-asset-service.js';
 import {
+  acceptedMediaTypeOf,
   deleteLibraryAsset,
   LibraryDeleteError,
   LibraryUploadError,
@@ -30,6 +31,25 @@ import {
   type LibraryAsset,
   type MediaType,
 } from '../services/content-review-service.js';
+import {
+  ContentInboxError,
+  assignInboxItem,
+  createInboxItem,
+  discardInboxItem,
+  getInboxItem,
+  inboxPathOf,
+  inboxView,
+  listInbox,
+} from '../services/content-inbox-service.js';
+import {
+  getContentRequirementByKey,
+  listEnabledContentRequirements,
+} from '../services/content-requirements-service.js';
+import {
+  getRequirementStatus,
+  summariseRequirementProgress,
+} from '../services/requirement-status-service.js';
+import { getCharacterForAdmin } from '../services/character-service.js';
 
 /**
  * US-106 — admin content review API.
@@ -54,6 +74,8 @@ function assetView(a: Awaited<ReturnType<typeof getReviewAsset>>) {
     status: a.status,
     kind: a.kind,
     contentRating: a.contentRating,
+    /** Which configured requirement this item is filed under, if any. */
+    requirementKey: a.requirementKey,
     /** DB column is is_canonical; the product term is Primary. */
     isPrimary: a.isCanonical,
     position: a.position,
@@ -86,7 +108,51 @@ export default async function adminContentRoutes(
   const adminOnly = { preHandler: [app.requireAuth, app.requireAdmin] };
 
   // Scoped to this plugin: multipart parsing exists only where uploads land.
-  await app.register(multipart, { limits: { fileSize: UPLOAD_MAX_BYTES, files: 1 } });
+  await app.register(multipart, {
+    limits: { fileSize: UPLOAD_MAX_BYTES, files: 1, fields: 8, fieldSize: 4096 },
+  });
+
+  /**
+   * Resolves a caller-supplied requirement key against the CONFIGURED set, and
+   * against the medium of the thing being filed.
+   *
+   * Returns the key, `null` for "no category", or a failure. Filing a video
+   * under an image requirement is refused rather than accepted: the asset would
+   * be stored, look filed, and count toward nothing — the exact invisible
+   * failure this phase exists to remove. No key is ever defaulted or invented.
+   */
+  type KeyResolution =
+    | { ok: true; key: string | null }
+    | { ok: false; error: 'unknown_requirement' | 'media_mismatch'; message: string };
+
+  const resolveRequirementKey = async (
+    raw: unknown,
+    mediaType?: MediaType,
+  ): Promise<KeyResolution> => {
+    if (raw === undefined || raw === null) return { ok: true, key: null };
+    const key = String(raw).trim();
+    if (key.length === 0) return { ok: true, key: null };
+
+    const requirement = await getContentRequirementByKey(opts.db, key);
+    if (!requirement) {
+      return {
+        ok: false,
+        error: 'unknown_requirement',
+        message: 'That content category is not configured.',
+      };
+    }
+    if (mediaType && requirement.mediaType !== mediaType) {
+      return {
+        ok: false,
+        error: 'media_mismatch',
+        message: `"${requirement.label}" needs ${requirement.mediaType} content, so a ${mediaType} cannot count toward it.`,
+      };
+    }
+    return { ok: true, key };
+  };
+
+  const refuseKey = (reply: FastifyReply, resolution: Extract<KeyResolution, { ok: false }>) =>
+    reply.code(400).send({ error: resolution.error, message: resolution.message });
 
   /**
    * US-100 — the Content Library. One request returns BOTH the recent strip and
@@ -117,11 +183,16 @@ export default async function adminContentRoutes(
   });
 
   /**
-   * Manual Library upload. NOT generation: no provider, model, cost or job is
-   * involved. `characterId` is REQUIRED because character_visual_assets cannot
-   * hold an unattached row; the upload lands on that character's active visual
-   * identity, approved into the Library but never canonical, so the public
-   * gallery rules are untouched.
+   * Manual upload for a KNOWN character. NOT generation: no provider, model,
+   * cost or job is involved.
+   *
+   * LIFECYCLE FIX: this used to approve on arrival, which put uploaded content
+   * straight into the Library and bypassed Review entirely — one workflow for
+   * generated content and a different one for uploads. It now lands in
+   * `under_review`, exactly where generated content lands, so both origins meet
+   * the same queue and the Library still begins at approval.
+   *
+   * Upload without a character is a different route: /admin/content/inbox.
    */
   app.post('/admin/content/uploads', adminOnly, async (request, reply) => {
     if (!opts.uploadStorage) {
@@ -150,6 +221,13 @@ export default async function adminContentRoutes(
         .send({ error: 'invalid_request', message: 'contentRating must be sfw or explicit.' });
     }
 
+    const requested = await resolveRequirementKey(
+      (file.fields.requirementKey as { value?: string } | undefined)?.value,
+      acceptedMediaTypeOf(file.mimetype) ?? undefined,
+    );
+    if (!requested.ok) return refuseKey(reply, requested);
+    const requirementKey = requested.key;
+
     const bytes = await file.toBuffer();
     if (file.file.truncated) {
       return reply.code(413).send({
@@ -166,6 +244,11 @@ export default async function adminContentRoutes(
         originalName: file.filename,
         contentRating: rating as ContentRating | undefined,
         uploadedBy: request.currentUser?.id,
+        // Content enters Review, never the Library directly.
+        approve: false,
+        // Optional, and never defaulted: the operator may say which requirement
+        // this satisfies at upload time, or leave it for triage in Review.
+        requirementKey,
       });
       return reply.code(201).send(assetView(await getReviewAsset(opts.db, asset.id)));
     } catch (err) {
@@ -243,6 +326,236 @@ export default async function adminContentRoutes(
     return reply.send({ characters: await summariseReviewByCharacter(opts.db) });
   });
 
+  /* ---------------------------------------------------------------- *
+   * The Review WORKSPACE — required content, per character.
+   *
+   * One request renders the whole board: the character rail with progress, the
+   * unassigned inbox count, and (when a character is named) that character's
+   * requirements with the assets filling them. Every count comes from
+   * requirement-status-service, which derives them from the configured
+   * requirements and the actual assets — the same function the generation
+   * planner uses, so a board and a plan can never disagree.
+   * ---------------------------------------------------------------- */
+  app.get<{ Querystring: { characterId?: string } }>(
+    '/admin/content/review/workspace',
+    adminOnly,
+    async (request, reply) => {
+      const { characterId } = request.query;
+      const [progress, requirements, inbox] = await Promise.all([
+        summariseRequirementProgress(opts.db),
+        listEnabledContentRequirements(opts.db),
+        listInbox(opts.db, { status: 'unassigned' }),
+      ]);
+
+      const base = {
+        characters: progress,
+        requirements,
+        inbox: { unassignedCount: inbox.length },
+      };
+      if (!characterId) return reply.send({ ...base, selected: null });
+
+      if (!UUID_RE.test(characterId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Character not found.' });
+      }
+      const character = await getCharacterForAdmin(opts.db, characterId);
+      if (!character) {
+        return reply.code(404).send({ error: 'not_found', message: 'Character not found.' });
+      }
+      const status = await getRequirementStatus(opts.db, characterId);
+
+      return reply.send({
+        ...base,
+        selected: {
+          character: {
+            id: character.id,
+            name: character.name,
+            displayName: character.displayName,
+            status: character.status,
+          },
+          totals: status.totals,
+          // The board renders `required` capacity slots per entry — the
+          // quantity is the configuration; slots are never stored.
+          requirements: status.entries.map((entry) => ({
+            key: entry.requirement.key,
+            label: entry.requirement.label,
+            mediaType: entry.requirement.mediaType,
+            contentRating: entry.requirement.contentRating,
+            required: entry.required,
+            approved: entry.approved,
+            pending: entry.pending,
+            remaining: entry.remaining,
+            surplus: entry.surplus,
+            satisfied: entry.satisfied,
+            assets: entry.assets.map((asset) =>
+              assetView({ ...asset, characterName: character.name }),
+            ),
+          })),
+          // Why each of these counts toward nothing, so the operator can fix it
+          // rather than wonder about it.
+          triage: status.triage.map((asset) => ({
+            ...assetView({ ...asset, characterName: character.name })!,
+            reason: asset.reason,
+          })),
+        },
+      });
+    },
+  );
+
+  /* ---------------------------------------------------------------- *
+   * Unassigned inbox — upload without choosing a character first.
+   *
+   * These rows live in `content_inbox`, which has no character column, so an
+   * unassigned upload is unreachable from every character-scoped query in the
+   * product. Assignment CREATES a proper asset in `under_review`; it never
+   * promotes anything past Review.
+   * ---------------------------------------------------------------- */
+
+  const storageUnavailable = (reply: FastifyReply) =>
+    reply.code(503).send({
+      error: 'uploads_unavailable',
+      message: 'Media storage is not configured for this environment.',
+    });
+
+  app.get('/admin/content/inbox', adminOnly, async (_request, reply) => {
+    const items = await listInbox(opts.db, { status: 'unassigned' });
+    return reply.send({ items: items.map(inboxView) });
+  });
+
+  /** Upload with NO character. The point of the whole inbox. */
+  app.post('/admin/content/inbox', adminOnly, async (request, reply) => {
+    if (!opts.uploadStorage) return storageUnavailable(reply);
+
+    const file = await request.file();
+    if (!file) {
+      return reply.code(400).send({ error: 'invalid_request', message: 'A file part is required.' });
+    }
+    const bytes = await file.toBuffer();
+    if (file.file.truncated) {
+      return reply.code(413).send({
+        error: 'file_too_large',
+        message: `That file exceeds the ${Math.round(UPLOAD_MAX_BYTES / (1024 * 1024))}MB upload limit.`,
+      });
+    }
+    try {
+      const item = await createInboxItem(opts.db, opts.uploadStorage, {
+        mimeType: file.mimetype,
+        bytes,
+        originalName: file.filename,
+        uploadedBy: request.currentUser?.id,
+      });
+      return reply.code(201).send(inboxView(item));
+    } catch (err) {
+      if (err instanceof ContentInboxError) {
+        return reply.code(400).send({ error: err.kind, message: err.message });
+      }
+      throw err;
+    }
+  });
+
+  /** Streams an inbox file. Admin-only and containment-checked, like uploads. */
+  app.get<{ Params: { inboxId: string } }>(
+    '/admin/content/inbox/:inboxId/file',
+    adminOnly,
+    async (request, reply) => {
+      if (!opts.uploadStorage) return storageUnavailable(reply);
+      const { inboxId } = request.params;
+      if (!UUID_RE.test(inboxId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Upload not found.' });
+      }
+      const item = await getInboxItem(opts.db, inboxId);
+      const path = item ? inboxPathOf(opts.uploadStorage, item) : null;
+      if (!item || !path || !existsSync(path)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Upload not found.' });
+      }
+      reply.header('content-type', item.mimeType);
+      reply.header('cache-control', 'private, max-age=60');
+      return reply.send(createReadStream(path));
+    },
+  );
+
+  /** Assign to a character and (optionally) a configured requirement. */
+  app.post<{
+    Params: { inboxId: string };
+    Body: { characterId?: string; requirementKey?: string | null; contentRating?: string };
+  }>('/admin/content/inbox/:inboxId/assign', adminOnly, async (request, reply) => {
+    if (!opts.uploadStorage) return storageUnavailable(reply);
+    const { inboxId } = request.params;
+    if (!UUID_RE.test(inboxId)) {
+      return reply.code(404).send({ error: 'not_found', message: 'Upload not found.' });
+    }
+    const characterId = request.body?.characterId;
+    if (typeof characterId !== 'string' || !UUID_RE.test(characterId)) {
+      return reply
+        .code(400)
+        .send({ error: 'invalid_request', message: 'characterId must be a character UUID.' });
+    }
+    if (!(await getCharacterForAdmin(opts.db, characterId))) {
+      return reply.code(404).send({ error: 'not_found', message: 'Character not found.' });
+    }
+    const item = await getInboxItem(opts.db, inboxId);
+    if (!item) return reply.code(404).send({ error: 'not_found', message: 'Upload not found.' });
+    const requested = await resolveRequirementKey(
+      request.body?.requirementKey,
+      item.mediaType as MediaType,
+    );
+    if (!requested.ok) return refuseKey(reply, requested);
+
+    const rating = request.body?.contentRating;
+    if (rating !== undefined && !RATINGS.includes(rating as ContentRating)) {
+      return reply
+        .code(400)
+        .send({ error: 'invalid_request', message: 'contentRating must be sfw or explicit.' });
+    }
+
+    try {
+      const { item, asset } = await assignInboxItem(opts.db, opts.uploadStorage, {
+        inboxId,
+        characterId,
+        requirementKey: requested.key,
+        contentRating: rating as ContentRating | undefined,
+        assignedBy: request.currentUser?.id,
+      });
+      return reply.send({
+        item: inboxView(item),
+        // The new asset is under_review — assignment is intake, not approval.
+        asset: assetView(await getReviewAsset(opts.db, asset.id)),
+      });
+    } catch (err) {
+      if (err instanceof ContentInboxError) {
+        return reply
+          .code(err.kind === 'not_found' ? 404 : err.kind === 'already_resolved' ? 409 : 400)
+          .send({ error: err.kind, message: err.message });
+      }
+      if (err instanceof LibraryUploadError) {
+        return reply.code(400).send({ error: err.kind, message: err.message });
+      }
+      throw err;
+    }
+  });
+
+  /** Discards an unassigned upload. The intake record survives; the bytes go. */
+  app.post<{ Params: { inboxId: string } }>(
+    '/admin/content/inbox/:inboxId/discard',
+    adminOnly,
+    async (request, reply) => {
+      if (!opts.uploadStorage) return storageUnavailable(reply);
+      const { inboxId } = request.params;
+      if (!UUID_RE.test(inboxId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Upload not found.' });
+      }
+      try {
+        return reply.send(inboxView(await discardInboxItem(opts.db, opts.uploadStorage, inboxId)));
+      } catch (err) {
+        if (err instanceof ContentInboxError) {
+          return reply
+            .code(err.kind === 'not_found' ? 404 : 409)
+            .send({ error: err.kind, message: err.message });
+        }
+        throw err;
+      }
+    },
+  );
+
   /** The queue itself, newest first, optionally scoped to one character. */
   app.get<{ Querystring: { characterId?: string; status?: string; mediaType?: string } }>(
     '/admin/content/review',
@@ -314,7 +627,11 @@ export default async function adminContentRoutes(
     adminOnly,
     async (request, reply) => {
       const body = request.body ?? {};
-      const allowed = new Set(['contentRating', 'position']);
+      // requirementKey joins the narrow allow-list: filing an item under a
+      // category IS a review decision, and it is the only way the board can be
+      // populated by hand. Everything else on the row stays provenance or
+      // lifecycle state that review must not rewrite.
+      const allowed = new Set(['contentRating', 'position', 'requirementKey']);
       const unsupported = Object.keys(body).filter((k) => !allowed.has(k));
       if (unsupported.length > 0) {
         return reply.code(400).send({
@@ -329,9 +646,19 @@ export default async function adminContentRoutes(
           .send({ error: 'invalid_request', message: 'contentRating must be sfw or explicit.' });
       }
 
+      let requirementKey: string | null | undefined;
+      if ('requirementKey' in body) {
+        const asset = await getReviewAsset(opts.db, request.params.assetId);
+        if (!asset) return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+        const requested = await resolveRequirementKey(body.requirementKey, asset.mediaType);
+        if (!requested.ok) return refuseKey(reply, requested);
+        requirementKey = requested.key;
+      }
+
       const updated = await updateAssetMetadata(opts.db, request.params.assetId, {
         contentRating: body.contentRating as ContentRating | undefined,
         position: body.position as number | null | undefined,
+        requirementKey,
       });
       if (!updated) return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
       return reply.send(assetView(await getReviewAsset(opts.db, request.params.assetId)));

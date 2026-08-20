@@ -11,6 +11,7 @@ import {
   retryGenerationResult,
 } from '../generation/jobs.js';
 import { listResults } from '../generation/results.js';
+import { getContentRequirementByKey } from '../services/content-requirements-service.js';
 import { getSequenceRun, runSequence } from '../generation/sequence-runner.js';
 
 /**
@@ -89,6 +90,32 @@ export default async function generationRoutes(
         return reply
           .code(400)
           .send({ error: 'invalid_request', message: 'type must be "image" or "video".' });
+      }
+
+      /**
+       * A target requirement must be one that is CONFIGURED, and must match the
+       * medium being generated. Accepting anything else would strand the
+       * produced asset: it would carry a key no requirement answers to, count
+       * toward nothing, and no Settings change could ever bring it back.
+       */
+      const requirementKey = (config as { requirementKey?: unknown }).requirementKey;
+      if (requirementKey !== undefined && requirementKey !== null) {
+        const requirement =
+          typeof requirementKey === 'string'
+            ? await getContentRequirementByKey(opts.db, requirementKey.trim())
+            : null;
+        if (!requirement) {
+          return reply.code(400).send({
+            error: 'unknown_requirement',
+            message: 'That content category is not configured.',
+          });
+        }
+        if (requirement.mediaType !== type) {
+          return reply.code(400).send({
+            error: 'media_mismatch',
+            message: `"${requirement.label}" needs ${requirement.mediaType} content, so a ${type} job cannot satisfy it.`,
+          });
+        }
       }
 
       const enqueued = await enqueueGenerationJob(

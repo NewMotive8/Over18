@@ -326,6 +326,12 @@ export const characterVisualAssets = pgTable(
       table.kind,
       table.status,
     ),
+    // The requirement board's query: every asset of one character, grouped by
+    // the category it satisfies. Runs on every Review and character page load.
+    index('character_visual_assets_character_requirement_idx').on(
+      table.characterId,
+      table.requirementKey,
+    ),
   ],
 );
 
@@ -510,6 +516,112 @@ export const generationResults = pgTable(
   ],
 );
 
+/**
+ * content_requirements — what content EVERY character needs.
+ *
+ * THE SINGLE SOURCE OF TRUTH. The Review board, character completion, and
+ * "Generate Missing Content" all read these rows; there is no second checklist
+ * anywhere, and no category name or quantity is written in TypeScript. The
+ * current defaults (1 natural, 1 nude, 2 selfies, 2 sexy, 4 explicit) are
+ * SEEDED ROWS, editable in Admin → Settings without a deploy.
+ *
+ * Category is a PRODUCTION dimension and is deliberately not any of the axes
+ * that already exist: `content_rating` is a policy dimension (sfw|explicit
+ * cannot express five categories), `kind` is origin, `is_canonical` is gallery
+ * membership. They stay separate.
+ *
+ * Requirements are a CATEGORY + A QUANTITY. Individual slots are never
+ * persisted: the board renders `required_quantity` capacity slots at read time,
+ * so changing a quantity can never orphan or delete a slot record.
+ */
+export const contentRequirements = pgTable(
+  'content_requirements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * The join value written to character_visual_assets.requirement_key.
+     * Immutable after creation — the label is what an operator renames.
+     */
+    key: text('key').notNull(),
+    label: text('label').notNull(),
+    /** 'image' | 'video'. Text, not an enum: there is no media_type enum in
+     *  this schema and inventing one would constrain future media kinds. */
+    mediaType: text('media_type').notNull(),
+    requiredQuantity: integer('required_quantity').notNull().default(1),
+    /**
+     * ADVISORY policy, never a qualification gate. It pre-fills the rating on
+     * assignment and gives generation a default; an asset is never silently
+     * excluded from its category for having a different rating. NULL = the
+     * requirement expresses no preference.
+     */
+    contentRating: contentRating('content_rating'),
+    /**
+     * Disabling is the non-destructive retirement path: the requirement leaves
+     * the board and stops counting, but its rows, its key and every asset
+     * carrying that key survive untouched, and re-enabling restores the board
+     * exactly as it was.
+     */
+    enabled: boolean('enabled').notNull().default(true),
+    /**
+     * When true, a character's PRIMARY REFERENCE image is filed under this
+     * requirement automatically. Configuration, not code: the quick-create path
+     * looks this flag up rather than naming a category, so the behaviour is
+     * re-pointable from Settings and no category name is hard-coded.
+     */
+    assignPrimaryReference: boolean('assign_primary_reference').notNull().default(false),
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('content_requirements_key_uq').on(table.key),
+    // At most ONE requirement can claim the primary reference, enforced by the
+    // database rather than by whichever code path happens to write next.
+    uniqueIndex('content_requirements_primary_reference_uq')
+      .on(table.assignPrimaryReference)
+      .where(sql`${table.assignPrimaryReference} = true`),
+    index('content_requirements_position_idx').on(table.position),
+  ],
+);
+
+/**
+ * content_inbox — an uploaded file that has no character YET.
+ *
+ * NOTE WHAT IS ABSENT: there is no character_id column. An unassigned upload is
+ * not a character asset in a nullable state, it is a different entity in a
+ * different table, so no character-scoped query — listVisualAssets, the
+ * canonical gallery, the chat media selector, the character pages — can reach
+ * it. That isolation is structural, not a filter someone must remember to add.
+ *
+ * Assignment does not move this row into the assets table; it CREATES a proper
+ * character_visual_assets row (under_review, so Review is never bypassed) and
+ * records its id here, so the intake is auditable after the fact.
+ */
+export const contentInbox = pgTable(
+  'content_inbox',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** 'unassigned' | 'assigned' | 'discarded'. */
+    status: text('status').notNull().default('unassigned'),
+    mimeType: text('mime_type').notNull(),
+    /** Derived from the VALIDATED mime type, never from the filename. */
+    mediaType: text('media_type').notNull(),
+    byteSize: integer('byte_size').notNull(),
+    originalName: text('original_name'),
+    /** Absolute path under MEDIA_STORAGE_DIR/inbox. Never sent to a client. */
+    storagePath: text('storage_path'),
+    uploadedBy: uuid('uploaded_by').references(() => users.id, { onDelete: 'set null' }),
+    assignedAssetId: uuid('assigned_asset_id').references(() => characterVisualAssets.id, {
+      onDelete: 'set null',
+    }),
+    assignedBy: uuid('assigned_by').references(() => users.id, { onDelete: 'set null' }),
+    assignedAt: timestamp('assigned_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('content_inbox_status_idx').on(table.status, table.createdAt)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -523,3 +635,5 @@ export type GenerationPresetRow = typeof generationPresets.$inferSelect;
 export type GenerationSequenceRow = typeof generationSequences.$inferSelect;
 export type GenerationSequenceRunRow = typeof generationSequenceRuns.$inferSelect;
 export type GenerationResultRow = typeof generationResults.$inferSelect;
+export type ContentRequirementRow = typeof contentRequirements.$inferSelect;
+export type ContentInboxRow = typeof contentInbox.$inferSelect;

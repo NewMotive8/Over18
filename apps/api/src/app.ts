@@ -14,6 +14,7 @@ import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
 import adminContentRoutes from './routes/admin-content.js';
 import adminCharacterRoutes from './routes/admin-characters.js';
+import adminSettingsRoutes from './routes/admin-settings.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 import {
@@ -110,6 +111,10 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     },
     profileAuthor: options.profileAuthor ?? unconfiguredProfileAuthor,
   });
+  // Admin → Settings. Content requirements are configuration, so they get their
+  // own plugin rather than living inside the content-review surface that reads
+  // them — the definition and the work it drives stay separable.
+  await app.register(adminSettingsRoutes, { db });
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
   await app.register(conversationRoutes, { db });

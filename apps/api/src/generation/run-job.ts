@@ -88,6 +88,7 @@ export async function runSingleAttempt(
             prompt: effective.prompt,
             referenceAssetId: effective.primaryReferenceAssetId ?? undefined,
             contentRating: effective.contentRating ?? 'sfw',
+            requirementKey: effective.requirementKey,
             status: effective.resultStatus,
             width: numberParam(effective, 'width'),
             height: numberParam(effective, 'height'),
@@ -100,6 +101,7 @@ export async function runSingleAttempt(
             resolution: resolutionParam(effective),
             // undefined => the service inherits the source asset's rating.
             contentRating: effective.contentRating ?? undefined,
+            requirementKey: effective.requirementKey,
             status: effective.resultStatus,
           });
 }

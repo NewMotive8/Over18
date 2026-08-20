@@ -58,6 +58,11 @@ export function acceptedMediaTypeOf(mimeType: string): 'image' | 'video' | null 
   return ACCEPTED[mimeType]?.media ?? null;
 }
 
+/** The extension this MIME type is stored with, or null if unsupported. */
+export function acceptedExtensionOf(mimeType: string): string | null {
+  return ACCEPTED[mimeType]?.ext ?? null;
+}
+
 export type LibraryUploadErrorKind = 'unsupported_type' | 'empty_file' | 'no_active_identity';
 
 export class LibraryUploadError extends Error {
@@ -101,6 +106,19 @@ export interface LibraryUploadInput {
    * next slice has to undo.
    */
   requirementKey?: string | null;
+  /**
+   * Whether this upload is approved on arrival.
+   *
+   * FALSE is the content path: the asset lands in `under_review` and an
+   * operator decides in Review, which is what "manual upload and generated
+   * content share one workflow" actually requires.
+   *
+   * TRUE — the default, and every pre-existing caller — is the IDENTITY path:
+   * a primary reference an admin chose deliberately, where approval is the act
+   * of choosing it and canonical promotion is the point. Defaulting to true
+   * keeps that behaviour byte-for-byte unchanged.
+   */
+  approve?: boolean;
 }
 
 export interface LibraryUploadStorage {
@@ -166,12 +184,16 @@ export async function uploadLibraryAsset(
     visualIdentityId = identity.id;
   }
 
+  const approve = input.approve ?? true;
   const created = await createVisualAsset(db, {
     characterId: input.characterId,
     visualIdentityId,
     // createVisualAsset enforces that the version belongs to this character,
     // so a mismatched pair is rejected rather than silently cross-linked.
     kind: input.kind ?? 'generated',
+    // An unapproved upload joins the review queue in the SAME state generated
+    // content arrives in, so one queue serves both origins.
+    status: approve ? undefined : 'under_review',
     contentRating: input.contentRating ?? 'sfw',
     requirementKey: input.requirementKey ?? null,
     provenance: {
@@ -203,7 +225,11 @@ export async function uploadLibraryAsset(
 
   // Reuse the existing approval transition rather than inventing one: it records
   // approvedBy/approvedAt and leaves is_canonical false for a generated asset.
-  return approveVisualAsset(db, created.id, input.uploadedBy);
+  if (approve) return approveVisualAsset(db, created.id, input.uploadedBy);
+
+  // Not approved: return the row as it now stands, with its storage key set.
+  const stored = await getVisualAssetById(db, created.id);
+  return stored!;
 }
 
 /**

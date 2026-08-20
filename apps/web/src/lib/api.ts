@@ -142,6 +142,8 @@ export interface ReviewAssetView {
   mediaType: 'image' | 'video';
   status: 'generated' | 'under_review' | 'approved' | 'rejected';
   contentRating: 'sfw' | 'explicit';
+  /** The configured content requirement this item is filed under, if any. */
+  requirementKey: string | null;
   isPrimary: boolean;
   storageKey: string | null;
   createdAt: string;
@@ -212,9 +214,168 @@ export const contentLibraryApi = {
     ),
 };
 
+/* ------------------------------------------------------------------ *
+ * Configurable content requirements
+ *
+ * Every category and quantity below arrives from the server. Nothing in this
+ * application declares what a character needs — that lives in configuration.
+ * ------------------------------------------------------------------ */
+
+export type MediaTypeName = 'image' | 'video';
+
+export interface ContentRequirementView {
+  id: string;
+  key: string;
+  label: string;
+  mediaType: MediaTypeName;
+  requiredQuantity: number;
+  /** Advisory policy, never a filter on what counts. */
+  contentRating: 'sfw' | 'explicit' | null;
+  enabled: boolean;
+  assignPrimaryReference: boolean;
+  position: number;
+}
+
+export interface ContentRequirementRowView extends ContentRequirementView {
+  /** How many items are filed under this key — why deleting may be refused. */
+  assignedAssetCount: number;
+}
+
+export interface RequirementTotals {
+  items: number;
+  images: number;
+  videos: number;
+}
+
+export interface CharacterProgressView {
+  characterId: string;
+  characterName: string;
+  displayName: string;
+  required: number;
+  approved: number;
+  pending: number;
+  missing: number;
+  complete: boolean;
+}
+
+export interface RequirementEntryView {
+  key: string;
+  label: string;
+  mediaType: MediaTypeName;
+  contentRating: 'sfw' | 'explicit' | null;
+  /** The configured quantity — the board renders this many capacity slots. */
+  required: number;
+  approved: number;
+  pending: number;
+  remaining: number;
+  surplus: number;
+  satisfied: boolean;
+  assets: ReviewAssetView[];
+}
+
+export type TriageReason = 'uncategorised' | 'unknown_requirement' | 'media_mismatch';
+
+export interface TriageAssetView extends ReviewAssetView {
+  reason: TriageReason;
+}
+
+export interface ReviewWorkspaceView {
+  characters: CharacterProgressView[];
+  requirements: ContentRequirementView[];
+  inbox: { unassignedCount: number };
+  selected: {
+    character: { id: string; name: string; displayName: string; status: string };
+    totals: { required: number; approved: number; pending: number; missing: number; complete: boolean };
+    requirements: RequirementEntryView[];
+    triage: TriageAssetView[];
+  } | null;
+}
+
+export interface InboxItemView {
+  inboxId: string;
+  status: 'unassigned' | 'assigned' | 'discarded';
+  mediaType: MediaTypeName;
+  originalName: string | null;
+  byteSize: number;
+  fileUrl: string | null;
+  assignedAssetId: string | null;
+  createdAt: string;
+}
+
+export interface RequirementDraft {
+  label: string;
+  mediaType: MediaTypeName;
+  requiredQuantity?: number;
+  contentRating?: 'sfw' | 'explicit' | null;
+  enabled?: boolean;
+  assignPrimaryReference?: boolean;
+  position?: number;
+}
+
+export const contentRequirementsApi = {
+  list: () =>
+    request<{ requirements: ContentRequirementRowView[]; totals: RequirementTotals }>(
+      '/admin/settings/content-requirements',
+    ),
+  /** What the configuration means for real characters, right now. */
+  impact: () =>
+    request<{ characters: CharacterProgressView[] }>(
+      '/admin/settings/content-requirements/impact',
+    ),
+  create: (draft: RequirementDraft) =>
+    request<ContentRequirementView>('/admin/settings/content-requirements', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    }),
+  update: (id: string, patch: Partial<RequirementDraft>) =>
+    request<ContentRequirementView>(
+      `/admin/settings/content-requirements/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+    ),
+  remove: (id: string) =>
+    request<void>(`/admin/settings/content-requirements/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+};
+
 export const contentReviewApi = {
   summary: () =>
     request<{ characters: CharacterReviewSummary[] }>('/admin/content/review/summary'),
+  /** The whole board in one request: rail, configuration, inbox count, slots. */
+  workspace: (characterId?: string) =>
+    request<ReviewWorkspaceView>(
+      `/admin/content/review/workspace${characterId ? `?characterId=${encodeURIComponent(characterId)}` : ''}`,
+    ),
+  /** Files an item under a category, or clears it back to triage with null. */
+  setRequirement: (assetId: string, requirementKey: string | null) =>
+    request<ReviewAssetView>(`/admin/content/assets/${encodeURIComponent(assetId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ requirementKey }),
+    }),
+  inbox: () => request<{ items: InboxItemView[] }>('/admin/content/inbox'),
+  /** Upload with NO character chosen. */
+  uploadToInbox: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return postMultipart<InboxItemView>('/admin/content/inbox', form, 'Upload failed');
+  },
+  /** Upload straight to a character (and optionally a category). Enters Review. */
+  uploadForCharacter: (file: File, characterId: string, requirementKey?: string) => {
+    const form = new FormData();
+    form.append('characterId', characterId);
+    if (requirementKey) form.append('requirementKey', requirementKey);
+    form.append('file', file);
+    return postMultipart<ReviewAssetView>('/admin/content/uploads', form, 'Upload failed');
+  },
+  assignInboxItem: (inboxId: string, body: { characterId: string; requirementKey?: string | null }) =>
+    request<{ item: InboxItemView; asset: ReviewAssetView }>(
+      `/admin/content/inbox/${encodeURIComponent(inboxId)}/assign`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  discardInboxItem: (inboxId: string) =>
+    request<InboxItemView>(`/admin/content/inbox/${encodeURIComponent(inboxId)}/discard`, {
+      method: 'POST',
+    }),
   queue: (params: { characterId?: string; mediaType?: 'image' | 'video' } = {}) => {
     const q = new URLSearchParams();
     if (params.characterId) q.set('characterId', params.characterId);
@@ -362,6 +523,13 @@ export const adminCharactersApi = {
       "Couldn't create the character",
     );
   },
+  /** What this character still needs, derived from the configuration. */
+  requirements: (characterId: string) =>
+    request<{
+      totals: { required: number; approved: number; pending: number; missing: number; complete: boolean };
+      requirements: RequirementEntryView[];
+      triageCount: number;
+    }>(`/admin/characters/${encodeURIComponent(characterId)}/requirements`),
   /** Proposes a persona. Returns a draft only — call `update` to save it. */
   autofill: (characterId: string) =>
     request<{ draft: CharacterProfileDraft }>(

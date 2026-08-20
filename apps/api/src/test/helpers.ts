@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../db/client.js';
@@ -84,8 +85,27 @@ export async function createTestContext(
 
 export async function truncateAll(ctx: TestContext): Promise<void> {
   await ctx.pool.query(
-    'TRUNCATE TABLE character_visual_assets, character_visual_identities, memories, messages, conversations, sessions, users, characters CASCADE',
+    'TRUNCATE TABLE content_inbox, character_visual_assets, character_visual_identities, memories, messages, conversations, sessions, users, characters CASCADE',
   );
+}
+
+/**
+ * Restores the DEFAULT content requirements by re-running the seed statement
+ * from the migration itself.
+ *
+ * Deliberately reads the SQL rather than restating the defaults in TypeScript:
+ * the categories and quantities have exactly one definition in this repository,
+ * and a test that hard-coded them would quietly let that stop being true.
+ */
+export async function resetContentRequirements(ctx: TestContext): Promise<void> {
+  const migration = new URL(
+    '../../drizzle/0012_add_content_requirements_and_inbox.sql',
+    import.meta.url,
+  );
+  const sql = readFileSync(migration, 'utf8');
+  const seed = sql.slice(sql.indexOf('INSERT INTO "content_requirements"'));
+  await ctx.pool.query('TRUNCATE TABLE content_requirements CASCADE');
+  await ctx.pool.query(seed);
 }
 
 export async function destroyTestContext(ctx: TestContext): Promise<void> {

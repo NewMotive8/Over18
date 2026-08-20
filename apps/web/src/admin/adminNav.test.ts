@@ -7,6 +7,7 @@ describe('US-99 admin navigation model', () => {
       'review',
       'library',
       'characters',
+      'settings',
       'publishing',
       'generation',
     ]);
@@ -21,7 +22,7 @@ describe('US-99 admin navigation model', () => {
     for (const dest of ADMIN_DESTINATIONS) {
       expect(dest.owner).toMatch(/US-\d{3}/);
     }
-    for (const key of ['review', 'library', 'characters'] as const) {
+    for (const key of ['review', 'library', 'characters', 'settings'] as const) {
       expect(adminDestination(key).status).toBe('available');
     }
     for (const key of ['publishing', 'generation'] as const) {
@@ -32,6 +33,7 @@ describe('US-99 admin navigation model', () => {
   it('marks the current location', () => {
     expect(activeAdminDestination('/admin/characters')).toBe('characters');
     expect(activeAdminDestination('/admin/publishing')).toBe('publishing');
+    expect(activeAdminDestination('/admin/settings/content-requirements')).toBe('settings');
   });
 
   it('prefers the longest matching prefix', () => {

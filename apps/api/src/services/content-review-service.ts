@@ -126,6 +126,13 @@ export async function getReviewAsset(db: Db, assetId: string): Promise<ReviewAss
 export interface AssetMetadataPatch {
   contentRating?: ContentRating;
   position?: number | null;
+  /**
+   * Which configured requirement this item satisfies. Filing an item under a
+   * category is a review decision — it is how the board gets populated by hand
+   * — and `null` un-files it back to triage. The route validates the key
+   * against the configured set before it reaches here.
+   */
+  requirementKey?: string | null;
 }
 
 export async function updateAssetMetadata(
@@ -136,6 +143,7 @@ export async function updateAssetMetadata(
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (patch.contentRating !== undefined) set.contentRating = patch.contentRating;
   if (patch.position !== undefined) set.position = patch.position;
+  if (patch.requirementKey !== undefined) set.requirementKey = patch.requirementKey;
 
   const [updated] = await db
     .update(characterVisualAssets)

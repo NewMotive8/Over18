@@ -26,6 +26,7 @@ const asset = (over: Partial<LibraryAssetView> = {}): LibraryAssetView => ({
   mediaType: 'image',
   status: 'approved',
   contentRating: 'sfw',
+  requirementKey: null,
   isPrimary: false,
   storageKey: '/admin/content/uploads/asset-1/file',
   createdAt: '2026-08-18T10:00:00.000Z',

@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PublicCharacter } from '@over18/shared';
 import { API_URL, charactersApi, contentLibraryApi, type LibraryAssetView } from '../../lib/api';
@@ -92,6 +93,7 @@ export default function ContentLibraryPage() {
   const [uploadCharacterId, setUploadCharacterId] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
 
   // Delete: two-step confirmation, reset whenever a different asset is opened.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -156,9 +158,14 @@ export default function ContentLibraryPage() {
       if (!file || !uploadCharacterId) return;
       setUploading(true);
       setUploadError(null);
+      setUploadNotice(null);
       try {
         await contentLibraryApi.upload(file, uploadCharacterId);
-        await load(); // the new asset is library content immediately
+        // The upload does NOT appear here: it lands in Review, like generated
+        // content, and reaches the Library when it is approved. Saying so
+        // explicitly matters — otherwise the file looks like it vanished.
+        setUploadNotice('Uploaded to Review. It joins the Library once approved.');
+        await load();
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : 'Upload failed.');
       } finally {
@@ -175,7 +182,7 @@ export default function ContentLibraryPage() {
         <div>
           <h1 className="text-xl font-semibold text-white">Content Library</h1>
           <p className="mt-1 text-sm text-zinc-400">
-            Approved content, ready for categories and publishing.
+            Approved content, ready for categories and publishing. Uploads go to Review first.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -211,6 +218,15 @@ export default function ContentLibraryPage() {
           </button>
         </div>
       </div>
+
+      {uploadNotice && (
+        <p className="mt-3 rounded-md border border-emerald-900 bg-emerald-950/30 px-4 py-2 text-sm text-emerald-300">
+          {uploadNotice}{' '}
+          <Link to="/admin/content/review" className="underline">
+            Open Review
+          </Link>
+        </p>
+      )}
 
       {uploadError && (
         <p

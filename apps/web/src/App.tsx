@@ -17,6 +17,7 @@ import AdminPlaceholder from './admin/AdminPlaceholder';
 import AdminHomePage from './pages/admin/AdminHomePage';
 import ContentReviewPage from './pages/admin/ContentReviewPage';
 import ContentLibraryPage from './pages/admin/ContentLibraryPage';
+import ContentSettingsPage from './pages/admin/ContentSettingsPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
 
@@ -52,6 +53,8 @@ export default function App() {
         {/* US-101 — character identity management. */}
         <Route path="characters" element={<AdminCharactersPage />} />
         <Route path="characters/:characterId" element={<AdminCharacterDetailPage />} />
+        {/* Content requirements — the configuration the Review board reads. */}
+        <Route path="settings/content-requirements" element={<ContentSettingsPage />} />
         <Route path="publishing" element={<AdminPlaceholder destination="publishing" />} />
         <Route path="generation" element={<AdminPlaceholder destination="generation" />} />
       </Route>

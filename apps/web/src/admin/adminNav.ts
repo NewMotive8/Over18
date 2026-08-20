@@ -15,6 +15,7 @@ export type AdminDestinationKey =
   | 'review'
   | 'library'
   | 'characters'
+  | 'settings'
   | 'publishing'
   | 'generation';
 
@@ -64,6 +65,15 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
     description: 'Characters, visual identity and Primary references',
     status: 'available',
     owner: 'US-101 — Visual Identity & Primary Reference Management',
+  },
+  {
+    key: 'settings',
+    label: 'Settings',
+    path: '/admin/settings/content-requirements',
+    matchPrefixes: ['/admin/settings'],
+    description: 'Configure the content every character needs',
+    status: 'available',
+    owner: 'US-100 — Configurable content requirements',
   },
   {
     key: 'publishing',

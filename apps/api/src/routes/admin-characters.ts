@@ -28,6 +28,7 @@ import {
 import {
   VisualAssetNotFoundError,
   VisualAssetScopeError,
+  VisualAssetTransitionError,
   approveVisualAsset,
   getVisualAssetById,
   listCanonicalReferences,
@@ -43,6 +44,14 @@ import {
   type LibraryUploadStorage,
 } from '../services/library-upload-service.js';
 import { mediaTypeOf } from '../services/content-review-service.js';
+import {
+  getContentRequirementByKey,
+  getPrimaryReferenceRequirementKey,
+} from '../services/content-requirements-service.js';
+import {
+  getRequirementStatus,
+  planMissingContentFor,
+} from '../services/requirement-status-service.js';
 import type { CharacterVisualAssetRow, CharacterVisualIdentityRow } from '../db/schema.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -235,11 +244,17 @@ export default async function adminCharacterRoutes(
       return reply.code(400).send({ error: 'empty_file', message: 'The selected file is empty.' });
     }
 
-    // Optional and never defaulted. Once content requirements are configurable,
-    // the UI will send the operator's chosen key here; until then references
-    // are simply unlabelled, and no requirement name exists in this codebase.
-    // Bounded, because it is free text by design — a key, not a description.
-    const requirementKey = fields.requirementKey?.trim().slice(0, 100) || null;
+    // Which requirement this image satisfies.
+    //
+    // CONFIGURATION decides, not code. A caller may name a key explicitly;
+    // otherwise we ask which requirement CLAIMS the primary reference — a flag
+    // Settings owns. So the primary image counts toward its category on
+    // creation without this file ever naming one, and re-pointing it (or
+    // clearing it entirely) is a Settings change rather than a deploy.
+    const requestedKey = fields.requirementKey?.trim().slice(0, 100);
+    const requirementKey = requestedKey
+      ? ((await getContentRequirementByKey(opts.db, requestedKey))?.key ?? null)
+      : await getPrimaryReferenceRequirementKey(opts.db);
 
     let character;
     try {
@@ -296,6 +311,60 @@ export default async function adminCharacterRoutes(
       throw error;
     }
   });
+
+  /**
+   * A character's required-content status: what she needs, has and lacks.
+   *
+   * Derived on every read from the configured requirements plus her actual
+   * assets — no stored counters — so it reflects a Settings change immediately
+   * and a configuration change can never have touched her content.
+   */
+  app.get<{ Params: { characterId: string } }>(
+    '/admin/characters/:characterId/requirements',
+    adminOnly,
+    async (request, reply) => {
+      const { characterId } = request.params;
+      if (!UUID_RE.test(characterId)) return notFound(reply);
+      if (!(await getCharacterForAdmin(opts.db, characterId))) return notFound(reply);
+
+      const status = await getRequirementStatus(opts.db, characterId);
+      return {
+        totals: status.totals,
+        requirements: status.entries.map((entry) => ({
+          key: entry.requirement.key,
+          label: entry.requirement.label,
+          mediaType: entry.requirement.mediaType,
+          contentRating: entry.requirement.contentRating,
+          required: entry.required,
+          approved: entry.approved,
+          pending: entry.pending,
+          remaining: entry.remaining,
+          surplus: entry.surplus,
+          satisfied: entry.satisfied,
+        })),
+        triageCount: status.triage.length,
+      };
+    },
+  );
+
+  /**
+   * "What is missing?" — the plan a Generation Studio (US-104) or any future
+   * automation submits as generation jobs.
+   *
+   * This is the SAME derivation the Review board renders, so a planner and the
+   * board can never disagree, and it names no category or quantity of its own.
+   * It is a read: nothing is generated, queued or spent here.
+   */
+  app.get<{ Params: { characterId: string } }>(
+    '/admin/characters/:characterId/requirements/plan',
+    adminOnly,
+    async (request, reply) => {
+      const { characterId } = request.params;
+      if (!UUID_RE.test(characterId)) return notFound(reply);
+      if (!(await getCharacterForAdmin(opts.db, characterId))) return notFound(reply);
+      return { missing: await planMissingContentFor(opts.db, characterId) };
+    },
+  );
 
   /**
    * Autofill — proposes a complete persona for an existing character.
@@ -555,6 +624,12 @@ export default async function adminCharacterRoutes(
         return referenceView(await approveVisualAsset(opts.db, assetId, request.currentUser!.id));
       } catch (error) {
         if (error instanceof VisualAssetNotFoundError) return notFound(reply);
+        // A rejected asset cannot be re-promoted. That is the existing EPIC 7
+        // rule; reporting it as a 409 with the reason beats a 500 that looks
+        // like a bug to whoever clicked the button.
+        if (error instanceof VisualAssetTransitionError) {
+          return reply.code(409).send({ error: 'invalid_transition', message: error.message });
+        }
         throw error;
       }
     },

@@ -1,7 +1,12 @@
 import { readdir } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { characterVisualAssets, characterVisualIdentities, users } from '../db/schema.js';
+import {
+  characterVisualAssets,
+  characterVisualIdentities,
+  contentRequirements,
+  users,
+} from '../db/schema.js';
 import { seedCharacters } from '../db/seed.js';
 import type {
   ProfileAuthor,
@@ -677,29 +682,67 @@ describe('quick create', () => {
     expect(res.json().character.displayName).toBe('Orion');
   });
 
-  it('carries an optional requirement key through, and defaults it to nothing', async () => {
-    // The join point for configurable content requirements. No key is invented
-    // here: an unlabelled reference stays unlabelled.
+  it('files the primary image under whichever requirement CLAIMS it in Settings', async () => {
+    // Configuration decides, not code: the creation path asks which requirement
+    // has assign_primary_reference set. Nothing here names a category, and the
+    // expected key is read from the configuration rather than written down.
     const cookies = await adminCookies();
+    const [claimant] = await ctx.db
+      .select()
+      .from(contentRequirements)
+      .where(eq(contentRequirements.assignPrimaryReference, true));
+    expect(claimant, 'a seeded requirement should claim the primary reference').toBeDefined();
+
     const plain = (await quickCreate(cookies)).json();
     const [plainRow] = await ctx.db
       .select()
       .from(characterVisualAssets)
       .where(eq(characterVisualAssets.id, plain.primaryReference.assetId));
-    expect(plainRow!.requirementKey).toBeNull();
+    expect(plainRow!.requirementKey).toBe(claimant!.key);
 
+    // ...and it therefore counts toward that requirement immediately.
+    const status = (
+      await ctx.app.inject({
+        method: 'GET',
+        url: `/admin/characters/${plain.character.id}/requirements`,
+        cookies,
+      })
+    ).json();
+    const entry = status.requirements.find((r: { key: string }) => r.key === claimant!.key);
+    expect(entry.approved).toBe(1);
+    expect(entry.satisfied).toBe(true);
+
+    // An explicit key overrides the claim — and an unconfigured one is simply
+    // not written, rather than becoming a dangling label on the asset.
+    const [other] = await ctx.db
+      .select()
+      .from(contentRequirements)
+      .where(eq(contentRequirements.assignPrimaryReference, false));
     const labelled = (
       await quickCreate(cookies, {
         name: 'orion',
         displayName: 'Orion',
-        requirementKey: 'anything-the-operator-chooses',
+        requirementKey: other!.key,
       })
     ).json();
     const [labelledRow] = await ctx.db
       .select()
       .from(characterVisualAssets)
       .where(eq(characterVisualAssets.id, labelled.primaryReference.assetId));
-    expect(labelledRow!.requirementKey).toBe('anything-the-operator-chooses');
+    expect(labelledRow!.requirementKey).toBe(other!.key);
+
+    const bogus = (
+      await quickCreate(cookies, {
+        name: 'vega',
+        displayName: 'Vega',
+        requirementKey: 'not_a_configured_category',
+      })
+    ).json();
+    const [bogusRow] = await ctx.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, bogus.primaryReference.assetId));
+    expect(bogusRow!.requirementKey).toBeNull();
   });
 });
 

@@ -281,6 +281,9 @@ export function resolveGenerationConfiguration(
       // Image: no source to inherit from, so a concrete default is right.
       // Video: null preserves the existing inherit-from-source behaviour.
       contentRating: config.contentRating ?? (config.type === 'image' ? 'sfw' : null),
+      // Carried verbatim: this layer resolves models and parameters, it does
+      // not interpret content categories.
+      requirementKey: config.requirementKey ?? null,
       parameters,
       resultStatus: GENERATED_ASSET_STATUS,
     },

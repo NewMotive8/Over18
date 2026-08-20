@@ -59,6 +59,12 @@ export interface GenerateImageInput {
   /** Initial lifecycle status; defaults to `under_review` (US-105 / EPIC 11:
    * generation never makes content live). Never canonical. */
   status?: Extract<VisualAssetStatus, 'generated' | 'under_review'>;
+  /**
+   * The content requirement this asset is meant to satisfy. Written straight
+   * onto the asset, so generated content reaches Review already filed under
+   * its category instead of landing in triage.
+   */
+  requirementKey?: string | null;
   width?: number;
   height?: number;
 }
@@ -74,6 +80,12 @@ export interface GenerateVideoInput {
   /** Overrides the rating inherited from the source asset. */
   contentRating?: ContentRating;
   status?: Extract<VisualAssetStatus, 'generated' | 'under_review'>;
+  /**
+   * The content requirement this asset is meant to satisfy. Written straight
+   * onto the asset, so generated content reaches Review already filed under
+   * its category instead of landing in triage.
+   */
+  requirementKey?: string | null;
 }
 
 export interface MediaJobCost {
@@ -176,6 +188,7 @@ export async function generateImageJob(
       kind: 'generated',
       status: input.status ?? GENERATED_ASSET_STATUS,
       contentRating: input.contentRating ?? 'sfw',
+      requirementKey: input.requirementKey ?? null,
       storageKey,
       provenance: {
         jobId,
@@ -265,6 +278,7 @@ export async function generateVideoJob(
       kind: 'generated',
       status: input.status ?? GENERATED_ASSET_STATUS,
       contentRating: input.contentRating ?? (source.contentRating as ContentRating),
+      requirementKey: input.requirementKey ?? null,
       storageKey,
       provenance: {
         jobId,

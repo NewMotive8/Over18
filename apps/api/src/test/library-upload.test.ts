@@ -71,7 +71,15 @@ beforeEach(async () => {
 });
 
 describe('manual library upload', () => {
-  it('stores an uploaded image, lists it in the library, and serves the bytes', async () => {
+  /**
+   * LIFECYCLE (changed): an upload no longer arrives approved.
+   *
+   * It used to be written straight into the Library, which meant manual uploads
+   * skipped the review step generated content has to pass. Both origins now
+   * land in `under_review` and meet the same queue; the Library still begins at
+   * approval, so it simply begins one deliberate decision later.
+   */
+  it('stores an uploaded image into REVIEW — not the library — and serves the bytes', async () => {
     const cookie = await adminCookie();
     const { payload, headers } = multipart(LUNA.id, 'luna.png', 'image/png', PNG);
 
@@ -84,17 +92,28 @@ describe('manual library upload', () => {
     expect(res.statusCode).toBe(201);
     const asset = res.json();
     expect(asset.characterId).toBe(LUNA.id);
-    expect(asset.status).toBe('approved');
+    expect(asset.status).toBe('under_review');
     // NEVER canonical — the public gallery rule is untouched.
     expect(asset.isPrimary).toBe(false);
     expect(asset.mediaType).toBe('image');
 
-    const library = await ctx.app.inject({
+    const inReview = await ctx.app.inject({
+      method: 'GET',
+      url: '/admin/content/review',
+      headers: { cookie },
+    });
+    expect(inReview.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(
+      asset.assetId,
+    );
+
+    const beforeApproval = await ctx.app.inject({
       method: 'GET',
       url: '/admin/content/library',
       headers: { cookie },
     });
-    expect(library.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(asset.assetId);
+    expect(
+      beforeApproval.json().assets.map((a: { assetId: string }) => a.assetId),
+    ).not.toContain(asset.assetId);
 
     const file = await ctx.app.inject({
       method: 'GET',
@@ -104,6 +123,41 @@ describe('manual library upload', () => {
     expect(file.statusCode).toBe(200);
     expect(file.headers['content-type']).toBe('image/png');
     expect(file.rawPayload.equals(PNG)).toBe(true);
+  });
+
+  it('reaches the library through approval, without being re-uploaded', async () => {
+    const cookie = await adminCookie();
+    const { payload, headers } = multipart(LUNA.id, 'luna.png', 'image/png', PNG);
+    const assetId = (
+      await ctx.app.inject({
+        method: 'POST',
+        url: '/admin/content/uploads',
+        headers: { ...headers, cookie },
+        payload,
+      })
+    ).json().assetId;
+
+    const approved = await ctx.app.inject({
+      method: 'POST',
+      url: `/admin/content/assets/${assetId}/approve`,
+      headers: { cookie },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().status).toBe('approved');
+
+    const library = await ctx.app.inject({
+      method: 'GET',
+      url: '/admin/content/library',
+      headers: { cookie },
+    });
+    expect(library.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(assetId);
+    // ...and it has left the review queue.
+    const queue = await ctx.app.inject({
+      method: 'GET',
+      url: '/admin/content/review',
+      headers: { cookie },
+    });
+    expect(queue.json().assets.map((a: { assetId: string }) => a.assetId)).not.toContain(assetId);
   });
 
   it('keeps the upload out of the public canonical gallery', async () => {
@@ -231,10 +285,12 @@ describe('uploaded video media type (regression: /file storage keys have no exte
 
     expect(asset.mediaType).toBe('video');
 
-    const video = await ctx.app.inject({ method: 'GET', url: '/admin/content/library?mediaType=video', headers: { cookie } });
+    // Filtered through the REVIEW queue: an upload now waits for a decision
+    // there, so that is where its classification has to be right.
+    const video = await ctx.app.inject({ method: 'GET', url: '/admin/content/review?mediaType=video', headers: { cookie } });
     expect(video.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(asset.assetId);
 
-    const image = await ctx.app.inject({ method: 'GET', url: '/admin/content/library?mediaType=image', headers: { cookie } });
+    const image = await ctx.app.inject({ method: 'GET', url: '/admin/content/review?mediaType=image', headers: { cookie } });
     expect(image.json().assets.map((a: { assetId: string }) => a.assetId)).not.toContain(asset.assetId);
   });
 
@@ -244,7 +300,7 @@ describe('uploaded video media type (regression: /file storage keys have no exte
     const up = await ctx.app.inject({ method: 'POST', url: '/admin/content/uploads', headers: { ...headers, cookie }, payload });
     expect(up.json().mediaType).toBe('image');
 
-    const image = await ctx.app.inject({ method: 'GET', url: '/admin/content/library?mediaType=image', headers: { cookie } });
+    const image = await ctx.app.inject({ method: 'GET', url: '/admin/content/review?mediaType=image', headers: { cookie } });
     expect(image.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(up.json().assetId);
   });
 
