@@ -43,6 +43,20 @@ export interface ReplyContext {
    * media that was not already selected by the server's own rules.
    */
   sendingMedia?: 'image' | 'video' | null;
+  /**
+   * Set when the person explicitly asked for media and the server had NOTHING
+   * eligible to send. Mutually exclusive with sendingMedia by construction.
+   *
+   * This used to be indistinguishable from an ordinary turn, on the reasoning
+   * that silence was safest. It was not: with no guidance the model wrote a
+   * flat refusal, and that refusal then sat in the conversation history and was
+   * replayed on every later turn — including turns where media WAS attached.
+   * One dead end became a permanent character trait.
+   *
+   * Telling the provider explicitly lets it answer honestly about this one
+   * moment without committing the character to refusing in future.
+   */
+  requestedMediaUnavailable?: 'image' | 'video' | null;
 }
 
 export type ReplyProvider = (context: ReplyContext) => Promise<string> | string;
@@ -57,6 +71,7 @@ export const deterministicReplyProvider: ReplyProvider = ({
   character,
   priorMessageCount,
   sendingMedia,
+  requestedMediaUnavailable,
 }) => {
   const interests = character.interests.length > 0 ? character.interests : ['getting to know you'];
   const interest = interests[Math.floor(priorMessageCount / 2) % interests.length]!;
@@ -67,6 +82,15 @@ export const deterministicReplyProvider: ReplyProvider = ({
     return sendingMedia === 'video'
       ? `Okay — here's a little video, just for you.`
       : `Okay — here's a picture of me, just for you.`;
+  }
+
+  // Asked, nothing to send. Honest about right now, deliberately NOT a rule
+  // about the character — "not right now" leaves later turns free, where
+  // "I don't send those" would poison them.
+  if (requestedMediaUnavailable) {
+    return requestedMediaUnavailable === 'video'
+      ? `Not right now — I'm not in the mood to film anything. Ask me again sometime.`
+      : `Not right now — I'm not in the mood for pictures. Ask me again sometime.`;
   }
 
   const templates = [

@@ -90,31 +90,11 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
     );
   }
 
-  // 5. Media the server has ALREADY decided to attach to this reply.
-  //
-  // Last thing the model reads about this specific turn. This is NOT a policy
-  // or permission statement and NOT a content instruction — it reports a
-  // decision the server has already made and committed to, so the words can
-  // match the picture the person is about to see. Without it the model writes
-  // blind and can refuse while an image is attached anyway, which is exactly
-  // what the first POC test produced.
-  //
-  // The model is told the KIND only. It never receives the asset id, storage
-  // key, path or URL, and nothing it writes can change which asset is sent.
-  if (context.sendingMedia) {
-    const noun = context.sendingMedia === 'video' ? 'a short video' : 'a photo';
-    sections.push(
-      [
-        'For THIS reply only:',
-        `- You are attaching ${noun} of yourself to this message. It is already attached, and they will see it with your reply.`,
-        '- Write the line that goes with it, in your own voice — short and natural, as if handing it over.',
-        '- Do NOT refuse, deflect, or say you would rather not send it. That would contradict what they can already see.',
-        '- Do NOT describe what is in it, and do not mention files, links, attachments or uploads.',
-      ].join('\n'),
-    );
-  }
+  // NOTE: the per-turn media instruction deliberately does NOT live here.
+  // It is emitted by createPromptBuilder AFTER the conversation history, so it
+  // is the most recent thing the model reads. See buildTurnMediaInstruction.
 
-  // 6. Conduct rules (US-09)
+  // 5. Conduct rules (US-09)
   sections.push(
     [
       'Conversation rules:',
@@ -130,10 +110,76 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
   return sections.join('\n\n');
 }
 
+/* ------------------------------------------------------------------ *
+ * Per-turn media instruction
+ * ------------------------------------------------------------------ */
+
+/**
+ * The one instruction that is about THIS turn rather than about the character.
+ *
+ * WHY IT IS NOT IN THE SYSTEM MESSAGE. It used to be, and that is what caused
+ * the production contradiction: the server attached a video and the character
+ * replied "if you want a video, the answer is still no". The instruction was
+ * real and correct, but it sat at the very top of the context while the
+ * model's own earlier refusal — replayed out of the history window — was the
+ * last thing it read before writing. The model was being consistent with
+ * itself. Recency, not absence, was the problem, so this block is now emitted
+ * after the history and immediately before the newest user message.
+ *
+ * WHAT IT IS. A report of a decision the server has ALREADY made and committed
+ * to. It is not a policy statement, not a permission, and not a content
+ * instruction. It exists so the words cannot contradict what the person can
+ * already see.
+ *
+ * WHAT IT IS NOT. It is not a mood override. The character may be shy,
+ * teasing, reluctant, smug or quiet about sending something — all of that is
+ * theirs. The only fixed thing is the fact.
+ *
+ * The model is told the KIND only. It never receives an id, a key, a path or a
+ * URL, and nothing it writes can change what is sent.
+ *
+ * Returns null on an ordinary turn, so nothing whatsoever is added.
+ */
+export function buildTurnMediaInstruction(context: ReplyContext): string | null {
+  const preamble =
+    'For THIS reply only — a statement of fact about what has already happened, not a request:';
+
+  if (context.sendingMedia) {
+    const noun = context.sendingMedia === 'video' ? 'a short video' : 'a photo';
+    return [
+      preamble,
+      `- You have just sent them ${noun} of yourself. It is attached to this reply and they can already see it.`,
+      '- This is already done and cannot be taken back. It overrides anything you said earlier in this conversation about not sending one: whatever your answer was before, this time you sent it.',
+      '- So do not refuse, deny, dodge, apologise for it, act surprised by it, or say anything that suggests nothing was sent. No "no", no "not this time", no "still not", no "I don\'t send those".',
+      '- Stay completely yourself about it. Shy, teasing, playful, reluctant, smug, quiet — how you feel about sending it is yours to show. The only fixed thing is that you did send it.',
+      '- Write the short line that goes with it, in your own voice, as if you were handing it over. Do not describe what is in it, and do not mention files, links, attachments or uploads.',
+    ].join('\n');
+  }
+
+  // Requested, but the server had nothing eligible to send. Left unhandled,
+  // this is where the FIRST refusal came from — the model was given no
+  // guidance at all, wrote a flat "no", and that line then sat in the history
+  // poisoning every later turn. So it gets explicit guidance too: honest about
+  // this moment, but never a standing rule about itself.
+  if (context.requestedMediaUnavailable) {
+    const noun = context.requestedMediaUnavailable === 'video' ? 'a video' : 'a photo';
+    return [
+      preamble,
+      `- They asked you for ${noun}. You have nothing you can send them right now, and nothing is attached to this reply.`,
+      '- Do not claim or imply that you just sent one, and do not describe one — they would see that nothing arrived.',
+      '- Answer them about this moment only, in your own voice: put it off, tease them, deflect, promise another time, say you are not in the mood right now — whatever actually fits you.',
+      '- Do not turn it into a rule about yourself. Do not say you never send those, that you do not do that, or anything that commits you to refusing again later. Another time the answer may well be yes.',
+    ].join('\n');
+  }
+
+  return null;
+}
+
 /**
  * Full model context: composed character instructions as the system message,
  * then the conversation history in order (user→user, character→assistant),
- * then the new user message last. User-authored text only ever appears in
+ * then — when this turn carries media — the per-turn media instruction, then
+ * the new user message last. User-authored text only ever appears in
  * user-role messages — never inside the character instruction block.
  */
 
@@ -218,22 +264,34 @@ export function createPromptBuilder(
   windowOptions: ContextWindowOptions = DEFAULT_CONTEXT_WINDOW,
   memoryOptions: MemoryInjectionOptions = DEFAULT_MEMORY_INJECTION,
 ): PromptBuilder {
-  return (context) => [
-    {
-      role: 'system',
-      content: buildCharacterSystemPrompt({
-        ...context,
-        memories: selectMemoriesForPrompt(context.memories ?? [], memoryOptions),
-      }),
-    },
-    ...selectContextWindow(context.history, windowOptions).map(
-      (message): LlmMessage => ({
-        role: message.sender === 'user' ? 'user' : 'assistant',
-        content: message.content,
-      }),
-    ),
-    { role: 'user', content: context.userMessage },
-  ];
+  return (context) => {
+    const messages: LlmMessage[] = [
+      {
+        role: 'system',
+        content: buildCharacterSystemPrompt({
+          ...context,
+          memories: selectMemoriesForPrompt(context.memories ?? [], memoryOptions),
+        }),
+      },
+      ...selectContextWindow(context.history, windowOptions).map(
+        (message): LlmMessage => ({
+          role: message.sender === 'user' ? 'user' : 'assistant',
+          content: message.content,
+        }),
+      ),
+    ];
+
+    // AFTER the history, BEFORE the newest user message: the last instruction
+    // the model reads, so it outranks any earlier refusal replayed out of the
+    // window. Null on an ordinary turn → the array is byte-identical to before.
+    const mediaInstruction = buildTurnMediaInstruction(context);
+    if (mediaInstruction) {
+      messages.push({ role: 'system', content: mediaInstruction });
+    }
+
+    messages.push({ role: 'user', content: context.userMessage });
+    return messages;
+  };
 }
 
 /** Default prompt builder: default context window applied. */

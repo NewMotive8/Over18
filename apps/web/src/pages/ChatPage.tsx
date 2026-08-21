@@ -6,9 +6,11 @@ import {
   MESSAGE_MAX_LENGTH,
   type ChatMessage,
   type ConversationSummary,
+  type SendMessageResult,
 } from '@over18/shared';
 import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
 import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
+import { createPacedSend } from '../lib/chatPacing';
 import { createScrollFollower } from '../lib/chatScroll';
 import { createViewportAnchor, type ViewportAnchor } from '../lib/chatViewport';
 import MessageMedia from '../components/MessageMedia';
@@ -131,12 +133,21 @@ export default function ChatPage() {
         //
         // chatSend.ts is untouched: the 2s indicator, the 5s reveal floor and
         // the scroll anchor never see any of this.
-        send: (content: string) =>
-          messagesApi.send(
-            conversationId!,
-            content,
-            detectMediaRequest(content, deriveMediaContext(messagesRef.current)) ?? undefined,
-          ),
+        //
+        // createPacedSend wraps — never replaces — that request. The call still
+        // fires immediately; only its RESOLUTION is held back, by 0ms for a
+        // short text reply, 2.5s for a longer one and 3s for one carrying
+        // media. To the controller that is simply a request that took a moment
+        // longer, so its own timing rules apply unchanged and the net effect is
+        // reveal = max(5s, response time) + hold. See chatPacing.ts.
+        send: createPacedSend<SendMessageResult>({
+          send: (content: string) =>
+            messagesApi.send(
+              conversationId!,
+              content,
+              detectMediaRequest(content, deriveMediaContext(messagesRef.current)) ?? undefined,
+            ),
+        }),
         onState: setSend,
         onResult: (result) => {
           // The canonical rows replace the optimistic bubble in one render.

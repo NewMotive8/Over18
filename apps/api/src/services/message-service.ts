@@ -175,6 +175,9 @@ export async function sendMessage(
     //
     // Both conditions are required: a selector (null when the feature flag is
     // off) and an explicit requested type. Neither can be produced by the model.
+    // True only when the feature is on AND the caller explicitly asked. With
+    // the feature off, a stray requestMedia is not a media turn at all.
+    const mediaWasRequested = Boolean(media.selector && media.requested);
     let selected: SelectedMedia | null = null;
     if (media.selector && media.requested) {
       try {
@@ -200,10 +203,14 @@ export async function sendMessage(
       priorMessageCount: historyRows.length,
       userMessage: content,
       memories: rememberedFacts,
-      // Null unless an asset was actually selected — so "asked but nothing
-      // eligible" reads exactly like an ordinary turn and the character never
+      // Null unless an asset was actually selected — the character never
       // promises media that is not attached.
       sendingMedia: selected?.mediaType ?? null,
+      // ...and when they DID ask but nothing was eligible, say so explicitly
+      // rather than letting it look like an ordinary turn. Silence there is
+      // what produced the first flat refusal, which the history window then
+      // replayed into every later turn. See ReplyContext.
+      requestedMediaUnavailable: mediaWasRequested && !selected ? media.requested! : null,
     });
 
     const [characterRow] = await tx

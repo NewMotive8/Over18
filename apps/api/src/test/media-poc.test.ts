@@ -14,7 +14,7 @@ import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
 import { createVisualAsset } from '../services/visual-asset-service.js';
 import { getActiveVisualIdentity } from '../services/visual-identity-service.js';
 import { deterministicReplyProvider, type ReplyContext } from '../services/character-reply.js';
-import { buildCharacterSystemPrompt } from '../services/prompt-builder.js';
+import { buildCharacterSystemPrompt, buildLlmMessages } from '../services/prompt-builder.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -379,29 +379,40 @@ describe('POC: the text agrees with the action', () => {
     userMessage: 'send me a picture',
   };
 
+  // The per-turn instruction moved OUT of the system message and is now
+  // emitted after the history (see media-reply-consistency.test.ts), so these
+  // assert on the assembled prompt rather than on the character block.
+  const assembled = (overrides: Partial<ReplyContext>) =>
+    buildLlmMessages({ ...base, ...overrides })
+      .map((m) => m.content)
+      .join('\n\n');
+
   it('the prompt tells the model an attachment is already committed', () => {
-    const prompt = buildCharacterSystemPrompt({ ...base, sendingMedia: 'image' });
-    expect(prompt).toContain('You are attaching a photo of yourself');
-    expect(prompt).toContain('already attached');
+    const prompt = assembled({ sendingMedia: 'image' });
+    expect(prompt).toContain('You have just sent them a photo of yourself');
+    expect(prompt).toContain('already see it');
     // The instruction that fixes the observed refusal.
-    expect(prompt).toMatch(/Do NOT refuse/);
+    expect(prompt).toMatch(/do not refuse/i);
   });
 
   it('says video when a video is being sent', () => {
-    const prompt = buildCharacterSystemPrompt({ ...base, sendingMedia: 'video' });
-    expect(prompt).toContain('a short video');
+    expect(assembled({ sendingMedia: 'video' })).toContain('a short video');
   });
 
   it('adds NOTHING to the prompt on an ordinary turn', () => {
-    const plain = buildCharacterSystemPrompt(base);
-    expect(plain).not.toContain('You are attaching');
+    const plain = assembled({});
+    expect(plain).not.toContain('You have just sent them');
     expect(plain).not.toContain('For THIS reply only');
     // Byte-identical whether the field is absent or explicitly null.
-    expect(buildCharacterSystemPrompt({ ...base, sendingMedia: null })).toBe(plain);
+    expect(assembled({ sendingMedia: null })).toBe(plain);
+    // ...and the character block itself never carries per-turn media text.
+    expect(buildCharacterSystemPrompt({ ...base, sendingMedia: 'image' })).toBe(
+      buildCharacterSystemPrompt(base),
+    );
   });
 
   it('never leaks an asset id, path or url into the prompt', () => {
-    const prompt = buildCharacterSystemPrompt({ ...base, sendingMedia: 'image' });
+    const prompt = assembled({ sendingMedia: 'image' });
     expect(prompt).not.toContain('/api/');
     expect(prompt).not.toContain('/admin/');
     expect(prompt).not.toContain(STORAGE_DIR);
