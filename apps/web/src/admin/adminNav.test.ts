@@ -22,10 +22,10 @@ describe('US-99 admin navigation model', () => {
     for (const dest of ADMIN_DESTINATIONS) {
       expect(dest.owner).toMatch(/US-\d{3}/);
     }
-    for (const key of ['review', 'library', 'characters', 'settings'] as const) {
+    for (const key of ['review', 'library', 'characters', 'settings', 'publishing'] as const) {
       expect(adminDestination(key).status).toBe('available');
     }
-    for (const key of ['publishing', 'generation'] as const) {
+    for (const key of ['generation'] as const) {
       expect(adminDestination(key).status).toBe('not-implemented');
     }
   });

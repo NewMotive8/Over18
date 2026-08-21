@@ -80,9 +80,9 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
     label: 'Categories & Publishing',
     path: '/admin/publishing',
     matchPrefixes: ['/admin/publishing'],
-    description: 'Assign categories and publish approved content',
-    status: 'not-implemented',
-    owner: 'US-102 — Content Categories & Publishing',
+    description: 'Manage app categories, ordering and publishing',
+    status: 'available',
+    owner: 'US-102 — App CMS, Categories & Publishing',
   },
   {
     key: 'generation',

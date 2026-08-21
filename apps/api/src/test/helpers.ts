@@ -85,7 +85,7 @@ export async function createTestContext(
 
 export async function truncateAll(ctx: TestContext): Promise<void> {
   await ctx.pool.query(
-    'TRUNCATE TABLE content_inbox, character_visual_assets, character_visual_identities, memories, messages, conversations, sessions, users, characters CASCADE',
+    'TRUNCATE TABLE app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, messages, conversations, sessions, users, characters CASCADE',
   );
 }
 

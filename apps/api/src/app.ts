@@ -15,6 +15,7 @@ import generationRoutes from './routes/generation.js';
 import adminContentRoutes from './routes/admin-content.js';
 import adminCharacterRoutes from './routes/admin-characters.js';
 import adminSettingsRoutes from './routes/admin-settings.js';
+import adminAppCategoryRoutes from './routes/admin-app-categories.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 import {
@@ -115,6 +116,11 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // own plugin rather than living inside the content-review surface that reads
   // them — the definition and the work it drives stay separable.
   await app.register(adminSettingsRoutes, { db });
+  // US-102.1 Admin → Categories & Publishing. The App CMS surface: how already
+  // approved content is ORGANISED in the app, as opposed to what must be
+  // produced. Its own plugin so merchandising and production configuration
+  // cannot drift into one another.
+  await app.register(adminAppCategoryRoutes, { db });
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
   await app.register(conversationRoutes, { db });

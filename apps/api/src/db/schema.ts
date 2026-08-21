@@ -6,6 +6,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -622,6 +623,96 @@ export const contentInbox = pgTable(
   (table) => [index('content_inbox_status_idx').on(table.status, table.createdAt)],
 );
 
+/**
+ * app_categories — the user-facing merchandising categories the App CMS
+ * manages (US-102.1).
+ *
+ * NOT content_requirements. That table answers "what must we PRODUCE for a
+ * character"; this one answers "how is already-approved content ORGANISED in
+ * the app". They share no column, no key and no code path, and conflating them
+ * is the most likely way this feature goes wrong — hence this note.
+ *
+ * IDENTITY IS THE SLUG, NOT THE NAME. `slug` is assigned once and never
+ * changes, so anything referencing a category keeps working when an operator
+ * renames "Girlfriend" to "Girlfriends". `name` is pure presentation.
+ *
+ * Presentation metadata is deliberately thin: a name and an optional tagline.
+ * Colours, icons, hero art, layout kinds and Home visibility are assumptions
+ * about a merchandising model that has not been designed yet (US-102.2/.3/.4).
+ * Columns can be added additively later; guessing now bakes the guess in.
+ */
+export const appCategories = pgTable(
+  'app_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Stable internal identity. Immutable after creation — see above. */
+    slug: text('slug').notNull(),
+    /** Display name. Freely renameable; nothing references it. */
+    name: text('name').notNull(),
+    /** Optional user-facing subtitle shown under the category heading. */
+    tagline: text('tagline'),
+    /**
+     * Disabling retires a category from the app without destroying it or its
+     * assignments — the non-destructive counterpart to delete, exactly as it
+     * works for content requirements.
+     */
+    enabled: boolean('enabled').notNull().default(true),
+    /** Merchandising order. Normalised to 0..n-1 by every reorder. */
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('app_categories_slug_uq').on(table.slug),
+    index('app_categories_position_idx').on(table.position),
+  ],
+);
+
+/**
+ * app_category_assets — which approved Library assets appear in which category.
+ *
+ * WHY THIS EXISTS IN US-102.1, WHICH BUILDS NO ASSIGNMENT UI. The rule this
+ * ticket must guarantee is "deleting a category never deletes content;
+ * affected content becomes unassigned and stays in the Library". With nowhere
+ * for an assignment to live that rule is vacuously true and untestable. With
+ * this table it is enforced by the DATABASE and provable in a test.
+ *
+ * Read the cascades carefully — they are the whole point:
+ *
+ *   category_id ON DELETE CASCADE  deleting a CATEGORY drops these LINK rows.
+ *                                  The asset row is untouched, so the content
+ *                                  becomes unassigned and stays in the Library,
+ *                                  available for reassignment.
+ *   asset_id    ON DELETE CASCADE  deleting an ASSET drops its links, so a
+ *                                  category can never point at a dead row.
+ *
+ * The composite primary key means an asset appears in a category at most once,
+ * while the same asset may sit in many categories — many-to-many with no
+ * duplication of the underlying media, as US-102 requires.
+ *
+ * NOTHING WRITES TO THIS TABLE YET. Assignment, ordering within a category and
+ * bulk operations are US-102.2.
+ */
+export const appCategoryAssets = pgTable(
+  'app_category_assets',
+  {
+    categoryId: uuid('category_id')
+      .notNull()
+      .references(() => appCategories.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => characterVisualAssets.id, { onDelete: 'cascade' }),
+    /** Order of this asset WITHIN its category. Consumed by US-102.2. */
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.categoryId, table.assetId] }),
+    index('app_category_assets_category_idx').on(table.categoryId, table.position),
+    index('app_category_assets_asset_idx').on(table.assetId),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -637,3 +728,5 @@ export type GenerationSequenceRunRow = typeof generationSequenceRuns.$inferSelec
 export type GenerationResultRow = typeof generationResults.$inferSelect;
 export type ContentRequirementRow = typeof contentRequirements.$inferSelect;
 export type ContentInboxRow = typeof contentInbox.$inferSelect;
+export type AppCategoryRow = typeof appCategories.$inferSelect;
+export type AppCategoryAssetRow = typeof appCategoryAssets.$inferSelect;

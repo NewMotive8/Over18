@@ -338,6 +338,73 @@ export const contentRequirementsApi = {
     }),
 };
 
+/* ------------------------------------------------------------------ *
+ * App Categories (US-102.1)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A user-facing merchandising category.
+ *
+ * NOT a content requirement. Requirements describe what must be PRODUCED for a
+ * character; these describe how already-approved content is ORGANISED in the
+ * app. Separate endpoints, separate tables, no shared field.
+ */
+export interface AppCategoryView {
+  id: string;
+  /** Stable internal identity, fixed at creation. Renaming never changes it. */
+  slug: string;
+  name: string;
+  tagline: string | null;
+  enabled: boolean;
+  position: number;
+  /** Approved Library items merchandised here. Assignment arrives in US-102.2. */
+  assignedAssetCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AppCategoryTotals {
+  categories: number;
+  enabled: number;
+  assignedAssets: number;
+}
+
+export interface AppCategoryDraft {
+  name: string;
+  /** Omitted on create so the server derives it from the name. */
+  slug?: string;
+  tagline?: string | null;
+  enabled?: boolean;
+}
+
+export const appCategoriesApi = {
+  list: () =>
+    request<{ categories: AppCategoryView[]; totals: AppCategoryTotals }>('/admin/app-categories'),
+  create: (draft: AppCategoryDraft) =>
+    request<AppCategoryView>('/admin/app-categories', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    }),
+  /** `slug` is deliberately absent: the server refuses it, and so does this. */
+  update: (id: string, patch: Partial<Omit<AppCategoryDraft, 'slug'>>) =>
+    request<AppCategoryView>(`/admin/app-categories/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  /** Returns how many items became unassigned. Never deletes an asset. */
+  remove: (id: string) =>
+    request<{ deleted: true; releasedAssetCount: number }>(
+      `/admin/app-categories/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+  /** Whole-list reorder. The server refuses anything but an exact permutation. */
+  reorder: (orderedIds: string[]) =>
+    request<{ categories: AppCategoryView[] }>('/admin/app-categories/order', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    }),
+};
+
 export const contentReviewApi = {
   summary: () =>
     request<{ characters: CharacterReviewSummary[] }>('/admin/content/review/summary'),
