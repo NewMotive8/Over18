@@ -187,3 +187,131 @@ export interface CharacterVisualIdentityResponse {
   identity: PublicVisualIdentity | null;
   canonicalAssets: PublicVisualAsset[];
 }
+
+/* ------------------------------------------------------------------ *
+ * Home banners (US-102.3)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Banner lifecycle and eligibility rules, shared by the API and the admin UI.
+ *
+ * These live in @over18/shared rather than in either app because both sides
+ * genuinely need the same answer: the server decides what is publicly eligible,
+ * and the editor's live preview has to say what the app will do RIGHT NOW while
+ * the operator is still typing. Two implementations of one state machine would
+ * drift, and the drift would show up as a preview that lies.
+ */
+
+export const BANNER_STATUSES = ['draft', 'published', 'unpublished'] as const;
+export type BannerStatus = (typeof BANNER_STATUSES)[number];
+
+export const BANNER_DESTINATION_KINDS = ['category', 'character', 'content', 'external'] as const;
+export type BannerDestinationKind = (typeof BANNER_DESTINATION_KINDS)[number];
+
+/**
+ * MVP audience model, deliberately three values and no engine.
+ * Demographic and geographic targeting are deferred to US-102.5 — do not add
+ * fields here for them; that ticket owns the model they need.
+ */
+export const BANNER_AUDIENCES = ['everyone', 'new_users', 'returning_users'] as const;
+export type BannerAudience = (typeof BANNER_AUDIENCES)[number];
+
+/**
+ * What a banner is doing right now. Derived on every read from status, the
+ * schedule window and whether its dependencies still resolve — never stored,
+ * because a stored flag goes stale the moment a category is re-enabled and
+ * would then need a repair job of its own.
+ */
+export type BannerState =
+  | 'draft'
+  | 'scheduled'
+  | 'live'
+  | 'ended'
+  | 'unpublished'
+  | 'needs_attention';
+
+/** Why a banner cannot be shown, when its state is needs_attention. */
+export type BannerProblem =
+  | 'creative_missing'
+  | 'creative_invalid'
+  | 'destination_missing'
+  | 'destination_unavailable'
+  | 'destination_invalid_url';
+
+export interface BannerStateInput {
+  status: BannerStatus;
+  /** ISO instants. Null means "no bound on this side". */
+  startsAt: string | null;
+  endsAt: string | null;
+  /** Everything wrong with this banner right now; empty when it is healthy. */
+  problems: readonly BannerProblem[];
+}
+
+/**
+ * The one state machine.
+ *
+ * Boundary semantics are explicit and inclusive-start/exclusive-end:
+ *   now  <  startsAt   → scheduled
+ *   now  >= startsAt and now < endsAt → live
+ *   now  >= endsAt     → ended
+ *
+ * PROBLEMS OUTRANK EVERYTHING published. A banner whose destination or creative
+ * has broken is `needs_attention` whether or not its window is open, so it can
+ * never be publicly eligible while broken — but a DRAFT with problems is still
+ * just a draft, because an operator part-way through building one has not
+ * asserted anything yet and does not need a warning chip for it.
+ *
+ * IT FAILS CLOSED. A bound that is present but unreadable cannot be compared,
+ * and every comparison against NaN is false — so the naive form of this
+ * function falls through to `live` and shows a banner forever on the strength
+ * of one corrupt timestamp. A window that cannot be read is treated as a broken
+ * banner instead. This is the primitive public eligibility is gated on, so its
+ * behaviour on data it does not understand has to be "do not show it".
+ */
+function scheduleBound(value: string | null): number | null | 'unreadable' {
+  if (value === null) return null;
+  const instant = Date.parse(value);
+  return Number.isNaN(instant) ? 'unreadable' : instant;
+}
+
+export function bannerEffectiveState(banner: BannerStateInput, now: Date): BannerState {
+  if (banner.status === 'draft') return 'draft';
+  if (banner.status === 'unpublished') return 'unpublished';
+
+  if (banner.problems.length > 0) return 'needs_attention';
+
+  const startsAt = scheduleBound(banner.startsAt);
+  const endsAt = scheduleBound(banner.endsAt);
+  if (startsAt === 'unreadable' || endsAt === 'unreadable') return 'needs_attention';
+
+  const instant = now.getTime();
+  if (startsAt !== null && instant < startsAt) return 'scheduled';
+  if (endsAt !== null && instant >= endsAt) return 'ended';
+  return 'live';
+}
+
+/** Only a live banner may be shown publicly. Nothing else, ever. */
+export function isBannerPubliclyEligible(banner: BannerStateInput, now: Date): boolean {
+  return bannerEffectiveState(banner, now) === 'live';
+}
+
+/** Who is looking. The ONLY viewer fact the MVP audience model consults. */
+export interface BannerViewer {
+  /** False for a first-time/newly registered visitor, true for a returning one. */
+  isReturning: boolean;
+}
+
+/**
+ * Audience matching, MVP.
+ *
+ * Deliberately a two-line function over one boolean rather than a predicate
+ * engine: US-102.5 will replace this wholesale, and a general segmentation
+ * layer built now would be the wrong shape and would have to be unbuilt.
+ *
+ * Note what is NOT here: the definition of "returning". That is a property of
+ * the public request, which US-102.4 owns.
+ */
+export function audienceMatches(audience: BannerAudience, viewer: BannerViewer): boolean {
+  if (audience === 'everyone') return true;
+  return audience === 'returning_users' ? viewer.isReturning : !viewer.isReturning;
+}

@@ -2,6 +2,11 @@ import type {
   ApiError,
   AuthCredentials,
   AuthUser,
+  BannerAudience,
+  BannerDestinationKind,
+  BannerProblem,
+  BannerState,
+  BannerStatus,
   ChatMessage,
   CharacterVisualIdentityResponse,
   ConversationSummary,
@@ -528,6 +533,156 @@ export const merchandisingApi = {
       `/admin/app-categories/${encodeURIComponent(categoryId)}/assets/${encodeURIComponent(assetId)}`,
       { method: 'PATCH', body: JSON.stringify({ featured }) },
     ),
+};
+
+/* ------------------------------------------------------------------ *
+ * Home banners (US-102.3)
+ * ------------------------------------------------------------------ */
+
+export interface BannerCreativeView {
+  id: string;
+  mimeType: string;
+  mediaType: 'image' | 'video';
+  byteSize: number;
+  originalName: string | null;
+  /** Advisory. Null when the format did not expose them. */
+  width: number | null;
+  height: number | null;
+  /** Opaque, id-keyed media route. Never a storage path. */
+  fileUrl: string;
+  createdAt: string;
+}
+
+export interface BannerDestinationView {
+  kind: BannerDestinationKind;
+  categoryId: string | null;
+  characterId: string | null;
+  assetId: string | null;
+  url: string | null;
+  /** Resolved server-side. Null when the destination is broken. */
+  label: string | null;
+}
+
+export interface HomeBannerView {
+  id: string;
+  title: string;
+  subtitle: string | null;
+  ctaLabel: string | null;
+  creative: BannerCreativeView | null;
+  destination: BannerDestinationView;
+  status: BannerStatus;
+  audience: BannerAudience;
+  startsAt: string | null;
+  endsAt: string | null;
+  scheduleTimezone: string | null;
+  position: number;
+  publishedAt: string | null;
+  /** Derived per read — never stored. See @over18/shared. */
+  state: BannerState;
+  problems: BannerProblem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BannerCreativeRequirements {
+  acceptedMimeTypes: string[];
+  maxBytes: number;
+  maxLabel: string;
+  recommendedAspect: string;
+  recommendedMinWidth: number;
+  dimensionsEnforced: false;
+}
+
+export interface BannerDestinationOptions {
+  categories: Array<{ id: string; name: string; slug: string }>;
+  characters: Array<{ id: string; name: string; displayName: string }>;
+  content: Array<{ id: string; characterId: string; characterName: string }>;
+}
+
+export interface HomeBannerDraft {
+  title: string;
+  subtitle?: string | null;
+  ctaLabel?: string | null;
+  creativeId?: string | null;
+  destinationKind: BannerDestinationKind;
+  destinationCategoryId?: string | null;
+  destinationCharacterId?: string | null;
+  destinationAssetId?: string | null;
+  destinationUrl?: string | null;
+  audience?: BannerAudience;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  scheduleTimezone?: string | null;
+}
+
+export const homeBannersApi = {
+  list: () =>
+    request<{
+      banners: HomeBannerView[];
+      totals: { total: number; live: number; scheduled: number; needsAttention: number };
+      requirements: BannerCreativeRequirements;
+    }>('/admin/home-banners'),
+  get: (id: string) => request<HomeBannerView>(`/admin/home-banners/${encodeURIComponent(id)}`),
+  /** Always creates a DRAFT — the server ignores any status sent. */
+  create: (draft: HomeBannerDraft) =>
+    request<HomeBannerView>('/admin/home-banners', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    }),
+  /** Never changes lifecycle state; publish/unpublish are separate actions. */
+  update: (id: string, patch: Partial<HomeBannerDraft>) =>
+    request<HomeBannerView>(`/admin/home-banners/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  publish: (id: string) =>
+    request<HomeBannerView>(`/admin/home-banners/${encodeURIComponent(id)}/publish`, {
+      method: 'POST',
+    }),
+  unpublish: (id: string) =>
+    request<HomeBannerView>(`/admin/home-banners/${encodeURIComponent(id)}/unpublish`, {
+      method: 'POST',
+    }),
+  /** Deletes the banner only — the creative row and file survive. */
+  remove: (id: string) =>
+    request<{ deleted: true; creativeKept: true }>(
+      `/admin/home-banners/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+  reorder: (orderedIds: string[]) =>
+    request<{ banners: HomeBannerView[] }>('/admin/home-banners/order', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  destinations: () => request<BannerDestinationOptions>('/admin/home-banners/destinations'),
+  requirements: () =>
+    request<BannerCreativeRequirements>('/admin/home-banners/creative-requirements'),
+  /**
+   * Uploads a dedicated banner creative. Multipart, so it bypasses `request`'s
+   * JSON handling — the same shape the Library upload client uses.
+   */
+  async uploadCreative(file: File): Promise<BannerCreativeView> {
+    const body = new FormData();
+    body.append('file', file);
+    const res = await fetch(`${API_URL}/admin/home-banners/creatives`, {
+      method: 'POST',
+      credentials: 'include',
+      body,
+    });
+    if (!res.ok) {
+      let code = 'upload_failed';
+      let message = `Upload failed (${res.status}).`;
+      try {
+        const parsed = (await res.json()) as Partial<ApiError>;
+        if (parsed.error) code = parsed.error;
+        if (parsed.message) message = parsed.message;
+      } catch {
+        // Non-JSON error body — keep the generic message.
+      }
+      throw new ApiRequestError(res.status, code, message);
+    }
+    return (await res.json()) as BannerCreativeView;
+  },
 };
 
 export const contentReviewApi = {

@@ -20,6 +20,8 @@ import ContentLibraryPage from './pages/admin/ContentLibraryPage';
 import ContentSettingsPage from './pages/admin/ContentSettingsPage';
 import AppCategoriesPage from './pages/admin/AppCategoriesPage';
 import CategoryMerchandisingPage from './pages/admin/CategoryMerchandisingPage';
+import BannersPage from './pages/admin/BannersPage';
+import BannerEditorPage from './pages/admin/BannerEditorPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
 
@@ -59,6 +61,10 @@ export default function App() {
         <Route path="settings/content-requirements" element={<ContentSettingsPage />} />
         <Route path="publishing" element={<AppCategoriesPage />} />
         {/* US-102.2 — merchandise one category, addressed by its stable slug. */}
+        {/* US-102.3 — banners live as a tab inside the same CMS workspace.
+            Declared BEFORE :categorySlug so "banners" is never read as a slug. */}
+        <Route path="publishing/banners" element={<BannersPage />} />
+        <Route path="publishing/banners/:bannerId" element={<BannerEditorPage />} />
         <Route path="publishing/:categorySlug" element={<CategoryMerchandisingPage />} />
         <Route path="generation" element={<AdminPlaceholder destination="generation" />} />
       </Route>

@@ -728,6 +728,116 @@ export const appCategoryAssets = pgTable(
   ],
 );
 
+/**
+ * banner_creatives — artwork uploaded FOR a banner, and for nothing else
+ * (US-102.3).
+ *
+ * A DEDICATED CMS ASSET, NOT LIBRARY CONTENT. Banner artwork is editorial: it
+ * is not a character's content, it does not count toward any content
+ * requirement, it never enters Review, and no generation job produces it. Put
+ * differently — there is no column here linking to a character, so nothing in
+ * the character content lifecycle can reach these rows.
+ *
+ * The shape deliberately mirrors content_inbox, the other "upload with no
+ * character" in this schema: validated mime type, derived media type, byte
+ * size, and an absolute storage_path that NEVER goes on the wire. The accepted
+ * formats and the size ceiling come from library-upload-service, which is the
+ * one authoritative list — banners do not define their own.
+ *
+ * Deleting a BANNER does not delete its creative: the FK lives on the banner
+ * and is ON DELETE SET NULL, so the row and its bytes survive and can be reused.
+ */
+export const bannerCreatives = pgTable('banner_creatives', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  /** Validated against the shared accepted list before anything is written. */
+  mimeType: text('mime_type').notNull(),
+  /** 'image' | 'video', derived from the VALIDATED mime type, never the name. */
+  mediaType: text('media_type').notNull(),
+  byteSize: integer('byte_size').notNull(),
+  originalName: text('original_name'),
+  /** Absolute path under MEDIA_STORAGE_DIR/banners. Never sent to a client. */
+  storagePath: text('storage_path'),
+  /**
+   * Pixel dimensions when they could be read cheaply. Advisory only — this
+   * product has no authoritative dimension rule, so these are shown to the
+   * operator alongside a 16:9 recommendation and never used to reject a file.
+   */
+  width: integer('width'),
+  height: integer('height'),
+  uploadedBy: uuid('uploaded_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * home_banners — editorial banners for the app's Home surface (US-102.3).
+ *
+ * WHAT THIS TABLE DOES NOT DECIDE: how Home is composed. Single banner,
+ * carousel, placement, whether Home shows banners at all — every one of those
+ * is US-102.4. This table owns the banners and their order, nothing more.
+ *
+ * NOTHING HERE IS A STORED STATE FLAG. Draft/Scheduled/Live/Ended/Unpublished/
+ * Needs-attention is derived per read by bannerEffectiveState in
+ * @over18/shared, from `status`, the schedule window and whether the
+ * dependencies below still resolve. A stored flag would go stale the instant a
+ * disabled category was re-enabled.
+ *
+ * EVERY DEPENDENCY IS ON DELETE SET NULL, and that is the mechanism behind
+ * "a banner whose destination disappears becomes Needs attention": the pointer
+ * nulls, the derived state flips, public eligibility stops — and the banner
+ * keeps its creative, copy, schedule and audience, and stays editable so the
+ * operator can repair it. Nothing is ever silently deleted.
+ */
+export const homeBanners = pgTable(
+  'home_banners',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    title: text('title').notNull(),
+    subtitle: text('subtitle'),
+    /** Button text. The DESTINATION is the four columns below. */
+    ctaLabel: text('cta_label'),
+    creativeId: uuid('creative_id').references(() => bannerCreatives.id, {
+      onDelete: 'set null',
+    }),
+
+    /** 'category' | 'character' | 'content' | 'external'. */
+    destinationKind: text('destination_kind').notNull(),
+    destinationCategoryId: uuid('destination_category_id').references(() => appCategories.id, {
+      onDelete: 'set null',
+    }),
+    destinationCharacterId: uuid('destination_character_id').references(() => characters.id, {
+      onDelete: 'set null',
+    }),
+    destinationAssetId: uuid('destination_asset_id').references(() => characterVisualAssets.id, {
+      onDelete: 'set null',
+    }),
+    /** https only, shape-validated. Never probed server-side (SSRF). */
+    destinationUrl: text('destination_url'),
+
+    /** 'draft' | 'published' | 'unpublished'. Draft is never public. */
+    status: text('status').notNull().default('draft'),
+    /** 'everyone' | 'new_users' | 'returning_users'. MVP model, see shared. */
+    audience: text('audience').notNull().default('everyone'),
+
+    /**
+     * Absolute instants, so comparisons are unambiguous. The IANA zone beside
+     * them is kept so the editor can render back the wall time that was typed;
+     * it is never used for comparison.
+     */
+    startsAt: timestamp('starts_at', { withTimezone: true }),
+    endsAt: timestamp('ends_at', { withTimezone: true }),
+    scheduleTimezone: text('schedule_timezone'),
+
+    position: integer('position').notNull().default(0),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('home_banners_position_idx').on(table.position),
+    index('home_banners_status_idx').on(table.status),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -745,3 +855,5 @@ export type ContentRequirementRow = typeof contentRequirements.$inferSelect;
 export type ContentInboxRow = typeof contentInbox.$inferSelect;
 export type AppCategoryRow = typeof appCategories.$inferSelect;
 export type AppCategoryAssetRow = typeof appCategoryAssets.$inferSelect;
+export type BannerCreativeRow = typeof bannerCreatives.$inferSelect;
+export type HomeBannerRow = typeof homeBanners.$inferSelect;

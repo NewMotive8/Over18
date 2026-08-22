@@ -16,6 +16,7 @@ import adminContentRoutes from './routes/admin-content.js';
 import adminCharacterRoutes from './routes/admin-characters.js';
 import adminSettingsRoutes from './routes/admin-settings.js';
 import adminAppCategoryRoutes from './routes/admin-app-categories.js';
+import adminHomeBannerRoutes from './routes/admin-home-banners.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 import {
@@ -121,6 +122,13 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // produced. Its own plugin so merchandising and production configuration
   // cannot drift into one another.
   await app.register(adminAppCategoryRoutes, { db });
+  // US-102.3 Admin → Categories & Publishing → Banners. Its own plugin: banner
+  // creatives are dedicated CMS assets with their own storage subtree, and
+  // nothing here touches Review, content requirements or generation.
+  await app.register(adminHomeBannerRoutes, {
+    db,
+    creativeStorage: { storageDir: env.media.storageDir },
+  });
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
   await app.register(conversationRoutes, { db });

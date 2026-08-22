@@ -32,6 +32,7 @@ import {
   summariseAdd,
   toggleSelected,
 } from '../../admin/merchandising';
+import ConfirmDialog from '../../admin/ConfirmDialog';
 
 /**
  * Admin → Categories & Publishing → merchandise one category (US-102.2).
@@ -947,117 +948,9 @@ function EmptyPanel({ title, body }: { title: string; body: string }) {
 }
 
 /**
- * The one modal used by both confirmations on this screen.
- *
- * Same contract as the categories workspace: focus moves to the safe action,
- * Tab and Shift+Tab cycle between the two buttons and cannot escape, Escape
- * and a backdrop click dismiss, and focus returns to whatever opened it. One
- * implementation rather than two, so the two dialogs cannot drift apart.
- */
-function ConfirmModal({
-  title,
-  body,
-  confirmLabel,
-  cancelLabel,
-  onConfirm,
-  onCancel,
-  busy,
-  tone = 'default',
-}: {
-  title: string;
-  body: string;
-  confirmLabel: string;
-  cancelLabel: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-  busy: boolean;
-  tone?: 'default' | 'danger';
-}) {
-  const cancelRef = useRef<HTMLButtonElement>(null);
-  const confirmRef = useRef<HTMLButtonElement>(null);
-  const restoreTo = useRef<Element | null>(null);
-
-  useEffect(() => {
-    restoreTo.current = document.activeElement;
-    cancelRef.current?.focus();
-    return () => {
-      if (restoreTo.current instanceof HTMLElement) restoreTo.current.focus();
-    };
-  }, []);
-
-  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.key === 'Escape') {
-      event.stopPropagation();
-      if (!busy) onCancel();
-      return;
-    }
-    if (event.key !== 'Tab') return;
-    const first = cancelRef.current;
-    const last = confirmRef.current;
-    if (!first || !last) return;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-black/60 px-4"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) onCancel();
-      }}
-    >
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="merch-dialog-title"
-        aria-describedby="merch-dialog-body"
-        onKeyDown={onKeyDown}
-        className="w-full max-w-md rounded-2xl border border-neutral-800 bg-neutral-950 p-5 shadow-2xl"
-      >
-        <h2 id="merch-dialog-title" className="text-base font-medium text-neutral-100">
-          {title}
-        </h2>
-        <p id="merch-dialog-body" className="mt-2 text-sm leading-relaxed text-neutral-400">
-          {body}
-        </p>
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            ref={cancelRef}
-            type="button"
-            onClick={onCancel}
-            disabled={busy}
-            className="rounded-lg border border-neutral-700 px-3.5 py-2 text-sm text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-          >
-            {cancelLabel}
-          </button>
-          <button
-            ref={confirmRef}
-            type="button"
-            onClick={onConfirm}
-            disabled={busy}
-            className={`rounded-lg px-3.5 py-2 text-sm font-medium disabled:opacity-50 ${
-              tone === 'danger'
-                ? 'bg-red-500/90 text-white hover:bg-red-500'
-                : 'bg-neutral-100 text-neutral-900 hover:bg-white'
-            }`}
-          >
-            {busy ? 'Working…' : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
  * Removal confirmation. The copy is the point: this is where the operator is
  * told, explicitly, that removing from a category changes nothing in the
- * Library.
+ * Library. The dialog behaviour itself is the shared admin/ConfirmDialog.
  */
 function RemoveDialog({
   count,
@@ -1071,7 +964,8 @@ function RemoveDialog({
   onConfirm: () => void;
 }) {
   return (
-    <ConfirmModal
+    <ConfirmDialog
+      open
       tone="danger"
       title={`Remove ${count} item${count === 1 ? '' : 's'} from this category?`}
       body={removalMessage(count)}
@@ -1087,7 +981,8 @@ function RemoveDialog({
 /** Shown when a staged reorder would be lost by navigating away. */
 function LeaveDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
   return (
-    <ConfirmModal
+    <ConfirmDialog
+      open
       title="Leave without saving the new order?"
       body="The order you arranged has not been saved yet. Leaving now keeps the last saved order — everything else you changed on this page has already been applied."
       confirmLabel="Leave without saving"
