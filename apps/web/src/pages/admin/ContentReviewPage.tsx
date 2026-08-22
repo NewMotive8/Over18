@@ -393,16 +393,16 @@ export default function ContentReviewPage() {
               </p>
 
               <div className="mt-3 overflow-hidden rounded bg-zinc-950">
-                {selected.storageKey && selected.mediaType === 'video' ? (
+                {selected.previewUrl && selected.mediaType === 'video' ? (
                   <video
-                    src={`${API_URL}${selected.storageKey}`}
+                    src={`${API_URL}${selected.previewUrl}`}
                     controls
                     muted
                     playsInline
                     className="w-full"
                   />
-                ) : selected.storageKey ? (
-                  <img src={`${API_URL}${selected.storageKey}`} alt="" className="w-full" />
+                ) : selected.previewUrl ? (
+                  <img src={`${API_URL}${selected.previewUrl}`} alt="" className="w-full" />
                 ) : null}
               </div>
 
@@ -631,9 +631,9 @@ function Slot({
             see lib/mediaTile. Contain, not cover: a reviewer must judge the
             whole asset, never a crop of it. */}
         <div className={`${tileFrameClass()} flex items-center justify-center`}>
-          {asset.storageKey && asset.mediaType === 'image' ? (
+          {asset.previewUrl && asset.mediaType === 'image' ? (
             <img
-              src={`${API_URL}${asset.storageKey}`}
+              src={`${API_URL}${asset.previewUrl}`}
               alt=""
               loading="lazy"
               className={TILE_MEDIA_CLASS}
@@ -701,9 +701,9 @@ function TriagePanel({
           <li key={item.assetId} className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
               <div className="h-12 w-9 shrink-0 overflow-hidden rounded bg-zinc-950">
-                {item.storageKey && item.mediaType === 'image' && (
+                {item.previewUrl && item.mediaType === 'image' && (
                   <img
-                    src={`${API_URL}${item.storageKey}`}
+                    src={`${API_URL}${item.previewUrl}`}
                     alt=""
                     loading="lazy"
                     className={TILE_MEDIA_CLASS}

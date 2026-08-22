@@ -1,0 +1,1 @@
+ALTER TABLE "app_category_assets" ADD COLUMN "featured" boolean DEFAULT false NOT NULL;

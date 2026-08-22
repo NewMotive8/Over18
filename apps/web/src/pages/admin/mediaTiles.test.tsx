@@ -28,7 +28,7 @@ const asset = (over: Partial<LibraryAssetView> = {}): LibraryAssetView => ({
   contentRating: 'sfw',
   requirementKey: null,
   isPrimary: false,
-  storageKey: '/admin/content/uploads/asset-1/file',
+  previewUrl: '/admin/content/assets/asset-1/file',
   createdAt: '2026-08-18T10:00:00.000Z',
   approvedAt: '2026-08-18T10:05:00.000Z',
   recencyBasis: 'approved',
@@ -109,7 +109,7 @@ describe('Content Library tile', () => {
 
   it('still labels video and keeps the placeholder for a keyless asset', () => {
     expect(render(asset({ mediaType: 'video' }))).toContain('video');
-    const keyless = render(asset({ storageKey: null }));
+    const keyless = render(asset({ previewUrl: null }));
     expect(keyless).not.toContain('<img');
     expect(keyless).not.toContain('<video');
   });

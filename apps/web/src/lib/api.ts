@@ -145,7 +145,12 @@ export interface ReviewAssetView {
   /** The configured content requirement this item is filed under, if any. */
   requirementKey: string | null;
   isPrimary: boolean;
-  storageKey: string | null;
+  /**
+   * Opaque media locator (`/admin/content/assets/<id>/file`), or null when the
+   * asset has no bytes. Replaced `storageKey`, which leaked the server's
+   * filesystem path for generated assets and was a broken URL for them too.
+   */
+  previewUrl: string | null;
   createdAt: string;
   approvedAt: string | null;
   provenance: {
@@ -357,8 +362,10 @@ export interface AppCategoryView {
   tagline: string | null;
   enabled: boolean;
   position: number;
-  /** Approved Library items merchandised here. Assignment arrives in US-102.2. */
+  /** Library items merchandised here, publishable or not (US-102.2). */
   assignedAssetCount: number;
+  /** How many of those are approved right now, i.e. would actually appear. */
+  publishableAssetCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -403,6 +410,124 @@ export const appCategoriesApi = {
       method: 'PUT',
       body: JSON.stringify({ orderedIds }),
     }),
+};
+
+/* ------------------------------------------------------------------ *
+ * Category merchandising (US-102.2)
+ * ------------------------------------------------------------------ */
+
+/** One approved asset as it sits inside a category. */
+export interface CategoryAssetView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  contentRating: string;
+  /** Advisory. Never a reason an item is or is not publishable. */
+  isPrimary: boolean;
+  status: string;
+  position: number;
+  featured: boolean;
+  /** False when the asset lost approval after being assigned. */
+  publishable: boolean;
+  previewUrl: string | null;
+  addedAt: string;
+}
+
+/** An approved Library asset offered by the picker. */
+export interface CandidateAssetView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  contentRating: string;
+  isPrimary: boolean;
+  previewUrl: string | null;
+  approvedAt: string | null;
+  categoryCount: number;
+  inThisCategory: boolean;
+}
+
+export interface AddOutcome {
+  assetId: string;
+  added: boolean;
+  reason?: 'not_found' | 'not_approved' | 'already_present';
+  status?: string;
+}
+
+export interface CategoryAssetTotals {
+  assigned: number;
+  publishable: number;
+  featured: number;
+}
+
+export interface CandidateQuery {
+  characterId?: string;
+  mediaType?: 'image' | 'video';
+  contentRating?: string;
+  search?: string;
+  categoryId?: string;
+  excludeAssigned?: boolean;
+}
+
+function queryString(params: Record<string, string | boolean | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '' || value === false) continue;
+    search.set(key, String(value));
+  }
+  const encoded = search.toString();
+  return encoded ? `?${encoded}` : '';
+}
+
+export const merchandisingApi = {
+  /** Resolves the workspace URL's stable slug. */
+  categoryBySlug: (slug: string) =>
+    request<{
+      id: string;
+      slug: string;
+      name: string;
+      tagline: string | null;
+      enabled: boolean;
+      position: number;
+    }>(`/admin/app-categories/by-slug/${encodeURIComponent(slug)}`),
+
+  /** Everything assigned, including items that lost approval (flagged). */
+  contents: (categoryId: string) =>
+    request<{ assets: CategoryAssetView[]; totals: CategoryAssetTotals }>(
+      `/admin/app-categories/${encodeURIComponent(categoryId)}/assets`,
+    ),
+
+  /** The picker. Approved content only — enforced server-side. */
+  candidates: (query: CandidateQuery = {}) =>
+    request<{ assets: CandidateAssetView[] }>(
+      `/admin/app-categories/candidates${queryString({ ...query })}`,
+    ),
+
+  add: (categoryId: string, assetIds: string[]) =>
+    request<{ outcomes: AddOutcome[]; added: number; refused: number }>(
+      `/admin/app-categories/${encodeURIComponent(categoryId)}/assets`,
+      { method: 'POST', body: JSON.stringify({ assetIds }) },
+    ),
+
+  /** Removes links only. The Library asset is never touched. */
+  remove: (categoryId: string, assetIds: string[]) =>
+    request<{ removed: number }>(
+      `/admin/app-categories/${encodeURIComponent(categoryId)}/assets/remove`,
+      { method: 'POST', body: JSON.stringify({ assetIds }) },
+    ),
+
+  reorder: (categoryId: string, orderedAssetIds: string[]) =>
+    request<{ assets: CategoryAssetView[] }>(
+      `/admin/app-categories/${encodeURIComponent(categoryId)}/assets/order`,
+      { method: 'PUT', body: JSON.stringify({ orderedAssetIds }) },
+    ),
+
+  setFeatured: (categoryId: string, assetId: string, featured: boolean) =>
+    request<{ assets: CategoryAssetView[] }>(
+      `/admin/app-categories/${encodeURIComponent(categoryId)}/assets/${encodeURIComponent(assetId)}`,
+      { method: 'PATCH', body: JSON.stringify({ featured }) },
+    ),
 };
 
 export const contentReviewApi = {

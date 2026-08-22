@@ -690,8 +690,11 @@ export const appCategories = pgTable(
  * while the same asset may sit in many categories — many-to-many with no
  * duplication of the underlying media, as US-102 requires.
  *
- * NOTHING WRITES TO THIS TABLE YET. Assignment, ordering within a category and
- * bulk operations are US-102.2.
+ * US-102.2 fills it in: assignment, bulk operations, ordering within a category
+ * and the featured flag. What it deliberately does NOT carry is any notion of
+ * publishability — that lives on the asset (`status = 'approved'`) and is
+ * re-checked on every read, so a link to an asset that later loses approval
+ * simply stops being returned rather than being destroyed.
  */
 export const appCategoryAssets = pgTable(
   'app_category_assets',
@@ -702,8 +705,20 @@ export const appCategoryAssets = pgTable(
     assetId: uuid('asset_id')
       .notNull()
       .references(() => characterVisualAssets.id, { onDelete: 'cascade' }),
-    /** Order of this asset WITHIN its category. Consumed by US-102.2. */
+    /** Order of this asset WITHIN its category. */
     position: integer('position').notNull().default(0),
+    /**
+     * US-102.2 merchandising emphasis — a BADGE, never a sort key.
+     *
+     * A presentation flag on the LINK, not on the asset: the same item can be
+     * featured in one category and ordinary in another, and nothing about the
+     * underlying Library asset changes when it is featured or un-featured.
+     *
+     * Ordering is `position` alone. Sorting by featured first was tried and
+     * removed: it silently overrode the operator's saved arrangement, so a
+     * drag that put an ordinary item ahead of a featured one could never stick.
+     */
+    featured: boolean('featured').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

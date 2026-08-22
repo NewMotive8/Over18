@@ -34,12 +34,12 @@ export function Tile({ a, onOpen, dense }: { a: LibraryAssetView; onOpen: () => 
       {/* Fixed-ratio frame. Images and video are fitted IDENTICALLY — see
           TILE_MEDIA_CLASS for why this is contain rather than cover. */}
       <div className={tileFrameClass(dense)}>
-        {a.storageKey && a.mediaType === 'image' ? (
-          <img src={`${API_URL}${a.storageKey}`} alt="" loading="lazy" className={TILE_MEDIA_CLASS} />
-        ) : a.storageKey && a.mediaType === 'video' ? (
+        {a.previewUrl && a.mediaType === 'image' ? (
+          <img src={`${API_URL}${a.previewUrl}`} alt="" loading="lazy" className={TILE_MEDIA_CLASS} />
+        ) : a.previewUrl && a.mediaType === 'video' ? (
           <>
             <video
-              src={`${API_URL}${a.storageKey}`}
+              src={`${API_URL}${a.previewUrl}`}
               muted
               playsInline
               preload="metadata"
@@ -328,10 +328,10 @@ export default function ContentLibraryPage() {
             </div>
 
             <div className="mt-3 overflow-hidden rounded bg-zinc-900">
-              {selected.storageKey && selected.mediaType === 'video' ? (
-                <video src={`${API_URL}${selected.storageKey}`} controls muted playsInline className="w-full" />
-              ) : selected.storageKey ? (
-                <img src={`${API_URL}${selected.storageKey}`} alt="" className="w-full" />
+              {selected.previewUrl && selected.mediaType === 'video' ? (
+                <video src={`${API_URL}${selected.previewUrl}`} controls muted playsInline className="w-full" />
+              ) : selected.previewUrl ? (
+                <img src={`${API_URL}${selected.previewUrl}`} alt="" className="w-full" />
               ) : null}
             </div>
 

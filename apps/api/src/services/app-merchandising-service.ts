@@ -1,0 +1,543 @@
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import type { Db } from '../db/client.js';
+import {
+  appCategories,
+  appCategoryAssets,
+  characters,
+  characterVisualAssets,
+} from '../db/schema.js';
+import { mediaTypeOf } from './content-review-service.js';
+
+/**
+ * Content distribution & category merchandising (US-102.2).
+ *
+ * Puts approved Library content INTO the App Categories US-102.1 created. It
+ * writes only `app_category_assets` — link rows. There is no UPDATE and no
+ * DELETE against `character_visual_assets` anywhere in this file, which is what
+ * makes "merchandising never modifies the Library" a property of the module
+ * rather than a promise. The Review → Approved → Library lifecycle is read
+ * from, never written to.
+ *
+ * PUBLISHABILITY IS CHECKED TWICE, ON PURPOSE.
+ *
+ *  1. On WRITE: only `status = 'approved'` can be newly assigned. Anything
+ *     else is refused per-asset and reported back.
+ *
+ *  2. On READ: every query that produces a category's PUBLIC contents joins
+ *     `status = 'approved'`. This is the one that actually matters, because an
+ *     asset can be approved, assigned, and rejected afterwards. The link row
+ *     survives that — it is not destroyed — but the asset cannot appear in a
+ *     public result while it is not approved, and it reappears by itself if it
+ *     is approved again. Deleting links on rejection would mean reaching into
+ *     the review lifecycle from the merchandising side, i.e. exactly the
+ *     competing lifecycle US-102 forbids.
+ *
+ * WHAT IS NOT A PUBLISHABILITY GATE: `content_rating`. It is advisory
+ * throughout this product (see content_requirements), and an explicit approved
+ * asset is as assignable as an sfw one. Same for `is_canonical` — a Primary
+ * reference is approved content and may be merchandised. Both are surfaced to
+ * the operator as visible facts, never as silent filters.
+ */
+
+/** The one rule that decides whether an asset may be publicly associated. */
+export const PUBLISHABLE_STATUS = 'approved' as const;
+
+export class MerchandisingValidationError extends Error {
+  constructor(
+    public readonly field: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MerchandisingValidationError';
+  }
+}
+
+export class MerchandisingOrderError extends Error {
+  constructor(
+    public readonly reason: 'unknown_id' | 'incomplete' | 'duplicate',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MerchandisingOrderError';
+  }
+}
+
+/** Why an asset could not be added. Reported per asset, never as a batch failure. */
+export type AddRejection = 'not_found' | 'not_approved' | 'already_present';
+
+export interface AddOutcome {
+  assetId: string;
+  added: boolean;
+  reason?: AddRejection;
+  /** Present for `not_approved`, so the UI can say WHICH state blocked it. */
+  status?: string;
+}
+
+export interface CategoryAssetView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  contentRating: string;
+  /** Advisory only — never a reason an item is or is not publishable. */
+  isPrimary: boolean;
+  status: string;
+  /** Position WITHIN this category. */
+  position: number;
+  featured: boolean;
+  /**
+   * True when this asset is currently publishable. False means the assignment
+   * still exists but the item is absent from every public read — the operator
+   * sees it flagged rather than silently vanishing.
+   */
+  publishable: boolean;
+  /**
+   * Opaque, message-free media locator. NEVER a storage key or filesystem
+   * path: the browser gets a route keyed by asset id and nothing else.
+   */
+  previewUrl: string | null;
+  addedAt: string;
+}
+
+export interface CandidateAssetView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  contentRating: string;
+  isPrimary: boolean;
+  previewUrl: string | null;
+  approvedAt: string | null;
+  /** Which other categories already merchandise this asset. */
+  categoryCount: number;
+  /** True when it is already in the category being merchandised. */
+  inThisCategory: boolean;
+}
+
+/** The opaque locator the browser is given for an asset's bytes. */
+export function assetPreviewUrl(assetId: string, storageKey: string | null): string | null {
+  return storageKey ? `/admin/content/assets/${assetId}/file` : null;
+}
+
+function mediaTypeFor(
+  storageKey: string | null,
+  provenance: Record<string, unknown> | null,
+): 'image' | 'video' {
+  return mediaTypeOf(storageKey, provenance) === 'video' ? 'video' : 'image';
+}
+
+/* ------------------------------------------------------------------ *
+ * Reading a category's contents
+ * ------------------------------------------------------------------ */
+
+/**
+ * Everything assigned to a category, INCLUDING items that have lost approval.
+ *
+ * This is the ADMIN view — the operator has to be able to see and clean up an
+ * assignment whose asset was rejected after the fact. `publishable` marks
+ * those. The public view is listPublishableCategoryAssets below, and the two
+ * are separate functions precisely so a public caller cannot get this one by
+ * forgetting a flag.
+ *
+ * ORDERING IS `position` ALONE, with a stable id tiebreak. `featured` is a
+ * BADGE, not a sort key — it used to be the leading ORDER BY term, which made
+ * it impossible to drag an ordinary item ahead of a featured one: the save
+ * wrote the requested positions and the next read sorted them straight back.
+ * The operator's saved order is now the only ordering authority.
+ */
+export async function listCategoryAssetsForAdmin(
+  db: Db,
+  categoryId: string,
+): Promise<CategoryAssetView[]> {
+  const rows = await db
+    .select({
+      link: appCategoryAssets,
+      asset: characterVisualAssets,
+      characterName: characters.name,
+    })
+    .from(appCategoryAssets)
+    .innerJoin(characterVisualAssets, eq(characterVisualAssets.id, appCategoryAssets.assetId))
+    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+    .where(eq(appCategoryAssets.categoryId, categoryId))
+    // position ONLY. See the note above: featured must never reorder anything.
+    .orderBy(asc(appCategoryAssets.position), asc(appCategoryAssets.assetId));
+
+  return rows.map(({ link, asset, characterName }) => ({
+    assetId: asset.id,
+    characterId: asset.characterId,
+    characterName,
+    mediaType: mediaTypeFor(asset.storageKey, asset.provenance as Record<string, unknown> | null),
+    contentRating: asset.contentRating,
+    isPrimary: asset.isCanonical,
+    status: asset.status,
+    position: link.position,
+    featured: link.featured,
+    publishable: asset.status === PUBLISHABLE_STATUS,
+    previewUrl: assetPreviewUrl(asset.id, asset.storageKey),
+    addedAt: link.createdAt.toISOString(),
+  }));
+}
+
+/**
+ * The PUBLIC contents of a category: approved only, always.
+ *
+ * The approval condition is part of the query, not a filter applied afterwards,
+ * so there is no code path that returns a non-approved asset from here — which
+ * is the guarantee "under-review, rejected or otherwise non-publishable content
+ * must not appear publicly" actually rests on.
+ *
+ * US-102.4 will consume this for Home. Nothing public reads it yet.
+ */
+export async function listPublishableCategoryAssets(
+  db: Db,
+  categoryId: string,
+): Promise<CategoryAssetView[]> {
+  const all = await listCategoryAssetsForAdmin(db, categoryId);
+  const rows = await db
+    .select({ assetId: characterVisualAssets.id })
+    .from(appCategoryAssets)
+    .innerJoin(characterVisualAssets, eq(characterVisualAssets.id, appCategoryAssets.assetId))
+    .where(
+      and(
+        eq(appCategoryAssets.categoryId, categoryId),
+        eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+      ),
+    );
+  const publishable = new Set(rows.map((row) => row.assetId));
+  return all.filter((item) => publishable.has(item.assetId));
+}
+
+/* ------------------------------------------------------------------ *
+ * Choosing what to add
+ * ------------------------------------------------------------------ */
+
+export interface CandidateFilter {
+  characterId?: string;
+  mediaType?: 'image' | 'video';
+  contentRating?: string;
+  /** Free text over the character's name. */
+  search?: string;
+  /** Marks (and optionally hides) what is already in this category. */
+  categoryId?: string;
+  excludeAssigned?: boolean;
+  limit?: number;
+}
+
+/**
+ * The picker's source list: APPROVED Library content only.
+ *
+ * Approval is a SQL condition here too, so a non-approved asset is never even
+ * offered — the operator cannot select something the write path would then
+ * refuse. Rating and Primary status are returned as visible facts, never used
+ * to exclude anything.
+ */
+export async function listAssignmentCandidates(
+  db: Db,
+  filter: CandidateFilter = {},
+): Promise<CandidateAssetView[]> {
+  const conditions = [eq(characterVisualAssets.status, PUBLISHABLE_STATUS)];
+  if (filter.characterId) {
+    conditions.push(eq(characterVisualAssets.characterId, filter.characterId));
+  }
+  if (filter.contentRating === 'sfw' || filter.contentRating === 'explicit') {
+    conditions.push(eq(characterVisualAssets.contentRating, filter.contentRating));
+  }
+  if (filter.search && filter.search.trim().length > 0) {
+    const term = `%${filter.search.trim().toLowerCase()}%`;
+    conditions.push(sql`lower(${characters.name}) like ${term}`);
+  }
+
+  const rows = await db
+    .select({ asset: characterVisualAssets, characterName: characters.name })
+    .from(characterVisualAssets)
+    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+    .where(and(...conditions))
+    .orderBy(desc(characterVisualAssets.approvedAt), desc(characterVisualAssets.createdAt));
+
+  // Media type is resolved in TS, not SQL: a manual upload's storage_key is an
+  // extensionless route, so extension sniffing misclassifies every upload.
+  const withMedia = rows.map(({ asset, characterName }) => ({
+    asset,
+    characterName,
+    mediaType: mediaTypeFor(asset.storageKey, asset.provenance as Record<string, unknown> | null),
+  }));
+  const typed = filter.mediaType
+    ? withMedia.filter((row) => row.mediaType === filter.mediaType)
+    : withMedia;
+
+  // How many categories each candidate already appears in, so the picker can
+  // show that adding one here does not remove it from anywhere else.
+  const counts = await db
+    .select({
+      assetId: appCategoryAssets.assetId,
+      total: sql<number>`count(*)::int`,
+    })
+    .from(appCategoryAssets)
+    .groupBy(appCategoryAssets.assetId);
+  const countByAsset = new Map(counts.map((row) => [row.assetId, Number(row.total)]));
+
+  let assigned = new Set<string>();
+  if (filter.categoryId) {
+    const links = await db
+      .select({ assetId: appCategoryAssets.assetId })
+      .from(appCategoryAssets)
+      .where(eq(appCategoryAssets.categoryId, filter.categoryId));
+    assigned = new Set(links.map((row) => row.assetId));
+  }
+
+  const mapped: CandidateAssetView[] = typed.map(({ asset, characterName, mediaType }) => ({
+    assetId: asset.id,
+    characterId: asset.characterId,
+    characterName,
+    mediaType,
+    contentRating: asset.contentRating,
+    isPrimary: asset.isCanonical,
+    previewUrl: assetPreviewUrl(asset.id, asset.storageKey),
+    approvedAt: asset.approvedAt ? asset.approvedAt.toISOString() : null,
+    categoryCount: countByAsset.get(asset.id) ?? 0,
+    inThisCategory: assigned.has(asset.id),
+  }));
+
+  const visible = filter.excludeAssigned ? mapped.filter((row) => !row.inThisCategory) : mapped;
+  return typeof filter.limit === 'number' ? visible.slice(0, filter.limit) : visible;
+}
+
+/* ------------------------------------------------------------------ *
+ * Writing assignments
+ * ------------------------------------------------------------------ */
+
+/**
+ * Adds many assets at once, reporting each outcome separately.
+ *
+ * PARTIAL SUCCESS IS THE POINT. Selecting twenty tiles and hitting one that was
+ * rejected while the picker was open must not discard the other nineteen, and
+ * must not silently pretend the twentieth worked. Every id comes back with what
+ * happened to it.
+ *
+ * New links append AFTER everything already in the category, so adding never
+ * disturbs an arrangement the operator has already made.
+ */
+export async function addAssetsToCategory(
+  db: Db,
+  categoryId: string,
+  assetIds: string[],
+): Promise<AddOutcome[]> {
+  if (assetIds.length === 0) return [];
+  const unique = [...new Set(assetIds)];
+
+  return db.transaction(async (tx) => {
+    const found = await tx
+      .select({
+        id: characterVisualAssets.id,
+        status: characterVisualAssets.status,
+      })
+      .from(characterVisualAssets)
+      .where(inArray(characterVisualAssets.id, unique));
+    const statusById = new Map(found.map((row) => [row.id, row.status]));
+
+    const existing = await tx
+      .select({ assetId: appCategoryAssets.assetId })
+      .from(appCategoryAssets)
+      .where(eq(appCategoryAssets.categoryId, categoryId));
+    const alreadyIn = new Set(existing.map((row) => row.assetId));
+
+    const [{ next } = { next: 0 }] = await tx
+      .select({ next: sql<number>`coalesce(max(${appCategoryAssets.position}), -1) + 1` })
+      .from(appCategoryAssets)
+      .where(eq(appCategoryAssets.categoryId, categoryId));
+
+    let position = Number(next);
+    const outcomes: AddOutcome[] = [];
+
+    for (const assetId of unique) {
+      const status = statusById.get(assetId);
+      if (status === undefined) {
+        outcomes.push({ assetId, added: false, reason: 'not_found' });
+        continue;
+      }
+      if (alreadyIn.has(assetId)) {
+        outcomes.push({ assetId, added: false, reason: 'already_present' });
+        continue;
+      }
+      if (status !== PUBLISHABLE_STATUS) {
+        // The write-side half of the rule. Rating and Primary status are NOT
+        // consulted — only approval decides publishability.
+        outcomes.push({ assetId, added: false, reason: 'not_approved', status });
+        continue;
+      }
+      await tx
+        .insert(appCategoryAssets)
+        .values({ categoryId, assetId, position: position++ })
+        .onConflictDoNothing();
+      outcomes.push({ assetId, added: true });
+    }
+
+    return outcomes;
+  });
+}
+
+export interface RemoveResult {
+  removed: number;
+}
+
+/**
+ * Removes assignments. DELETES LINK ROWS ONLY.
+ *
+ * There is no statement in this function that can reach `character_visual_assets`
+ * — the asset keeps its status, its approval timestamp, its Primary flag, its
+ * file and its place in the Library, and stays available to every other
+ * category it belongs to.
+ */
+export async function removeAssetsFromCategory(
+  db: Db,
+  categoryId: string,
+  assetIds: string[],
+): Promise<RemoveResult> {
+  if (assetIds.length === 0) return { removed: 0 };
+  const unique = [...new Set(assetIds)];
+  return db.transaction(async (tx) => {
+    const deleted = await tx
+      .delete(appCategoryAssets)
+      .where(
+        and(
+          eq(appCategoryAssets.categoryId, categoryId),
+          inArray(appCategoryAssets.assetId, unique),
+        ),
+      )
+      .returning({ assetId: appCategoryAssets.assetId });
+    await normalisePositions(tx, categoryId);
+    return { removed: deleted.length };
+  });
+}
+
+/**
+ * Sets or clears the featured flag on ONE assignment.
+ *
+ * A property of the link, so featuring an item in one category says nothing
+ * about it anywhere else, and nothing at all about the asset.
+ *
+ * PURELY VISUAL. Featuring does not move an item: position is the only
+ * ordering authority, so a featured item stays exactly where the operator put
+ * it and simply carries a badge.
+ */
+export async function setAssetFeatured(
+  db: Db,
+  categoryId: string,
+  assetId: string,
+  featured: boolean,
+): Promise<boolean> {
+  const updated = await db
+    .update(appCategoryAssets)
+    .set({ featured })
+    .where(
+      and(eq(appCategoryAssets.categoryId, categoryId), eq(appCategoryAssets.assetId, assetId)),
+    )
+    .returning({ assetId: appCategoryAssets.assetId });
+  return updated.length > 0;
+}
+
+/**
+ * Applies an order within a category.
+ *
+ * Exact-permutation-or-refuse, for the same reason US-102.1's category reorder
+ * works this way: the failure to design for is a stale browser, where a lenient
+ * implementation would quietly drop an item a colleague just added. Note this
+ * validates against EVERY assignment including non-publishable ones, because
+ * the admin list the operator dragged shows those too.
+ */
+export async function reorderCategoryAssets(
+  db: Db,
+  categoryId: string,
+  orderedAssetIds: string[],
+): Promise<void> {
+  const unique = new Set(orderedAssetIds);
+  if (unique.size !== orderedAssetIds.length) {
+    throw new MerchandisingOrderError('duplicate', 'The same item was listed more than once.');
+  }
+
+  await db.transaction(async (tx) => {
+    const existing = await tx
+      .select({ assetId: appCategoryAssets.assetId })
+      .from(appCategoryAssets)
+      .where(eq(appCategoryAssets.categoryId, categoryId));
+    const existingIds = new Set(existing.map((row) => row.assetId));
+
+    for (const assetId of orderedAssetIds) {
+      if (!existingIds.has(assetId)) {
+        throw new MerchandisingOrderError('unknown_id', 'That item is no longer in this category.');
+      }
+    }
+    if (orderedAssetIds.length !== existingIds.size) {
+      throw new MerchandisingOrderError(
+        'incomplete',
+        'The order is out of date — it does not list every item in this category. Reload and try again.',
+      );
+    }
+
+    for (const [index, assetId] of orderedAssetIds.entries()) {
+      await tx
+        .update(appCategoryAssets)
+        .set({ position: index })
+        .where(
+          and(eq(appCategoryAssets.categoryId, categoryId), eq(appCategoryAssets.assetId, assetId)),
+        );
+    }
+  });
+}
+
+/** Per-category assignment counts, split by what is currently publishable. */
+export async function categoryAssignmentCounts(
+  db: Db,
+): Promise<Map<string, { total: number; publishable: number }>> {
+  const rows = await db
+    .select({
+      categoryId: appCategoryAssets.categoryId,
+      status: characterVisualAssets.status,
+      total: sql<number>`count(*)::int`,
+    })
+    .from(appCategoryAssets)
+    .innerJoin(characterVisualAssets, eq(characterVisualAssets.id, appCategoryAssets.assetId))
+    .groupBy(appCategoryAssets.categoryId, characterVisualAssets.status);
+
+  const byCategory = new Map<string, { total: number; publishable: number }>();
+  for (const row of rows) {
+    const entry = byCategory.get(row.categoryId) ?? { total: 0, publishable: 0 };
+    entry.total += Number(row.total);
+    if (row.status === PUBLISHABLE_STATUS) entry.publishable += Number(row.total);
+    byCategory.set(row.categoryId, entry);
+  }
+  return byCategory;
+}
+
+/** Resolves a category by its stable slug — what the workspace URL carries. */
+export async function getCategoryBySlug(db: Db, slug: string) {
+  const [row] = await db
+    .select()
+    .from(appCategories)
+    .where(eq(appCategories.slug, slug))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Rewrites positions to 0..n-1 within one category. */
+async function normalisePositions(
+  tx: Pick<Db, 'select' | 'update'>,
+  categoryId: string,
+): Promise<void> {
+  const rows = await tx
+    .select({ assetId: appCategoryAssets.assetId })
+    .from(appCategoryAssets)
+    .where(eq(appCategoryAssets.categoryId, categoryId))
+    .orderBy(asc(appCategoryAssets.position), asc(appCategoryAssets.assetId));
+  for (const [index, row] of rows.entries()) {
+    await tx
+      .update(appCategoryAssets)
+      .set({ position: index })
+      .where(
+        and(
+          eq(appCategoryAssets.categoryId, categoryId),
+          eq(appCategoryAssets.assetId, row.assetId),
+        ),
+      );
+  }
+}

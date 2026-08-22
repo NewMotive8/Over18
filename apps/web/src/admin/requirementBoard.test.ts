@@ -31,7 +31,7 @@ const asset = (over: Partial<ReviewAssetView> = {}): ReviewAssetView => ({
   contentRating: 'sfw',
   requirementKey: 'demo',
   isPrimary: false,
-  storageKey: '/file',
+  previewUrl: '/admin/content/assets/a/file',
   createdAt: '2026-08-01T00:00:00.000Z',
   approvedAt: null,
   provenance: { jobId: null, provider: null, model: null, generatedAt: null },

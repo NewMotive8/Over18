@@ -7,7 +7,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   ApiRequestError,
   appCategoriesApi,
@@ -745,6 +745,15 @@ function CategoryRow({
             </code>
             <span aria-hidden>·</span>
             <span>{assignedLabel(category.assignedAssetCount)}</span>
+            {typeof category.publishableAssetCount === 'number' &&
+              category.publishableAssetCount !== category.assignedAssetCount && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="text-amber-300/90">
+                    {category.publishableAssetCount} live in the app
+                  </span>
+                </>
+              )}
           </p>
         </div>
 
@@ -770,6 +779,12 @@ function CategoryRow({
           <span className="sr-only">
             Position {index + 1} of {total}
           </span>
+          <Link
+            to={`/admin/publishing/${category.slug}`}
+            className="mr-1 rounded-md border border-neutral-800 px-2.5 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
+          >
+            Merchandise
+          </Link>
           <button
             type="button"
             onClick={onToggle}

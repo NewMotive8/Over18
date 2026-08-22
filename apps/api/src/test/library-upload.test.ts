@@ -278,11 +278,20 @@ describe('uploaded video media type (regression: /file storage keys have no exte
     expect(up.statusCode).toBe(201);
     const asset = up.json();
 
-    // The storage key is a route path with NO extension — the exact shape that
+    // The STORED key is a route path with NO extension — the exact shape that
     // used to defeat extension sniffing and misclassify every upload as image.
-    expect(asset.storageKey).toMatch(/\/file$/);
-    expect(asset.storageKey).not.toMatch(/\.(mp4|webm|mov|m4v)$/i);
+    // Read from the row, not the response: US-102.2 stopped putting storage
+    // keys on the wire (they leaked the server's filesystem layout), so the
+    // client now receives only an opaque per-asset preview route.
+    const [row] = await ctx.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, asset.assetId));
+    expect(row!.storageKey).toMatch(/\/file$/);
+    expect(row!.storageKey).not.toMatch(/\.(mp4|webm|mov|m4v)$/i);
 
+    expect(asset.storageKey).toBeUndefined();
+    expect(asset.previewUrl).toBe(`/admin/content/assets/${asset.assetId}/file`);
     expect(asset.mediaType).toBe('video');
 
     // Filtered through the REVIEW queue: an upload now waits for a decision

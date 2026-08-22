@@ -50,6 +50,7 @@ import {
   summariseRequirementProgress,
 } from '../services/requirement-status-service.js';
 import { getCharacterForAdmin } from '../services/character-service.js';
+import { resolveMediaFile } from '../services/message-media-service.js';
 
 /**
  * US-106 — admin content review API.
@@ -79,7 +80,14 @@ function assetView(a: Awaited<ReturnType<typeof getReviewAsset>>) {
     /** DB column is is_canonical; the product term is Primary. */
     isPrimary: a.isCanonical,
     position: a.position,
-    storageKey: a.storageKey,
+    /**
+     * OPAQUE MEDIA LOCATOR. Was `storageKey`, which handed the browser either a
+     * route (manual uploads) or a raw server filesystem path (generated
+     * assets) — the second is both broken as a URL and a disclosure of the
+     * server's layout. The client now receives a route keyed by asset id and
+     * nothing else; the two storage conventions are resolved server-side.
+     */
+    previewUrl: a.storageKey ? `/admin/content/assets/${a.id}/file` : null,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
     approvedAt: a.approvedAt,
@@ -106,6 +114,11 @@ export default async function adminContentRoutes(
   opts: { db: Db; uploadStorage?: LibraryUploadStorage },
 ) {
   const adminOnly = { preHandler: [app.requireAuth, app.requireAdmin] };
+  /**
+   * Where every asset's bytes live. Same directory the upload path writes to;
+   * resolveMediaFile refuses anything that resolves outside it.
+   */
+  const mediaStorageDir = opts.uploadStorage?.storageDir ?? null;
 
   // Scoped to this plugin: multipart parsing exists only where uploads land.
   await app.register(multipart, {
@@ -282,6 +295,54 @@ export default async function adminContentRoutes(
       reply.header('content-type', uploadedMimeTypeOf(asset));
       reply.header('cache-control', 'private, max-age=60');
       return reply.send(createReadStream(path));
+    },
+  );
+
+  /**
+   * Streams an asset's bytes by ID — the ONLY media locator the admin client is
+   * given (US-102.2).
+   *
+   * The two storage conventions disagree about what `storage_key` means: for a
+   * manual upload it is a route and the real path lives in
+   * provenance.storagePath; for a generated asset it IS the absolute path.
+   * resolveMediaFile settles that and, more importantly, refuses any path that
+   * escapes MEDIA_STORAGE_DIR — so the containment check is enforced here
+   * rather than trusted from the column.
+   *
+   * Admin-only, like every other route in this plugin. A missing file is a
+   * distinct 404 so an orphaned row (an ephemeral-disk redeploy) is diagnosable
+   * rather than looking like a permissions problem.
+   */
+  app.get<{ Params: { assetId: string } }>(
+    '/admin/content/assets/:assetId/file',
+    adminOnly,
+    async (request, reply) => {
+      const { assetId } = request.params;
+      if (!UUID_RE.test(assetId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      if (!mediaStorageDir) {
+        return reply
+          .code(503)
+          .send({ error: 'media_unavailable', message: 'Media storage is not configured.' });
+      }
+      const asset = await getVisualAssetById(opts.db, assetId);
+      if (!asset) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      const resolved = resolveMediaFile(asset, mediaStorageDir);
+      if ('failure' in resolved) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      if (!existsSync(resolved.path)) {
+        return reply.code(404).send({
+          error: 'file_missing',
+          message: 'Asset row exists but the file is missing (storage may not be persistent).',
+        });
+      }
+      reply.header('content-type', resolved.contentType);
+      reply.header('cache-control', 'private, max-age=60');
+      return reply.send(createReadStream(resolved.path));
     },
   );
 

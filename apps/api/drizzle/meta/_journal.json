@@ -99,6 +99,13 @@
       "when": 1787341638809,
       "tag": "0013_add_app_categories",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1787345203526,
+      "tag": "0014_add_category_asset_featured",
+      "breakpoints": true
     }
   ]
 }

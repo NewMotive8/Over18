@@ -1,6 +1,17 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Db } from '../db/client.js';
 import {
+  addAssetsToCategory,
+  categoryAssignmentCounts,
+  getCategoryBySlug,
+  listAssignmentCandidates,
+  listCategoryAssetsForAdmin,
+  MerchandisingOrderError,
+  removeAssetsFromCategory,
+  reorderCategoryAssets,
+  setAssetFeatured,
+} from '../services/app-merchandising-service.js';
+import {
   AppCategoryOrderError,
   AppCategorySlugTakenError,
   AppCategoryValidationError,
@@ -60,6 +71,27 @@ const updateBodySchema = {
   },
 } as const;
 
+const assetIdsBodySchema = {
+  type: 'object',
+  required: ['assetIds'],
+  additionalProperties: false,
+  properties: { assetIds: { type: 'array', items: { type: 'string' }, maxItems: 500 } },
+} as const;
+
+const assetOrderBodySchema = {
+  type: 'object',
+  required: ['orderedAssetIds'],
+  additionalProperties: false,
+  properties: { orderedAssetIds: { type: 'array', items: { type: 'string' }, maxItems: 500 } },
+} as const;
+
+const featuredBodySchema = {
+  type: 'object',
+  required: ['featured'],
+  additionalProperties: false,
+  properties: { featured: { type: 'boolean' } },
+} as const;
+
 const orderBodySchema = {
   type: 'object',
   required: ['orderedIds'],
@@ -91,8 +123,16 @@ export default async function adminAppCategoryRoutes(app: FastifyInstance, opts:
   /** Every category in merchandising order, each with its assignment count. */
   app.get('/admin/app-categories', adminOnly, async () => {
     const categories = await listAppCategories(opts.db);
+    // US-102.2: how much of each category's content is CURRENTLY publishable.
+    // An assignment whose asset was rejected afterwards still counts as
+    // assigned but not as publishable, and the workspace says so.
+    const counts = await categoryAssignmentCounts(opts.db);
+    const withCounts = categories.map((category) => ({
+      ...category,
+      publishableAssetCount: counts.get(category.id)?.publishable ?? 0,
+    }));
     return {
-      categories,
+      categories: withCounts,
       totals: {
         categories: categories.length,
         enabled: categories.filter((category) => category.enabled).length,
@@ -193,6 +233,161 @@ export default async function adminAppCategoryRoutes(app: FastifyInstance, opts:
         deleted: true,
         releasedAssetCount: result.releasedAssetCount,
       });
+    },
+  );
+
+  /* ---------------------------------------------------------------- *
+   * US-102.2 — content distribution & category merchandising
+   * ---------------------------------------------------------------- */
+
+  /**
+   * The picker's source list: APPROVED Library content only.
+   *
+   * Declared before the `:categoryId` routes so "candidates" is never read as
+   * an id. Rating and Primary status are returned as visible facts and are
+   * never used to exclude anything — approval is the only publishability rule.
+   */
+  app.get<{
+    Querystring: {
+      characterId?: string;
+      mediaType?: string;
+      contentRating?: string;
+      search?: string;
+      categoryId?: string;
+      excludeAssigned?: string;
+    };
+  }>('/admin/app-categories/candidates', adminOnly, async (request) => {
+    const q = request.query;
+    const assets = await listAssignmentCandidates(opts.db, {
+      characterId: q.characterId && UUID_RE.test(q.characterId) ? q.characterId : undefined,
+      mediaType: q.mediaType === 'image' || q.mediaType === 'video' ? q.mediaType : undefined,
+      contentRating: q.contentRating,
+      search: q.search,
+      categoryId: q.categoryId && UUID_RE.test(q.categoryId) ? q.categoryId : undefined,
+      excludeAssigned: q.excludeAssigned === 'true',
+    });
+    return { assets };
+  });
+
+  /** Resolves the workspace URL's stable slug to the category it names. */
+  app.get<{ Params: { slug: string } }>(
+    '/admin/app-categories/by-slug/:slug',
+    adminOnly,
+    async (request, reply) => {
+      const row = await getCategoryBySlug(opts.db, request.params.slug.toLowerCase());
+      if (!row) return notFound(reply);
+      return {
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        tagline: row.tagline,
+        enabled: row.enabled,
+        position: row.position,
+      };
+    },
+  );
+
+  /**
+   * Everything assigned to a category — including items that have since lost
+   * approval, flagged rather than hidden, so the operator can clean them up.
+   * The approved-only view is a different function in the service.
+   */
+  app.get<{ Params: { categoryId: string } }>(
+    '/admin/app-categories/:categoryId/assets',
+    adminOnly,
+    async (request, reply) => {
+      const { categoryId } = request.params;
+      if (!UUID_RE.test(categoryId)) return notFound(reply);
+      if (!(await getAppCategory(opts.db, categoryId))) return notFound(reply);
+      const assets = await listCategoryAssetsForAdmin(opts.db, categoryId);
+      return {
+        assets,
+        totals: {
+          assigned: assets.length,
+          publishable: assets.filter((a) => a.publishable).length,
+          featured: assets.filter((a) => a.featured).length,
+        },
+      };
+    },
+  );
+
+  /**
+   * Bulk add. Reports EVERY id's outcome rather than failing the batch: one
+   * asset rejected while the picker was open must not discard the rest, and
+   * must not be silently reported as added.
+   */
+  app.post<{ Params: { categoryId: string }; Body: { assetIds: string[] } }>(
+    '/admin/app-categories/:categoryId/assets',
+    { ...adminOnly, schema: { body: assetIdsBodySchema } },
+    async (request, reply) => {
+      const { categoryId } = request.params;
+      if (!UUID_RE.test(categoryId)) return notFound(reply);
+      if (!(await getAppCategory(opts.db, categoryId))) return notFound(reply);
+      const outcomes = await addAssetsToCategory(opts.db, categoryId, request.body.assetIds);
+      return reply.code(200).send({
+        outcomes,
+        added: outcomes.filter((o) => o.added).length,
+        refused: outcomes.filter((o) => !o.added).length,
+      });
+    },
+  );
+
+  /**
+   * Bulk remove. A POST rather than a DELETE because it carries a body, which
+   * DELETE handling is inconsistent about across proxies and clients.
+   *
+   * Removes LINK ROWS ONLY — the assets keep their status, their approval and
+   * their place in the Library, and stay in every other category they are in.
+   */
+  app.post<{ Params: { categoryId: string }; Body: { assetIds: string[] } }>(
+    '/admin/app-categories/:categoryId/assets/remove',
+    { ...adminOnly, schema: { body: assetIdsBodySchema } },
+    async (request, reply) => {
+      const { categoryId } = request.params;
+      if (!UUID_RE.test(categoryId)) return notFound(reply);
+      if (!(await getAppCategory(opts.db, categoryId))) return notFound(reply);
+      const result = await removeAssetsFromCategory(opts.db, categoryId, request.body.assetIds);
+      return { removed: result.removed };
+    },
+  );
+
+  /** Whole-list reorder within a category. Exact permutation or 409. */
+  app.put<{ Params: { categoryId: string }; Body: { orderedAssetIds: string[] } }>(
+    '/admin/app-categories/:categoryId/assets/order',
+    { ...adminOnly, schema: { body: assetOrderBodySchema } },
+    async (request, reply) => {
+      const { categoryId } = request.params;
+      if (!UUID_RE.test(categoryId)) return notFound(reply);
+      if (!(await getAppCategory(opts.db, categoryId))) return notFound(reply);
+      try {
+        await reorderCategoryAssets(opts.db, categoryId, request.body.orderedAssetIds);
+      } catch (error) {
+        if (error instanceof MerchandisingOrderError) {
+          return reply.code(409).send({
+            error: 'order_out_of_date',
+            reason: error.reason,
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+      return { assets: await listCategoryAssetsForAdmin(opts.db, categoryId) };
+    },
+  );
+
+  /** Feature / un-feature one assignment. A link property, never an asset one. */
+  app.patch<{
+    Params: { categoryId: string; assetId: string };
+    Body: { featured: boolean };
+  }>(
+    '/admin/app-categories/:categoryId/assets/:assetId',
+    { ...adminOnly, schema: { body: featuredBodySchema } },
+    async (request, reply) => {
+      const { categoryId, assetId } = request.params;
+      if (!UUID_RE.test(categoryId) || !UUID_RE.test(assetId)) return notFound(reply);
+      const changed = await setAssetFeatured(opts.db, categoryId, assetId, request.body.featured);
+      if (!changed) return notFound(reply);
+      return { assets: await listCategoryAssetsForAdmin(opts.db, categoryId) };
     },
   );
 }
