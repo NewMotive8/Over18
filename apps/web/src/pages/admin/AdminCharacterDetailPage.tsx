@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 import {
   addKeywords,
   approveConsequence,
@@ -782,7 +782,7 @@ export default function AdminCharacterDetailPage() {
                             asset.mediaType === 'video' ? (
                               <video
                                 src={`${API_URL}${asset.previewUrl}`}
-                                muted
+                                {...TILE_VIDEO_PLAYBACK}
                                 preload="metadata"
                                 className={TILE_MEDIA_CLASS}
                               />
@@ -1099,8 +1099,7 @@ export default function AdminCharacterDetailPage() {
                         (reference.mediaType === 'video' ? (
                           <video
                             src={`${API_URL}${reference.fileUrl}`}
-                            muted
-                            playsInline
+                            {...TILE_VIDEO_PLAYBACK}
                             preload="metadata"
                             className="h-full w-full object-contain"
                           />

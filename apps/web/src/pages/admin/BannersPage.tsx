@@ -22,7 +22,7 @@ import {
 import { slotLabel } from '../../admin/homeBoard';
 import ConfirmDialog from '../../admin/ConfirmDialog';
 import PublishingTabs from '../../admin/PublishingTabs';
-import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 
 /**
  * Admin → Categories & Publishing → Banners (US-102.3).
@@ -614,8 +614,7 @@ export function BannerThumb({ banner }: { banner: HomeBannerView }) {
       {creative && creative.mediaType === 'video' ? (
         <video
           src={`${API_URL}${creative.fileUrl}`}
-          muted
-          playsInline
+          {...TILE_VIDEO_PLAYBACK}
           preload="metadata"
           className={TILE_MEDIA_CLASS}
         />

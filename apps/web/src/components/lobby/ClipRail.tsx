@@ -27,7 +27,11 @@ export default function ClipRail({ rail }: { rail: PublicCategoryRail }) {
             aria-label={`Open ${clip.characterName}`}
             className="relative block aspect-[3/4] w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-white/5 bg-zinc-900"
           >
-            <ClipMedia clip={clip} />
+            {/* autoPlay, like the Hero. ClipMedia defaults it OFF, so this
+                rail rendered a frozen first frame for every video clip while
+                the Hero next to it played — the same component behaving two
+                different ways on one page. Playback only: no class, no size. */}
+            <ClipMedia clip={clip} autoPlay />
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-zinc-950 to-transparent" />
             <span className="absolute inset-x-0 bottom-0 block truncate p-2.5 text-sm font-semibold text-white">
               {clip.characterName}

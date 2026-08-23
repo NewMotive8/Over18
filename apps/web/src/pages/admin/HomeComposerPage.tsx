@@ -33,7 +33,7 @@ import {
 import { canMove, interceptedPath, moveBy, sameOrder } from '../../admin/categoryBoard';
 import ConfirmDialog from '../../admin/ConfirmDialog';
 import PublishingTabs from '../../admin/PublishingTabs';
-import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 import { absoluteMediaUrl } from '../../lib/media';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -521,7 +521,7 @@ export default function HomeComposerPage() {
                           clip.mediaType === 'video' ? (
                             <video
                               src={`${API_URL}${clip.previewUrl}`}
-                              muted
+                              {...TILE_VIDEO_PLAYBACK}
                               preload="metadata"
                               className={TILE_MEDIA_CLASS}
                             />
@@ -597,7 +597,7 @@ export default function HomeComposerPage() {
                           candidate.mediaType === 'video' ? (
                             <video
                               src={`${API_URL}${candidate.previewUrl}`}
-                              muted
+                              {...TILE_VIDEO_PLAYBACK}
                               preload="metadata"
                               className={TILE_MEDIA_CLASS}
                             />

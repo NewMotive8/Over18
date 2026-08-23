@@ -17,7 +17,7 @@ import {
   type CandidateAssetView,
   type CategoryAssetView,
 } from '../../lib/api';
-import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 import { canMove, interceptedPath, moveBy, moveItem, sameOrder } from '../../admin/categoryBoard';
 import {
   blockedItems,
@@ -902,8 +902,7 @@ function Thumb({
       {previewUrl && mediaType === 'video' ? (
         <video
           src={`${API_URL}${previewUrl}`}
-          muted
-          playsInline
+          {...TILE_VIDEO_PLAYBACK}
           preload="metadata"
           className={TILE_MEDIA_CLASS}
         />

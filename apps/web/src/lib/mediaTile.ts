@@ -37,3 +37,32 @@ export const TILE_MEDIA_CLASS = 'h-full w-full object-contain';
 export function tileFrameClass(dense?: boolean): string {
   return `${dense ? 'aspect-square' : 'aspect-[3/4]'} relative bg-zinc-900`;
 }
+
+/**
+ * Playback for a preview `<video>`. PLAYBACK ONLY — no classes, no dimensions,
+ * no layout. Spreading this changes what the element DOES, never how it looks.
+ *
+ * A preview tile showing a still first frame is not a preview of a video: an
+ * operator judging a clip, or a visitor scanning a rail, sees one frozen frame
+ * and cannot tell motion from a photograph. These four attributes are what make
+ * a silent inline video actually start:
+ *
+ *   autoPlay + muted — browsers block autoplay WITH SOUND, and only with sound.
+ *                      Muted is therefore not decoration here; it is the
+ *                      permission that lets autoplay happen at all.
+ *   loop             — a two-second clip that plays once and freezes reads as
+ *                      broken, and freezes on a frame nobody chose.
+ *   playsInline      — without it iOS Safari takes the video FULL SCREEN on
+ *                      play, so a thumbnail would hijack the page.
+ *
+ * One constant rather than nine copies, so the set cannot drift between the
+ * surfaces that render a preview. Deliberately NOT used for chat media, which
+ * carries `controls` because a clip a character sent is watched on purpose
+ * rather than glanced at.
+ */
+export const TILE_VIDEO_PLAYBACK = {
+  autoPlay: true,
+  muted: true,
+  loop: true,
+  playsInline: true,
+} as const;

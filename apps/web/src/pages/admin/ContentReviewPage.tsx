@@ -9,7 +9,7 @@ import {
   type ReviewWorkspaceView,
   type TriageAssetView,
 } from '../../lib/api';
-import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 import {
   buildSlots,
   categoryOptions,
@@ -393,12 +393,14 @@ export default function ContentReviewPage() {
               </p>
 
               <div className="mt-3 overflow-hidden rounded bg-zinc-950">
+                {/* `controls` stays: this is the full-size review pane, where an
+                    operator scrubs deliberately. The playback set only decides
+                    that it STARTS rather than sitting on a frozen first frame. */}
                 {selected.previewUrl && selected.mediaType === 'video' ? (
                   <video
                     src={`${API_URL}${selected.previewUrl}`}
                     controls
-                    muted
-                    playsInline
+                    {...TILE_VIDEO_PLAYBACK}
                     className="w-full"
                   />
                 ) : selected.previewUrl ? (

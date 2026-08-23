@@ -46,6 +46,18 @@ const PNG = Buffer.from(
   'base64',
 );
 
+/**
+ * A tiny WebM-shaped payload (EBML magic + filler).
+ *
+ * The server classifies media by EXTENSION — `mediaTypeOf` reads the storage
+ * key — so what this test needs from the bytes is only that they are non-empty
+ * and accepted. Browser decoding is proven separately, in a real browser.
+ */
+const WEBM = Buffer.concat([
+  Buffer.from([0x1a, 0x45, 0xdf, 0xa3]),
+  Buffer.alloc(64, 0x42),
+]);
+
 let on: TestContext;
 let adminCookies: Record<string, string>;
 let userCookies: Record<string, string>;
@@ -2061,6 +2073,31 @@ async function createCharacterByName(displayName: string) {
   });
 }
 
+/**
+ * Uploads one small WEBM to a character — a real video, through the real route.
+ *
+ * The extension is what `mediaTypeOf` reads, so this is how a test produces an
+ * asset the CMS genuinely classifies as video rather than an image pretending.
+ */
+async function uploadVideoTo(characterId: string) {
+  return on.app.inject({
+    method: 'POST',
+    url: '/admin/content/uploads',
+    headers: { 'content-type': 'multipart/form-data; boundary=----v' },
+    cookies: adminCookies,
+    payload: Buffer.concat([
+      Buffer.from(
+        `------v\r\nContent-Disposition: form-data; name="characterId"\r\n\r\n${characterId}\r\n`,
+      ),
+      Buffer.from(
+        '------v\r\nContent-Disposition: form-data; name="file"; filename="clip.webm"\r\nContent-Type: video/webm\r\n\r\n',
+      ),
+      WEBM,
+      Buffer.from('\r\n------v--\r\n'),
+    ]),
+  });
+}
+
 /** Uploads one small PNG to a character through the real multipart route. */
 async function uploadTo(characterId: string) {
   return on.app.inject({
@@ -2696,5 +2733,166 @@ describe('the Nova journey', () => {
     /* 16. The approved public lobby has no Recently Added rail, so curating it
           must not have created one. The CMS still holds the curation. */
     expect(recentRail.curated).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * A CMS-uploaded video reaching the public card
+ *
+ * THE GAP THIS CLOSES. A character created through the CMS could upload and
+ * approve any number of videos and her public card stayed a still image,
+ * because the only video a card could show came from a hard-coded manifest of
+ * four seeded names. Her clips were in the payload the whole time; nothing
+ * selected them.
+ *
+ * WHAT IS NOT RELAXED. `publiclyReachableCondition` is untouched, so the card
+ * gets a clip only when the clip is approved, the character is ACTIVE, and the
+ * clip is placed somewhere public. The tests below assert each of those refusals
+ * as well as the success, because a fix that made her video visible one step
+ * early would be a leak, not a feature.
+ * ------------------------------------------------------------------ */
+
+describe('an uploaded video becomes the public card’s clip', () => {
+  /** Nova's card as `/api/home` composes it, or undefined if she is absent. */
+  const cardFor = async (id: string) =>
+    (await api.home())
+      .json()
+      .playWithMe.find((c: { id: string }) => c.id === id) as
+      | { id: string; clip: { id: string; mediaType: string; url: string } | null }
+      | undefined;
+
+  async function novaWithVideo() {
+    const nova = (await createCharacterByName('NovaVideo')).json().character as { id: string };
+    const upload = await uploadVideoTo(nova.id);
+    expect(upload.statusCode).toBe(201);
+    const assetId = upload.json().assetId as string;
+    return { nova, assetId };
+  }
+
+  const publish = async (id: string) =>
+    on.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${id}`,
+      payload: {
+        shortBio: 'b',
+        personality: 'p',
+        conversationStyle: 'c',
+        systemPrompt: 's',
+        status: 'active',
+      },
+      cookies: adminCookies,
+    });
+
+  const approve = async (assetId: string) =>
+    on.app.inject({
+      method: 'POST',
+      url: `/admin/content/assets/${assetId}/approve`,
+      cookies: adminCookies,
+    });
+
+  it('resolves the uploaded VIDEO as her representative clip', async () => {
+    const { nova, assetId } = await novaWithVideo();
+    expect((await approve(assetId)).statusCode).toBe(200);
+    expect((await publish(nova.id)).statusCode).toBe(200);
+
+    // Placement is what makes it public — the same rule as every other clip.
+    const category = await makeCategory('Nova Video Cat');
+    expect((await assign(category.id, [assetId])).statusCode).toBe(200);
+    expect((await api.publish(category.id, true)).statusCode).toBe(200);
+
+    const card = await cardFor(nova.id);
+    expect(card).toBeDefined();
+    expect(card!.clip).not.toBeNull();
+    expect(card!.clip!.id).toBe(assetId);
+    // The card now has a VIDEO to show, which is the whole point: the browser
+    // resolves this to a <video> instead of falling back to a still.
+    expect(card!.clip!.mediaType).toBe('video');
+    // An opaque id-keyed route, never a storage key or a filesystem path.
+    expect(card!.clip!.url).toBe(`/api/media/assets/${assetId}/file`);
+    expect((await api.media(assetId)).statusCode).toBe(200);
+  });
+
+  it('gives her NO clip while the video is only uploaded, not approved', async () => {
+    const { nova } = await novaWithVideo();
+    expect((await publish(nova.id)).statusCode).toBe(200);
+    const card = await cardFor(nova.id);
+    expect(card).toBeDefined();
+    expect(card!.clip).toBeNull();
+  });
+
+  it('gives her NO clip while she is approved but placed nowhere', async () => {
+    const { nova, assetId } = await novaWithVideo();
+    await approve(assetId);
+    await publish(nova.id);
+    const card = await cardFor(nova.id);
+    expect(card!.clip).toBeNull();
+    expect((await api.media(assetId)).statusCode).toBe(404);
+  });
+
+  it('keeps her media NON-PUBLIC entirely while she is unpublished', async () => {
+    const { nova, assetId } = await novaWithVideo();
+    await approve(assetId);
+    const category = await makeCategory('Unpublished Owner Cat');
+    await assign(category.id, [assetId]);
+    await api.publish(category.id, true);
+
+    // She is still inactive: she is not on the rail at all, and her bytes 404.
+    const home = (await api.home()).json();
+    expect(home.playWithMe.map((c: { id: string }) => c.id)).not.toContain(nova.id);
+    expect((await api.media(assetId)).statusCode).toBe(404);
+
+    // Publishing her is the single step that changes it.
+    await publish(nova.id);
+    const card = await cardFor(nova.id);
+    expect(card!.clip!.mediaType).toBe('video');
+    expect((await api.media(assetId)).statusCode).toBe(200);
+  });
+
+  it('drops back to non-public the moment she is taken offline again', async () => {
+    const { nova, assetId } = await novaWithVideo();
+    await approve(assetId);
+    await publish(nova.id);
+    const category = await makeCategory('Offline Again Cat');
+    await assign(category.id, [assetId]);
+    await api.publish(category.id, true);
+    expect((await cardFor(nova.id))!.clip!.mediaType).toBe('video');
+
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, nova.id));
+    expect(await cardFor(nova.id)).toBeUndefined();
+    expect((await api.media(assetId)).statusCode).toBe(404);
+  });
+
+  it('accepts many videos for one character — no clip becomes a limit', async () => {
+    const nova = (await createCharacterByName('NovaManyVideos')).json().character as {
+      id: string;
+    };
+    for (let i = 0; i < 8; i += 1) {
+      expect((await uploadVideoTo(nova.id)).statusCode).toBe(201);
+    }
+    const rows = await on.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.characterId, nova.id));
+    expect(rows).toHaveLength(8);
+  });
+
+  it('leaves the Hero independently curated — her card clip is not a Hero clip', async () => {
+    const { nova, assetId } = await novaWithVideo();
+    await approve(assetId);
+    await publish(nova.id);
+    const category = await makeCategory('Hero Independence Cat');
+    await assign(category.id, [assetId]);
+    await api.publish(category.id, true);
+
+    // Her card has the video, and the Hero has not adopted it.
+    expect((await cardFor(nova.id))!.clip!.id).toBe(assetId);
+    const heroIds = (await api.adminHome()).json().hero.map((c: { assetId: string }) => c.assetId);
+    expect(heroIds).not.toContain(assetId);
+
+    // Putting it in the Hero is a separate, deliberate act.
+    expect((await api.addHero([assetId])).statusCode).toBe(200);
+    expect(
+      (await api.adminHome()).json().hero.map((c: { assetId: string }) => c.assetId),
+    ).toContain(assetId);
   });
 });

@@ -9,7 +9,7 @@ import {
 import { canMove, moveBy } from '../../admin/categoryBoard';
 import ConfirmDialog from '../../admin/ConfirmDialog';
 import PublishingTabs from '../../admin/PublishingTabs';
-import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 
 /**
  * Admin → Categories & Publishing → Discovery (US-102.4).
@@ -453,7 +453,7 @@ export default function DiscoveryCategoriesPage() {
                           asset.mediaType === 'video' ? (
                             <video
                               src={`${API_URL}${asset.previewUrl}`}
-                              muted
+                              {...TILE_VIDEO_PLAYBACK}
                               preload="metadata"
                               className={TILE_MEDIA_CLASS}
                             />

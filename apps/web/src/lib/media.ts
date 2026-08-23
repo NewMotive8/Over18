@@ -11,7 +11,21 @@ import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/s
 export type MediaCharacter = Pick<
   PublicCharacter,
   'id' | 'name' | 'displayName' | 'profileImage'
->;
+> & {
+  /**
+   * The character's ONE representative publicly-reachable clip, as the server
+   * chose it. Optional, because the older `/api/characters` payload has no such
+   * field and every existing caller must keep working unchanged.
+   *
+   * This is the CMS's answer to "what does this character look like right now",
+   * and it is the field that lets an operator's uploaded video reach a card.
+   * It carries no authority of its own: the server only puts a clip here when
+   * `publiclyReachableCondition` passes, so an unapproved clip, a clip placed
+   * nowhere, or a clip belonging to an unpublished character simply is not in
+   * the payload and cannot be selected here.
+   */
+  clip?: { url: string; mediaType: 'image' | 'video' } | null;
+};
 import { characterHeroVideo } from './characterMedia';
 import { API_URL } from './api';
 
@@ -92,12 +106,42 @@ export function firstCanonicalImage(
 }
 
 /**
+ * The character's CMS clip, when it is a video the browser can be pointed at.
+ *
+ * This is the seam that connects an operator's upload to a public card. Before
+ * it, the only video a card could ever show came from the hard-coded local
+ * manifest below, so a character created through the CMS — however many clips
+ * were uploaded and approved for her — was permanently a still image.
+ *
+ * IT RELAXES NOTHING. `clip` is only present when the server's
+ * `publiclyReachableCondition` passed: approved, owned by an ACTIVE character,
+ * and reachable via the Hero, a published category, a canonical reference or a
+ * discovery keyword. An unapproved clip, one placed nowhere, or one belonging
+ * to an unpublished character never arrives here to be chosen.
+ */
+function cmsVideoUrl(character: MediaCharacter): string | undefined {
+  if (character.clip?.mediaType !== 'video') return undefined;
+  // API-relative opaque route — the web app and the API are separate origins.
+  return absoluteMediaUrl(character.clip.url);
+}
+
+/**
  * Resolves the hero media for a character, video-first:
- *  1. a valid video (PoC override or a future API `videoUrl`) → video, using the
- *     best available still as its poster;
+ *  1. a valid video → video, using the best available still as its poster;
  *  2. otherwise the active Visual Identity's first canonical image, else the
  *     legacy `profileImage` → image;
  *  3. otherwise an initial-letter placeholder (never a broken image).
+ *
+ * VIDEO PRECEDENCE, and why the CMS sits above the manifest. A PoC override
+ * wins first (it exists to force a specific asset during a demo), then a real
+ * API `videoUrl` if one ever ships. Then the CMS clip — what an operator
+ * actually published — and only then the hard-coded manifest, which is
+ * explicitly a stopgap "single, provider-agnostic seam" to be replaced. An
+ * operator's published choice must outrank a constant in the source.
+ *
+ * The seeded characters are unaffected in practice: their representative clip
+ * is a canonical IMAGE, so `cmsVideoUrl` returns nothing for them and their
+ * manifest clips still play, exactly as before.
  */
 export function resolveHeroMedia(
   character: MediaCharacter,
@@ -106,9 +150,10 @@ export function resolveHeroMedia(
   const override = DEMO_MEDIA_OVERRIDES[character.id];
   // Real approved local clip (US-29) is the video-first source when present, so
   // the character's video loads across Lobby / Discovery / Profile. A future API
-  // `videoUrl` or a PoC override still take precedence.
+  // `videoUrl`, a PoC override and the CMS's own clip all take precedence.
   const localHero = characterHeroVideo(character);
-  const videoUrl = override?.videoUrl ?? characterVideoUrl(character) ?? localHero?.src;
+  const videoUrl =
+    override?.videoUrl ?? characterVideoUrl(character) ?? cmsVideoUrl(character) ?? localHero?.src;
   const stillImage = firstCanonicalImage(visual) ?? character.profileImage ?? undefined;
 
   if (videoUrl) {

@@ -7,7 +7,7 @@ import {
   type AdminCharacterListItem,
   type LibraryAssetView,
 } from '../../lib/api';
-import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 
 /**
  * US-100 — Content Library.
@@ -45,8 +45,7 @@ export function Tile({ a, onOpen, dense }: { a: LibraryAssetView; onOpen: () => 
           <>
             <video
               src={`${API_URL}${a.previewUrl}`}
-              muted
-              playsInline
+              {...TILE_VIDEO_PLAYBACK}
               preload="metadata"
               className={TILE_MEDIA_CLASS}
             />
@@ -290,7 +289,7 @@ export default function ContentLibraryPage() {
               justUploaded.mediaType === 'video' ? (
                 <video
                   src={`${API_URL}${justUploaded.previewUrl}`}
-                  muted
+                  {...TILE_VIDEO_PLAYBACK}
                   preload="metadata"
                   className={TILE_MEDIA_CLASS}
                 />
@@ -459,7 +458,7 @@ export default function ContentLibraryPage() {
 
             <div className="mt-3 overflow-hidden rounded bg-zinc-900">
               {selected.previewUrl && selected.mediaType === 'video' ? (
-                <video src={`${API_URL}${selected.previewUrl}`} controls muted playsInline className="w-full" />
+                <video src={`${API_URL}${selected.previewUrl}`} controls {...TILE_VIDEO_PLAYBACK} className="w-full" />
               ) : selected.previewUrl ? (
                 <img src={`${API_URL}${selected.previewUrl}`} alt="" className="w-full" />
               ) : null}

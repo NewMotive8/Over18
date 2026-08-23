@@ -133,3 +133,87 @@ describe('apparentAge', () => {
     expect(apparentAge(null)).toBeUndefined();
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * The CMS clip as a card's video
+ *
+ * THE GAP THIS CLOSES. A character created through the CMS could upload and
+ * approve any number of videos and her public card stayed a still image
+ * forever, because the only video source a card had was a hard-coded manifest
+ * keyed on four seeded names. The card component is unchanged; what changed is
+ * which data it is allowed to select from.
+ * ------------------------------------------------------------------ */
+
+const clip = (mediaType: 'image' | 'video', id = 'a1') => ({
+  url: `/api/media/assets/${id}/file`,
+  mediaType,
+});
+
+describe('a character’s CMS clip can be her card video', () => {
+  it('uses an approved CMS VIDEO as the card’s video', () => {
+    const media = resolveHeroMedia(character({ name: 'nova-cms', clip: clip('video') } as never));
+    expect(media.kind).toBe('video');
+    // Absolutised against the API origin — the web app is a different origin.
+    expect(media.kind === 'video' && media.src).toContain('/api/media/assets/a1/file');
+  });
+
+  it('does NOT treat a CMS image clip as a video', () => {
+    const media = resolveHeroMedia(character({ name: 'nova-cms', clip: clip('image') } as never));
+    expect(media.kind).toBe('image');
+  });
+
+  it('posters the CMS video with the canonical still, then profileImage', () => {
+    const withCanonical = resolveHeroMedia(
+      character({ name: 'nova-cms', clip: clip('video') } as never),
+      visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
+    );
+    expect(withCanonical.kind === 'video' && withCanonical.poster).toContain('/assets/i1/file');
+
+    const withProfile = resolveHeroMedia(character({ name: 'nova-cms', clip: clip('video') } as never));
+    expect(withProfile.kind === 'video' && withProfile.poster).toBe('https://img.example/nova.png');
+  });
+
+  it('leaves a character with no clip exactly as she was', () => {
+    // The field is optional: the older /api/characters payload has none, and
+    // every existing caller must keep working untouched.
+    const media = resolveHeroMedia(character({ name: 'unknown-to-manifest' }));
+    expect(media.kind).toBe('image');
+    expect(media.kind === 'image' && media.src).toBe('https://img.example/nova.png');
+  });
+
+  it('a null clip is handled like an absent one', () => {
+    const media = resolveHeroMedia(character({ name: 'unknown-to-manifest', clip: null } as never));
+    expect(media.kind).toBe('image');
+  });
+});
+
+describe('the seeded characters keep working', () => {
+  it('Luna still plays her MANIFEST clip when her CMS clip is an image', () => {
+    // Her representative clip is a canonical image, so nothing here supplies a
+    // CMS video and the manifest is still what plays. This is the regression
+    // that would break Maria/Ember/Luna if the precedence were wrong.
+    const media = resolveHeroMedia(character({ name: 'luna', clip: clip('image') } as never));
+    expect(media.kind).toBe('video');
+    expect(media.kind === 'video' && media.src).toBe('/media/luna/profile-04.mp4');
+  });
+
+  it('Luna with NO clip at all is unchanged', () => {
+    const media = resolveHeroMedia(character({ name: 'luna' }));
+    expect(media.kind === 'video' && media.src).toBe('/media/luna/profile-04.mp4');
+  });
+
+  it('Ember and Maria still resolve their own manifest clips', () => {
+    for (const [name, src] of [
+      ['ember', '/media/ember/hero.mp4'],
+      ['maria', '/media/maria/hero.mp4'],
+    ] as const) {
+      const media = resolveHeroMedia(character({ name, clip: clip('image') } as never));
+      expect(media.kind === 'video' && media.src).toBe(src);
+    }
+  });
+
+  it('a CMS VIDEO outranks the manifest — an operator’s choice beats a constant', () => {
+    const media = resolveHeroMedia(character({ name: 'luna', clip: clip('video', 'new') } as never));
+    expect(media.kind === 'video' && media.src).toContain('/api/media/assets/new/file');
+  });
+});
