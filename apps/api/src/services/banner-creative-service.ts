@@ -1,9 +1,9 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { eq } from 'drizzle-orm';
+import { and, eq, gt, isNull, lte, or } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { bannerCreatives, type BannerCreativeRow } from '../db/schema.js';
+import { bannerCreatives, homeBanners, type BannerCreativeRow } from '../db/schema.js';
 import {
   ACCEPTED_MIME_TYPES,
   acceptedExtensionOf,
@@ -109,6 +109,52 @@ export interface BannerCreativeView {
 
 export function bannerCreativeUrl(creativeId: string): string {
   return `/admin/home-banners/creatives/${creativeId}/file`;
+}
+
+/**
+ * The PUBLIC locator for a banner creative (US-102.4).
+ *
+ * A separate route from the admin one, because the admin route is
+ * `requireAuth` + `requireAdmin` — handing that URL to an anonymous browser
+ * would render every live banner as an empty box behind a 401. Both are opaque
+ * and id-keyed; they differ only in who may fetch them.
+ */
+export function publicBannerCreativeUrl(creativeId: string): string {
+  return `/api/home/banner-creatives/${creativeId}/file`;
+}
+
+/**
+ * A creative row, but ONLY while a banner using it is currently eligible.
+ *
+ * Uploading artwork must not publish it. The gate is the banner's own
+ * eligibility — status, schedule window and dependency health — asked here in
+ * SQL rather than re-derived, so a creative attached to a draft or an expired
+ * banner is a 404 and becomes fetchable the moment its banner goes live.
+ *
+ * Audience is deliberately NOT part of this gate: bytes are not a targeting
+ * boundary, and making them one would mean a "new users" banner's artwork 404ed
+ * for a returning visitor who legitimately holds the URL from a shared link.
+ * What a viewer is *shown* is decided by the Home payload, which does apply it.
+ */
+export async function getPubliclyVisibleBannerCreative(
+  db: Db,
+  creativeId: string,
+  now: Date,
+): Promise<BannerCreativeRow | null> {
+  const [row] = await db
+    .select({ creative: bannerCreatives })
+    .from(bannerCreatives)
+    .innerJoin(homeBanners, eq(homeBanners.creativeId, bannerCreatives.id))
+    .where(
+      and(
+        eq(bannerCreatives.id, creativeId),
+        eq(homeBanners.status, 'published'),
+        or(isNull(homeBanners.startsAt), lte(homeBanners.startsAt, now)),
+        or(isNull(homeBanners.endsAt), gt(homeBanners.endsAt, now)),
+      ),
+    )
+    .limit(1);
+  return row?.creative ?? null;
 }
 
 export function toBannerCreativeView(row: BannerCreativeRow): BannerCreativeView {

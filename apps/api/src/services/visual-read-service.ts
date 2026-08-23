@@ -8,6 +8,7 @@ import type { Db } from '../db/client.js';
 import type { CharacterVisualAssetRow, CharacterVisualIdentityRow } from '../db/schema.js';
 import { getActiveVisualIdentity } from './visual-identity-service.js';
 import { listCanonicalReferences } from './visual-asset-service.js';
+import { publicAssetUrl } from './public-media-service.js';
 
 /**
  * Public read projection for Visual Identity (US-16B).
@@ -76,12 +77,21 @@ export function toPublicVisualIdentity(row: CharacterVisualIdentityRow): PublicV
   };
 }
 
-/** Builds the public canonical-asset projection (only a display locator). */
+/**
+ * Builds the public canonical-asset projection (only a display locator).
+ *
+ * US-102.4 — `imageUrl` is now an OPAQUE, id-keyed route. It used to be
+ * `row.storageKey`: the server's absolute filesystem path, sent to every
+ * anonymous browser. That is the same leak US-102.2 closed for the admin
+ * Library and Review surfaces; the public route had been missed. Every caller
+ * already treated this field as an opaque string, so the change is invisible to
+ * them and the path never leaves the server.
+ */
 export function toPublicVisualAsset(row: CharacterVisualAssetRow): PublicVisualAsset {
   return {
     id: row.id,
     position: row.position,
-    imageUrl: row.storageKey ?? '',
+    imageUrl: publicAssetUrl(row.id, row.storageKey) ?? '',
   };
 }
 

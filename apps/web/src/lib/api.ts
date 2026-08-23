@@ -7,6 +7,7 @@ import type {
   BannerProblem,
   BannerState,
   BannerStatus,
+  HomeBannerSlot,
   ChatMessage,
   CharacterVisualIdentityResponse,
   ConversationSummary,
@@ -575,6 +576,8 @@ export interface HomeBannerView {
   startsAt: string | null;
   endsAt: string | null;
   scheduleTimezone: string | null;
+  /** Which Home slot this banner renders in (US-102.4). */
+  slot: HomeBannerSlot;
   position: number;
   publishedAt: string | null;
   /** Derived per read — never stored. See @over18/shared. */
@@ -610,6 +613,7 @@ export interface HomeBannerDraft {
   destinationAssetId?: string | null;
   destinationUrl?: string | null;
   audience?: BannerAudience;
+  slot?: HomeBannerSlot;
   startsAt?: string | null;
   endsAt?: string | null;
   scheduleTimezone?: string | null;
@@ -649,10 +653,11 @@ export const homeBannersApi = {
       `/admin/home-banners/${encodeURIComponent(id)}`,
       { method: 'DELETE' },
     ),
-  reorder: (orderedIds: string[]) =>
+  /** US-102.4: ordering is per SLOT — position is an order within a slot. */
+  reorder: (slot: HomeBannerSlot, orderedIds: string[]) =>
     request<{ banners: HomeBannerView[] }>('/admin/home-banners/order', {
       method: 'PUT',
-      body: JSON.stringify({ orderedIds }),
+      body: JSON.stringify({ slot, orderedIds }),
     }),
   destinations: () => request<BannerDestinationOptions>('/admin/home-banners/destinations'),
   requirements: () =>
@@ -683,6 +688,256 @@ export const homeBannersApi = {
     }
     return (await res.json()) as BannerCreativeView;
   },
+};
+
+/* ------------------------------------------------------------------ *
+ * Public Home & Discovery (US-102.4)
+ * ------------------------------------------------------------------ */
+
+export interface PublicClip {
+  id: string;
+  mediaType: 'image' | 'video';
+  /** Opaque, id-keyed route. Never a storage key or path. */
+  url: string;
+  characterId: string;
+  characterName: string;
+}
+
+export interface PublicCharacterCard {
+  id: string;
+  displayName: string;
+  shortBio: string;
+  clip: PublicClip | null;
+}
+
+export interface PublicHomeBanner {
+  id: string;
+  title: string;
+  subtitle: string | null;
+  ctaLabel: string | null;
+  creativeUrl: string | null;
+  creativeMediaType: 'image' | 'video' | null;
+  destination: {
+    kind: string;
+    categoryId: string | null;
+    characterId: string | null;
+    assetId: string | null;
+    url: string | null;
+  };
+}
+
+export interface PublicCategoryRail {
+  id: string;
+  slug: string;
+  name: string;
+  tagline: string | null;
+  clips: PublicClip[];
+}
+
+export interface PublicHome {
+  banners: Record<HomeBannerSlot, PublicHomeBanner[]>;
+  hero: PublicClip[];
+  playWithMe: PublicCharacterCard[];
+  recentlyAdded: PublicCharacterCard[];
+  categories: PublicCategoryRail[];
+}
+
+export interface PublicDiscoveryCategory {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+export const homeApi = {
+  get: () => request<PublicHome>('/api/home'),
+};
+
+export const discoveryApi = {
+  categories: () => request<{ categories: PublicDiscoveryCategory[] }>('/api/discovery/categories'),
+  clips: (params: { category?: string | null; q?: string | null; limit?: number; offset?: number }) => {
+    const search = new URLSearchParams();
+    if (params.category) search.set('category', params.category);
+    if (params.q) search.set('q', params.q);
+    if (params.limit != null) search.set('limit', String(params.limit));
+    if (params.offset != null) search.set('offset', String(params.offset));
+    const qs = search.toString();
+    return request<{ clips: PublicClip[]; total: number; maxLimit: number }>(
+      `/api/discovery/clips${qs ? `?${qs}` : ''}`,
+    );
+  },
+};
+
+/* ------------------------------------------------------------------ *
+ * Admin Home composition & Discovery management (US-102.4)
+ * ------------------------------------------------------------------ */
+
+export interface HomeCategoryView {
+  id: string;
+  slug: string;
+  name: string;
+  tagline: string | null;
+  enabled: boolean;
+  homePublished: boolean;
+  homePosition: number;
+  publishableAssetCount: number;
+  assetCount: number;
+  wouldRenderEmpty: boolean;
+}
+
+export interface HeroClipAdminView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  status: string;
+  publishable: boolean;
+  position: number;
+  previewUrl: string | null;
+}
+
+export interface HeroCandidateView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  previewUrl: string | null;
+  approvedAt: string | null;
+  inHero: boolean;
+}
+
+export interface RecentCharacterAdminView {
+  characterId: string;
+  displayName: string;
+  status: string;
+  position: number;
+  createdAt: string;
+}
+
+export interface RecentlyAddedAdminView {
+  curated: boolean;
+  characters: RecentCharacterAdminView[];
+}
+
+export const adminHomeApi = {
+  overview: () =>
+    request<{
+      categories: HomeCategoryView[];
+      hero: HeroClipAdminView[];
+      recentlyAdded: RecentlyAddedAdminView;
+    }>('/admin/home'),
+  preview: () =>
+    request<{ generatedAt: string; newVisitor: PublicHome; returning: PublicHome }>(
+      '/admin/home/preview',
+    ),
+  setPublished: (categoryId: string, homePublished: boolean) =>
+    request<HomeCategoryView>(`/admin/home/categories/${encodeURIComponent(categoryId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ homePublished }),
+    }),
+  orderCategories: (orderedIds: string[]) =>
+    request<{ categories: HomeCategoryView[] }>('/admin/home/categories/order', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  heroCandidates: () =>
+    request<{ candidates: HeroCandidateView[] }>('/admin/home/hero/candidates'),
+  addHero: (assetIds: string[]) =>
+    request<{ outcomes: Array<{ assetId: string; added: boolean; reason?: string }>; clips: HeroClipAdminView[] }>(
+      '/admin/home/hero',
+      { method: 'POST', body: JSON.stringify({ assetIds }) },
+    ),
+  removeHero: (assetId: string) =>
+    request<{ removed: true; assetKept: true; clips: HeroClipAdminView[] }>(
+      `/admin/home/hero/${encodeURIComponent(assetId)}`,
+      { method: 'DELETE' },
+    ),
+  orderHero: (orderedIds: string[]) =>
+    request<{ clips: HeroClipAdminView[] }>('/admin/home/hero/order', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  recentCandidates: () =>
+    request<{ candidates: Array<{ characterId: string; displayName: string; createdAt: string }> }>(
+      '/admin/home/recent/candidates',
+    ),
+  addRecent: (characterId: string) =>
+    request<RecentlyAddedAdminView>('/admin/home/recent', {
+      method: 'POST',
+      body: JSON.stringify({ characterId }),
+    }),
+  removeRecent: (characterId: string) =>
+    request<RecentlyAddedAdminView>(`/admin/home/recent/${encodeURIComponent(characterId)}`, {
+      method: 'DELETE',
+    }),
+  orderRecent: (orderedIds: string[]) =>
+    request<RecentlyAddedAdminView>('/admin/home/recent/order', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  resetRecent: () =>
+    request<RecentlyAddedAdminView>('/admin/home/recent/reset', { method: 'POST' }),
+};
+
+export interface KeywordView {
+  id: string;
+  key: string;
+  label: string;
+  assetCount: number;
+}
+
+export interface DiscoveryCategoryView {
+  id: string;
+  slug: string;
+  name: string;
+  enabled: boolean;
+  position: number;
+  keywords: KeywordView[];
+  matchCount: number;
+}
+
+export interface TaggableAssetView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  previewUrl: string | null;
+  keywords: KeywordView[];
+}
+
+export const adminDiscoveryApi = {
+  categories: () => request<{ categories: DiscoveryCategoryView[] }>('/admin/discovery/categories'),
+  keywords: () => request<{ keywords: KeywordView[] }>('/admin/discovery/keywords'),
+  create: (payload: { name: string; keywords?: string[] }) =>
+    request<DiscoveryCategoryView>('/admin/discovery/categories', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  update: (id: string, changes: { name?: string; enabled?: boolean }) =>
+    request<DiscoveryCategoryView>(`/admin/discovery/categories/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }),
+  setKeywords: (id: string, keywords: string[]) =>
+    request<DiscoveryCategoryView>(
+      `/admin/discovery/categories/${encodeURIComponent(id)}/keywords`,
+      { method: 'PUT', body: JSON.stringify({ keywords }) },
+    ),
+  remove: (id: string) =>
+    request<{ deleted: boolean; contentRemoved: number; keywordsKept: number }>(
+      `/admin/discovery/categories/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+  order: (orderedIds: string[]) =>
+    request<{ categories: DiscoveryCategoryView[] }>('/admin/discovery/categories/order', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  content: () => request<{ assets: TaggableAssetView[] }>('/admin/discovery/content'),
+  setAssetKeywords: (assetId: string, keywords: string[]) =>
+    request<{ keywords: KeywordView[] }>(
+      `/admin/discovery/content/${encodeURIComponent(assetId)}/keywords`,
+      { method: 'PUT', body: JSON.stringify({ keywords }) },
+    ),
 };
 
 export const contentReviewApi = {

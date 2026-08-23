@@ -66,7 +66,11 @@ describe('GET /api/characters/:id/visual-identity (seeded)', () => {
     // Canonical gallery present and ordered by position.
     expect(body.canonicalAssets).toHaveLength(3);
     expect(body.canonicalAssets.map((a: { position: number }) => a.position)).toEqual([1, 2, 3]);
-    expect(body.canonicalAssets[0].imageUrl).toContain('http');
+    // US-102.4: imageUrl is an OPAQUE, id-keyed route. It used to be the raw
+    // storage_key — an absolute server path handed to every anonymous browser.
+    for (const asset of body.canonicalAssets as Array<{ id: string; imageUrl: string }>) {
+      expect(asset.imageUrl).toBe(`/api/media/assets/${asset.id}/file`);
+    }
   });
 
   it('NEVER leaks internal fields on the wire', async () => {
@@ -105,10 +109,16 @@ describe('GET /api/characters/:id/visual-identity (seeded)', () => {
     expect(luna.identity.characterId).toBe(LUNA.id);
     expect(ember.identity.characterId).toBe(EMBER.id);
     expect(maria.identity.characterId).toBe(MARIA.id);
-    // Each gallery belongs to its own character (distinct placeholder labels).
-    expect(luna.canonicalAssets[0].imageUrl).toContain('Luna');
-    expect(ember.canonicalAssets[0].imageUrl).toContain('Ember');
-    expect(luna.canonicalAssets[0].imageUrl).not.toContain('Ember');
+    // Each gallery belongs to its own character. Identity is checked by ASSET
+    // ID now rather than by reading a character name out of a storage path —
+    // the path is no longer on the wire (US-102.4), which is the point.
+    const lunaIds = luna.canonicalAssets.map((a: { id: string }) => a.id);
+    const emberIds = ember.canonicalAssets.map((a: { id: string }) => a.id);
+    expect(lunaIds.length).toBeGreaterThan(0);
+    expect(emberIds.length).toBeGreaterThan(0);
+    for (const id of lunaIds) expect(emberIds).not.toContain(id);
+    // And the locator carries the asset's own id, nothing else.
+    expect(luna.canonicalAssets[0].imageUrl).toBe(`/api/media/assets/${lunaIds[0]}/file`);
   });
 
   /**
@@ -143,7 +153,12 @@ describe('GET /api/characters/:id/visual-identity (seeded)', () => {
     // fabricated Selfie/Mirror shots padding the usual three slots.
     expect(body.canonicalAssets).toHaveLength(1);
     expect(body.canonicalAssets[0].position).toBe(1);
-    expect(body.canonicalAssets[0].imageUrl).toBe('/media/maria/portrait.png');
+    // The stored path is '/media/maria/portrait.png'. It must NOT be the URL:
+    // US-102.4 replaced the raw storage key with an opaque id-keyed route.
+    expect(body.canonicalAssets[0].imageUrl).toBe(
+      `/api/media/assets/${body.canonicalAssets[0].id}/file`,
+    );
+    expect(res.body).not.toContain('/media/maria/portrait.png');
   });
 
   it('AC6 — Sage\'s visual identity and canonical assets survive her retirement', async () => {

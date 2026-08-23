@@ -22,6 +22,8 @@ import AppCategoriesPage from './pages/admin/AppCategoriesPage';
 import CategoryMerchandisingPage from './pages/admin/CategoryMerchandisingPage';
 import BannersPage from './pages/admin/BannersPage';
 import BannerEditorPage from './pages/admin/BannerEditorPage';
+import HomeComposerPage from './pages/admin/HomeComposerPage';
+import DiscoveryCategoriesPage from './pages/admin/DiscoveryCategoriesPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
 
@@ -65,6 +67,11 @@ export default function App() {
             Declared BEFORE :categorySlug so "banners" is never read as a slug. */}
         <Route path="publishing/banners" element={<BannersPage />} />
         <Route path="publishing/banners/:bannerId" element={<BannerEditorPage />} />
+        {/* US-102.4 — Home composition and the separate keyword Discovery
+            system. Both declared BEFORE :categorySlug so neither is read as a
+            slug. */}
+        <Route path="publishing/home" element={<HomeComposerPage />} />
+        <Route path="publishing/discovery" element={<DiscoveryCategoriesPage />} />
         <Route path="publishing/:categorySlug" element={<CategoryMerchandisingPage />} />
         <Route path="generation" element={<AdminPlaceholder destination="generation" />} />
       </Route>

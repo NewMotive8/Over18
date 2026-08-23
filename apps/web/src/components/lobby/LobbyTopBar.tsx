@@ -1,20 +1,23 @@
 import { Link } from 'react-router-dom';
-import { BellIcon, ProfileIcon, SearchIcon, SparkleIcon } from '../icons';
+import { BellIcon, ProfileIcon, SparkleIcon } from '../icons';
 
 /**
  * Lobby top navigation (US-28 / v2 brief §1).
  *
- * Brand mark on the left; an action cluster on the right: search, a
- * notification bell with a numeric badge, a utility/profile action, and a
- * highlighted promo CTA. Sticky and dark with a safe-area top inset. Search is
- * a callback so the lobby can scroll to its Discovery search input.
+ * Brand mark on the left; an action cluster on the right: a notification bell
+ * with a numeric badge, a utility/profile action, and a highlighted promo CTA.
+ * Sticky and dark with a safe-area top inset.
+ *
+ * NO SEARCH ICON (US-102.4). It used to sit here and scroll the page down to
+ * the Discovery search box. The ticket removes it: Search lives in one place,
+ * in the "Over18 AI Companions" section further down, and a header shortcut to
+ * it was a second entry point to the same thing. The `onSearch` prop went with
+ * it rather than being left dangling.
  */
 export default function LobbyTopBar({
   notificationCount = 3,
-  onSearch,
 }: {
   notificationCount?: number;
-  onSearch?: () => void;
 }) {
   return (
     <header className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-white/5 bg-zinc-950/85 px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl">
@@ -28,15 +31,6 @@ export default function LobbyTopBar({
       </Link>
 
       <div className="flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={onSearch}
-          aria-label="Search"
-          className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-300 transition-colors hover:bg-white/10 hover:text-white"
-        >
-          <SearchIcon className="h-[18px] w-[18px]" />
-        </button>
-
         <button
           type="button"
           aria-label={`Notifications${notificationCount ? `, ${notificationCount} unread` : ''}`}

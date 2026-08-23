@@ -17,6 +17,9 @@ import adminCharacterRoutes from './routes/admin-characters.js';
 import adminSettingsRoutes from './routes/admin-settings.js';
 import adminAppCategoryRoutes from './routes/admin-app-categories.js';
 import adminHomeBannerRoutes from './routes/admin-home-banners.js';
+import adminHomeRoutes from './routes/admin-home.js';
+import adminDiscoveryRoutes from './routes/admin-discovery.js';
+import publicHomeRoutes from './routes/public-home.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 import {
@@ -128,6 +131,20 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   await app.register(adminHomeBannerRoutes, {
     db,
     creativeStorage: { storageDir: env.media.storageDir },
+  });
+  // US-102.4 Admin → Categories & Publishing → Home and Discovery. Two plugins
+  // because they are two systems: Home publishes editorial App Categories,
+  // Discovery is a keyword index over all content. Neither can write the
+  // other's tables.
+  await app.register(adminHomeRoutes, { db, mediaStorageDir: env.media.storageDir });
+  await app.register(adminDiscoveryRoutes, { db });
+  // US-102.4 the PUBLIC app surface: Home, Discovery and public media. No auth
+  // by design, which is why every projection it serves is narrow and every read
+  // is approval-gated.
+  await app.register(publicHomeRoutes, {
+    db,
+    mediaStorageDir: env.media.storageDir,
+    cookie: { secure: env.cookieSecure, sameSite: env.cookieSameSite },
   });
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });

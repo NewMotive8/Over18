@@ -4,12 +4,14 @@ import {
   bannerEffectiveState,
   BANNER_AUDIENCES,
   BANNER_DESTINATION_KINDS,
+  HOME_BANNER_SLOTS,
   type BannerAudience,
   type BannerDestinationKind,
   type BannerProblem,
   type BannerState,
   type BannerStatus,
   type BannerViewer,
+  type HomeBannerSlot,
 } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import {
@@ -111,6 +113,8 @@ export interface HomeBannerView {
   startsAt: string | null;
   endsAt: string | null;
   scheduleTimezone: string | null;
+  /** US-102.4 — WHERE on Home this renders. Order below is within the slot. */
+  slot: HomeBannerSlot;
   position: number;
   publishedAt: string | null;
   /** Derived. Never stored — see the note at the top of this file. */
@@ -194,6 +198,7 @@ export interface HomeBannerInput {
   destinationAssetId?: string | null;
   destinationUrl?: string | null;
   audience?: BannerAudience;
+  slot?: HomeBannerSlot;
   startsAt?: string | null;
   endsAt?: string | null;
   scheduleTimezone?: string | null;
@@ -338,6 +343,13 @@ function validate(input: Partial<HomeBannerInput>, requireAll: boolean) {
       throw new HomeBannerValidationError('audience', 'Unknown audience.');
     }
     values.audience = input.audience;
+  }
+
+  if (input.slot !== undefined) {
+    if (!HOME_BANNER_SLOTS.includes(input.slot)) {
+      throw new HomeBannerValidationError('slot', 'Unknown Home slot.');
+    }
+    values.slot = input.slot;
   }
 
   if (input.destinationKind !== undefined) {
@@ -540,6 +552,9 @@ async function toView(
     startsAt,
     endsAt,
     scheduleTimezone: row.scheduleTimezone,
+    slot: (HOME_BANNER_SLOTS.includes(row.slot as HomeBannerSlot)
+      ? row.slot
+      : 'before_search') as HomeBannerSlot,
     position: row.position,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     state: bannerEffectiveState({ status, startsAt, endsAt, problems }, now),
@@ -562,7 +577,9 @@ export async function listHomeBanners(
   const rows = await db
     .select()
     .from(homeBanners)
-    .orderBy(asc(homeBanners.position), asc(homeBanners.createdAt));
+    // US-102.4: slot-major. Position is order WITHIN a slot, so sorting by
+    // position alone would interleave two independent arrangements.
+    .orderBy(asc(homeBanners.slot), asc(homeBanners.position), asc(homeBanners.createdAt));
   return Promise.all(rows.map((row) => toView(db, row, storage, now)));
 }
 
@@ -598,7 +615,7 @@ export async function listEligibleHomeBanners(
     .select()
     .from(homeBanners)
     .where(eq(homeBanners.status, 'published'))
-    .orderBy(asc(homeBanners.position), asc(homeBanners.createdAt));
+    .orderBy(asc(homeBanners.slot), asc(homeBanners.position), asc(homeBanners.createdAt));
 
   const views = await Promise.all(rows.map((row) => toView(db, row, storage, options.now)));
   return views.filter(
@@ -615,7 +632,8 @@ export async function listEligibleHomeBanners(
  * input that can make a new banner public, which is the strongest form of
  * "saving a draft must never make it public".
  *
- * Appended to the end, so creating one never renumbers an arrangement.
+ * Appended to the end OF ITS SLOT, so creating one never renumbers an
+ * arrangement — and never renumbers the other slot's, either.
  */
 export async function createHomeBanner(
   db: Db,
@@ -630,9 +648,11 @@ export async function createHomeBanner(
   );
   await assertReferencesExist(db, values);
 
+  const slot = (values.slot as HomeBannerSlot | undefined) ?? 'before_search';
   const [{ next } = { next: 0 }] = await db
     .select({ next: sql<number>`coalesce(max(${homeBanners.position}), -1) + 1` })
-    .from(homeBanners);
+    .from(homeBanners)
+    .where(eq(homeBanners.slot, slot));
 
   const [created] = await db
     .insert(homeBanners)
@@ -647,6 +667,7 @@ export async function createHomeBanner(
       destinationAssetId: (values.destinationAssetId as string | null) ?? null,
       destinationUrl: (values.destinationUrl as string | null) ?? null,
       audience: (values.audience as BannerAudience | undefined) ?? 'everyone',
+      slot,
       startsAt: (values.startsAt as Date | null) ?? null,
       endsAt: (values.endsAt as Date | null) ?? null,
       scheduleTimezone: (values.scheduleTimezone as string | null) ?? null,
@@ -690,6 +711,19 @@ export async function updateHomeBanner(
     'endsAt' in values ? (values.endsAt as Date | null) : existing.endsAt,
   );
   await assertReferencesExist(db, values);
+
+  // MOVING BETWEEN SLOTS re-homes the position. `position` is an order within a
+  // slot, so carrying the old number across would collide with whatever already
+  // holds it there; appending to the end of the destination is the only move
+  // that cannot disturb an arrangement the operator already made.
+  const movedSlot = 'slot' in values && values.slot !== existing.slot;
+  if (movedSlot) {
+    const [{ next } = { next: 0 }] = await db
+      .select({ next: sql<number>`coalesce(max(${homeBanners.position}), -1) + 1` })
+      .from(homeBanners)
+      .where(eq(homeBanners.slot, values.slot as HomeBannerSlot));
+    values.position = Number(next);
+  }
 
   const [row] = await db
     .update(homeBanners)
@@ -766,26 +800,41 @@ export async function deleteHomeBanner(db: Db, id: string): Promise<boolean> {
 }
 
 /**
- * Applies a new order. Exact permutation or refuse, matching US-102.1/.2: the
- * failure to design for is a stale browser reordering a list that has changed
- * underneath it.
+ * Applies a new order WITHIN ONE SLOT. Exact permutation or refuse, matching
+ * US-102.1/.2: the failure to design for is a stale browser reordering a list
+ * that has changed underneath it.
+ *
+ * Scoped to a slot because US-102.4 made `position` an order within a slot
+ * rather than across all banners. A whole-table permutation would force the
+ * operator to restate the other slot's arrangement to change this one, and any
+ * banner moved between slots meanwhile would make both lists "incomplete".
  */
-export async function reorderHomeBanners(db: Db, orderedIds: string[]): Promise<void> {
+export async function reorderHomeBanners(
+  db: Db,
+  slot: HomeBannerSlot,
+  orderedIds: string[],
+): Promise<void> {
+  if (!HOME_BANNER_SLOTS.includes(slot)) {
+    throw new HomeBannerOrderError('unknown_id', 'Unknown Home slot.');
+  }
   if (new Set(orderedIds).size !== orderedIds.length) {
     throw new HomeBannerOrderError('duplicate', 'The same banner was listed more than once.');
   }
   await db.transaction(async (tx) => {
-    const existing = await tx.select({ id: homeBanners.id }).from(homeBanners);
+    const existing = await tx
+      .select({ id: homeBanners.id })
+      .from(homeBanners)
+      .where(eq(homeBanners.slot, slot));
     const existingIds = new Set(existing.map((row) => row.id));
     for (const id of orderedIds) {
       if (!existingIds.has(id)) {
-        throw new HomeBannerOrderError('unknown_id', 'That banner no longer exists.');
+        throw new HomeBannerOrderError('unknown_id', 'That banner is not in this slot.');
       }
     }
     if (orderedIds.length !== existingIds.size) {
       throw new HomeBannerOrderError(
         'incomplete',
-        'The order is out of date — it does not list every banner. Reload and try again.',
+        'The order is out of date — it does not list every banner in this slot. Reload and try again.',
       );
     }
     for (const [index, id] of orderedIds.entries()) {
@@ -797,13 +846,17 @@ export async function reorderHomeBanners(db: Db, orderedIds: string[]): Promise<
   });
 }
 
+/** Renumbers each slot to 0..n-1 independently. */
 async function normalisePositions(tx: Pick<Db, 'select' | 'update'>): Promise<void> {
-  const rows = await tx
-    .select({ id: homeBanners.id })
-    .from(homeBanners)
-    .orderBy(asc(homeBanners.position), asc(homeBanners.createdAt));
-  for (const [index, row] of rows.entries()) {
-    await tx.update(homeBanners).set({ position: index }).where(eq(homeBanners.id, row.id));
+  for (const slot of HOME_BANNER_SLOTS) {
+    const rows = await tx
+      .select({ id: homeBanners.id })
+      .from(homeBanners)
+      .where(eq(homeBanners.slot, slot))
+      .orderBy(asc(homeBanners.position), asc(homeBanners.createdAt));
+    for (const [index, row] of rows.entries()) {
+      await tx.update(homeBanners).set({ position: index }).where(eq(homeBanners.id, row.id));
+    }
   }
 }
 

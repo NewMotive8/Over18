@@ -7,6 +7,7 @@ import {
   type BannerCreativeRequirements,
   type HomeBannerView,
 } from '../../lib/api';
+import { HOME_BANNER_SLOTS } from '@over18/shared';
 import { canMove, interceptedPath, moveBy, moveItem, sameOrder } from '../../admin/categoryBoard';
 import {
   audienceLabel,
@@ -181,12 +182,29 @@ export default function BannersPage() {
     if (ok) setConfirmDeleteId(null);
   }
 
+  /**
+   * Saves the arrangement, ONE SLOT AT A TIME.
+   *
+   * US-102.4 made `position` an order within a slot, so the API takes an exact
+   * permutation of a single slot. Sending every banner at once — which is what
+   * this did before slots existed — is rejected as incomplete for whichever
+   * slot it names. Only slots the operator actually rearranged are sent, so an
+   * untouched slot is never restated.
+   */
   async function saveOrder() {
     if (!banners || busy) return;
     setBusy(true);
     setNotice(null);
+    const slotOf = new Map(banners.map((b) => [b.id, b.slot]));
     try {
-      const { banners: fresh } = await homeBannersApi.reorder(banners.map((b) => b.id));
+      let fresh = banners;
+      for (const slot of HOME_BANNER_SLOTS) {
+        const now = banners.filter((b) => b.slot === slot).map((b) => b.id);
+        const before = savedOrder.filter((id) => slotOf.get(id) === slot);
+        if (now.length === 0 || sameOrder(now, before)) continue;
+        const res = await homeBannersApi.reorder(slot, now);
+        fresh = res.banners;
+      }
       setBanners(fresh);
       setSavedOrder(fresh.map((b) => b.id));
       setNotice({ kind: 'success', text: 'Order saved.' });
@@ -195,7 +213,11 @@ export default function BannersPage() {
         kind: 'error',
         text: err instanceof ApiRequestError ? err.message : "Couldn't save the new order.",
       });
-      if (err instanceof ApiRequestError && err.status === 409) await load(false);
+      // One slot may already have been written before another failed. Reloading
+      // is the only way to stop the screen claiming an arrangement the server
+      // does not have — a stale savedOrder would leave the operator with an
+      // "unsaved" bar over changes that are, in part, already live.
+      await load(false);
     } finally {
       setBusy(false);
     }
@@ -208,6 +230,11 @@ export default function BannersPage() {
 
   function nudge(id: string, delta: number) {
     if (!banners) return;
+    const current = banners.find((b) => b.id === id);
+    const neighbourIndex = banners.findIndex((b) => b.id === id) + delta;
+    const neighbour = banners[neighbourIndex];
+    // Same rule as drag: a nudge never carries a banner into the other slot.
+    if (!current || !neighbour || neighbour.slot !== current.slot) return;
     applyOrder(moveBy(banners, id, delta));
     requestAnimationFrame(() => rowRefs.current.get(id)?.focus());
   }
@@ -220,6 +247,16 @@ export default function BannersPage() {
     const from = banners.findIndex((b) => b.id === sourceId);
     const to = banners.findIndex((b) => b.id === targetId);
     if (from === -1 || to === -1) return;
+    // Ordering is within a slot. Dragging across slots would look like a
+    // reorder but mean "move this banner elsewhere on the page", which is an
+    // edit — so it is refused here rather than silently reassigning.
+    if (banners[from]!.slot !== banners[to]!.slot) {
+      setNotice({
+        kind: 'error',
+        text: 'Banners are ordered within their slot. Change the slot in the banner editor.',
+      });
+      return;
+    }
     applyOrder(moveItem(banners, from, to));
   }
 

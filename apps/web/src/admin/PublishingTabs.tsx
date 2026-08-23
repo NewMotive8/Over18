@@ -12,17 +12,30 @@ import { Link, useLocation } from 'react-router-dom';
 const TABS = [
   { key: 'categories', label: 'Categories', to: '/admin/publishing' },
   { key: 'banners', label: 'Banners', to: '/admin/publishing/banners' },
+  { key: 'home', label: 'Home', to: '/admin/publishing/home' },
+  { key: 'discovery', label: 'Discovery', to: '/admin/publishing/discovery' },
 ] as const;
 
 /**
  * Which tab a path belongs to.
  *
- * Anything under /banners is Banners — including the editor at
- * /banners/:id — and everything else under /admin/publishing, including a
- * category's merchandising screen, is Categories.
+ * Anything under /banners is Banners — including the editor at /banners/:id —
+ * /home is Home composition, /discovery is the keyword system, and everything
+ * else under /admin/publishing, including a category's merchandising screen, is
+ * Categories.
+ *
+ * Home and Discovery are SEPARATE TABS because they are separate systems
+ * (US-102.4): Home publishes editorial App Categories, Discovery indexes all
+ * content by keyword. Folding them together in the UI would suggest a
+ * relationship the data model deliberately does not have.
  */
-export function activePublishingTab(pathname: string): 'categories' | 'banners' {
-  return pathname.startsWith('/admin/publishing/banners') ? 'banners' : 'categories';
+export type PublishingTab = 'categories' | 'banners' | 'home' | 'discovery';
+
+export function activePublishingTab(pathname: string): PublishingTab {
+  if (pathname.startsWith('/admin/publishing/banners')) return 'banners';
+  if (pathname.startsWith('/admin/publishing/home')) return 'home';
+  if (pathname.startsWith('/admin/publishing/discovery')) return 'discovery';
+  return 'categories';
 }
 
 export default function PublishingTabs() {

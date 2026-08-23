@@ -1,5 +1,6 @@
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import { characterHeroVideo } from './characterMedia';
+import { API_URL } from './api';
 
 /**
  * Hero-media resolution for the Discover experience (US-19).
@@ -42,6 +43,22 @@ function characterVideoUrl(character: PublicCharacter): string | undefined {
   return typeof maybe === 'string' && maybe.trim().length > 0 ? maybe : undefined;
 }
 
+/**
+ * Resolves a media locator to something a browser can actually fetch.
+ *
+ * US-102.4 replaced the public `imageUrl` with an API-relative opaque route
+ * (`/api/media/assets/:id/file`) — it used to be the server's raw storage path.
+ * A root-relative path resolves against the WEB origin, which is not where the
+ * API lives in any deployed configuration, so it has to be prefixed. Absolute
+ * URLs (a PoC override, a future CDN) are passed through untouched.
+ */
+export function absoluteMediaUrl(raw: string | null | undefined): string | undefined {
+  const url = raw?.trim();
+  if (!url) return undefined;
+  if (/^(https?:|data:|blob:)/i.test(url)) return url;
+  return url.startsWith('/') ? `${API_URL}${url}` : url;
+}
+
 /** First canonical reference image (by position) from a visual-identity response. */
 export function firstCanonicalImage(
   visual: CharacterVisualIdentityResponse | null | undefined,
@@ -53,7 +70,11 @@ export function firstCanonicalImage(
       (a, b) =>
         (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER),
     )[0];
-  const url = first?.imageUrl?.trim();
+  // US-102.4: imageUrl is now an API-relative opaque route
+  // (/api/media/assets/:id/file), not an absolute URL. It has to be resolved
+  // against the API origin — the web app and the API are separate origins in
+  // every deployed configuration.
+  const url = absoluteMediaUrl(first?.imageUrl);
   return url && url.length > 0 ? url : undefined;
 }
 
@@ -132,7 +153,7 @@ export function characterMediaList(
         (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER),
     );
   for (let i = 1; i < sorted.length; i += 1) {
-    const url = sorted[i]?.imageUrl?.trim();
+    const url = absoluteMediaUrl(sorted[i]?.imageUrl);
     if (url) items.push({ id: sorted[i]!.id, media: { kind: 'image', src: url }, premium: false });
   }
 

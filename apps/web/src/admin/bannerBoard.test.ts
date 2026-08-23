@@ -65,6 +65,7 @@ function banner(overrides: Partial<HomeBannerView> = {}): HomeBannerView {
     startsAt: null,
     endsAt: null,
     scheduleTimezone: null,
+    slot: 'before_search',
     position: 0,
     publishedAt: null,
     state: 'live',

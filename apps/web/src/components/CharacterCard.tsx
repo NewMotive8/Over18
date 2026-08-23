@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { PublicCharacter } from '@over18/shared';
 import { charactersApi } from '../lib/api';
+import { absoluteMediaUrl } from '../lib/media';
 
 /**
  * Consumer-grade character card: portrait image with a gradient overlay,
@@ -34,7 +35,8 @@ export default function CharacterCard({ character }: { character: PublicCharacte
               (a.position ?? Number.MAX_SAFE_INTEGER) -
               (b.position ?? Number.MAX_SAFE_INTEGER),
           )[0];
-        setVisualImage(firstCanonical?.imageUrl ?? null);
+        // US-102.4: an API-relative opaque route, resolved against the API origin.
+        setVisualImage(absoluteMediaUrl(firstCanonical?.imageUrl) ?? null);
       })
       .catch(() => {
         // Visual identity is an enhancement; retain the existing profile fallback.

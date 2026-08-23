@@ -1,7 +1,8 @@
 import { createReadStream } from 'node:fs';
 import multipart from '@fastify/multipart';
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { BANNER_AUDIENCES, BANNER_DESTINATION_KINDS } from '@over18/shared';
+import type { HomeBannerSlot } from '@over18/shared';
+import { BANNER_AUDIENCES, BANNER_DESTINATION_KINDS, HOME_BANNER_SLOTS } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import {
   BannerCreativeError,
@@ -55,6 +56,8 @@ const bannerBodyProperties = {
   destinationAssetId: { type: ['string', 'null'] },
   destinationUrl: { type: ['string', 'null'], maxLength: 2000 },
   audience: { type: 'string', enum: [...BANNER_AUDIENCES] },
+  /** US-102.4 — which Home slot this banner renders in. */
+  slot: { type: 'string', enum: [...HOME_BANNER_SLOTS] },
   startsAt: { type: ['string', 'null'] },
   endsAt: { type: ['string', 'null'] },
   scheduleTimezone: { type: ['string', 'null'], maxLength: 100 },
@@ -79,9 +82,13 @@ const updateBodySchema = {
 
 const orderBodySchema = {
   type: 'object',
-  required: ['orderedIds'],
+  required: ['slot', 'orderedIds'],
   additionalProperties: false,
-  properties: { orderedIds: { type: 'array', items: { type: 'string' }, maxItems: 200 } },
+  properties: {
+    // Ordering is per slot (US-102.4), so the slot is part of the request.
+    slot: { type: 'string', enum: [...HOME_BANNER_SLOTS] },
+    orderedIds: { type: 'array', items: { type: 'string' }, maxItems: 200 },
+  },
 } as const;
 
 export default async function adminHomeBannerRoutes(
@@ -223,13 +230,13 @@ export default async function adminHomeBannerRoutes(
   /* ---------------- ordering ---------------- */
 
   /** Declared before `:bannerId` so "order" is never parsed as an id. */
-  app.put<{ Body: { orderedIds: string[] } }>(
+  app.put<{ Body: { slot: HomeBannerSlot; orderedIds: string[] } }>(
     '/admin/home-banners/order',
     { ...adminOnly, schema: { body: orderBodySchema } },
     async (request, reply) => {
       if (!storage) return noStorage(reply);
       try {
-        await reorderHomeBanners(opts.db, request.body.orderedIds);
+        await reorderHomeBanners(opts.db, request.body.slot, request.body.orderedIds);
       } catch (error) {
         if (error instanceof HomeBannerOrderError) {
           return reply

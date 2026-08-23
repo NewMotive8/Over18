@@ -659,12 +659,34 @@ export const appCategories = pgTable(
     enabled: boolean('enabled').notNull().default(true),
     /** Merchandising order. Normalised to 0..n-1 by every reorder. */
     position: integer('position').notNull().default(0),
+    /**
+     * US-102.4 — whether this category appears on the app's Home surface.
+     *
+     * A SECOND, INDEPENDENT GATE, not a synonym for `enabled`. `enabled` says
+     * the category exists and is usable across the CMS; `home_published` says
+     * an operator has deliberately put it on Home. A category can be enabled
+     * and absent from Home (the normal case), and un-publishing it from Home
+     * leaves the category, its assignments and its order completely intact.
+     *
+     * Defaults to FALSE so the migration cannot silently publish anything that
+     * already exists — "categories do not appear merely because they exist".
+     */
+    homePublished: boolean('home_published').notNull().default(false),
+    /**
+     * Order among the Home rails, INDEPENDENT of `position`.
+     *
+     * Two orders because they answer different questions: `position` is how the
+     * operator arranges their CMS workspace, `home_position` is what the app
+     * shows. A category can be third in the list and first on Home.
+     */
+    homePosition: integer('home_position').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex('app_categories_slug_uq').on(table.slug),
     index('app_categories_position_idx').on(table.position),
+    index('app_categories_home_idx').on(table.homePublished, table.homePosition),
   ],
 );
 
@@ -827,14 +849,194 @@ export const homeBanners = pgTable(
     endsAt: timestamp('ends_at', { withTimezone: true }),
     scheduleTimezone: text('schedule_timezone'),
 
+    /**
+     * US-102.4 — WHERE on Home this banner renders.
+     *
+     * 'before_search' | 'below_results'. Two fixed slots, each holding any
+     * number of banners in explicit order. Placement is a Home-composition
+     * concern, which is why the column arrives with 102.4 rather than 102.3 —
+     * 102.3 deliberately owned only the banners themselves and their
+     * eligibility, and left composition to this ticket.
+     *
+     * Defaults to 'before_search' so every banner created before this migration
+     * keeps a defined, visible position rather than disappearing.
+     */
+    slot: text('slot').notNull().default('before_search'),
+    /** Order WITHIN the slot. Normalised to 0..n-1 per slot by every reorder. */
     position: integer('position').notNull().default(0),
     publishedAt: timestamp('published_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    index('home_banners_position_idx').on(table.position),
+    index('home_banners_position_idx').on(table.slot, table.position),
     index('home_banners_status_idx').on(table.status),
+  ],
+);
+
+/**
+ * home_hero_clips — the Hero carousel, ADMIN-ASSIGNED (US-102.4).
+ *
+ * Editorial selection only. There is deliberately no performance, engagement or
+ * ranking column here: this product has no such data, and the ticket says the
+ * mixing rule between editorial and performance selection is still unspecified.
+ * A future performance-weighted Hero adds its own inputs; it does not need this
+ * table to have guessed at them.
+ *
+ * Publishability is NOT stored. The clip appears only while its asset is
+ * approved, checked on every read exactly as US-102.2 does for category
+ * contents — so a clip that loses approval leaves the Hero on its own, and
+ * comes back if it is approved again. The link row survives either way.
+ */
+export const homeHeroClips = pgTable(
+  'home_hero_clips',
+  {
+    assetId: uuid('asset_id')
+      .primaryKey()
+      .references(() => characterVisualAssets.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('home_hero_clips_position_idx').on(table.position)],
+);
+
+/**
+ * home_recent_characters — the Recently Added rail's CURATED override
+ * (US-102.4).
+ *
+ * EMPTY MEANS DEFAULT. When this table has no rows the rail is the 12 newest
+ * active characters, computed per read. The moment an operator adds, removes or
+ * reorders anything, the current list is materialised here and becomes the
+ * explicit arrangement; clearing the table restores the automatic behaviour.
+ *
+ * A curated list rather than a stored copy of the default: nothing periodically
+ * rewrites these rows, so there is no job to run and no drift. This is not a
+ * "recently added" algorithm — it is one default and one override.
+ */
+export const homeRecentCharacters = pgTable(
+  'home_recent_characters',
+  {
+    characterId: uuid('character_id')
+      .primaryKey()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('home_recent_characters_position_idx').on(table.position)],
+);
+
+/**
+ * content_keywords — the vocabulary behind the lower-page Discovery strip
+ * (US-102.4).
+ *
+ * A SEPARATE SYSTEM FROM APP CATEGORIES. App Categories (US-102.1) are
+ * editorial collections an operator fills by hand and publishes to Home.
+ * Discovery categories are keyword queries over all content. They share no
+ * table, no route and no ordering, and neither can affect the other.
+ *
+ * `key` is the stable normalised identity and is immutable; `label` is what an
+ * operator renames — the same slug/name split App Categories use, for the same
+ * reason: renaming must never orphan the things pointing at it.
+ */
+export const contentKeywords = pgTable(
+  'content_keywords',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    key: text('key').notNull(),
+    label: text('label').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('content_keywords_key_uq').on(table.key)],
+);
+
+/**
+ * asset_keywords — which keywords a piece of content carries (US-102.4).
+ *
+ * Many-to-many, because a clip is genuinely several things at once. This is
+ * what `requirement_key` on character_visual_assets is NOT: that column is a
+ * single nullable join to one content requirement, and overloading it with
+ * discovery keywords would have made two unrelated systems fight over one
+ * field.
+ *
+ * Both sides CASCADE: deleting a keyword removes its assignments, deleting an
+ * asset removes its keywords. Neither direction can reach the asset's bytes,
+ * its status, or its review lifecycle.
+ */
+export const assetKeywords = pgTable(
+  'asset_keywords',
+  {
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => characterVisualAssets.id, { onDelete: 'cascade' }),
+    keywordId: uuid('keyword_id')
+      .notNull()
+      .references(() => contentKeywords.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.assetId, table.keywordId] }),
+    index('asset_keywords_keyword_idx').on(table.keywordId),
+  ],
+);
+
+/**
+ * discovery_categories — the lower-page strip's pills (US-102.4).
+ *
+ * A discovery category is a NAMED SET OF KEYWORDS, and its membership is
+ * derived: every approved asset carrying AT LEAST ONE of its keywords, computed
+ * per read. Nothing is materialised, so tagging a new clip updates the strip
+ * immediately with no sweep and no refresh job.
+ *
+ * `position` 0 is the first/default pill. That the first one is "Sexy" is DATA,
+ * not a hard-coded name — the strip has no special-cased entries, which is also
+ * why the old hard-coded "All" is simply gone rather than reserved.
+ */
+export const discoveryCategories = pgTable(
+  'discovery_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Stable internal identity. Immutable after creation. */
+    slug: text('slug').notNull(),
+    /** Display name. Freely renameable. */
+    name: text('name').notNull(),
+    /** Non-destructive retirement, exactly as App Categories use it. */
+    enabled: boolean('enabled').notNull().default(true),
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('discovery_categories_slug_uq').on(table.slug),
+    index('discovery_categories_position_idx').on(table.position),
+  ],
+);
+
+/**
+ * discovery_category_keywords — which keywords a discovery category matches.
+ *
+ * Membership is OR: "Sexy = sexy OR lingerie OR seductive". One row per term.
+ *
+ * DELETING A DISCOVERY CATEGORY CANNOT REACH CONTENT. The cascade runs from the
+ * category to these link rows and stops: the keywords survive, every
+ * asset_keywords row survives, and no asset is touched. That is the ticket's
+ * "removing a discovery category does not delete or modify the underlying
+ * content or its keywords", enforced by the foreign keys rather than by
+ * remembering to be careful.
+ */
+export const discoveryCategoryKeywords = pgTable(
+  'discovery_category_keywords',
+  {
+    discoveryCategoryId: uuid('discovery_category_id')
+      .notNull()
+      .references(() => discoveryCategories.id, { onDelete: 'cascade' }),
+    keywordId: uuid('keyword_id')
+      .notNull()
+      .references(() => contentKeywords.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.discoveryCategoryId, table.keywordId] }),
+    index('discovery_category_keywords_keyword_idx').on(table.keywordId),
   ],
 );
 
@@ -857,3 +1059,8 @@ export type AppCategoryRow = typeof appCategories.$inferSelect;
 export type AppCategoryAssetRow = typeof appCategoryAssets.$inferSelect;
 export type BannerCreativeRow = typeof bannerCreatives.$inferSelect;
 export type HomeBannerRow = typeof homeBanners.$inferSelect;
+export type HomeHeroClipRow = typeof homeHeroClips.$inferSelect;
+export type HomeRecentCharacterRow = typeof homeRecentCharacters.$inferSelect;
+export type ContentKeywordRow = typeof contentKeywords.$inferSelect;
+export type AssetKeywordRow = typeof assetKeywords.$inferSelect;
+export type DiscoveryCategoryRow = typeof discoveryCategories.$inferSelect;

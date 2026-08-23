@@ -91,11 +91,14 @@ const api = {
     await on.app.inject({ method: 'POST', url: `/admin/home-banners/${id}/unpublish`, cookies }),
   remove: async (id: string, cookies = adminCookies) =>
     await on.app.inject({ method: 'DELETE', url: `/admin/home-banners/${id}`, cookies }),
-  order: async (orderedIds: unknown, cookies = adminCookies) =>
+  // US-102.4 made ordering per SLOT: position is an order within a slot, so the
+  // request names which one. Every banner these tests create lands in the
+  // default 'before_search' slot.
+  order: async (orderedIds: unknown, cookies = adminCookies, slot = 'before_search') =>
     await on.app.inject({
       method: 'PUT',
       url: '/admin/home-banners/order',
-      payload: { orderedIds },
+      payload: { slot, orderedIds },
       cookies,
     }),
   destinations: async (cookies = adminCookies) =>

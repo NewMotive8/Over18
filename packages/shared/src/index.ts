@@ -217,6 +217,17 @@ export const BANNER_AUDIENCES = ['everyone', 'new_users', 'returning_users'] as 
 export type BannerAudience = (typeof BANNER_AUDIENCES)[number];
 
 /**
+ * Where on Home a banner renders (US-102.4).
+ *
+ * Two fixed slots, each holding any number of banners in explicit order.
+ * Placement belongs to Home composition, which is why the concept arrives with
+ * 102.4: 102.3 deliberately owned the banners and their eligibility and left
+ * "where does this appear" to the ticket that owns the page.
+ */
+export const HOME_BANNER_SLOTS = ['before_search', 'below_results'] as const;
+export type HomeBannerSlot = (typeof HOME_BANNER_SLOTS)[number];
+
+/**
  * What a banner is doing right now. Derived on every read from status, the
  * schedule window and whether its dependencies still resolve — never stored,
  * because a stored flag goes stale the moment a category is re-enabled and
