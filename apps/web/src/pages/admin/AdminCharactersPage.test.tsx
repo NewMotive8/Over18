@@ -14,6 +14,12 @@ import type { AdminCharacterListItem } from '../../lib/api';
  * What they cannot do: exercise the loaded list, the create form submit, or
  * activation, all of which need effects and a live API. Those paths are
  * covered end-to-end by the API suite instead.
+ *
+ * The create form's VALIDATION is no longer in that blind spot: it moved to
+ * admin/characterForm and is tested directly in characterForm.test.ts. A
+ * stale-error bug had shipped precisely because it could not be reached from
+ * here — the Name field showed "Nova" beneath "Enter a name with at least two
+ * letters or numbers."
  */
 
 const base: AdminCharacterListItem = {

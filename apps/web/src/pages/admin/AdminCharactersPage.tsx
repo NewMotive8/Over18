@@ -6,6 +6,13 @@ import {
   type AdminCharacterListItem,
   type AdminCharacterView,
 } from '../../lib/api';
+import {
+  blockingError,
+  quickCreatePayload,
+  slugify,
+  visibleError,
+  type CharacterDraft,
+} from '../../admin/characterForm';
 
 /**
  * US-101 / Phase 1 — Characters catalogue.
@@ -22,15 +29,11 @@ import {
  * approves generated content; that is the Review queue.
  */
 
-/** Derives a valid slug from what the operator typed, so they never meet the regex. */
-export function slugify(input: string): string {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 50);
-}
+/**
+ * Re-exported so existing callers and tests keep their import. The rule itself
+ * now lives in admin/characterForm, where it can be tested without a DOM.
+ */
+export { slugify };
 
 export function readinessOf(character: AdminCharacterListItem): string {
   if (character.identityVersionCount === 0) return 'No visual identity yet';
@@ -60,8 +63,18 @@ export default function AdminCharactersPage() {
   const [displayName, setDisplayName] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  /**
+   * A validation error is NEVER stored — see admin/characterForm. Only these two
+   * are: whether Create has been pressed, and what the server said about the
+   * last attempt. The message on screen is derived from them plus the current
+   * draft, so correcting a field removes the message immediately.
+   */
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  const draft: CharacterDraft = { displayName, hasImage: file !== null };
+  const saveError = visibleError({ submitAttempted, serverError, draft });
 
   const load = useCallback(() => {
     setLoadError(null);
@@ -73,36 +86,41 @@ export default function AdminCharactersPage() {
 
   useEffect(load, [load]);
 
+  /**
+   * Any edit invalidates what the server said about the PREVIOUS payload.
+   * Validation messages need no equivalent — they are derived, so they cannot
+   * go stale in the first place.
+   */
+  function clearServerError() {
+    setServerError(null);
+  }
+
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
     if (saving) return;
-    if (!file) {
-      setSaveError('Choose an image of her first.');
-      return;
-    }
-    const name = slugify(displayName);
-    if (name.length < 2) {
-      setSaveError('Enter a name with at least two letters or numbers.');
-      return;
-    }
+    setSubmitAttempted(true);
+    // Same two checks, same order, same wording as before — just stated once,
+    // in one place, so the form and the submit gate cannot disagree.
+    if (blockingError(draft) !== null || !file) return;
+
     setSaving(true);
-    setSaveError(null);
+    setServerError(null);
     try {
       // The image becomes her primary reference on visual identity v1 —
       // one file, stored once, no copy made to fill profile_image.
       const created = await adminCharactersApi.quickCreate({
-        name,
-        displayName: displayName.trim(),
+        ...quickCreatePayload(draft),
         file,
       });
       setDisplayName('');
       setFile(null);
       setCreating(false);
+      setSubmitAttempted(false);
       // Straight to her page: the persona is the next thing to do, and that is
       // where Autofill lives.
       navigate(`/admin/characters/${created.character.id}`);
     } catch (error) {
-      setSaveError(
+      setServerError(
         error instanceof ApiRequestError ? error.message : "Couldn't create the character.",
       );
     } finally {
@@ -122,7 +140,13 @@ export default function AdminCharactersPage() {
         </div>
         <button
           type="button"
-          onClick={() => setCreating((open) => !open)}
+          onClick={() => {
+            setCreating((open) => !open);
+            // Reopening the form must not greet the operator with the verdict
+            // from a previous session of it.
+            setSubmitAttempted(false);
+            setServerError(null);
+          }}
           className="shrink-0 rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-500"
         >
           {creating ? 'Cancel' : 'Create character'}
@@ -145,7 +169,10 @@ export default function AdminCharactersPage() {
             <input
               type="text"
               value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
+              onChange={(e) => {
+                setDisplayName(e.target.value);
+                clearServerError();
+              }}
               placeholder="Nova"
               className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
             />
@@ -160,7 +187,10 @@ export default function AdminCharactersPage() {
               ref={fileInput}
               type="file"
               accept="image/jpeg,image/png,image/webp"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                setFile(e.target.files?.[0] ?? null);
+                clearServerError();
+              }}
               className="mt-1 block w-full text-sm text-zinc-300 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-2 file:text-sm file:text-zinc-200"
             />
             <span className="mt-1 block text-xs text-zinc-500">
