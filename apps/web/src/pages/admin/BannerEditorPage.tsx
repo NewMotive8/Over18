@@ -13,21 +13,24 @@ import {
   type BannerCreativeRequirements,
   type BannerCreativeView,
   type BannerDestinationOptions,
-  type HomeBannerDraft,
   type HomeBannerView,
 } from '../../lib/api';
 import {
   audienceLabel,
+  bannerDraftFrom,
+  bannerFormFromView,
   creativeRequirementText,
   dimensionsLabel,
+  emptyBannerForm,
   formatBytes,
-  instantToWallTime,
   matchesRecommendedAspect,
   problemMessage,
   scheduleSummary,
   stateLabel,
   wallTimeToInstant,
+  type BannerFormState,
 } from '../../admin/bannerBoard';
+import { HOME_SLOTS } from '../../admin/homeBoard';
 import ConfirmDialog from '../../admin/ConfirmDialog';
 import PublishingTabs from '../../admin/PublishingTabs';
 import { StateChip } from './BannersPage';
@@ -53,21 +56,11 @@ import { StateChip } from './BannersPage';
 
 type Notice = { kind: 'error' | 'success' | 'info'; text: string } | null;
 
-interface FormState {
-  title: string;
-  subtitle: string;
-  ctaLabel: string;
-  creativeId: string | null;
-  destinationKind: BannerDestinationKind;
-  destinationCategoryId: string;
-  destinationCharacterId: string;
-  destinationAssetId: string;
-  destinationUrl: string;
-  audience: (typeof BANNER_AUDIENCES)[number];
-  startLocal: string;
-  endLocal: string;
-  timezone: string;
-}
+/**
+ * The form shape and its mapping to and from the wire now live in
+ * admin/bannerBoard, where node tests can reach them.
+ */
+type FormState = BannerFormState;
 
 const browserZone = (): string => {
   try {
@@ -77,21 +70,7 @@ const browserZone = (): string => {
   }
 };
 
-const EMPTY_FORM = (): FormState => ({
-  title: '',
-  subtitle: '',
-  ctaLabel: '',
-  creativeId: null,
-  destinationKind: 'category',
-  destinationCategoryId: '',
-  destinationCharacterId: '',
-  destinationAssetId: '',
-  destinationUrl: '',
-  audience: 'everyone',
-  startLocal: '',
-  endLocal: '',
-  timezone: browserZone(),
-});
+const EMPTY_FORM = (): FormState => emptyBannerForm(browserZone());
 
 export default function BannerEditorPage() {
   const { bannerId } = useParams<{ bannerId: string }>();
@@ -125,22 +104,7 @@ export default function BannerEditorPage() {
       const existing = await homeBannersApi.get(bannerId!);
       setBanner(existing);
       setCreative(existing.creative);
-      const zone = existing.scheduleTimezone ?? browserZone();
-      setForm({
-        title: existing.title,
-        subtitle: existing.subtitle ?? '',
-        ctaLabel: existing.ctaLabel ?? '',
-        creativeId: existing.creative?.id ?? null,
-        destinationKind: existing.destination.kind,
-        destinationCategoryId: existing.destination.categoryId ?? '',
-        destinationCharacterId: existing.destination.characterId ?? '',
-        destinationAssetId: existing.destination.assetId ?? '',
-        destinationUrl: existing.destination.url ?? '',
-        audience: existing.audience,
-        startLocal: instantToWallTime(existing.startsAt, zone),
-        endLocal: instantToWallTime(existing.endsAt, zone),
-        timezone: zone,
-      });
+      setForm(bannerFormFromView(existing, browserZone()));
     } catch (err) {
       setLoadError(
         err instanceof ApiRequestError && err.status === 404
@@ -230,23 +194,7 @@ export default function BannerEditorPage() {
 
   /* ---------------- actions ---------------- */
 
-  function draftPayload(): HomeBannerDraft {
-    return {
-      title: form.title.trim(),
-      subtitle: form.subtitle.trim() || null,
-      ctaLabel: form.ctaLabel.trim() || null,
-      creativeId: form.creativeId,
-      destinationKind: form.destinationKind,
-      destinationCategoryId: form.destinationCategoryId || null,
-      destinationCharacterId: form.destinationCharacterId || null,
-      destinationAssetId: form.destinationAssetId || null,
-      destinationUrl: form.destinationUrl.trim() || null,
-      audience: form.audience,
-      startsAt: wallTimeToInstant(form.startLocal, form.timezone),
-      endsAt: wallTimeToInstant(form.endLocal, form.timezone),
-      scheduleTimezone: form.startLocal || form.endLocal ? form.timezone : null,
-    };
-  }
+  const draftPayload = () => bannerDraftFrom(form);
 
   async function act(action: () => Promise<unknown>, failure: string, success?: string) {
     if (busy) return false;
@@ -582,6 +530,33 @@ export default function BannerEditorPage() {
                     />
                   </Field>
                 )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4">
+              <h2 className="text-sm font-semibold text-neutral-200">Where it appears</h2>
+              <div className="mt-3">
+                <Field
+                  label="Home slot"
+                  hint="Home has two banner places. Moving a banner sends it to the end of the slot it arrives in; the order within each slot is set on the banners list."
+                >
+                  <select
+                    value={form.slot}
+                    onChange={(e) =>
+                      setForm({ ...form, slot: e.target.value as FormState['slot'] })
+                    }
+                    className={inputClass}
+                  >
+                    {HOME_SLOTS.map((slot) => (
+                      <option key={slot.key} value={slot.key}>
+                        {slot.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <p className="mt-1.5 text-[11px] leading-snug text-neutral-500">
+                  {HOME_SLOTS.find((s) => s.key === form.slot)?.hint}
+                </p>
               </div>
             </section>
 

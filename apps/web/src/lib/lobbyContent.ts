@@ -37,6 +37,20 @@ export const FORBIDDEN_AGE_TERMS = [
   'high school',
 ] as const;
 
+export type PersonaBadge = 'NEW' | 'HOT' | null;
+
+/**
+ * Deterministic NEW/HOT badge for a persona at a given feed position. Pure UI
+ * decoration (no backend "trending" signal exists yet) — stable per index so
+ * the feed looks intentional rather than random.
+ */
+export function personaBadge(index: number): PersonaBadge {
+  const slot = index % 4;
+  if (slot === 0) return 'HOT';
+  if (slot === 1) return 'NEW';
+  return null;
+}
+
 /**
  * Derives a clearly-adult numeric age from a Visual Identity apparent-age band
  * (e.g. "adult (mid-20s)"). The band is already adult-validated server-side;

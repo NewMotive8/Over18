@@ -901,6 +901,36 @@ export const homeHeroClips = pgTable(
 );
 
 /**
+ * home_play_with_me_characters — the Play with me rail's CURATED override.
+ *
+ * THE SAME SHAPE AS home_recent_characters, DELIBERATELY. Both rails show
+ * CHARACTER cards, both have one automatic rule and one operator override, and
+ * both order by an explicit position. Giving the second rail its own table
+ * rather than a discriminator column on the first keeps each table's meaning
+ * single: `home_recent_characters.character_id` is its whole primary key, so
+ * one table physically cannot hold two rails' membership without changing that
+ * key — and a shared table would leak one rail into the other the first time a
+ * query forgot its filter.
+ *
+ * EMPTY MEANS AUTOMATIC. With no rows the rail is every active character,
+ * alphabetically, computed per read — exactly what it has always been. With
+ * rows it is those characters, in that order, and the automatic rule is not
+ * consulted at all: manual never blends with automatic. Deleting the rows
+ * restores the automatic behaviour.
+ */
+export const homePlayWithMeCharacters = pgTable(
+  'home_play_with_me_characters',
+  {
+    characterId: uuid('character_id')
+      .primaryKey()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('home_play_with_me_characters_position_idx').on(table.position)],
+);
+
+/**
  * home_recent_characters — the Recently Added rail's CURATED override
  * (US-102.4).
  *
@@ -1060,6 +1090,7 @@ export type AppCategoryAssetRow = typeof appCategoryAssets.$inferSelect;
 export type BannerCreativeRow = typeof bannerCreatives.$inferSelect;
 export type HomeBannerRow = typeof homeBanners.$inferSelect;
 export type HomeHeroClipRow = typeof homeHeroClips.$inferSelect;
+export type HomePlayWithMeCharacterRow = typeof homePlayWithMeCharacters.$inferSelect;
 export type HomeRecentCharacterRow = typeof homeRecentCharacters.$inferSelect;
 export type ContentKeywordRow = typeof contentKeywords.$inferSelect;
 export type AssetKeywordRow = typeof assetKeywords.$inferSelect;

@@ -37,15 +37,21 @@ export function slugify(input: string): string {
     .slice(0, 50);
 }
 
-/** Exact wording, preserved from the inline implementation. */
-export const IMAGE_REQUIRED = 'Choose an image of her first.';
 export const NAME_TOO_SHORT = 'Enter a name with at least two letters or numbers.';
 
 /** The minimum slug length a character name must produce. Unchanged. */
 export const MIN_NAME_LENGTH = 2;
 
-/** What the operator has entered. `hasImage` rather than a File so this stays
- *  testable in node, where `File` does not exist. */
+/**
+ * What the operator has entered. `hasImage` rather than a File so this stays
+ * testable in node, where `File` does not exist.
+ *
+ * AN IMAGE IS OPTIONAL. It used to be required, which meant a character could
+ * not exist until its media did — the wrong way round for an operator who
+ * creates the roster first and uploads over the following days. A name is
+ * enough; a photo supplied here is still filed as the primary reference
+ * exactly as before.
+ */
 export interface CharacterDraft {
   displayName: string;
   hasImage: boolean;
@@ -54,11 +60,10 @@ export interface CharacterDraft {
 /**
  * Why this draft cannot be submitted, or null when it can.
  *
- * The image is checked before the name, matching the original order so the
- * operator sees the same message first that they always did.
+ * The name is the only requirement. It must still produce a usable slug,
+ * because the slug is the character's stable id everywhere else.
  */
 export function blockingError(draft: CharacterDraft): string | null {
-  if (!draft.hasImage) return IMAGE_REQUIRED;
   if (slugify(draft.displayName).length < MIN_NAME_LENGTH) return NAME_TOO_SHORT;
   return null;
 }

@@ -179,11 +179,25 @@ export interface LibraryAssetView extends ReviewAssetView {
 }
 
 export const contentLibraryApi = {
-  list: (params: { characterId?: string; mediaType?: 'image' | 'video'; search?: string } = {}) => {
+  list: (
+    params: {
+      characterId?: string;
+      mediaType?: 'image' | 'video';
+      search?: string;
+      /**
+       * An explicit status. The Library shows APPROVED content by default, so
+       * a just-uploaded clip — which is `under_review` — is legitimately absent
+       * from it. Passing the status is how a caller asks for the items that are
+       * still waiting, using the filter the route has always accepted.
+       */
+      status?: 'generated' | 'under_review' | 'approved' | 'rejected';
+    } = {},
+  ) => {
     const q = new URLSearchParams();
     if (params.characterId) q.set('characterId', params.characterId);
     if (params.mediaType) q.set('mediaType', params.mediaType);
     if (params.search) q.set('search', params.search);
+    if (params.status) q.set('status', params.status);
     const suffix = q.toString() ? `?${q}` : '';
     return request<{ recent: LibraryAssetView[]; assets: LibraryAssetView[]; filtered: boolean }>(
       `/admin/content/library${suffix}`,
@@ -705,9 +719,22 @@ export interface PublicClip {
 
 export interface PublicCharacterCard {
   id: string;
+  /** Stable slug — the local clip manifest keys on it. */
+  name: string;
   displayName: string;
   shortBio: string;
+  /** Legacy display locator on the character. Never a storage key or path. */
+  profileImage: string | null;
+  /** Real App Category membership; the card chips render these. */
+  categories: Array<{ slug: string; name: string }>;
   clip: PublicClip | null;
+}
+
+/** One lobby category pill — an enabled App Category, in the operator's order. */
+export interface PublicCategoryPill {
+  id: string;
+  slug: string;
+  name: string;
 }
 
 export interface PublicHomeBanner {
@@ -750,6 +777,21 @@ export interface PublicDiscoveryCategory {
 
 export const homeApi = {
   get: () => request<PublicHome>('/api/home'),
+  /** The lobby's category pills — App Categories, the one editorial system. */
+  categories: () => request<{ categories: PublicCategoryPill[] }>('/api/categories'),
+  /**
+   * The character grid. Omitting `category` is the unfiltered "All" state, and
+   * is why search works before any category has been configured.
+   */
+  browse: (params: { category?: string | null; q?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.category) search.set('category', params.category);
+    if (params.q) search.set('q', params.q);
+    const qs = search.toString();
+    return request<{ characters: PublicCharacterCard[] }>(
+      `/api/browse/characters${qs ? `?${qs}` : ''}`,
+    );
+  },
 };
 
 export const discoveryApi = {
@@ -811,6 +853,20 @@ export interface RecentCharacterAdminView {
   status: string;
   position: number;
   createdAt: string;
+  /** The same profile image the public card uses. Never a storage key or path. */
+  profileImage: string | null;
+}
+
+/**
+ * A character the Recently Added picker may offer. The server's rule is
+ * "active, newest first" — it does NOT mark the ones already on the rail the
+ * way the Hero candidate endpoint does, so that flag is derived on the client
+ * from the rail itself. See admin/homeBoard.recentPickerRows.
+ */
+export interface RecentCandidateView {
+  characterId: string;
+  displayName: string;
+  createdAt: string;
 }
 
 export interface RecentlyAddedAdminView {
@@ -818,11 +874,44 @@ export interface RecentlyAddedAdminView {
   characters: RecentCharacterAdminView[];
 }
 
+/** One entry on the Play with me rail, as Admin sees it. */
+export interface PlayWithMeCharacterAdminView {
+  characterId: string;
+  displayName: string;
+  status: string;
+  position: number;
+  createdAt: string;
+  /** The same profile image the public card uses. Never a storage key or path. */
+  profileImage: string | null;
+}
+
+/**
+ * A character the Play with me picker may offer.
+ *
+ * The server's rule is "active, alphabetical", and — as with Recently Added —
+ * it does not mark who is already on the rail, so that is derived on the client.
+ */
+export interface PlayWithMeCandidateView extends RecentCandidateView {
+  profileImage: string | null;
+}
+
+export interface PlayWithMeAdminView {
+  /** False when the rail is the automatic alphabetical list; true when overridden. */
+  curated: boolean;
+  characters: PlayWithMeCharacterAdminView[];
+}
+
 export const adminHomeApi = {
   overview: () =>
     request<{
       categories: HomeCategoryView[];
       hero: HeroClipAdminView[];
+      /**
+       * What the public Hero is borrowing because nothing is assigned. Always
+       * empty once `hero` has anything in it — a configured Hero is never
+       * topped up. Never stored, never an assignment.
+       */
+      heroFallback: PublicClip[];
       recentlyAdded: RecentlyAddedAdminView;
     }>('/admin/home'),
   preview: () =>
@@ -856,10 +945,28 @@ export const adminHomeApi = {
       method: 'PUT',
       body: JSON.stringify({ orderedIds }),
     }),
-  recentCandidates: () =>
-    request<{ candidates: Array<{ characterId: string; displayName: string; createdAt: string }> }>(
-      '/admin/home/recent/candidates',
+  playWithMe: () => request<PlayWithMeAdminView>('/admin/home/play-with-me'),
+  playWithMeCandidates: () =>
+    request<{ candidates: PlayWithMeCandidateView[] }>('/admin/home/play-with-me/candidates'),
+  addPlayWithMe: (characterId: string) =>
+    request<PlayWithMeAdminView>('/admin/home/play-with-me', {
+      method: 'POST',
+      body: JSON.stringify({ characterId }),
+    }),
+  removePlayWithMe: (characterId: string) =>
+    request<PlayWithMeAdminView>(
+      `/admin/home/play-with-me/${encodeURIComponent(characterId)}`,
+      { method: 'DELETE' },
     ),
+  orderPlayWithMe: (orderedIds: string[]) =>
+    request<PlayWithMeAdminView>('/admin/home/play-with-me/order', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  resetPlayWithMe: () =>
+    request<PlayWithMeAdminView>('/admin/home/play-with-me/reset', { method: 'POST' }),
+  recentCandidates: () =>
+    request<{ candidates: RecentCandidateView[] }>('/admin/home/recent/candidates'),
   addRecent: (characterId: string) =>
     request<RecentlyAddedAdminView>('/admin/home/recent', {
       method: 'POST',
@@ -933,6 +1040,16 @@ export const adminDiscoveryApi = {
       body: JSON.stringify({ orderedIds }),
     }),
   content: () => request<{ assets: TaggableAssetView[] }>('/admin/discovery/content'),
+  /**
+   * One asset's keywords. The endpoint already existed and is the same one the
+   * Discovery screen writes through — this is the missing READ half, so a
+   * keyword editor can show what an item currently carries without inventing a
+   * second source of truth.
+   */
+  assetKeywords: (assetId: string) =>
+    request<{ keywords: KeywordView[] }>(
+      `/admin/discovery/content/${encodeURIComponent(assetId)}/keywords`,
+    ),
   setAssetKeywords: (assetId: string, keywords: string[]) =>
     request<{ keywords: KeywordView[] }>(
       `/admin/discovery/content/${encodeURIComponent(assetId)}/keywords`,
@@ -1077,8 +1194,9 @@ export interface CharacterProfileDraft {
 
 export interface QuickCreatedCharacter {
   character: AdminCharacterView;
-  identity: VisualIdentityView;
-  primaryReference: PrimaryReferenceView;
+  /** Null when no photo was supplied — the first upload provisions v1. */
+  identity: VisualIdentityView | null;
+  primaryReference: PrimaryReferenceView | null;
 }
 
 /**
@@ -1107,24 +1225,56 @@ async function postMultipart<T>(path: string, form: FormData, failure: string): 
   return (await res.json()) as T;
 }
 
+/** One item on a character's content shelf. */
+export interface CharacterContentAsset {
+  assetId: string;
+  characterId: string;
+  kind: string;
+  status: 'generated' | 'under_review' | 'approved' | 'rejected';
+  mediaType: 'image' | 'video';
+  contentRating: 'sfw' | 'explicit';
+  requirementKey: string | null;
+  isPrimary: boolean;
+  position: number | null;
+  /** Opaque id-keyed admin locator. Never a storage key or path. */
+  previewUrl: string | null;
+  placement: {
+    categories: Array<{ id: string; slug: string; name: string; position: number }>;
+    heroPosition: number | null;
+  };
+  createdAt: string;
+  approvedAt: string | null;
+}
+
 export const adminCharactersApi = {
   list: () => request<AdminCharacterListItem[]>('/admin/characters'),
   /**
-   * Name + one image is enough to create a character: the server also creates
-   * visual identity v1, activates it, and files the image as her primary
-   * reference. The persona is filled in afterwards, by hand or by Autofill.
+   * A NAME is enough to create a character. Supply an image too and the server
+   * also creates visual identity v1, activates it and files the image as her
+   * primary reference; omit it and she simply exists, with her first identity
+   * provisioned by her first upload. The persona is filled in afterwards, by
+   * hand or by Autofill.
    */
-  quickCreate: (input: { name: string; displayName?: string; file: File }) => {
+  quickCreate: (input: { name: string; displayName?: string; file?: File | null }) => {
     const form = new FormData();
     form.append('name', input.name);
     if (input.displayName) form.append('displayName', input.displayName);
-    form.append('file', input.file);
+    if (input.file) form.append('file', input.file);
     return postMultipart<QuickCreatedCharacter>(
       '/admin/characters/quick',
       form,
       "Couldn't create the character",
     );
   },
+  /**
+   * Everything this character has, on her own page: approved, pending and
+   * rejected, each with an opaque preview locator, its category membership and
+   * its Hero position. Saves a trip to Review just to find out what exists.
+   */
+  content: (characterId: string) =>
+    request<{ assets: CharacterContentAsset[] }>(
+      `/admin/characters/${encodeURIComponent(characterId)}/content`,
+    ),
   /** What this character still needs, derived from the configuration. */
   requirements: (characterId: string) =>
     request<{
@@ -1139,7 +1289,12 @@ export const adminCharactersApi = {
       { method: 'POST' },
     ),
   get: (id: string) => request<AdminCharacterDetail>(`/admin/characters/${encodeURIComponent(id)}`),
-  create: (draft: CharacterDraft) =>
+  /**
+   * Creates a character. Only `name` is required — the server defaults the rest
+   * and the persona is written (or Autofilled) afterwards. The full draft shape
+   * stays available for callers that have one.
+   */
+  create: (draft: Partial<CharacterDraft> & { name: string }) =>
     request<AdminCharacterView>('/admin/characters', {
       method: 'POST',
       body: JSON.stringify(draft),

@@ -5,20 +5,26 @@ import {
   addRecentCharacter,
   HomeAdminOrderError,
   HomeAdminValidationError,
+  addPlayWithMeCharacter,
   listHeroCandidates,
   listHeroClipsForAdmin,
   listHomeCategories,
+  listPlayWithMeCandidates,
+  listPlayWithMeForAdmin,
   listRecentCandidates,
   listRecentlyAddedForAdmin,
   removeHeroClip,
+  removePlayWithMeCharacter,
   removeRecentCharacter,
   reorderHeroClips,
   reorderHomeCategories,
+  reorderPlayWithMeCharacters,
   reorderRecentCharacters,
+  resetPlayWithMe,
   resetRecentlyAdded,
   setCategoryHomePublication,
 } from '../services/home-admin-service.js';
-import { composeHome } from '../services/home-composition-service.js';
+import { composeHome, heroFallback, listPlayWithMe } from '../services/home-composition-service.js';
 
 /**
  * Admin → Categories & Publishing → Home (US-102.4).
@@ -74,11 +80,24 @@ export default async function adminHomeRoutes(
 
   /* ---------------- the composition ---------------- */
 
-  app.get('/admin/home', adminOnly, async () => ({
-    categories: await listHomeCategories(opts.db),
-    hero: await listHeroClipsForAdmin(opts.db),
-    recentlyAdded: await listRecentlyAddedForAdmin(opts.db),
-  }));
+  app.get('/admin/home', adminOnly, async () => {
+    const hero = await listHeroClipsForAdmin(opts.db);
+    return {
+      categories: await listHomeCategories(opts.db),
+      hero,
+      /**
+       * What the public Hero is showing RIGHT NOW because nothing is assigned.
+       *
+       * Computed on read and never stored. An operator must be able to see the
+       * difference between "I chose these clips" and "nothing is chosen, so the
+       * app is borrowing some" — otherwise a full-looking Hero on the app looks
+       * like configuration that does not exist. Empty whenever `hero` is not,
+       * because a configured Hero is never topped up.
+       */
+      heroFallback: hero.length > 0 ? [] : heroFallback(await listPlayWithMe(opts.db)),
+      recentlyAdded: await listRecentlyAddedForAdmin(opts.db),
+    };
+  });
 
   /**
    * Preview — the real public payload, for both audience cases.
@@ -203,6 +222,70 @@ export default async function adminHomeRoutes(
       }
       return { clips: await listHeroClipsForAdmin(opts.db) };
     },
+  );
+
+  /* ---------------- play with me ---------------- */
+
+  app.get('/admin/home/play-with-me', adminOnly, async () => listPlayWithMeForAdmin(opts.db));
+
+  app.get<{ Querystring: { limit?: string } }>(
+    '/admin/home/play-with-me/candidates',
+    adminOnly,
+    async (request) => ({
+      candidates: await listPlayWithMeCandidates(opts.db, boundedLimit(request.query.limit)),
+    }),
+  );
+
+  app.post<{ Body: { characterId: string } }>(
+    '/admin/home/play-with-me',
+    {
+      ...adminOnly,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['characterId'],
+          additionalProperties: false,
+          properties: { characterId: { type: 'string' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        return await addPlayWithMeCharacter(opts.db, request.body.characterId);
+      } catch (error) {
+        return failed(reply, error);
+      }
+    },
+  );
+
+  app.delete<{ Params: { characterId: string } }>(
+    '/admin/home/play-with-me/:characterId',
+    adminOnly,
+    async (request, reply) => {
+      try {
+        return await removePlayWithMeCharacter(opts.db, request.params.characterId);
+      } catch (error) {
+        return failed(reply, error);
+      }
+    },
+  );
+
+  app.put<{ Body: { orderedIds: string[] } }>(
+    '/admin/home/play-with-me/order',
+    { ...adminOnly, schema: { body: orderBody } },
+    async (request, reply) => {
+      try {
+        await reorderPlayWithMeCharacters(opts.db, request.body.orderedIds);
+      } catch (error) {
+        return failed(reply, error);
+      }
+      return listPlayWithMeForAdmin(opts.db);
+    },
+  );
+
+  /** Clears the override, restoring the automatic alphabetical list. */
+  app.post('/admin/home/play-with-me/reset', adminOnly, async () =>
+    resetPlayWithMe(opts.db),
   );
 
   /* ---------------- recently added ---------------- */

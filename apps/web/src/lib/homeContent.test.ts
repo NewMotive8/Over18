@@ -30,7 +30,15 @@ function clip(id: string): PublicClip {
 }
 
 function card(id: string): PublicCharacterCard {
-  return { id, displayName: `Name ${id}`, shortBio: 'bio', clip: clip(`clip-${id}`) };
+  return {
+    id,
+    name: id,
+    displayName: `Name ${id}`,
+    shortBio: 'bio',
+    profileImage: null,
+    categories: [],
+    clip: clip(`clip-${id}`),
+  };
 }
 
 function rail(id: string, clips: PublicClip[] = [clip(`${id}-a`)]): PublicCategoryRail {

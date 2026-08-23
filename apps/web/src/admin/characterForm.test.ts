@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   blockingError,
   canSubmit,
-  IMAGE_REQUIRED,
   NAME_TOO_SHORT,
   quickCreatePayload,
   slugify,
@@ -95,16 +94,23 @@ describe('the name rule is exactly what it was', () => {
     }
   });
 
-  it('still requires an image, and reports it FIRST', () => {
-    // Order preserved from the original inline implementation: an operator with
-    // neither an image nor a name sees the image message, as they always did.
-    expect(blockingError(draft('Nova', false))).toBe(IMAGE_REQUIRED);
-    expect(blockingError(draft('!', false))).toBe(IMAGE_REQUIRED);
+  it('NO LONGER requires an image — a name is enough to create a character', () => {
+    // The old rule made a character impossible to create until its media
+    // existed, which is the wrong way round: an operator builds the roster
+    // first and uploads over the following days.
+    expect(blockingError(draft('Nova', false))).toBeNull();
+    expect(canSubmit(draft('Nova', false))).toBe(true);
+    expect(shown({ draft: draft('Nova', false) })).toBeNull();
   });
 
-  it('clears the image error the moment an image is chosen', () => {
-    expect(shown({ draft: draft('Nova', false) })).toBe(IMAGE_REQUIRED);
-    expect(shown({ draft: draft('Nova', true) })).toBeNull();
+  it('still refuses a bad NAME whether or not an image is present', () => {
+    expect(blockingError(draft('!', false))).toBe(NAME_TOO_SHORT);
+    expect(blockingError(draft('!', true))).toBe(NAME_TOO_SHORT);
+  });
+
+  it('an image is accepted but never demanded', () => {
+    expect(blockingError(draft('Nova', true))).toBeNull();
+    expect(blockingError(draft('Nova', false))).toBeNull();
   });
 
   it('derives the slug exactly as before', () => {

@@ -1,7 +1,12 @@
 import { Link } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PublicCharacter } from '@over18/shared';
-import { API_URL, charactersApi, contentLibraryApi, type LibraryAssetView } from '../../lib/api';
+import {
+  API_URL,
+  adminCharactersApi,
+  contentLibraryApi,
+  type AdminCharacterListItem,
+  type LibraryAssetView,
+} from '../../lib/api';
 import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
 
 /**
@@ -89,11 +94,28 @@ export default function ContentLibraryPage() {
   // Manual upload. characterId is REQUIRED: a library asset cannot exist
   // without a character, so the operator picks one — nothing is inferred.
   const fileRef = useRef<HTMLInputElement>(null);
-  const [characters, setCharacters] = useState<PublicCharacter[]>([]);
+  const [characters, setCharacters] = useState<AdminCharacterListItem[]>([]);
   const [uploadCharacterId, setUploadCharacterId] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  /**
+   * The item just uploaded, kept so the operator SEES it. A confirmation
+   * sentence alone reads like the file went nowhere: uploads land in Review,
+   * and the Library lists approved items only, so without this the shelf below
+   * is unchanged and the upload looks lost.
+   */
+  const [justUploaded, setJustUploaded] = useState<LibraryAssetView | null>(null);
+  /**
+   * The selected character's clips that are still IN REVIEW.
+   *
+   * The Library grid below lists approved content only — that is what a library
+   * is — so a clip uploaded a moment ago is legitimately not in it, and the
+   * page therefore looked like the upload had failed. This strip is the
+   * missing half of the answer: everything waiting for this character, with
+   * real previews, using the status filter the library route already accepts.
+   */
+  const [inReview, setInReview] = useState<LibraryAssetView[]>([]);
 
   // Delete: two-step confirmation, reset whenever a different asset is opened.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -118,9 +140,42 @@ export default function ContentLibraryPage() {
     void load();
   }, [load]);
 
-  // Character choices for the upload target, from the existing public endpoint.
+  /** Everything still awaiting a decision for whoever is selected. */
+  const loadInReview = useCallback(async () => {
+    if (!uploadCharacterId) {
+      setInReview([]);
+      return;
+    }
+    try {
+      const data = await contentLibraryApi.list({
+        characterId: uploadCharacterId,
+        status: 'under_review',
+      });
+      setInReview(data.assets);
+    } catch {
+      setInReview([]);
+    }
+  }, [uploadCharacterId]);
+
   useEffect(() => {
-    charactersApi
+    void loadInReview();
+  }, [loadInReview]);
+
+  /**
+   * Upload targets come from the ADMIN character list, not the public one.
+   *
+   * The public list is active characters only. A character is created inactive
+   * and stays that way until her profile is written and she is published — so
+   * the public list hides exactly the characters an operator has just made and
+   * most wants to upload to. She was absent from this dropdown with no
+   * explanation, and the Upload button simply stayed dead.
+   *
+   * `/admin/characters` is the list that already backs the Characters screen
+   * and returns every character regardless of status. Nothing about what is
+   * PUBLIC changes here; this is which characters an operator may work on.
+   */
+  useEffect(() => {
+    adminCharactersApi
       .list()
       .then((list) => {
         setCharacters(list);
@@ -160,20 +215,23 @@ export default function ContentLibraryPage() {
       setUploadError(null);
       setUploadNotice(null);
       try {
-        await contentLibraryApi.upload(file, uploadCharacterId);
-        // The upload does NOT appear here: it lands in Review, like generated
-        // content, and reaches the Library when it is approved. Saying so
-        // explicitly matters — otherwise the file looks like it vanished.
+        const created = await contentLibraryApi.upload(file, uploadCharacterId);
+        // The upload does NOT join the list below: it lands in Review, like
+        // generated content, and reaches the Library when it is approved. It is
+        // shown immediately anyway, with its real preview, so the operator can
+        // see what arrived rather than take the sentence on trust.
+        setJustUploaded(created);
         setUploadNotice('Uploaded to Review. It joins the Library once approved.');
-        await load();
+        await Promise.all([load(), loadInReview()]);
       } catch (err) {
+        setJustUploaded(null);
         setUploadError(err instanceof Error ? err.message : 'Upload failed.');
       } finally {
         setUploading(false);
         if (fileRef.current) fileRef.current.value = ''; // allow re-picking the same file
       }
     },
-    [uploadCharacterId, load],
+    [uploadCharacterId, load, loadInReview],
   );
 
   return (
@@ -197,7 +255,11 @@ export default function ContentLibraryPage() {
           >
             {characters.map((c) => (
               <option key={c.id} value={c.id}>
+                {/* Not-live is worth saying: uploading to her is allowed and
+                    normal, but nothing she has will be publicly visible until
+                    she is published. */}
                 {c.displayName}
+                {c.status !== 'active' ? ' — not live' : ''}
               </option>
             ))}
           </select>
@@ -219,7 +281,75 @@ export default function ContentLibraryPage() {
         </div>
       </div>
 
-      {uploadNotice && (
+      {justUploaded && (
+        <div className="mt-3 flex items-start gap-3 rounded-md border border-emerald-900 bg-emerald-950/30 p-3">
+          {/* The shared tile rule: contained, never cropped. An operator
+              checking what they just uploaded must see the whole frame. */}
+          <div className={`w-20 shrink-0 overflow-hidden rounded-md ${tileFrameClass()}`}>
+            {justUploaded.previewUrl ? (
+              justUploaded.mediaType === 'video' ? (
+                <video
+                  src={`${API_URL}${justUploaded.previewUrl}`}
+                  muted
+                  preload="metadata"
+                  className={TILE_MEDIA_CLASS}
+                />
+              ) : (
+                <img
+                  src={`${API_URL}${justUploaded.previewUrl}`}
+                  alt=""
+                  className={TILE_MEDIA_CLASS}
+                />
+              )
+            ) : null}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-emerald-300">Uploaded</p>
+            <p className="mt-0.5 text-xs text-emerald-200/80">
+              {uploadNotice ?? 'In Review. It joins the Library once approved.'}
+            </p>
+            <p className="mt-1 flex flex-wrap gap-x-3 text-xs">
+              <Link to="/admin/content/review" className="text-emerald-300 underline">
+                Open Review
+              </Link>
+              <Link
+                to={`/admin/characters/${justUploaded.characterId}`}
+                className="text-emerald-300 underline"
+              >
+                See it on {justUploaded.characterName}
+              </Link>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Waiting on a decision for the selected character. Not part of the
+          Library — a library is approved content — but the operator has to be
+          able to see that what they uploaded exists. */}
+      {inReview.length > 0 && (
+        <section aria-label="In review" className="mt-4">
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-medium text-zinc-200">
+              In review for{' '}
+              {characters.find((c) => c.id === uploadCharacterId)?.displayName ??
+                'this character'}{' '}
+              ({inReview.length})
+            </h2>
+            <Link to="/admin/content/review" className="text-xs text-zinc-400 underline">
+              Open Review
+            </Link>
+          </div>
+          <ul className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+            {inReview.map((asset) => (
+              <li key={asset.assetId}>
+                <Tile a={asset} onOpen={() => openAsset(asset)} dense />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {uploadNotice && !justUploaded && (
         <p className="mt-3 rounded-md border border-emerald-900 bg-emerald-950/30 px-4 py-2 text-sm text-emerald-300">
           {uploadNotice}{' '}
           <Link to="/admin/content/review" className="underline">

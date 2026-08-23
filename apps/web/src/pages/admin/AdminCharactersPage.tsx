@@ -101,24 +101,26 @@ export default function AdminCharactersPage() {
     setSubmitAttempted(true);
     // Same two checks, same order, same wording as before — just stated once,
     // in one place, so the form and the submit gate cannot disagree.
-    if (blockingError(draft) !== null || !file) return;
+    if (blockingError(draft) !== null) return;
 
     setSaving(true);
     setServerError(null);
     try {
-      // The image becomes her primary reference on visual identity v1 —
-      // one file, stored once, no copy made to fill profile_image.
-      const created = await adminCharactersApi.quickCreate({
-        ...quickCreatePayload(draft),
-        file,
-      });
+      // TWO PATHS, ONE FORM. With a photo the server also creates visual
+      // identity v1, activates it and files the image as her primary
+      // reference. Without one it creates just the character — she exists
+      // immediately and everything else is added later. Uploading to her at
+      // that point provisions the same v1 identity on demand, so skipping the
+      // photo costs nothing downstream.
+      const created = await adminCharactersApi.quickCreate({ ...quickCreatePayload(draft), file });
+      const characterId = created.character.id;
       setDisplayName('');
       setFile(null);
       setCreating(false);
       setSubmitAttempted(false);
       // Straight to her page: the persona is the next thing to do, and that is
       // where Autofill lives.
-      navigate(`/admin/characters/${created.character.id}`);
+      navigate(`/admin/characters/${characterId}`);
     } catch (error) {
       setServerError(
         error instanceof ApiRequestError ? error.message : "Couldn't create the character.",
@@ -160,8 +162,9 @@ export default function AdminCharactersPage() {
         >
           <h2 className="text-sm font-medium text-zinc-200">New character</h2>
           <p className="text-xs text-zinc-500">
-            A name and one photo is all you need. You can write her personality — or have it
-            written for you — on her page afterwards.
+            A name is all you need. A photo is optional — add it now to set her first primary
+            reference, or upload content later. You can write her personality, or have it
+            written for you, on her page afterwards.
           </p>
 
           <label className="block">
@@ -182,7 +185,9 @@ export default function AdminCharactersPage() {
           </label>
 
           <label className="block">
-            <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">Photo</span>
+            <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+              Photo (optional)
+            </span>
             <input
               ref={fileInput}
               type="file"
@@ -194,7 +199,7 @@ export default function AdminCharactersPage() {
               className="mt-1 block w-full text-sm text-zinc-300 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-2 file:text-sm file:text-zinc-200"
             />
             <span className="mt-1 block text-xs text-zinc-500">
-              JPEG, PNG or WebP. This becomes her first primary reference.
+              JPEG, PNG or WebP. If you add one it becomes her first primary reference.
             </span>
           </label>
 

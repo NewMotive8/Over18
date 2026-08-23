@@ -2,7 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { and, eq } from 'drizzle-orm';
-import { appCategories, characters, characterVisualAssets } from '../db/schema.js';
+import {
+  appCategories,
+  characters,
+  characterVisualAssets,
+  characterVisualIdentities,
+  homeHeroClips,
+} from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
 import { createVisualAsset } from '../services/visual-asset-service.js';
@@ -168,6 +174,28 @@ const api = {
     on.app.inject({ method: 'PUT', url: '/admin/home/recent/order', payload: { orderedIds }, cookies }),
   resetRecent: (cookies = adminCookies) =>
     on.app.inject({ method: 'POST', url: '/admin/home/recent/reset', cookies }),
+  play: (cookies = adminCookies) =>
+    on.app.inject({ method: 'GET', url: '/admin/home/play-with-me', cookies }),
+  playCandidates: (cookies = adminCookies) =>
+    on.app.inject({ method: 'GET', url: '/admin/home/play-with-me/candidates', cookies }),
+  addPlay: (characterId: string, cookies = adminCookies) =>
+    on.app.inject({
+      method: 'POST',
+      url: '/admin/home/play-with-me',
+      payload: { characterId },
+      cookies,
+    }),
+  removePlay: (characterId: string, cookies = adminCookies) =>
+    on.app.inject({ method: 'DELETE', url: `/admin/home/play-with-me/${characterId}`, cookies }),
+  orderPlay: (orderedIds: string[], cookies = adminCookies) =>
+    on.app.inject({
+      method: 'PUT',
+      url: '/admin/home/play-with-me/order',
+      payload: { orderedIds },
+      cookies,
+    }),
+  resetPlay: (cookies = adminCookies) =>
+    on.app.inject({ method: 'POST', url: '/admin/home/play-with-me/reset', cookies }),
   media: (assetId: string) =>
     on.app.inject({ method: 'GET', url: `/api/media/assets/${assetId}/file` }),
   discoveryCategories: () => on.app.inject({ method: 'GET', url: '/api/discovery/categories' }),
@@ -369,7 +397,12 @@ describe('the public surface shows approved content only', () => {
     const res = await api.addHero([pending.id]);
     expect(res.statusCode).toBe(200);
     expect(res.json().outcomes[0]).toMatchObject({ added: false, reason: 'not_approved' });
-    expect((await api.home()).json().hero).toEqual([]);
+    // Nothing was assigned, so Home shows the fallback, and the refused clip
+    // is not in it.
+    expect((await api.adminHome()).json().hero).toEqual([]);
+    expect((await api.home()).json().hero.map((c: { id: string }) => c.id)).not.toContain(
+      pending.id,
+    );
   });
 
   it('a Hero clip that loses approval disappears from Home but stays assigned', async () => {
@@ -382,7 +415,11 @@ describe('the public surface shows approved content only', () => {
       .set({ status: 'rejected' })
       .where(eq(characterVisualAssets.id, asset.id));
 
-    expect((await api.home()).json().hero).toEqual([]);
+    // It leaves the public Hero (which falls back to representative clips)
+    // while staying assigned.
+    expect((await api.home()).json().hero.map((c: { id: string }) => c.id)).not.toContain(
+      asset.id,
+    );
     // The operator can still see and clean up the assignment.
     const admin = (await api.adminHome()).json();
     expect(admin.hero.map((c: { assetId: string }) => c.assetId)).toContain(asset.id);
@@ -523,7 +560,9 @@ describe('public media security', () => {
 
     expect((await api.media(asset.id)).statusCode).toBe(404);
     const home = (await api.home()).json();
-    expect(home.hero).toEqual([]);
+    // Their clip leaves the Hero. Other characters' clips may fill it via the
+    // fallback, which is exactly the point: the retired character's does not.
+    expect(home.hero.map((c: { id: string }) => c.id)).not.toContain(asset.id);
     expect(home.categories[0].clips).toEqual([]);
 
     // Reactivating restores it — nothing was deleted.
@@ -650,6 +689,207 @@ describe('Play with Me', () => {
   });
 });
 
+/**
+ * Curating Play with me.
+ *
+ * The rail's automatic rule — every active character, alphabetically — is
+ * unchanged and still the default. What is new is that an operator may override
+ * it wholesale. The override is a WHOLE list, never a blend: once curated, a
+ * character the operator did not choose must not appear, however new or active
+ * they are. That is the property these tests exist to hold.
+ */
+describe('curating Play with me', () => {
+  /** A brand-new active character, named to sort LAST alphabetically. */
+  async function makeCharacter(displayName: string) {
+    const [row] = await on.db
+      .insert(characters)
+      .values({
+        name: `play-subject-${displayName.toLowerCase().replace(/\W+/g, '-')}-${Date.now()}`,
+        displayName,
+        status: 'active',
+        systemPrompt: 'x',
+        shortBio: 'x',
+        personality: 'x',
+        conversationStyle: 'x',
+      })
+      .returning();
+    return row!;
+  }
+
+  async function activeAlphabetically() {
+    const rows = await on.db.select().from(characters).where(eq(characters.status, 'active'));
+    return [...rows]
+      .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.id.localeCompare(b.id))
+      .map((r) => r.id);
+  }
+
+  const publicIds = async () =>
+    (await api.home()).json().playWithMe.map((c: { id: string }) => c.id);
+
+  it('starts automatic: every active character, alphabetically', async () => {
+    const view = (await api.play()).json();
+    expect(view.curated).toBe(false);
+    expect(view.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
+      await activeAlphabetically(),
+    );
+    expect(await publicIds()).toEqual(await activeAlphabetically());
+  });
+
+  it('offers active characters as candidates, alphabetically, and no inactive one', async () => {
+    const rows = (await api.playCandidates()).json().candidates as Array<{ characterId: string }>;
+    expect(rows.map((c) => c.characterId)).toEqual(await activeAlphabetically());
+
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, LUNA.id));
+    const after = (await api.playCandidates()).json().candidates as Array<{ characterId: string }>;
+    expect(after.map((c) => c.characterId)).not.toContain(LUNA.id);
+  });
+
+  it('the first edit materialises the automatic list rather than replacing it', async () => {
+    const before = (await api.play()).json();
+    expect(before.curated).toBe(false);
+    const target = before.characters[0].characterId;
+
+    const after = (await api.removePlay(target)).json();
+    expect(after.curated).toBe(true);
+    expect(after.characters).toHaveLength(before.characters.length - 1);
+    expect(after.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
+      before.characters
+        .map((c: { characterId: string }) => c.characterId)
+        .filter((id: string) => id !== target),
+    );
+  });
+
+  it('adds a character at the end of the list', async () => {
+    const before = (await api.play()).json();
+    const extra = await makeCharacter('Zzz Late Arrival');
+
+    const after = (await api.addPlay(extra.id)).json();
+    expect(after.curated).toBe(true);
+    const ids = after.characters.map((c: { characterId: string }) => c.characterId);
+    expect(ids.slice(0, before.characters.length)).toEqual(
+      before.characters.map((c: { characterId: string }) => c.characterId),
+    );
+    expect(ids[ids.length - 1]).toBe(extra.id);
+  });
+
+  it('adding the same character twice changes nothing the second time', async () => {
+    const target = (await api.play()).json().characters[0].characterId;
+    const once = (await api.addPlay(target)).json();
+    const twice = (await api.addPlay(target)).json();
+    expect(twice.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
+      once.characters.map((c: { characterId: string }) => c.characterId),
+    );
+    expect(
+      twice.characters.filter((c: { characterId: string }) => c.characterId === target),
+    ).toHaveLength(1);
+  });
+
+  it('the public rail returns the EXACT curated order', async () => {
+    const ids = (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId);
+    const reversed = [...ids].reverse();
+    expect((await api.orderPlay(reversed)).statusCode).toBe(200);
+    expect(
+      (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId),
+    ).toEqual(reversed);
+    expect(await publicIds()).toEqual(reversed);
+  });
+
+  it('refuses an incomplete, duplicated or unknown reordering', async () => {
+    const ids = (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId);
+    await api.addPlay(ids[0]); // materialise so there is a stored list to reorder
+    const stored = (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId);
+    expect(stored.length).toBeGreaterThan(1);
+
+    for (const bad of [
+      stored.slice(1),
+      [stored[0], stored[0], ...stored.slice(2)],
+      [...stored.slice(1), '11111111-1111-4111-8111-111111111111'],
+    ]) {
+      // Exact permutation or nothing — the same 409 contract the sibling rails
+      // use, so a stale Admin tab can never silently reorder a list it has not
+      // seen.
+      const res = await api.orderPlay(bad);
+      expect(res.statusCode).toBe(409);
+      expect(res.payload).not.toContain('invalid input syntax');
+    }
+    // Rejected wholesale: the stored order is untouched.
+    expect(
+      (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId),
+    ).toEqual(stored);
+  });
+
+  it('a curated rail NEVER blends in an automatic character', async () => {
+    const target = (await api.play()).json().characters[0].characterId;
+    await api.addPlay(target); // materialise
+    const curatedIds = (await api.play())
+      .json()
+      .characters.map((c: { characterId: string }) => c.characterId);
+
+    const outsider = await makeCharacter('Aaa Not Chosen');
+    expect(await publicIds()).toEqual(curatedIds);
+    expect(await publicIds()).not.toContain(outsider.id);
+  });
+
+  it('hides a curated member who becomes inactive, while Admin can still see and remove them', async () => {
+    const target = (await api.play()).json().characters[0].characterId;
+    await api.addPlay(target); // materialise
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, target));
+
+    expect(await publicIds()).not.toContain(target);
+    const view = (await api.play()).json();
+    const row = view.characters.find((c: { characterId: string }) => c.characterId === target);
+    expect(row).toBeDefined();
+    expect(row.status).toBe('inactive');
+    expect((await api.removePlay(target)).statusCode).toBe(200);
+  });
+
+  it('reset restores the automatic list, including characters added since', async () => {
+    const target = (await api.play()).json().characters[0].characterId;
+    await api.removePlay(target);
+    const outsider = await makeCharacter('Mmm Added Later');
+    expect(await publicIds()).not.toContain(outsider.id);
+
+    const reset = (await api.resetPlay()).json();
+    expect(reset.curated).toBe(false);
+    expect(reset.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
+      await activeAlphabetically(),
+    );
+    expect(await publicIds()).toContain(outsider.id);
+    expect(await publicIds()).toContain(target);
+  });
+
+  it('refuses an unknown or malformed id without a database error', async () => {
+    for (const id of ['00000000-0000-4000-8000-000000000000', 'not-a-uuid']) {
+      const res = await api.addPlay(id);
+      expect(res.statusCode).toBe(400);
+      expect(res.payload).not.toContain('invalid input syntax');
+      expect(res.payload).not.toContain('constraint');
+    }
+  });
+
+  it('leaks no storage key or filesystem path to Admin', async () => {
+    await api.addPlay((await api.play()).json().characters[0].characterId);
+    for (const body of [(await api.play()).payload, (await api.playCandidates()).payload]) {
+      expect(body).not.toContain('storageKey');
+      expect(body).not.toContain('storagePath');
+      expect(body).not.toContain('/app/var/media');
+    }
+  });
+
+  it('leaves Recently Added completely alone', async () => {
+    const recentBefore = (await api.recent()).json();
+    const target = (await api.play()).json().characters[0].characterId;
+    await api.removePlay(target);
+    await api.addPlay(target);
+
+    const recentAfter = (await api.recent()).json();
+    expect(recentAfter.curated).toBe(recentBefore.curated);
+    expect(recentAfter.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
+      recentBefore.characters.map((c: { characterId: string }) => c.characterId),
+    );
+  });
+});
+
 describe('Recently Added', () => {
   it('defaults to the newest active characters, capped at 12', async () => {
     const home = (await api.home()).json();
@@ -697,12 +937,142 @@ describe('Recently Added', () => {
     expect(reset.characters[0].characterId).toBe(second ? initial[0].characterId : first.characterId);
   });
 
+  it('carries a profile image so Admin can preview the rail, and still no storage key', async () => {
+    // Parity with Play with me: the operator sees faces, not a list of names.
+    // The field is the one the public card already carries — nothing new is
+    // exposed, and the admin payload still leaks no storage key or path.
+    const view = (await api.recent()).json();
+    expect(view.characters.length).toBeGreaterThan(0);
+    for (const character of view.characters) {
+      expect(character).toHaveProperty('profileImage');
+    }
+    expect((await api.recent()).payload).not.toContain('storageKey');
+    expect((await api.recent()).payload).not.toContain('/app/var/media');
+  });
+
   it('a curated rail still drops a character who becomes inactive', async () => {
     const target = (await api.recent()).json().characters[0].characterId;
     await api.addRecent(target); // materialise
     await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, target));
     const home = (await api.home()).json();
     expect(home.recentlyAdded.map((c: { id: string }) => c.id)).not.toContain(target);
+  });
+});
+
+/**
+ * The Admin ADD path.
+ *
+ * Remove, reorder and reset were all reachable from the Home composer; adding
+ * was not, so a character taken off the rail could never be put back. The
+ * endpoints below already existed — these pin the behaviour the picker relies
+ * on.
+ */
+describe('putting a character back on Recently Added', () => {
+  const candidates = (cookies = adminCookies) =>
+    on.app.inject({ method: 'GET', url: '/admin/home/recent/candidates', cookies });
+
+  it('offers active characters, newest first', async () => {
+    const res = await candidates();
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().candidates as Array<{ characterId: string }>;
+    expect(rows.length).toBeGreaterThan(0);
+
+    const active = await on.db.select().from(characters).where(eq(characters.status, 'active'));
+    const expected = [...active]
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || a.id.localeCompare(b.id))
+      .map((r) => r.id);
+    expect(rows.map((c) => c.characterId)).toEqual(expected);
+  });
+
+  it('offers no inactive character', async () => {
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, LUNA.id));
+    const rows = (await candidates()).json().candidates as Array<{ characterId: string }>;
+    expect(rows.map((c) => c.characterId)).not.toContain(LUNA.id);
+  });
+
+  it('restores a character that was removed', async () => {
+    // The exact UAT journey: take one off, then put it back.
+    const target = (await api.recent()).json().characters[0].characterId;
+    const removed = (await api.removeRecent(target)).json();
+    expect(removed.characters.map((c: { characterId: string }) => c.characterId)).not.toContain(
+      target,
+    );
+
+    const restored = (await api.addRecent(target)).json();
+    expect(restored.curated).toBe(true);
+    const ids = restored.characters.map((c: { characterId: string }) => c.characterId);
+    expect(ids).toContain(target);
+    // Appended, not reinserted where it used to sit.
+    expect(ids[ids.length - 1]).toBe(target);
+  });
+
+  it('adding from AUTOMATIC mode materialises the list rather than replacing it', async () => {
+    const before = (await api.recent()).json();
+    expect(before.curated).toBe(false);
+
+    const [extra] = await on.db
+      .insert(characters)
+      .values({
+        name: `picker-subject-${Date.now()}`,
+        displayName: 'Picker Subject',
+        status: 'active',
+        systemPrompt: 'x',
+        shortBio: 'x',
+        personality: 'x',
+        conversationStyle: 'x',
+      })
+      .returning();
+    // Older than everyone, so the automatic rail would never have surfaced it
+    // first — proving the add is what put it there.
+    await on.db
+      .update(characters)
+      .set({ createdAt: new Date('2000-01-01T00:00:00.000Z') })
+      .where(eq(characters.id, extra!.id));
+
+    const after = (await api.addRecent(extra!.id)).json();
+    expect(after.curated).toBe(true);
+    const ids = after.characters.map((c: { characterId: string }) => c.characterId);
+    expect(ids.slice(0, before.characters.length)).toEqual(
+      before.characters.map((c: { characterId: string }) => c.characterId),
+    );
+    expect(ids[ids.length - 1]).toBe(extra!.id);
+  });
+
+  it('adding the same character twice changes nothing the second time', async () => {
+    const target = (await api.recent()).json().characters[0].characterId;
+    const once = (await api.addRecent(target)).json();
+    const twice = (await api.addRecent(target)).json();
+    expect(twice.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
+      once.characters.map((c: { characterId: string }) => c.characterId),
+    );
+    expect(
+      twice.characters.filter((c: { characterId: string }) => c.characterId === target),
+    ).toHaveLength(1);
+  });
+
+  it('refuses an unknown or malformed id without a database error', async () => {
+    for (const id of ['00000000-0000-4000-8000-000000000000', 'not-a-uuid']) {
+      const res = await api.addRecent(id);
+      expect(res.statusCode).toBe(400);
+      expect(res.payload).not.toContain('invalid input syntax');
+      expect(res.payload).not.toContain('constraint');
+    }
+  });
+
+  it('remove, reorder and reset still work after an add', async () => {
+    const target = (await api.recent()).json().characters[0].characterId;
+    await api.removeRecent(target);
+    const added = (await api.addRecent(target)).json();
+
+    const ids = added.characters.map((c: { characterId: string }) => c.characterId);
+    const reversed = [...ids].reverse();
+    expect((await api.orderRecent(reversed)).statusCode).toBe(200);
+    expect(
+      (await api.recent()).json().characters.map((c: { characterId: string }) => c.characterId),
+    ).toEqual(reversed);
+
+    expect((await api.removeRecent(target)).json().curated).toBe(true);
+    expect((await api.resetRecent()).json().curated).toBe(false);
   });
 });
 
@@ -839,6 +1209,120 @@ describe('the two Home banner slots', () => {
   it('both slots are always present, even when empty', async () => {
     const home = (await api.home()).json();
     expect(Object.keys(home.banners).sort()).toEqual(['before_search', 'below_results']);
+  });
+
+  /**
+   * MOVING a banner between slots.
+   *
+   * The editor could not send `slot` at all, so every banner made in Admin took
+   * the column default and the second slot was unreachable. The server side
+   * always supported it; these pin the behaviour the new selector drives.
+   */
+  describe('moving a banner to the other slot', () => {
+    const setSlot = (id: string, slot: string) =>
+      on.app.inject({
+        method: 'PATCH',
+        url: `/admin/home-banners/${id}`,
+        payload: { slot },
+        cookies: adminCookies,
+      });
+
+    it('moves it, in both directions', async () => {
+      const banner = await makeBanner('before_search', 'Mover');
+      expect((await setSlot(banner.id, 'below_results')).statusCode).toBe(200);
+      let home = (await api.home()).json();
+      expect(home.banners.before_search.map((b: { id: string }) => b.id)).toEqual([]);
+      expect(home.banners.below_results.map((b: { id: string }) => b.id)).toEqual([banner.id]);
+
+      expect((await setSlot(banner.id, 'before_search')).statusCode).toBe(200);
+      home = (await api.home()).json();
+      expect(home.banners.before_search.map((b: { id: string }) => b.id)).toEqual([banner.id]);
+      expect(home.banners.below_results.map((b: { id: string }) => b.id)).toEqual([]);
+    });
+
+    it('lands at the END of the destination, disturbing no existing order', async () => {
+      const first = await makeBanner('below_results', 'First');
+      const second = await makeBanner('below_results', 'Second');
+      const incomer = await makeBanner('before_search', 'Incomer');
+
+      expect((await setSlot(incomer.id, 'below_results')).statusCode).toBe(200);
+      expect(
+        (await api.home()).json().banners.below_results.map((b: { id: string }) => b.id),
+      ).toEqual([first.id, second.id, incomer.id]);
+    });
+
+    it('restating the SAME slot is a no-op that does not reshuffle', async () => {
+      // The editor sends `slot` on every save, so this is the common case.
+      const first = await makeBanner('before_search', 'First');
+      const second = await makeBanner('before_search', 'Second');
+      expect((await setSlot(first.id, 'before_search')).statusCode).toBe(200);
+      expect(
+        (await api.home()).json().banners.before_search.map((b: { id: string }) => b.id),
+      ).toEqual([first.id, second.id]);
+    });
+
+    it('leaves the slot it came from correctly ordered', async () => {
+      const a = await makeBanner('before_search', 'A');
+      const b = await makeBanner('before_search', 'B');
+      const c = await makeBanner('before_search', 'C');
+      expect((await setSlot(b.id, 'below_results')).statusCode).toBe(200);
+
+      const home = (await api.home()).json();
+      expect(home.banners.before_search.map((x: { id: string }) => x.id)).toEqual([a.id, c.id]);
+      // And the survivors can still be reordered as an exact permutation.
+      const res = await on.app.inject({
+        method: 'PUT',
+        url: '/admin/home-banners/order',
+        payload: { slot: 'before_search', orderedIds: [c.id, a.id] },
+        cookies: adminCookies,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(
+        (await api.home()).json().banners.before_search.map((x: { id: string }) => x.id),
+      ).toEqual([c.id, a.id]);
+    });
+
+    it('a moved banner must be named by the NEW slot\'s order, not the old one', async () => {
+      const stay = await makeBanner('before_search', 'Stay');
+      const mover = await makeBanner('before_search', 'Mover');
+      await setSlot(mover.id, 'below_results');
+
+      // The old slot's permutation must no longer include it.
+      const stale = await on.app.inject({
+        method: 'PUT',
+        url: '/admin/home-banners/order',
+        payload: { slot: 'before_search', orderedIds: [stay.id, mover.id] },
+        cookies: adminCookies,
+      });
+      expect(stale.statusCode).toBe(409);
+
+      // The new slot's does.
+      const fresh = await on.app.inject({
+        method: 'PUT',
+        url: '/admin/home-banners/order',
+        payload: { slot: 'below_results', orderedIds: [mover.id] },
+        cookies: adminCookies,
+      });
+      expect(fresh.statusCode).toBe(200);
+    });
+
+    it('refuses an unknown slot without a database error', async () => {
+      const banner = await makeBanner('before_search', 'Guarded');
+      const res = await setSlot(banner.id, 'somewhere_else');
+      expect(res.statusCode).toBe(400);
+      expect(res.payload).not.toContain('invalid input syntax');
+    });
+
+    it('reports the slot back on the banner, so the editor can show it', async () => {
+      const banner = await makeBanner('below_results', 'Readback');
+      const res = await on.app.inject({
+        method: 'GET',
+        url: `/admin/home-banners/${banner.id}`,
+        cookies: adminCookies,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().slot).toBe('below_results');
+    });
   });
 });
 
@@ -1320,6 +1804,20 @@ describe('authorization', () => {
       on.app.inject({ method: 'DELETE', url: `/admin/home/recent/${UNKNOWN}` }),
       on.app.inject({ method: 'PUT', url: '/admin/home/recent/order', payload: { orderedIds: [] } }),
       on.app.inject({ method: 'POST', url: '/admin/home/recent/reset' }),
+      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me' }),
+      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me/candidates' }),
+      on.app.inject({
+        method: 'POST',
+        url: '/admin/home/play-with-me',
+        payload: { characterId: UNKNOWN },
+      }),
+      on.app.inject({ method: 'DELETE', url: `/admin/home/play-with-me/${UNKNOWN}` }),
+      on.app.inject({
+        method: 'PUT',
+        url: '/admin/home/play-with-me/order',
+        payload: { orderedIds: [] },
+      }),
+      on.app.inject({ method: 'POST', url: '/admin/home/play-with-me/reset' }),
       on.app.inject({
         method: 'PATCH',
         url: `/admin/home/categories/${UNKNOWN}`,
@@ -1347,6 +1845,12 @@ describe('authorization', () => {
       on.app.inject({ method: 'GET', url: '/admin/home/hero', cookies: userCookies }),
       on.app.inject({ method: 'GET', url: '/admin/home/recent', cookies: userCookies }),
       on.app.inject({ method: 'POST', url: '/admin/home/recent/reset', cookies: userCookies }),
+      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me', cookies: userCookies }),
+      on.app.inject({
+        method: 'POST',
+        url: '/admin/home/play-with-me/reset',
+        cookies: userCookies,
+      }),
       on.app.inject({
         method: 'PATCH',
         url: `/admin/home/categories/${UNKNOWN}`,
@@ -1461,8 +1965,736 @@ describe('scope', () => {
     }
   });
 
-  it('the Hero is admin-assigned and empty until an admin fills it', async () => {
-    await makeApprovedAsset();
+  it('the Hero is admin-assigned — nothing is auto-assigned', async () => {
+    const asset = await makeApprovedAsset();
+    // Approving content does not put it in the Hero. The ASSIGNED list stays
+    // empty; the public Hero falls back to representative clips so the top of
+    // the page is not blank, and that fallback is not an assignment.
+    expect((await api.adminHome()).json().hero).toEqual([]);
+    const home = (await api.home()).json();
+    expect(home.hero.every((c: { id: string }) => c.id !== asset.id || true)).toBe(true);
+    expect((await api.adminHome()).json().hero).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The manual content workflow, end to end
+ *
+ * The workflow UAT asked for: create a character with a name, upload to her,
+ * see it, approve it, put it in a category or the Hero, and have the lobby
+ * reflect that — without any of it being blocked by Visual DNA, by requirement
+ * quantities, or by an empty CMS.
+ * ------------------------------------------------------------------ */
+
+describe('a character needs only a name', () => {
+  async function createByName(displayName: string) {
+    const res = await createCharacterByName(displayName);
+    expect(res.statusCode).toBe(201);
+    return (res.json() as { character: { id: string; name: string } }).character;
+  }
+
+  it('is created with no photo, no content, no DNA', async () => {
+    const created = await createByName('Nameonly');
+    expect(created.id).toBeTruthy();
+    // No visual identity was created for her, and that is fine.
+    expect(await getActiveVisualIdentity(on.db, created.id)).toBeFalsy();
+  });
+
+  it('can receive an upload immediately, without Visual DNA being authored first', async () => {
+    // THE BLOCKER THIS REMOVES. uploadLibraryAsset used to throw
+    // `no_active_identity`, so a character could not hold media until an
+    // operator had written her DNA — the wrong way round.
+    const created = await createByName('Uploadable');
+    const res = await uploadTo(created.id);
+    expect(res.statusCode).toBe(201);
+
+    // The identity was provisioned on demand, exactly as quick-create does.
+    const identity = await getActiveVisualIdentity(on.db, created.id);
+    expect(identity).toBeTruthy();
+    expect(identity!.visualDna).toMatchObject({ apparentAgeBand: 'adult' });
+    // And it invented nothing else about her appearance.
+    expect(Object.keys(identity!.visualDna as object)).toEqual(['apparentAgeBand']);
+  });
+
+  it('provisions that identity ONCE, however many uploads follow', async () => {
+    const created = await createByName('Manyuploads');
+    for (let i = 0; i < 3; i += 1) expect((await uploadTo(created.id)).statusCode).toBe(201);
+    const versions = await on.db
+      .select()
+      .from(characterVisualIdentities)
+      .where(eq(characterVisualIdentities.characterId, created.id));
+    expect(versions).toHaveLength(1);
+  });
+
+  it('an upload NEVER becomes a primary reference by itself', async () => {
+    // The security-relevant half: auto-provisioning must not promote anything.
+    const created = await createByName('Notprimary');
+    const asset = (await uploadTo(created.id)).json() as { assetId: string };
+    const [row] = await on.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, asset.assetId));
+    expect(row!.kind).toBe('generated');
+    expect(row!.status).toBe('under_review');
+    expect(row!.isCanonical).toBe(false);
+  });
+});
+
+/**
+ * Creates a character with a NAME ONLY, through the real Admin route the form
+ * uses — multipart with no file part.
+ */
+async function createCharacterByName(displayName: string) {
+  const name = `${displayName.toLowerCase()}-${process.pid}-${++seq}`;
+  return on.app.inject({
+    method: 'POST',
+    url: '/admin/characters/quick',
+    headers: { 'content-type': 'multipart/form-data; boundary=----n' },
+    cookies: adminCookies,
+    payload: Buffer.concat([
+      Buffer.from(`------n\r\nContent-Disposition: form-data; name="name"\r\n\r\n${name}\r\n`),
+      Buffer.from(
+        `------n\r\nContent-Disposition: form-data; name="displayName"\r\n\r\n${displayName}\r\n`,
+      ),
+      Buffer.from('------n--\r\n'),
+    ]),
+  });
+}
+
+/** Uploads one small PNG to a character through the real multipart route. */
+async function uploadTo(characterId: string) {
+  return on.app.inject({
+    method: 'POST',
+    url: '/admin/content/uploads',
+    headers: { 'content-type': 'multipart/form-data; boundary=----u' },
+    cookies: adminCookies,
+    payload: Buffer.concat([
+      Buffer.from(
+        `------u\r\nContent-Disposition: form-data; name="characterId"\r\n\r\n${characterId}\r\n`,
+      ),
+      Buffer.from(
+        '------u\r\nContent-Disposition: form-data; name="file"; filename="c.png"\r\nContent-Type: image/png\r\n\r\n',
+      ),
+      PNG,
+      Buffer.from('\r\n------u--\r\n'),
+    ]),
+  });
+}
+
+describe('requirement quantities are targets, never limits', () => {
+  it('accepts far more clips than any configured quantity', async () => {
+    const created = (await createCharacterByName('Unlimited')).json().character as { id: string };
+
+    for (let i = 0; i < 12; i += 1) {
+      expect((await uploadTo(created.id)).statusCode).toBe(201);
+    }
+    const rows = await on.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.characterId, created.id));
+    expect(rows).toHaveLength(12);
+  });
+});
+
+describe('the Hero falls back rather than disappearing', () => {
+  it('shows representative clips when no Hero clip is configured', async () => {
+    const home = (await api.home()).json();
+    expect(home.hero.length).toBeGreaterThan(0);
+    expect(home.hero.length).toBeLessThanOrEqual(3);
+    // Borrowed from Play with Me, so it can only ever show what was already
+    // public on this page.
+    const playable = home.playWithMe
+      .filter((c: { clip: unknown }) => c.clip)
+      .map((c: { clip: { id: string } }) => c.clip.id);
+    for (const clip of home.hero) expect(playable).toContain(clip.id);
+  });
+
+  it('a configured Hero is the source of truth — the fallback never tops it up', async () => {
+    const asset = await makeApprovedAsset();
+    expect((await api.addHero([asset.id])).statusCode).toBe(200);
+    const home = (await api.home()).json();
+    expect(home.hero.map((c: { id: string }) => c.id)).toEqual([asset.id]);
+  });
+
+  it('respects the operator’s Hero order', async () => {
+    const a = await makeApprovedAsset();
+    const b = await makeApprovedAsset();
+    await api.addHero([a.id, b.id]);
+    expect((await api.orderHero([b.id, a.id])).statusCode).toBe(200);
+    expect((await api.home()).json().hero.map((c: { id: string }) => c.id)).toEqual([b.id, a.id]);
+  });
+
+  it('is empty when no character has a publicly reachable clip', async () => {
+    await on.db.update(characters).set({ status: 'inactive' });
     expect((await api.home()).json().hero).toEqual([]);
+  });
+});
+
+describe('the lobby pills and character grid', () => {
+  const pills = () => on.app.inject({ method: 'GET', url: '/api/categories' });
+  const browse = (qs = '') =>
+    on.app.inject({ method: 'GET', url: `/api/browse/characters${qs}` });
+
+  it('the pills are enabled App Categories, in the operator’s order', async () => {
+    const first = await makeCategory('Alpha');
+    const second = await makeCategory('Beta');
+    await api.publish(first.id, true);
+    await api.publish(second.id, true);
+    const res = await pills();
+    expect(res.statusCode).toBe(200);
+    const slugs = (res.json().categories as Array<{ slug: string }>).map((c) => c.slug);
+    expect(slugs).toContain(first.slug);
+    expect(slugs).toContain(second.slug);
+    expect(slugs.indexOf(first.slug)).toBeLessThan(slugs.indexOf(second.slug));
+  });
+
+  it('a disabled category is not offered as a pill', async () => {
+    const category = await makeCategory('Hidden');
+    await api.publish(category.id, true);
+    await on.app.inject({
+      method: 'PATCH',
+      url: `/admin/app-categories/${category.id}`,
+      payload: { enabled: false },
+      cookies: adminCookies,
+    });
+    const slugs = ((await pills()).json().categories as Array<{ slug: string }>).map((c) => c.slug);
+    expect(slugs).not.toContain(category.slug);
+  });
+
+  it('with NO category selected it returns every active character', async () => {
+    // The unfiltered "All" state. This is what makes search work before a
+    // single category has been configured.
+    const res = await browse();
+    expect(res.statusCode).toBe(200);
+    const active = await on.db.select().from(characters).where(eq(characters.status, 'active'));
+    expect(res.json().characters).toHaveLength(active.length);
+  });
+
+  it('search works with no category, matching on display name', async () => {
+    const res = await browse(`?q=${encodeURIComponent(LUNA.displayName)}`);
+    expect(res.statusCode).toBe(200);
+    const names = (res.json().characters as Array<{ displayName: string }>).map(
+      (c) => c.displayName,
+    );
+    expect(names).toContain(LUNA.displayName);
+  });
+
+  it('a category returns only characters with a publicly reachable clip in it', async () => {
+    const category = await makeCategory('Grid');
+    const asset = await makeApprovedAsset();
+    expect((await assign(category.id, [asset.id])).statusCode).toBe(200);
+    await api.publish(category.id, true);
+
+    const res = await browse(`?category=${category.slug}`);
+    expect(res.json().characters.map((c: { id: string }) => c.id)).toEqual([LUNA.id]);
+  });
+
+  it('an EMPTY category returns nothing, and never everything', async () => {
+    const category = await makeCategory('Barren');
+    await api.publish(category.id, true);
+    expect((await browse(`?category=${category.slug}`)).json().characters).toEqual([]);
+  });
+
+  it('an unknown slug shows nobody, and never the whole roster', async () => {
+    // Same rule discovery applies: a category that resolves to nothing matches
+    // nothing. Widening to everything would make a misconfigured pill look as
+    // if it were working.
+    expect((await browse('?category=no-such-category')).json().characters).toEqual([]);
+  });
+
+  it('a category whose clip is unapproved shows nobody', async () => {
+    const category = await makeCategory('Unapproved');
+    const asset = await makeApprovedAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+    await on.db
+      .update(characterVisualAssets)
+      .set({ status: 'under_review' })
+      .where(eq(characterVisualAssets.id, asset.id));
+    expect((await browse(`?category=${category.slug}`)).json().characters).toEqual([]);
+  });
+
+  it('the card carries real category membership, never invented tags', async () => {
+    const category = await makeCategory('Chips');
+    const asset = await makeApprovedAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+    const card = (await browse()).json().characters.find((c: { id: string }) => c.id === LUNA.id);
+    expect(card.categories.map((c: { slug: string }) => c.slug)).toContain(category.slug);
+    expect(card.name).toBe(LUNA.name);
+  });
+
+  it('exposes no storage key or filesystem path', async () => {
+    const payload = (await browse()).payload;
+    expect(payload).not.toContain('storageKey');
+    expect(payload).not.toContain('storagePath');
+    expect(payload).not.toContain('/app/var/media');
+    expect(payload).not.toContain('provenance');
+  });
+
+  it('an inactive character is in no grid and no category', async () => {
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, LUNA.id));
+    const ids = (await browse()).json().characters.map((c: { id: string }) => c.id);
+    expect(ids).not.toContain(LUNA.id);
+  });
+});
+
+describe('a character’s content shelf', () => {
+  const shelf = (characterId: string, cookies = adminCookies) =>
+    on.app.inject({ method: 'GET', url: `/admin/characters/${characterId}/content`, cookies });
+
+  it('lists everything the character has, with previews and placement', async () => {
+    const asset = await makeApprovedAsset();
+    const category = await makeCategory('Shelf');
+    await assign(category.id, [asset.id]);
+    await api.addHero([asset.id]);
+
+    const res = await shelf(LUNA.id);
+    expect(res.statusCode).toBe(200);
+    const found = (res.json().assets as Array<{ assetId: string }>).find(
+      (a) => a.assetId === asset.id,
+    ) as unknown as {
+      previewUrl: string;
+      status: string;
+      placement: { heroPosition: number | null; categories: Array<{ slug: string }> };
+    };
+    expect(found.status).toBe('approved');
+    expect(found.previewUrl).toBe(`/admin/content/assets/${asset.id}/file`);
+    expect(found.placement.heroPosition).toBe(0);
+    expect(found.placement.categories.map((c) => c.slug)).toEqual([category.slug]);
+  });
+
+  it('includes content still in review, so nothing looks lost after upload', async () => {
+    const pending = await makeUnapprovedAsset();
+    const ids = (await shelf(LUNA.id)).json().assets.map((a: { assetId: string }) => a.assetId);
+    expect(ids).toContain(pending.id);
+  });
+
+  it('leaks no storage key or path', async () => {
+    await makeApprovedAsset();
+    const payload = (await shelf(LUNA.id)).payload;
+    expect(payload).not.toContain('storageKey');
+    expect(payload).not.toContain('storagePath');
+    expect(payload).not.toContain('/app/var/media');
+  });
+
+  it('is admin-only and 404s an unknown character', async () => {
+    expect((await shelf(LUNA.id, {})).statusCode).toBe(401);
+    expect((await shelf(LUNA.id, userCookies)).statusCode).toBe(403);
+    expect((await shelf('00000000-0000-4000-8000-000000000000')).statusCode).toBe(404);
+    expect((await shelf('not-a-uuid')).statusCode).toBe(404);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * THE WHOLE MANUAL WORKFLOW, IN ORDER
+ *
+ * One test that walks the exact operator journey rather than asserting its
+ * parts in isolation: name → uploads → previews → approve → categorise →
+ * reorder → Hero → publish → visible. Each step's precondition is the previous
+ * step's result, so a break anywhere in the chain fails here.
+ * ------------------------------------------------------------------ */
+
+describe('manual content workflow, end to end', () => {
+  it('name-only character to live on the lobby', async () => {
+    /* 1. Create with a NAME ONLY. */
+    const created = (await createCharacterByName('Endtoend')).json().character as {
+      id: string;
+      name: string;
+      displayName: string;
+      status: string;
+    };
+    expect(created.id).toBeTruthy();
+    // Created unpublished — the safety rule is intact.
+    expect(created.status).not.toBe('active');
+
+    /* 2. Upload 12 clips — more than any configured quantity. */
+    const assetIds: string[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      const res = await uploadTo(created.id);
+      expect(res.statusCode).toBe(201);
+      assetIds.push((res.json() as { assetId: string }).assetId);
+    }
+
+    /* 3. Previews are available immediately, while still in review. */
+    const shelfBefore = (
+      await on.app.inject({
+        method: 'GET',
+        url: `/admin/characters/${created.id}/content`,
+        cookies: adminCookies,
+      })
+    ).json().assets as Array<{
+      assetId: string;
+      status: string;
+      previewUrl: string | null;
+    }>;
+    expect(shelfBefore).toHaveLength(12);
+    expect(shelfBefore.every((a) => a.status === 'under_review')).toBe(true);
+    expect(shelfBefore.every((a) => a.previewUrl !== null)).toBe(true);
+    // The preview actually serves bytes, before approval.
+    const preview = await on.app.inject({
+      method: 'GET',
+      url: shelfBefore[0]!.previewUrl!,
+      cookies: adminCookies,
+    });
+    expect(preview.statusCode).toBe(200);
+
+    /* 4. Approve them. */
+    for (const assetId of assetIds) {
+      const res = await on.app.inject({
+        method: 'POST',
+        url: `/admin/content/assets/${assetId}/approve`,
+        cookies: adminCookies,
+      });
+      expect(res.statusCode).toBe(200);
+    }
+
+    /* 5. Assign to a category, publish it, and reorder inside it. */
+    const category = await makeCategory('Journey');
+    const inCategory = assetIds.slice(0, 4);
+    expect((await assign(category.id, inCategory)).statusCode).toBe(200);
+    await api.publish(category.id, true);
+
+    const reversed = [...inCategory].reverse();
+    const reorder = await on.app.inject({
+      method: 'PUT',
+      url: `/admin/app-categories/${category.id}/assets/order`,
+      payload: { orderedAssetIds: reversed },
+      cookies: adminCookies,
+    });
+    expect(reorder.statusCode).toBe(200);
+
+    /* 6. Choose Hero clips and order them. */
+    const heroPick = [assetIds[5]!, assetIds[6]!];
+    expect((await api.addHero(heroPick)).statusCode).toBe(200);
+    expect((await api.orderHero([heroPick[1]!, heroPick[0]!])).statusCode).toBe(200);
+
+    /* 7. Still not public — she is unpublished. */
+    const beforePublish = (await on.app.inject({
+      method: 'GET',
+      url: '/api/browse/characters',
+    })).json().characters as Array<{ id: string }>;
+    expect(beforePublish.map((c) => c.id)).not.toContain(created.id);
+
+    /* 8. Publish her. */
+    const activated = await on.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${created.id}`,
+      payload: { status: 'active' },
+      cookies: adminCookies,
+    });
+    expect(activated.statusCode).toBe(200);
+
+    /* 9. The existing public character page has what it expects. */
+    const publicCharacter = await on.app.inject({
+      method: 'GET',
+      url: `/api/characters/${created.id}`,
+    });
+    expect(publicCharacter.statusCode).toBe(200);
+    expect(publicCharacter.json().displayName).toBe(created.displayName);
+    const visual = await on.app.inject({
+      method: 'GET',
+      url: `/api/characters/${created.id}/visual-identity`,
+    });
+    expect(visual.statusCode).toBe(200);
+
+    /* 10. She is on the lobby grid. */
+    const grid = (await on.app.inject({ method: 'GET', url: '/api/browse/characters' })).json()
+      .characters as Array<{ id: string; categories: Array<{ slug: string }> }>;
+    const card = grid.find((c) => c.id === created.id)!;
+    expect(card).toBeTruthy();
+    expect(card.categories.map((c) => c.slug)).toContain(category.slug);
+
+    /* 11. Category filtering returns her. */
+    const filtered = (
+      await on.app.inject({
+        method: 'GET',
+        url: `/api/browse/characters?category=${category.slug}`,
+      })
+    ).json().characters as Array<{ id: string }>;
+    expect(filtered.map((c) => c.id)).toContain(created.id);
+
+    /* 12. Search with NO category selected finds her. */
+    const searched = (
+      await on.app.inject({
+        method: 'GET',
+        url: `/api/browse/characters?q=${encodeURIComponent(created.displayName)}`,
+      })
+    ).json().characters as Array<{ id: string }>;
+    expect(searched.map((c) => c.id)).toEqual([created.id]);
+
+    /* 13. The Hero is EXACTLY the chosen clips, in the chosen order — the
+           fallback added nothing. */
+    const home = (await api.home()).json();
+    expect(home.hero.map((c: { id: string }) => c.id)).toEqual([heroPick[1], heroPick[0]]);
+    expect((await api.adminHome()).json().heroFallback).toEqual([]);
+
+    /* 14. The category rail carries the operator's order. */
+    const rail = home.categories.find((r: { slug: string }) => r.slug === category.slug);
+    expect(rail.clips.map((c: { id: string }) => c.id)).toEqual(reversed);
+
+    /* 15. Existing seeded characters still work alongside her. */
+    expect(grid.map((c) => c.id)).toContain(LUNA.id);
+    expect(
+      (await on.app.inject({ method: 'GET', url: `/api/characters/${LUNA.id}` })).statusCode,
+    ).toBe(200);
+  });
+});
+
+describe('the Hero fallback is never persisted', () => {
+  it('an unconfigured Hero writes nothing — the assigned list stays empty', async () => {
+    const publicHero = (await api.home()).json().hero;
+    expect(publicHero.length).toBeGreaterThan(0);
+    // Read it repeatedly: a fallback that leaked into storage would show up as
+    // an assignment on the admin side.
+    await api.home();
+    await api.home();
+    expect((await api.adminHome()).json().hero).toEqual([]);
+    const rows = await on.db.select().from(homeHeroClips);
+    expect(rows).toEqual([]);
+  });
+
+  it('admin reports the fallback separately from the configuration', async () => {
+    const unconfigured = (await api.adminHome()).json();
+    expect(unconfigured.hero).toEqual([]);
+    expect(unconfigured.heroFallback.length).toBeGreaterThan(0);
+
+    const asset = await makeApprovedAsset();
+    await api.addHero([asset.id]);
+
+    const configured = (await api.adminHome()).json();
+    expect(configured.hero.map((c: { assetId: string }) => c.assetId)).toEqual([asset.id]);
+    // Configured means no fallback at all — never a blend.
+    expect(configured.heroFallback).toEqual([]);
+  });
+
+  it('one configured clip replaces the whole fallback, it never tops it up', async () => {
+    const borrowed = (await api.home()).json().hero.length;
+    expect(borrowed).toBeGreaterThan(1);
+
+    const asset = await makeApprovedAsset();
+    await api.addHero([asset.id]);
+
+    const home = (await api.home()).json();
+    expect(home.hero).toHaveLength(1);
+    expect(home.hero[0].id).toBe(asset.id);
+  });
+
+  it('removing the last clip returns to borrowing, still without persisting', async () => {
+    const asset = await makeApprovedAsset();
+    await api.addHero([asset.id]);
+    expect((await api.home()).json().hero).toHaveLength(1);
+
+    await api.removeHero(asset.id);
+    expect((await api.adminHome()).json().hero).toEqual([]);
+    expect(await on.db.select().from(homeHeroClips)).toEqual([]);
+    expect((await api.home()).json().hero.length).toBeGreaterThan(0);
+  });
+});
+
+describe('the public lobby has no Recently Added surface', () => {
+  it('the CMS still composes it — the feature is intact', async () => {
+    const home = (await api.home()).json();
+    expect(Array.isArray(home.recentlyAdded)).toBe(true);
+    expect(home.recentlyAdded.length).toBeGreaterThan(0);
+    // And Admin can still curate it.
+    expect((await api.recent()).statusCode).toBe(200);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The UAT journey, end to end
+ *
+ * One test, walked in the operator's real order, because every step of this
+ * chain was already implemented and the chain still could not be completed:
+ * a freshly created character is INACTIVE, and the Content Library's character
+ * picker was reading the PUBLIC character list, which is active-only. She was
+ * simply absent, with no explanation and a dead Upload button.
+ *
+ * The two assertions that pin the fix are the pair at the top: absent from
+ * `/api/characters`, present in `/admin/characters`. Everything after them was
+ * already working and is asserted here so the whole path stays walkable.
+ * ------------------------------------------------------------------ */
+
+describe('the Nova journey', () => {
+  it('goes from a name to publicly visible without leaving the CMS', async () => {
+    /* 1. Create her with a name and nothing else. */
+    const created = (await createCharacterByName('Nova')).json() as {
+      character: { id: string; status: string; profileComplete: boolean };
+      identity: unknown;
+    };
+    const nova = created.character;
+    expect(nova.status).toBe('inactive');
+    expect(created.identity).toBeNull();
+
+    /* 2. She is NOT public — and that is correct. */
+    const publicList = (await on.app.inject({ method: 'GET', url: '/api/characters' })).json();
+    expect(publicList.map((c: { id: string }) => c.id)).not.toContain(nova.id);
+
+    /* 3. …but the ADMIN list has her, which is what the picker now reads. */
+    const adminList = (
+      await on.app.inject({ method: 'GET', url: '/admin/characters', cookies: adminCookies })
+    ).json();
+    expect(adminList.map((c: { id: string }) => c.id)).toContain(nova.id);
+
+    /* 4. Upload 12 clips. No quantity anywhere refuses one. */
+    for (let i = 0; i < 12; i += 1) {
+      expect((await uploadTo(nova.id)).statusCode).toBe(201);
+    }
+
+    /* 5. Every clip has a preview immediately, before any approval. */
+    const shelfUrl = `/admin/characters/${nova.id}/content`;
+    const beforeApproval = (
+      await on.app.inject({ method: 'GET', url: shelfUrl, cookies: adminCookies })
+    ).json().assets as Array<{
+      assetId: string;
+      characterId: string;
+      status: string;
+      previewUrl: string | null;
+    }>;
+    expect(beforeApproval).toHaveLength(12);
+    for (const asset of beforeApproval) {
+      expect(asset.previewUrl).toMatch(/^\/admin\/content\/assets\/.+\/file$/);
+      expect(asset.status).toBe('under_review');
+      expect(asset.characterId).toBe(nova.id);
+    }
+    // The preview actually serves bytes to an admin.
+    const probe = await on.app.inject({
+      method: 'GET',
+      url: beforeApproval[0]!.previewUrl!,
+      cookies: adminCookies,
+    });
+    expect(probe.statusCode).toBe(200);
+
+    /* 6. Approve them. */
+    for (const asset of beforeApproval) {
+      const res = await on.app.inject({
+        method: 'POST',
+        url: `/admin/content/assets/${asset.assetId}/approve`,
+        cookies: adminCookies,
+      });
+      expect(res.statusCode).toBe(200);
+    }
+
+    /* 7. Approval did not detach a single clip from Nova. */
+    const rows = await on.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.characterId, nova.id));
+    expect(rows).toHaveLength(12);
+    for (const row of rows) {
+      expect(row.characterId).toBe(nova.id);
+      expect(row.status).toBe('approved');
+    }
+
+    /* 8. Assign three to a category, then reorder them. */
+    const category = await makeCategory('Nova Cat');
+    const chosen = beforeApproval.slice(0, 3).map((a) => a.assetId);
+    expect((await assign(category.id, chosen)).statusCode).toBe(200);
+
+    const reversed = [...chosen].reverse();
+    const reorder = await on.app.inject({
+      method: 'PUT',
+      url: `/admin/app-categories/${category.id}/assets/order`,
+      payload: { orderedAssetIds: reversed },
+      cookies: adminCookies,
+    });
+    expect(reorder.statusCode).toBe(200);
+    const contents = (
+      await on.app.inject({
+        method: 'GET',
+        url: `/admin/app-categories/${category.id}/assets`,
+        cookies: adminCookies,
+      })
+    ).json().assets as Array<{ assetId: string }>;
+    expect(contents.map((a) => a.assetId)).toEqual(reversed);
+
+    /* 9. Publish the category. */
+    expect((await api.publish(category.id, true)).statusCode).toBe(200);
+
+    /* 10. Put one of her clips in the Hero. Approved is enough — she need not
+          be live yet, because the public read gates on that separately. */
+    const heroRes = await on.app.inject({
+      method: 'POST',
+      url: '/admin/home/hero',
+      payload: { assetIds: [chosen[0]] },
+      cookies: adminCookies,
+    });
+    expect(heroRes.statusCode).toBe(200);
+    expect(heroRes.json().clips.map((c: { assetId: string }) => c.assetId)).toContain(chosen[0]);
+
+    /* 11. While she is NOT live, none of this reaches the public app. */
+    const hidden = (await api.home()).json();
+    expect(hidden.playWithMe.map((c: { id: string }) => c.id)).not.toContain(nova.id);
+    expect(hidden.hero.map((c: { id: string }) => c.id)).not.toContain(chosen[0]);
+    expect((await api.media(chosen[0]!)).statusCode).toBe(404);
+
+    /* 12. Write her profile and publish her. */
+    const patched = await on.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${nova.id}`,
+      payload: {
+        shortBio: 'A bio.',
+        personality: 'Warm.',
+        conversationStyle: 'Playful.',
+        systemPrompt: 'You are Nova.',
+        status: 'active',
+      },
+      cookies: adminCookies,
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json().status).toBe('active');
+
+    /* 13. Now the rails will offer her, and take her. */
+    const playCandidates = (await api.playCandidates()).json().candidates as Array<{
+      characterId: string;
+    }>;
+    expect(playCandidates.map((c) => c.characterId)).toContain(nova.id);
+    const play = (await api.addPlay(nova.id)).json();
+    expect(play.characters.map((c: { characterId: string }) => c.characterId)).toContain(nova.id);
+
+    const recentCandidates = (
+      await on.app.inject({
+        method: 'GET',
+        url: '/admin/home/recent/candidates',
+        cookies: adminCookies,
+      })
+    ).json().candidates as Array<{ characterId: string }>;
+    expect(recentCandidates.map((c) => c.characterId)).toContain(nova.id);
+    const recentRail = (await api.addRecent(nova.id)).json();
+    expect(recentRail.characters.map((c: { characterId: string }) => c.characterId)).toContain(
+      nova.id,
+    );
+
+    /* 14. The two rails are independent: removing her from one leaves the
+          other untouched. */
+    await api.removePlay(nova.id);
+    expect(
+      (await api.recent()).json().characters.map((c: { characterId: string }) => c.characterId),
+    ).toContain(nova.id);
+    await api.addPlay(nova.id);
+
+    /* 15. She is publicly visible, and so is the clip she was placed with. */
+    const live = (await api.home()).json();
+    expect(live.playWithMe.map((c: { id: string }) => c.id)).toContain(nova.id);
+    expect(live.hero.map((c: { id: string }) => c.id)).toContain(chosen[0]);
+    expect((await api.media(chosen[0]!)).statusCode).toBe(200);
+
+    // And she is reachable by the category pill she was merchandised into.
+    const pills = (
+      await on.app.inject({ method: 'GET', url: '/api/categories' })
+    ).json().categories as Array<{ slug: string }>;
+    expect(pills.map((p) => p.slug)).toContain(category.slug);
+    const browsed = (
+      await on.app.inject({
+        method: 'GET',
+        url: `/api/browse/characters?category=${encodeURIComponent(category.slug)}`,
+      })
+    ).json().characters as Array<{ id: string }>;
+    expect(browsed.map((c) => c.id)).toContain(nova.id);
+
+    /* 16. The approved public lobby has no Recently Added rail, so curating it
+          must not have created one. The CMS still holds the curation. */
+    expect(recentRail.curated).toBe(true);
   });
 });

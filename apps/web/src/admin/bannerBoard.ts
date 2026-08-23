@@ -1,5 +1,11 @@
-import type { BannerProblem, BannerState } from '@over18/shared';
-import type { HomeBannerView } from '../lib/api';
+import type {
+  BannerAudience,
+  BannerDestinationKind,
+  BannerProblem,
+  BannerState,
+  HomeBannerSlot,
+} from '@over18/shared';
+import type { HomeBannerDraft, HomeBannerView } from '../lib/api';
 
 /**
  * Banner workspace presentation logic (US-102.3) — React-free, like its
@@ -287,4 +293,113 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/* ------------------------------------------------------------------ *
+ * The editor's form <-> wire mapping
+ *
+ * Lifted out of BannerEditorPage so it can be tested at all: this repo's web
+ * tests run in node with no DOM (see apps/web/vitest.config.ts) and the
+ * editor's first paint is a loading state, so nothing inside the component
+ * could ever reach a form field. The `slot` field shipped unreachable for
+ * exactly that reason — `draftPayload` simply omitted it, so every banner
+ * created in Admin took the column default and `below_results` could not be
+ * chosen. Moving the mapping here makes both directions assertable.
+ *
+ * It belongs beside wallTimeToInstant / instantToWallTime, because the mapping
+ * is mostly those two applied to a form.
+ * ------------------------------------------------------------------ */
+
+/** Exactly what the editor's inputs hold. Strings, because inputs hold strings. */
+export interface BannerFormState {
+  title: string;
+  subtitle: string;
+  ctaLabel: string;
+  creativeId: string | null;
+  destinationKind: BannerDestinationKind;
+  destinationCategoryId: string;
+  destinationCharacterId: string;
+  destinationAssetId: string;
+  destinationUrl: string;
+  audience: BannerAudience;
+  /** US-102.4 — which Home slot this banner renders in. */
+  slot: HomeBannerSlot;
+  startLocal: string;
+  endLocal: string;
+  timezone: string;
+}
+
+/**
+ * A blank form. `before_search` matches the column's own default, so creating a
+ * banner without touching the selector puts it exactly where it went before —
+ * the selector adds a choice, it does not relocate anything.
+ */
+export function emptyBannerForm(timezone: string): BannerFormState {
+  return {
+    title: '',
+    subtitle: '',
+    ctaLabel: '',
+    creativeId: null,
+    destinationKind: 'category',
+    destinationCategoryId: '',
+    destinationCharacterId: '',
+    destinationAssetId: '',
+    destinationUrl: '',
+    audience: 'everyone',
+    slot: 'before_search',
+    startLocal: '',
+    endLocal: '',
+    timezone,
+  };
+}
+
+/** An existing banner, as the editor's fields. */
+export function bannerFormFromView(
+  banner: HomeBannerView,
+  fallbackTimezone: string,
+): BannerFormState {
+  const zone = banner.scheduleTimezone ?? fallbackTimezone;
+  return {
+    title: banner.title,
+    subtitle: banner.subtitle ?? '',
+    ctaLabel: banner.ctaLabel ?? '',
+    creativeId: banner.creative?.id ?? null,
+    destinationKind: banner.destination.kind,
+    destinationCategoryId: banner.destination.categoryId ?? '',
+    destinationCharacterId: banner.destination.characterId ?? '',
+    destinationAssetId: banner.destination.assetId ?? '',
+    destinationUrl: banner.destination.url ?? '',
+    audience: banner.audience,
+    slot: banner.slot,
+    startLocal: instantToWallTime(banner.startsAt, zone),
+    endLocal: instantToWallTime(banner.endsAt, zone),
+    timezone: zone,
+  };
+}
+
+/**
+ * The form as a create or update body.
+ *
+ * `slot` is always sent. On PATCH that is deliberate and safe: the server
+ * re-homes a banner's position only when the slot actually CHANGES, so
+ * restating the current slot is a no-op — and always sending it means the field
+ * cannot be quietly dropped again.
+ */
+export function bannerDraftFrom(form: BannerFormState): HomeBannerDraft {
+  return {
+    title: form.title.trim(),
+    subtitle: form.subtitle.trim() || null,
+    ctaLabel: form.ctaLabel.trim() || null,
+    creativeId: form.creativeId,
+    destinationKind: form.destinationKind,
+    destinationCategoryId: form.destinationCategoryId || null,
+    destinationCharacterId: form.destinationCharacterId || null,
+    destinationAssetId: form.destinationAssetId || null,
+    destinationUrl: form.destinationUrl.trim() || null,
+    audience: form.audience,
+    slot: form.slot,
+    startsAt: wallTimeToInstant(form.startLocal, form.timezone),
+    endsAt: wallTimeToInstant(form.endLocal, form.timezone),
+    scheduleTimezone: form.startLocal || form.endLocal ? form.timezone : null,
+  };
 }

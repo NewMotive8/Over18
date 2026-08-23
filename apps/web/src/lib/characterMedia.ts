@@ -1,5 +1,4 @@
-import type { PublicCharacter } from '@over18/shared';
-import type { CharacterMediaItem, HeroMedia } from './media';
+import type { CharacterMediaItem, HeroMedia, MediaCharacter } from './media';
 
 /**
  * Local PoC media manifest (US-29).
@@ -58,23 +57,23 @@ const MANIFEST: Record<string, CharacterVideo[]> = {
   ],
 };
 
-function manifestKey(character: PublicCharacter): string {
+function manifestKey(character: MediaCharacter): string {
   return (character.name || character.displayName || '').trim().toLowerCase();
 }
 
 /** All real video clips for a character (hero first), or [] if none on disk. */
-export function characterVideos(character: PublicCharacter): CharacterVideo[] {
+export function characterVideos(character: MediaCharacter): CharacterVideo[] {
   return MANIFEST[manifestKey(character)] ?? [];
 }
 
 /** The character's hero clip (or the first available), if any. */
-export function characterHeroVideo(character: PublicCharacter): CharacterVideo | undefined {
+export function characterHeroVideo(character: MediaCharacter): CharacterVideo | undefined {
   const videos = characterVideos(character);
   return videos.find((v) => v.role === 'hero') ?? videos[0];
 }
 
 /** The character's non-hero "thematic" clips. */
-export function characterAdditionalVideos(character: PublicCharacter): CharacterVideo[] {
+export function characterAdditionalVideos(character: MediaCharacter): CharacterVideo[] {
   const hero = characterHeroVideo(character);
   return characterVideos(character).filter((v) => v !== hero);
 }
@@ -85,7 +84,7 @@ export function videoToHeroMedia(video: CharacterVideo): HeroMedia {
 }
 
 /** The full clip set as gallery/viewer items (US-19 MediaViewer/Gallery compatible). */
-export function characterVideoItems(character: PublicCharacter): CharacterMediaItem[] {
+export function characterVideoItems(character: MediaCharacter): CharacterMediaItem[] {
   return characterVideos(character).map((video) => ({
     id: video.src,
     media: videoToHeroMedia(video),

@@ -1,4 +1,17 @@
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
+
+/**
+ * The only character fields media resolution actually reads.
+ *
+ * Narrowed from `PublicCharacter` so the lobby's CMS card payload — which
+ * carries identity and locators but not the persona prose — can use the same
+ * resolution path. Every existing caller passes a full `PublicCharacter`, which
+ * satisfies this structurally, so nothing else changes.
+ */
+export type MediaCharacter = Pick<
+  PublicCharacter,
+  'id' | 'name' | 'displayName' | 'profileImage'
+>;
 import { characterHeroVideo } from './characterMedia';
 import { API_URL } from './api';
 
@@ -38,7 +51,7 @@ export const DEMO_MEDIA_OVERRIDES: Record<string, { videoUrl?: string; poster?: 
  * without prematurely widening the shared `PublicCharacter` type. When the API
  * gains a real video field, this is the only line that needs to change.
  */
-function characterVideoUrl(character: PublicCharacter): string | undefined {
+function characterVideoUrl(character: MediaCharacter): string | undefined {
   const maybe = (character as { videoUrl?: unknown }).videoUrl;
   return typeof maybe === 'string' && maybe.trim().length > 0 ? maybe : undefined;
 }
@@ -87,7 +100,7 @@ export function firstCanonicalImage(
  *  3. otherwise an initial-letter placeholder (never a broken image).
  */
 export function resolveHeroMedia(
-  character: PublicCharacter,
+  character: MediaCharacter,
   visual?: CharacterVisualIdentityResponse | null,
 ): HeroMedia {
   const override = DEMO_MEDIA_OVERRIDES[character.id];
@@ -133,7 +146,7 @@ export interface CharacterMediaItem {
  * whole point of routing every media surface through this one function.
  */
 export function characterMediaList(
-  character: PublicCharacter,
+  character: MediaCharacter,
   visual?: CharacterVisualIdentityResponse | null,
   opts: { minItems?: number } = {},
 ): CharacterMediaItem[] {

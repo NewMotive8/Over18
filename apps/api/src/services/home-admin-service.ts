@@ -6,6 +6,7 @@ import {
   characters,
   characterVisualAssets,
   homeHeroClips,
+  homePlayWithMeCharacters,
   homeRecentCharacters,
 } from '../db/schema.js';
 import { PUBLISHABLE_STATUS, assetPreviewUrl } from './app-merchandising-service.js';
@@ -379,6 +380,12 @@ export interface RecentCharacterAdminView {
   status: string;
   position: number;
   createdAt: string;
+  /**
+   * The character's own profile image, so Admin can preview the rail the same
+   * way Play with me does. Identical field to the one the public card payload
+   * already carries — no storage key and no filesystem path is exposed.
+   */
+  profileImage: string | null;
 }
 
 export interface RecentlyAddedAdminView {
@@ -394,6 +401,7 @@ async function defaultRecent(db: Db): Promise<RecentCharacterAdminView[]> {
       displayName: characters.displayName,
       status: characters.status,
       createdAt: characters.createdAt,
+      profileImage: characters.profileImage,
     })
     .from(characters)
     .where(eq(characters.status, 'active'))
@@ -405,6 +413,7 @@ async function defaultRecent(db: Db): Promise<RecentCharacterAdminView[]> {
     status: row.status,
     position: index,
     createdAt: row.createdAt.toISOString(),
+    profileImage: row.profileImage,
   }));
 }
 
@@ -416,6 +425,7 @@ async function curatedRecent(db: Db): Promise<RecentCharacterAdminView[]> {
       displayName: characters.displayName,
       status: characters.status,
       createdAt: characters.createdAt,
+      profileImage: characters.profileImage,
     })
     .from(homeRecentCharacters)
     .innerJoin(characters, eq(characters.id, homeRecentCharacters.characterId))
@@ -426,6 +436,7 @@ async function curatedRecent(db: Db): Promise<RecentCharacterAdminView[]> {
     status: row.status,
     position: row.position,
     createdAt: row.createdAt.toISOString(),
+    profileImage: row.profileImage,
   }));
 }
 
@@ -588,4 +599,220 @@ export async function listHeroCandidates(db: Db, limit = 100) {
     approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
     inHero: inHero.has(row.assetId),
   }));
+}
+
+/* ------------------------------------------------------------------ *
+ * Play with me — the same curated-override model, its own table
+ *
+ * Mirrors Recently Added function for function, because the two rails are the
+ * same shape of problem: one automatic rule, one operator override, characters
+ * rather than clips. The ONLY differences are the table and the automatic rule
+ * (all active characters alphabetically, versus the 12 newest).
+ *
+ * WHY NOT SHARE ONE TABLE. `home_recent_characters.character_id` is its whole
+ * primary key, so one character cannot hold a row for two rails. Sharing would
+ * mean re-keying a table that already holds production configuration, and a
+ * shared table leaks one rail into the other the first time a query forgets its
+ * discriminator. Two single-purpose tables cannot do that.
+ * ------------------------------------------------------------------ */
+
+export interface PlayWithMeCharacterAdminView {
+  characterId: string;
+  displayName: string;
+  status: string;
+  position: number;
+  createdAt: string;
+  /**
+   * The character's own profile image, so Admin shows the same face the rail
+   * shows. This is the identical field the public card payload already carries
+   * — no storage key and no filesystem path is exposed by including it here.
+   */
+  profileImage: string | null;
+}
+
+export interface PlayWithMeAdminView {
+  /** False when the rail is the automatic alphabetical list; true when overridden. */
+  curated: boolean;
+  characters: PlayWithMeCharacterAdminView[];
+}
+
+/** The automatic rail: every active character, alphabetically. Unchanged. */
+async function defaultPlayWithMe(db: Db): Promise<PlayWithMeCharacterAdminView[]> {
+  const rows = await db
+    .select({
+      characterId: characters.id,
+      displayName: characters.displayName,
+      status: characters.status,
+      createdAt: characters.createdAt,
+      profileImage: characters.profileImage,
+    })
+    .from(characters)
+    .where(eq(characters.status, 'active'))
+    .orderBy(asc(characters.displayName), asc(characters.id));
+  return rows.map((row, index) => ({
+    characterId: row.characterId,
+    displayName: row.displayName,
+    status: row.status,
+    position: index,
+    createdAt: row.createdAt.toISOString(),
+    profileImage: row.profileImage,
+  }));
+}
+
+/**
+ * The operator's arrangement, whatever its characters' current status.
+ *
+ * Inactive members are RETURNED here on purpose — Admin has to be able to see
+ * and remove one. The public read filters them out separately, so a retired
+ * character is invisible to visitors while staying visible to the operator.
+ */
+async function curatedPlayWithMe(db: Db): Promise<PlayWithMeCharacterAdminView[]> {
+  const rows = await db
+    .select({
+      characterId: homePlayWithMeCharacters.characterId,
+      position: homePlayWithMeCharacters.position,
+      displayName: characters.displayName,
+      status: characters.status,
+      createdAt: characters.createdAt,
+      profileImage: characters.profileImage,
+    })
+    .from(homePlayWithMeCharacters)
+    .innerJoin(characters, eq(characters.id, homePlayWithMeCharacters.characterId))
+    .orderBy(
+      asc(homePlayWithMeCharacters.position),
+      asc(homePlayWithMeCharacters.characterId),
+    );
+  return rows.map((row) => ({
+    characterId: row.characterId,
+    displayName: row.displayName,
+    status: row.status,
+    position: row.position,
+    createdAt: row.createdAt.toISOString(),
+    profileImage: row.profileImage,
+  }));
+}
+
+export async function listPlayWithMeForAdmin(db: Db): Promise<PlayWithMeAdminView> {
+  const curated = await curatedPlayWithMe(db);
+  if (curated.length > 0) return { curated: true, characters: curated };
+  return { curated: false, characters: await defaultPlayWithMe(db) };
+}
+
+/** Characters an operator may add. Active only, alphabetical — the rail's own rule. */
+export async function listPlayWithMeCandidates(db: Db, limit = 100) {
+  const rows = await db
+    .select({
+      characterId: characters.id,
+      displayName: characters.displayName,
+      createdAt: characters.createdAt,
+      profileImage: characters.profileImage,
+    })
+    .from(characters)
+    .where(eq(characters.status, 'active'))
+    .orderBy(asc(characters.displayName), asc(characters.id))
+    .limit(limit);
+  return rows.map((row) => ({
+    characterId: row.characterId,
+    displayName: row.displayName,
+    createdAt: row.createdAt.toISOString(),
+    profileImage: row.profileImage,
+  }));
+}
+
+/**
+ * Materialises the automatic list before the first edit.
+ *
+ * Without this, removing one character from an automatic rail of ten would
+ * leave an empty table — which reads as "automatic" and brings all ten back.
+ * The first edit therefore writes down what is currently on screen, and the
+ * edit then applies to that.
+ */
+async function ensurePlayWithMeCurated(db: Db): Promise<void> {
+  const curated = await curatedPlayWithMe(db);
+  if (curated.length > 0) return;
+  const rows = await defaultPlayWithMe(db);
+  if (rows.length === 0) return;
+  await db
+    .insert(homePlayWithMeCharacters)
+    .values(rows.map((row, index) => ({ characterId: row.characterId, position: index })))
+    .onConflictDoNothing();
+}
+
+export async function addPlayWithMeCharacter(
+  db: Db,
+  characterId: string,
+): Promise<PlayWithMeAdminView> {
+  assertUuid(characterId, 'characterId', 'character id');
+  const [character] = await db
+    .select({ id: characters.id })
+    .from(characters)
+    .where(eq(characters.id, characterId))
+    .limit(1);
+  if (!character) {
+    throw new HomeAdminValidationError('characterId', 'That character no longer exists.');
+  }
+  await ensurePlayWithMeCurated(db);
+  const [{ next } = { next: 0 }] = await db
+    .select({
+      next: sql<number>`coalesce(max(${homePlayWithMeCharacters.position}), -1) + 1`,
+    })
+    .from(homePlayWithMeCharacters);
+  // Idempotent by the primary key: adding the same character twice is a no-op
+  // rather than a duplicate row or an error.
+  await db
+    .insert(homePlayWithMeCharacters)
+    .values({ characterId, position: Number(next) })
+    .onConflictDoNothing();
+  return listPlayWithMeForAdmin(db);
+}
+
+export async function removePlayWithMeCharacter(
+  db: Db,
+  characterId: string,
+): Promise<PlayWithMeAdminView> {
+  assertUuid(characterId, 'characterId', 'character id');
+  await ensurePlayWithMeCurated(db);
+  await db
+    .delete(homePlayWithMeCharacters)
+    .where(eq(homePlayWithMeCharacters.characterId, characterId));
+  return listPlayWithMeForAdmin(db);
+}
+
+export async function reorderPlayWithMeCharacters(
+  db: Db,
+  orderedIds: string[],
+): Promise<void> {
+  if (new Set(orderedIds).size !== orderedIds.length) {
+    throw new HomeAdminOrderError('duplicate', 'The same character was listed more than once.');
+  }
+  await ensurePlayWithMeCurated(db);
+  await db.transaction(async (tx) => {
+    const existing = await tx
+      .select({ characterId: homePlayWithMeCharacters.characterId })
+      .from(homePlayWithMeCharacters);
+    const ids = new Set(existing.map((row) => row.characterId));
+    for (const id of orderedIds) {
+      if (!ids.has(id)) {
+        throw new HomeAdminOrderError('unknown_id', 'That character is not in Play with me.');
+      }
+    }
+    if (orderedIds.length !== ids.size) {
+      throw new HomeAdminOrderError(
+        'incomplete',
+        'The order is out of date — it does not list every character. Reload and try again.',
+      );
+    }
+    for (const [index, characterId] of orderedIds.entries()) {
+      await tx
+        .update(homePlayWithMeCharacters)
+        .set({ position: index })
+        .where(eq(homePlayWithMeCharacters.characterId, characterId));
+    }
+  });
+}
+
+/** Clears the override, restoring the automatic alphabetical list. */
+export async function resetPlayWithMe(db: Db): Promise<PlayWithMeAdminView> {
+  await db.delete(homePlayWithMeCharacters);
+  return listPlayWithMeForAdmin(db);
 }

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import LobbyTopBar from './LobbyTopBar';
@@ -9,6 +11,9 @@ import HomeBannerSlot from './HomeBannerSlot';
 import DiscoveryStrip from './DiscoveryStrip';
 import FeedView from './FeedView';
 import CommunityPromoCard from './CommunityPromoCard';
+import PersonaGridCard from './PersonaGridCard';
+import PlayWithMeCarousel from './PlayWithMeCarousel';
+import CategoryPills from './CategoryPills';
 import LobbyPage from '../../pages/LobbyPage';
 import { FORBIDDEN_AGE_TERMS } from '../../lib/lobbyContent';
 import type {
@@ -42,7 +47,15 @@ function clip(id = 'a'): PublicClip {
 }
 
 function card(id = 'a'): PublicCharacterCard {
-  return { id, displayName: `Name ${id}`, shortBio: 'bio', clip: clip(id) };
+  return {
+    id,
+    name: id,
+    displayName: `Name ${id}`,
+    shortBio: 'bio',
+    profileImage: null,
+    categories: [],
+    clip: clip(id),
+  };
 }
 
 function rail(): PublicCategoryRail {
@@ -73,11 +86,14 @@ const categories: PublicDiscoveryCategory[] = [
   { id: 'd2', slug: 'cosplay', name: 'Cosplay' },
 ];
 
-describe('the header no longer carries Search', () => {
+describe('the header carries Search', () => {
   const markup = router(<LobbyTopBar />);
 
-  it('has no search control', () => {
-    expect(markup).not.toContain('aria-label="Search"');
+  it('has the search control the product design shows', () => {
+    // It was removed once on the reasoning that Search should live in exactly
+    // one place. It is not a second search — it is the shortcut to the one
+    // below, and the approved design has it in the header.
+    expect(markup).toContain('aria-label="Search"');
   });
 
   it('keeps the logo, notifications and account access', () => {
@@ -258,5 +274,161 @@ describe('the adults-only guardrail still holds', () => {
     for (const term of FORBIDDEN_AGE_TERMS) {
       expect(markup.includes(term)).toBe(false);
     }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The approved lobby design, restored
+ *
+ * US-102.4 kept the CMS but changed the presentation: the character grid became
+ * clip tiles, Play with Me became a generic rail, the header lost its search
+ * icon and the pills became keyword queries with the first one auto-selected.
+ * The product design is the source of truth for presentation; the CMS is the
+ * source of truth for content. These pin the presentation half.
+ * ------------------------------------------------------------------ */
+
+describe('the original character-card presentation', () => {
+  const markup = router(<PersonaGridCard character={card('grid')} index={0} />);
+
+  it('is a character card, not a clip tile — name and age together', () => {
+    expect(markup).toContain('Name grid');
+    // The card states an adult age beside the name, as the design shows.
+    expect(markup).toMatch(/Name grid[\s\S]*?<span class="text-sm font-medium text-zinc-200">\d+/);
+  });
+
+  it('links to the character, not to a clip', () => {
+    expect(markup).toContain('/characters/grid');
+  });
+
+  it('renders the approved HOT/NEW badge', () => {
+    // The design has it. It was briefly dropped as "invented decoration"; the
+    // approved public UI is frozen, so the original rule stands.
+    expect(router(<PersonaGridCard character={card('a')} index={0} />)).toContain('🔥 Hot');
+    expect(router(<PersonaGridCard character={card('b')} index={1} />)).toContain('New');
+    expect(router(<PersonaGridCard character={card('c')} index={2} />)).not.toContain('🔥 Hot');
+  });
+
+  it('renders NO category chips — the approved grid card has none', () => {
+    // Chips belong on the Play with me card. Adding them here was a
+    // presentation change to an approved component.
+    const withCategories = router(
+      <PersonaGridCard
+        character={{
+          ...card('t'),
+          categories: [
+            { slug: 'sexy', name: 'Sexy' },
+            { slug: 'lux', name: 'Luxury' },
+          ],
+        }}
+        index={2}
+      />,
+    );
+    expect(withCategories).not.toContain('Sexy');
+    expect(withCategories).not.toContain('Luxury');
+  });
+
+  it('keeps the original footer layout', () => {
+    expect(markup).toContain('flex items-baseline gap-1.5 p-3');
+  });
+});
+
+describe('the original Play with me rail', () => {
+  const markup = router(<PlayWithMeCarousel characters={[card('a'), card('b')]} />);
+
+  it('keeps its heading and Swipe mode link', () => {
+    expect(markup).toContain('Play with me');
+    expect(markup).toContain('Swipe mode');
+    expect(markup).toContain('/discover/swipe');
+  });
+
+  it('keeps the Online chip the design shows', () => {
+    expect(markup).toContain('Online');
+  });
+
+  it('renders one card per CMS character', () => {
+    expect(markup).toContain('Name a');
+    expect(markup).toContain('Name b');
+  });
+
+  it('renders nothing at all when the CMS sends no characters', () => {
+    expect(router(<PlayWithMeCarousel characters={[]} />)).toBe('');
+  });
+
+  it('is the ONLY character rail the lobby renders', () => {
+    // The approved design has one rail. Recently Added is a CMS feature with
+    // no public surface, so no second rail may appear here.
+    expect(markup.match(/aria-label="Play with me"/g)).toHaveLength(1);
+    expect(markup).not.toContain('Recently Added');
+  });
+});
+
+describe('the category pills are CMS data with an All state', () => {
+  const pills = [
+    { id: '1', slug: 'sexy', name: 'Sexy' },
+    { id: '2', slug: 'new', name: 'New' },
+  ];
+
+  it('renders All first, then the operator’s categories in order', () => {
+    const markup = router(<CategoryPills categories={pills} active={null} onSelect={() => {}} />);
+    expect(markup.indexOf('All')).toBeLessThan(markup.indexOf('Sexy'));
+    expect(markup.indexOf('Sexy')).toBeLessThan(markup.indexOf('New'));
+  });
+
+  it('marks All as selected when nothing is filtered', () => {
+    const markup = router(<CategoryPills categories={pills} active={null} onSelect={() => {}} />);
+    // The first pill (All) carries the active styling.
+    expect(markup).toContain('aria-pressed="true"');
+    expect(markup.split('aria-pressed="true"').length - 1).toBe(1);
+  });
+
+  it('marks the chosen category instead once one is selected', () => {
+    const markup = router(<CategoryPills categories={pills} active="new" onSelect={() => {}} />);
+    const activeIndex = markup.indexOf('aria-pressed="true"');
+    expect(markup.slice(activeIndex, activeIndex + 200)).toContain('New');
+  });
+
+  it('still shows All when the operator has created no categories', () => {
+    // This is what keeps search usable before any category exists.
+    const markup = router(<CategoryPills categories={[]} active={null} onSelect={() => {}} />);
+    expect(markup).toContain('All');
+  });
+
+  it('invents no hard-coded taxonomy', () => {
+    const markup = router(<CategoryPills categories={[]} active={null} onSelect={() => {}} />);
+    for (const invented of ['Trending', 'Girlfriend', 'Milf', 'Dominant', 'Cosplay', 'Goth']) {
+      expect(markup).not.toContain(invented);
+    }
+  });
+});
+
+describe('the original Advanced-filters control', () => {
+  // Rendered through the page, because the funnel and its panel are wired
+  // together there — the button was briefly inert, which a component-only test
+  // would not have caught.
+  const source = readFileSync(
+    fileURLToPath(new URL('../../pages/LobbyPage.tsx', import.meta.url)),
+    'utf8',
+  );
+
+  it('toggles, rather than sitting inert', () => {
+    expect(source).toContain('setShowFilters((v) => !v)');
+  });
+
+  it('exposes aria-expanded', () => {
+    expect(source).toContain('aria-expanded={showFilters}');
+  });
+
+  it('keeps the original shape and active-state styling', () => {
+    expect(source).toContain('rounded-xl');
+    expect(source).toContain('border-rose-500/60 bg-rose-500/15');
+  });
+
+  it('renders the original Advanced filters panel when open', () => {
+    expect(source).toContain('Advanced filters');
+    expect(source).toContain('Refine by body type, personality and availability');
+  });
+
+  it('uses the original small pill size in the Discovery section', () => {
+    expect(source).toContain('size="sm"');
   });
 });

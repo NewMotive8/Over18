@@ -43,7 +43,7 @@ import {
   uploadLibraryAsset,
   type LibraryUploadStorage,
 } from '../services/library-upload-service.js';
-import { mediaTypeOf } from '../services/content-review-service.js';
+import { listCharacterContent, mediaTypeOf } from '../services/content-review-service.js';
 import {
   getContentRequirementByKey,
   getPrimaryReferenceRequirementKey,
@@ -229,10 +229,13 @@ export default async function adminCharacterRoutes(
         .send({ error: 'invalid_upload', message: 'That upload could not be read.' });
     }
 
-    if (!file) {
-      return reply.code(400).send({ error: 'invalid_request', message: 'No image was provided.' });
-    }
-    if (acceptedMediaTypeOf(file.mimeType) !== 'image') {
+    // A PHOTO IS OPTIONAL. Requiring one meant a character could not exist
+    // until her media did, which is the wrong way round for an operator who
+    // builds the roster first and uploads over the following days. Without a
+    // file this creates the character alone; her first identity version is
+    // provisioned on demand by the first upload, so nothing downstream needs
+    // her to have had one now.
+    if (file && acceptedMediaTypeOf(file.mimeType) !== 'image') {
       return reply.code(400).send({
         error: 'unsupported_type',
         message: `A primary reference must be an image. Accepted: ${ACCEPTED_MIME_TYPES.filter(
@@ -240,7 +243,7 @@ export default async function adminCharacterRoutes(
         ).join(', ')}.`,
       });
     }
-    if (file.bytes.length === 0) {
+    if (file && file.bytes.length === 0) {
       return reply.code(400).send({ error: 'empty_file', message: 'The selected file is empty.' });
     }
 
@@ -272,6 +275,13 @@ export default async function adminCharacterRoutes(
         return reply.code(409).send({ error: 'name_taken', message: error.message });
       }
       throw error;
+    }
+
+    // NO PHOTO: the character exists and that is the whole job. No identity
+    // version is created here — the first upload provisions it, so an operator
+    // who never adds a photo is not left with an empty version to explain.
+    if (!file) {
+      return reply.code(201).send({ character, identity: null, primaryReference: null });
     }
 
     // Version 1 carries only the one attribute the validator requires. The
@@ -344,6 +354,26 @@ export default async function adminCharacterRoutes(
         })),
         triageCount: status.triage.length,
       };
+    },
+  );
+
+  /**
+   * Everything this character has, on the character's own page.
+   *
+   * Assembled from tables that were already readable — it introduces no
+   * lifecycle, no new state and no new permission, and every locator it emits
+   * is the same opaque id-keyed admin route every other admin surface uses.
+   * Its only job is to stop "what content does Maria have?" being a question
+   * that requires visiting four screens.
+   */
+  app.get<{ Params: { characterId: string } }>(
+    '/admin/characters/:characterId/content',
+    adminOnly,
+    async (request, reply) => {
+      const { characterId } = request.params;
+      if (!UUID_RE.test(characterId)) return notFound(reply);
+      if (!(await getCharacterForAdmin(opts.db, characterId))) return notFound(reply);
+      return { assets: await listCharacterContent(opts.db, characterId) };
     },
   );
 

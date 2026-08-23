@@ -1,6 +1,13 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { characters, characterVisualAssets, type CharacterVisualAssetRow } from '../db/schema.js';
+import {
+  appCategories,
+  appCategoryAssets,
+  characters,
+  characterVisualAssets,
+  homeHeroClips,
+  type CharacterVisualAssetRow,
+} from '../db/schema.js';
 import type { ContentRating, VisualAssetStatus } from './visual-asset-service.js';
 
 /**
@@ -253,4 +260,117 @@ export async function listLibrary(db: Db, filter: LibraryFilter = {}): Promise<L
  */
 export async function listRecentLibrary(db: Db, limit = 12): Promise<LibraryAsset[]> {
   return orderByRecency(await selectLibrary(db, {})).slice(0, limit);
+}
+
+/* ------------------------------------------------------------------ *
+ * One character's whole content shelf
+ *
+ * WHY THIS EXISTS. Everything below was already reachable — the Review board
+ * knew a character's pending items, the Library knew its approved ones, the
+ * merchandising screens knew its category membership and the Home composer
+ * knew its Hero clips — but only from four different screens, none of them the
+ * character's own. Opening Maria and asking "what content does she have?" had
+ * no answer. This assembles that answer from the existing tables; it adds no
+ * lifecycle, no new state and no new permission.
+ * ------------------------------------------------------------------ */
+
+/** Where one asset currently appears, editorially. */
+export interface AssetPlacement {
+  /** App Categories this asset is in, with its operator-chosen position. */
+  categories: Array<{ id: string; slug: string; name: string; position: number }>;
+  /** Its position in the Hero, or null when it is not assigned there. */
+  heroPosition: number | null;
+}
+
+export interface CharacterContentAsset {
+  assetId: string;
+  characterId: string;
+  kind: string;
+  status: VisualAssetStatus;
+  mediaType: MediaType;
+  contentRating: ContentRating;
+  requirementKey: string | null;
+  /** True for an approved canonical reference — the character's primary set. */
+  isPrimary: boolean;
+  /** Its order within the primary references, when it has one. */
+  position: number | null;
+  /**
+   * Opaque, id-keyed admin locator, or null when the row has no bytes yet.
+   * NEVER a storage key or filesystem path — the same rule US-102.2 set for
+   * every other admin surface.
+   */
+  previewUrl: string | null;
+  placement: AssetPlacement;
+  createdAt: string;
+  approvedAt: string | null;
+}
+
+/**
+ * Every asset belonging to one character, newest first, whatever its status.
+ *
+ * Rejected rows are included deliberately: an operator looking at a character
+ * needs to see that something was rejected rather than wonder where it went.
+ * The caller decides how to group them.
+ */
+export async function listCharacterContent(
+  db: Db,
+  characterId: string,
+): Promise<CharacterContentAsset[]> {
+  const rows = await db
+    .select()
+    .from(characterVisualAssets)
+    .where(eq(characterVisualAssets.characterId, characterId))
+    .orderBy(desc(characterVisualAssets.createdAt), desc(characterVisualAssets.id));
+  if (rows.length === 0) return [];
+
+  const ids = rows.map((row) => row.id);
+
+  const [categoryRows, heroRows] = await Promise.all([
+    db
+      .select({
+        assetId: appCategoryAssets.assetId,
+        position: appCategoryAssets.position,
+        id: appCategories.id,
+        slug: appCategories.slug,
+        name: appCategories.name,
+      })
+      .from(appCategoryAssets)
+      .innerJoin(appCategories, eq(appCategories.id, appCategoryAssets.categoryId))
+      .where(inArray(appCategoryAssets.assetId, ids)),
+    db
+      .select({ assetId: homeHeroClips.assetId, position: homeHeroClips.position })
+      .from(homeHeroClips)
+      .where(inArray(homeHeroClips.assetId, ids)),
+  ]);
+
+  const byAsset = new Map<string, AssetPlacement['categories']>();
+  for (const row of categoryRows) {
+    const list = byAsset.get(row.assetId) ?? [];
+    list.push({ id: row.id, slug: row.slug, name: row.name, position: row.position });
+    byAsset.set(row.assetId, list);
+  }
+  const heroAt = new Map(heroRows.map((row) => [row.assetId, row.position]));
+
+  return rows.map((row) => ({
+    assetId: row.id,
+    characterId: row.characterId,
+    kind: row.kind,
+    status: row.status,
+    mediaType: mediaTypeOf(row.storageKey, row.provenance),
+    contentRating: row.contentRating,
+    requirementKey: row.requirementKey,
+    isPrimary: row.kind === 'reference' && row.status === 'approved' && row.isCanonical,
+    position: row.position,
+    // ONE id-keyed admin route for every kind. It resolves both storage
+    // conventions itself (a manual upload's real path from provenance, a
+    // generated asset's from the key) and refuses anything escaping
+    // MEDIA_STORAGE_DIR, so the caller never needs to know which it holds.
+    previewUrl: row.storageKey ? `/admin/content/assets/${row.id}/file` : null,
+    placement: {
+      categories: (byAsset.get(row.id) ?? []).sort((a, b) => a.position - b.position),
+      heroPosition: heroAt.get(row.id) ?? null,
+    },
+    createdAt: row.createdAt.toISOString(),
+    approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
+  }));
 }

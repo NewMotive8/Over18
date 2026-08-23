@@ -11,12 +11,12 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   ApiRequestError,
   API_URL,
-  charactersApi,
+  adminCharactersApi,
   merchandisingApi,
+  type AdminCharacterListItem,
   type CandidateAssetView,
   type CategoryAssetView,
 } from '../../lib/api';
-import type { PublicCharacter } from '@over18/shared';
 import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
 import { canMove, interceptedPath, moveBy, moveItem, sameOrder } from '../../admin/categoryBoard';
 import {
@@ -98,7 +98,7 @@ export default function CategoryMerchandisingPage() {
   const [contents, setContents] = useState<CategoryAssetView[] | null>(null);
   const [savedOrder, setSavedOrder] = useState<string[]>([]);
   const [candidates, setCandidates] = useState<CandidateAssetView[] | null>(null);
-  const [characters, setCharacters] = useState<PublicCharacter[]>([]);
+  const [characters, setCharacters] = useState<AdminCharacterListItem[]>([]);
 
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [pickerSelected, setPickerSelected] = useState<ReadonlySet<string>>(new Set());
@@ -176,7 +176,10 @@ export default function CategoryMerchandisingPage() {
         await Promise.all([
           loadContents(resolved.id),
           loadCandidates(resolved.id, EMPTY_FILTERS),
-          charactersApi.list().then(setCharacters).catch(() => setCharacters([])),
+          // The ADMIN list, for the same reason the Content Library uses it: an
+          // unpublished character's approved clips are perfectly assignable,
+          // so filtering the picker by her must be possible before she is live.
+          adminCharactersApi.list().then(setCharacters).catch(() => setCharacters([])),
         ]);
       } catch (err) {
         if (cancelled) return;

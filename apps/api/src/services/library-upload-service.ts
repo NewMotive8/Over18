@@ -3,7 +3,11 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { characterVisualAssets, type CharacterVisualAssetRow } from '../db/schema.js';
-import { getActiveVisualIdentity } from './visual-identity-service.js';
+import {
+  activateVisualIdentityVersion,
+  createVisualIdentityVersion,
+  getActiveVisualIdentity,
+} from './visual-identity-service.js';
 import {
   approveVisualAsset,
   createVisualAsset,
@@ -146,6 +150,35 @@ export function uploadedMimeTypeOf(asset: CharacterVisualAssetRow): string {
 }
 
 /**
+ * Gives a character its first visual identity version so an upload has
+ * something to attach to.
+ *
+ * WHY THIS EXISTS. `character_visual_assets.visual_identity_id` is NOT NULL, so
+ * every asset belongs to a version. Requiring the operator to author Visual DNA
+ * before they may upload a single clip inverted the real workflow: media
+ * arrives first, and the DNA describing the character is written later, if at
+ * all. Uploading used to fail outright with `no_active_identity`.
+ *
+ * WHY IT IS NOT A NEW CONCEPT. This is exactly what character quick-create
+ * already does (routes/admin-characters.ts) — v1 carrying only the one
+ * attribute the validator requires, then activated. Reusing that keeps one
+ * definition of "a character's first identity" and needs no schema change.
+ *
+ * WHY IT INVENTS NOTHING. `apparentAgeBand: 'adult'` is the sole field, and it
+ * is the validator's own hard requirement, not a guess about appearance. Every
+ * descriptive attribute stays absent until an operator writes it.
+ */
+async function provisionInitialIdentity(db: Db, characterId: string) {
+  const created = await createVisualIdentityVersion(
+    db,
+    characterId,
+    { apparentAgeBand: 'adult' },
+    { label: 'Initial identity' },
+  );
+  return activateVisualIdentityVersion(db, created.id);
+}
+
+/**
  * Validates, stores and records one manually uploaded file.
  *
  * Order matters: the row is created BEFORE the bytes are written so the file is
@@ -174,13 +207,9 @@ export async function uploadLibraryAsset(
   // version the rest of the visual system treats as current.
   let visualIdentityId = input.visualIdentityId;
   if (!visualIdentityId) {
-    const identity = await getActiveVisualIdentity(db, input.characterId);
-    if (!identity) {
-      throw new LibraryUploadError(
-        'no_active_identity',
-        'That character has no active visual identity to attach an upload to.',
-      );
-    }
+    const identity =
+      (await getActiveVisualIdentity(db, input.characterId)) ??
+      (await provisionInitialIdentity(db, input.characterId));
     visualIdentityId = identity.id;
   }
 

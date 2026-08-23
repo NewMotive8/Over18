@@ -1,7 +1,11 @@
 import { createReadStream, existsSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/client.js';
-import { composeHome } from '../services/home-composition-service.js';
+import {
+  browsePublicCharacters,
+  composeHome,
+  listPublicCategoryPills,
+} from '../services/home-composition-service.js';
 import {
   listDiscoveryClips,
   listPublicDiscoveryCategories,
@@ -87,6 +91,32 @@ export default async function publicHomeRoutes(
   app.get('/api/discovery/categories', async () => ({
     categories: await listPublicDiscoveryCategories(opts.db),
   }));
+
+  /**
+   * The lobby's category pills — App Categories, in the operator's CMS order.
+   *
+   * These are the SAME categories an operator merchandises in Admin. Discovery
+   * categories are not exposed as pills: one editorial system, one place to
+   * manage it.
+   */
+  app.get('/api/categories', async () => ({
+    categories: await listPublicCategoryPills(opts.db),
+  }));
+
+  /**
+   * The lobby's character grid. Both filters are optional and independent;
+   * omitting `category` is the unfiltered "All" state, which is what makes
+   * search work before any category has been configured.
+   */
+  app.get<{ Querystring: { category?: string; q?: string } }>(
+    '/api/browse/characters',
+    async (request) => ({
+      characters: await browsePublicCharacters(opts.db, {
+        categorySlug: request.query.category ?? null,
+        query: request.query.q ?? null,
+      }),
+    }),
+  );
 
   /**
    * Discovery results. `category` and `q` are INDEPENDENT filters — selecting a

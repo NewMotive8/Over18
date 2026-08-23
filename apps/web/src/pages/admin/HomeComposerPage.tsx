@@ -6,15 +6,27 @@ import {
   type HeroCandidateView,
   type HeroClipAdminView,
   type HomeCategoryView,
+  type PlayWithMeAdminView,
+  type PlayWithMeCandidateView,
+  type PublicClip,
   type PublicHome,
+  type RecentCandidateView,
   type RecentlyAddedAdminView,
 } from '../../lib/api';
 import {
+  addPlayWithMeConsequence,
+  addRecentConsequence,
   contentSummary,
+  heroFallbackNote,
+  heroMode,
+  heroModeLabel,
   emptyReason,
   previewSummary,
   publishedInOrder,
+  playWithMeModeLabel,
+  playWithMePickerRows,
   recentModeLabel,
+  recentPickerRows,
   summariseHome,
   unpublished,
 } from '../../admin/homeBoard';
@@ -22,6 +34,7 @@ import { canMove, interceptedPath, moveBy, sameOrder } from '../../admin/categor
 import ConfirmDialog from '../../admin/ConfirmDialog';
 import PublishingTabs from '../../admin/PublishingTabs';
 import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import { absoluteMediaUrl } from '../../lib/media';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 /**
@@ -45,8 +58,14 @@ type Notice = { kind: 'error' | 'success'; text: string } | null;
 export default function HomeComposerPage() {
   const [categories, setCategories] = useState<HomeCategoryView[] | null>(null);
   const [hero, setHero] = useState<HeroClipAdminView[]>([]);
+  /** What the app is borrowing while the Hero is unconfigured. Never saved. */
+  const [heroBorrowed, setHeroBorrowed] = useState<PublicClip[]>([]);
   const [recent, setRecent] = useState<RecentlyAddedAdminView | null>(null);
+  const [playWithMe, setPlayWithMe] = useState<PlayWithMeAdminView | null>(null);
+  const [playCandidates, setPlayCandidates] = useState<PlayWithMeCandidateView[] | null>(null);
+  const [confirmPlayReset, setConfirmPlayReset] = useState(false);
   const [candidates, setCandidates] = useState<HeroCandidateView[] | null>(null);
+  const [recentCandidates, setRecentCandidates] = useState<RecentCandidateView[] | null>(null);
   const [preview, setPreview] = useState<{ newVisitor: PublicHome; returning: PublicHome } | null>(
     null,
   );
@@ -68,7 +87,9 @@ export default function HomeComposerPage() {
       const data = await adminHomeApi.overview();
       setCategories(data.categories);
       setHero(data.hero);
+      setHeroBorrowed(data.heroFallback);
       setRecent(data.recentlyAdded);
+      setPlayWithMe(await adminHomeApi.playWithMe());
       const ids = publishedInOrder(data.categories).map((c) => c.id);
       setOrder(ids);
       setSavedOrder(ids);
@@ -148,6 +169,21 @@ export default function HomeComposerPage() {
   const availableList = useMemo(() => (categories ? unpublished(categories) : []), [categories]);
   const totals = useMemo(() => summariseHome(categories ?? []), [categories]);
 
+  /**
+   * Derived from the CURRENT rail, so a character added a moment ago reads as
+   * already present without refetching the candidate list.
+   */
+  const recentPicker = useMemo(
+    () => (recentCandidates ? recentPickerRows(recentCandidates, recent) : null),
+    [recentCandidates, recent],
+  );
+
+  /** Same derivation, same reason: the endpoint does not mark who is on the rail. */
+  const playPicker = useMemo(
+    () => (playCandidates ? playWithMePickerRows(playCandidates, playWithMe) : null),
+    [playCandidates, playWithMe],
+  );
+
   async function togglePublished(category: HomeCategoryView, next: boolean) {
     await run(
       async () => {
@@ -173,6 +209,24 @@ export default function HomeComposerPage() {
     );
   }
 
+  /**
+   * Keeps the Hero panel honest after a change.
+   *
+   * A configured Hero has no fallback by definition, so that case needs no
+   * request. Emptying the Hero is the case that matters: the app starts
+   * borrowing again and the panel has to show what it is borrowing, which only
+   * the server can say.
+   */
+  async function syncHero(clips: HeroClipAdminView[]) {
+    setHero(clips);
+    if (clips.length > 0) {
+      setHeroBorrowed([]);
+      return;
+    }
+    const overview = await adminHomeApi.overview();
+    setHeroBorrowed(overview.heroFallback);
+  }
+
   async function loadCandidates() {
     await run(async () => {
       const res = await adminHomeApi.heroCandidates();
@@ -184,7 +238,7 @@ export default function HomeComposerPage() {
     await run(
       async () => {
         const res = await adminHomeApi.addHero([assetId]);
-        setHero(res.clips);
+        await syncHero(res.clips);
         const refreshed = await adminHomeApi.heroCandidates();
         setCandidates(refreshed.candidates);
       },
@@ -197,7 +251,7 @@ export default function HomeComposerPage() {
     await run(
       async () => {
         const res = await adminHomeApi.removeHero(clip.assetId);
-        setHero(res.clips);
+        await syncHero(res.clips);
         if (candidates) {
           const refreshed = await adminHomeApi.heroCandidates();
           setCandidates(refreshed.candidates);
@@ -221,6 +275,75 @@ export default function HomeComposerPage() {
       },
       "Couldn't reorder the Hero.",
       'Hero order saved.',
+    );
+  }
+
+  async function loadPlayCandidates() {
+    await run(async () => {
+      const res = await adminHomeApi.playWithMeCandidates();
+      setPlayCandidates(res.candidates);
+    }, "Couldn't load the character list.");
+  }
+
+  async function addPlay(characterId: string, displayName: string) {
+    await run(
+      async () => setPlayWithMe(await adminHomeApi.addPlayWithMe(characterId)),
+      "Couldn't add that character.",
+      `${displayName} added to Play with me.`,
+    );
+  }
+
+  async function removePlay(characterId: string) {
+    await run(
+      async () => setPlayWithMe(await adminHomeApi.removePlayWithMe(characterId)),
+      "Couldn't remove that character.",
+      'Removed from Play with me. The character is untouched.',
+    );
+  }
+
+  async function movePlay(characterId: string, delta: number) {
+    if (!playWithMe) return;
+    const ids = moveBy(
+      playWithMe.characters.map((c) => ({ id: c.characterId })),
+      characterId,
+      delta,
+    ).map((c) => c.id);
+    await run(
+      async () => setPlayWithMe(await adminHomeApi.orderPlayWithMe(ids)),
+      "Couldn't reorder Play with me.",
+      'Play with me order saved.',
+    );
+  }
+
+  async function resetPlay() {
+    const ok = await run(
+      async () => setPlayWithMe(await adminHomeApi.resetPlayWithMe()),
+      "Couldn't reset Play with me.",
+      'Play with me is automatic again.',
+    );
+    if (ok) setConfirmPlayReset(false);
+  }
+
+  async function loadRecentCandidates() {
+    await run(async () => {
+      const res = await adminHomeApi.recentCandidates();
+      setRecentCandidates(res.candidates);
+    }, "Couldn't load the character list.");
+  }
+
+  /**
+   * Adds one character to the rail via the EXISTING endpoint. The server owns
+   * every rule that matters — it materialises the automatic list first
+   * (`ensureCurated`), appends at the end, and ignores a character already
+   * there — so this only reports the rail it hands back.
+   */
+  async function addRecent(characterId: string, displayName: string) {
+    await run(
+      async () => {
+        setRecent(await adminHomeApi.addRecent(characterId));
+      },
+      "Couldn't add that character.",
+      `${displayName} added to Recently Added.`,
     );
   }
 
@@ -331,9 +454,20 @@ export default function HomeComposerPage() {
           <section>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-sm font-semibold text-neutral-200">Hero</h2>
+                <h2 className="text-sm font-semibold text-neutral-200">
+                  Hero{' '}
+                  <span
+                    className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                      heroMode(hero) === 'configured'
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : 'bg-amber-500/15 text-amber-300'
+                    }`}
+                  >
+                    {heroMode(hero) === 'configured' ? 'Configured' : 'Fallback'}
+                  </span>
+                </h2>
                 <p className="mt-0.5 text-xs text-neutral-500">
-                  Clips you choose, in your order. Only approved content can be added.
+                  {heroModeLabel(heroMode(hero))}
                 </p>
               </div>
               <button
@@ -347,9 +481,28 @@ export default function HomeComposerPage() {
             </div>
 
             {hero.length === 0 ? (
-              <p className="rounded-xl border border-dashed border-neutral-800 bg-neutral-900/30 p-4 text-xs text-neutral-400">
-                No Hero clips yet. The Hero is hidden on Home until you add some.
-              </p>
+              <div className="rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-4">
+                <p className="text-xs text-amber-200/90">{heroFallbackNote(heroBorrowed)}</p>
+                {heroBorrowed.length > 0 && (
+                  <ul className="mt-3 flex flex-wrap gap-2">
+                    {heroBorrowed.map((clip, index) => (
+                      <li key={clip.id} className="w-16">
+                        <div className={tileFrameClass(true)}>
+                          <img
+                            src={`${API_URL}${clip.url}`}
+                            alt=""
+                            loading="lazy"
+                            className={TILE_MEDIA_CLASS}
+                          />
+                        </div>
+                        <span className="mt-1 block truncate text-[10px] text-neutral-500">
+                          {index + 1}. {clip.characterName}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             ) : (
               <ul className="space-y-2">
                 {hero.map((clip, index) => (
@@ -468,25 +621,213 @@ export default function HomeComposerPage() {
             )}
           </section>
 
+          {/* ---------------- Play with me ---------------- */}
+          <section>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-200">
+                  Play with me{' '}
+                  <span
+                    className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                      playWithMe?.curated
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : 'bg-neutral-700/40 text-neutral-300'
+                    }`}
+                  >
+                    {playWithMe?.curated ? 'Manually curated' : 'Automatic'}
+                  </span>
+                </h2>
+                <p className="mt-0.5 text-xs text-neutral-500">
+                  {playWithMe ? playWithMeModeLabel(playWithMe) : ''}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    playCandidates ? setPlayCandidates(null) : void loadPlayCandidates()
+                  }
+                  disabled={busy}
+                  className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+                >
+                  {playCandidates ? 'Close picker' : 'Add characters'}
+                </button>
+                {playWithMe?.curated && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmPlayReset(true)}
+                    disabled={busy}
+                    className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+                  >
+                    Reset to automatic
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {(playWithMe?.characters.length ?? 0) === 0 ? (
+              <p className="rounded-xl border border-dashed border-neutral-800 bg-neutral-900/30 p-4 text-xs text-neutral-400">
+                {playWithMe?.curated
+                  ? 'Your custom list is empty, so this rail shows nothing on the app. Add a character, or reset to automatic.'
+                  : 'No active characters yet, so this rail shows nothing on the app.'}
+              </p>
+            ) : (
+              <ul className="space-y-1.5">
+                {(playWithMe?.characters ?? []).map((character, index) => {
+                  const preview = absoluteMediaUrl(character.profileImage);
+                  return (
+                    <li
+                      key={character.characterId}
+                      className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2"
+                    >
+                      <span className="w-5 shrink-0 text-center text-[11px] tabular-nums text-neutral-600">
+                        {index + 1}
+                      </span>
+                      <div className="w-10 shrink-0">
+                        <div className={tileFrameClass(true)}>
+                          {preview ? (
+                            <img src={preview} alt="" loading="lazy" className={TILE_MEDIA_CLASS} />
+                          ) : null}
+                        </div>
+                      </div>
+                      <span className="min-w-0 flex-1 truncate text-sm text-neutral-200">
+                        {character.displayName}
+                        {character.status !== 'active' && (
+                          <span className="ml-2 text-[11px] text-amber-300/90">
+                            inactive — hidden on Home
+                          </span>
+                        )}
+                      </span>
+                      <div className="flex shrink-0 gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void movePlay(character.characterId, -1)}
+                          disabled={busy || index === 0}
+                          aria-label={`Move ${character.displayName} up`}
+                          className="rounded-md border border-neutral-800 px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 disabled:opacity-30"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void movePlay(character.characterId, 1)}
+                          disabled={busy || index === (playWithMe?.characters.length ?? 0) - 1}
+                          aria-label={`Move ${character.displayName} down`}
+                          className="rounded-md border border-neutral-800 px-2 py-1 text-xs text-neutral-400 hover:bg-neutral-800 disabled:opacity-30"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void removePlay(character.characterId)}
+                          disabled={busy}
+                          className="rounded-md border border-neutral-800 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            {playPicker && (
+              <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-900/40 p-3">
+                <p className="mb-2 text-xs text-neutral-400">
+                  Active characters, alphabetically. {addPlayWithMeConsequence(playWithMe)}
+                </p>
+                {playPicker.length === 0 ? (
+                  <p className="text-xs text-neutral-500">No active characters to add.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {playPicker.map((row) => {
+                      const preview = absoluteMediaUrl(row.profileImage);
+                      return (
+                        <li
+                          key={row.characterId}
+                          className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2"
+                        >
+                          <div className="w-10 shrink-0">
+                            <div className={tileFrameClass(true)}>
+                              {preview ? (
+                                <img
+                                  src={preview}
+                                  alt=""
+                                  loading="lazy"
+                                  className={TILE_MEDIA_CLASS}
+                                />
+                              ) : null}
+                            </div>
+                          </div>
+                          <span className="min-w-0 flex-1 truncate text-sm text-neutral-300">
+                            {row.displayName}
+                          </span>
+                          {row.onRail ? (
+                            <span className="shrink-0 text-[11px] text-neutral-500">
+                              Already on the rail
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void addPlay(row.characterId, row.displayName)}
+                              disabled={busy}
+                              className="shrink-0 rounded-md border border-emerald-500/40 px-2.5 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+                            >
+                              Add
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            )}
+          </section>
+
           {/* ---------------- Recently Added ---------------- */}
           <section>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-sm font-semibold text-neutral-200">Recently Added</h2>
+                <h2 className="text-sm font-semibold text-neutral-200">
+                  Recently Added{' '}
+                  <span
+                    className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                      recent?.curated
+                        ? 'bg-emerald-500/15 text-emerald-300'
+                        : 'bg-neutral-700/40 text-neutral-300'
+                    }`}
+                  >
+                    {recent?.curated ? 'Manually curated' : 'Automatic'}
+                  </span>
+                </h2>
                 <p className="mt-0.5 text-xs text-neutral-500">
                   {recent ? recentModeLabel(recent) : ''}
                 </p>
               </div>
-              {recent?.curated && (
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => setConfirmReset(true)}
+                  onClick={() =>
+                    recentCandidates ? setRecentCandidates(null) : void loadRecentCandidates()
+                  }
                   disabled={busy}
                   className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
                 >
-                  Reset to automatic
+                  {recentCandidates ? 'Close picker' : 'Add characters'}
                 </button>
-              )}
+                {recent?.curated && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmReset(true)}
+                    disabled={busy}
+                    className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+                  >
+                    Reset to automatic
+                  </button>
+                )}
+              </div>
             </div>
             <ul className="space-y-1.5">
               {(recent?.characters ?? []).map((character, index) => (
@@ -497,6 +838,18 @@ export default function HomeComposerPage() {
                   <span className="w-5 shrink-0 text-center text-[11px] tabular-nums text-neutral-600">
                     {index + 1}
                   </span>
+                  <div className="w-10 shrink-0">
+                    <div className={tileFrameClass(true)}>
+                      {absoluteMediaUrl(character.profileImage) ? (
+                        <img
+                          src={absoluteMediaUrl(character.profileImage)}
+                          alt=""
+                          loading="lazy"
+                          className={TILE_MEDIA_CLASS}
+                        />
+                      ) : null}
+                    </div>
+                  </div>
                   <span className="min-w-0 flex-1 truncate text-sm text-neutral-200">
                     {character.displayName}
                     {character.status !== 'active' && (
@@ -536,6 +889,44 @@ export default function HomeComposerPage() {
                 </li>
               ))}
             </ul>
+
+            {recentPicker && (
+              <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-900/40 p-3">
+                <p className="mb-2 text-xs text-neutral-400">
+                  Active characters, newest first. {addRecentConsequence(recent)}
+                </p>
+                {recentPicker.length === 0 ? (
+                  <p className="text-xs text-neutral-500">No active characters to add.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {recentPicker.map((row) => (
+                      <li
+                        key={row.characterId}
+                        className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-sm text-neutral-300">
+                          {row.displayName}
+                        </span>
+                        {row.onRail ? (
+                          <span className="shrink-0 text-[11px] text-neutral-500">
+                            Already on the rail
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void addRecent(row.characterId, row.displayName)}
+                            disabled={busy}
+                            className="shrink-0 rounded-md border border-emerald-500/40 px-2.5 py-1 text-xs text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+                          >
+                            Add
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </section>
 
           {/* ---------------- Categories on Home ---------------- */}
@@ -707,6 +1098,19 @@ export default function HomeComposerPage() {
             )}
           </section>
         </div>
+      )}
+
+      {confirmPlayReset && (
+        <ConfirmDialog
+          open
+          title="Reset Play with me?"
+          body="The rail goes back to showing every active character alphabetically. Your custom arrangement is discarded; no character is changed."
+          confirmLabel="Reset to automatic"
+          cancelLabel="Keep my list"
+          busy={busy}
+          onCancel={() => setConfirmPlayReset(false)}
+          onConfirm={() => void resetPlay()}
+        />
       )}
 
       {confirmReset && (

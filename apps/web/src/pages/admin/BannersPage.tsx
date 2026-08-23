@@ -19,6 +19,7 @@ import {
   stateTone,
   summarise,
 } from '../../admin/bannerBoard';
+import { slotLabel } from '../../admin/homeBoard';
 import ConfirmDialog from '../../admin/ConfirmDialog';
 import PublishingTabs from '../../admin/PublishingTabs';
 import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
@@ -441,6 +442,10 @@ export default function BannersPage() {
                         <p className="mt-0.5 truncate text-xs text-neutral-400">{banner.subtitle}</p>
                       )}
                       <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-neutral-500">
+                        {/* Which slot, first: ordering here is WITHIN a slot, so
+                            the row's number means nothing without it. */}
+                        <span className="text-neutral-400">{slotLabel(banner.slot)}</span>
+                        <span aria-hidden>·</span>
                         <span>{destinationLabel(banner)}</span>
                         <span aria-hidden>·</span>
                         <span>{audienceLabel(banner.audience)}</span>

@@ -1,7 +1,12 @@
 import { readdir } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { characterVisualAssets, contentInbox, users } from '../db/schema.js';
+import {
+  characterVisualAssets,
+  characterVisualIdentities,
+  contentInbox,
+  users,
+} from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
 import { getActiveVisualIdentity } from '../services/visual-identity-service.js';
@@ -354,7 +359,7 @@ describe('assigning an inbox item', () => {
     expect(await storedFileCount()).toBe(before);
   });
 
-  it('refuses assignment to a character with no active visual identity', async () => {
+  it('assigns to a character with NO visual identity, provisioning her first version', async () => {
     const cookies = await adminCookies();
     const item = (await upload(cookies)).json();
     const draft = (
@@ -379,11 +384,35 @@ describe('assigning an inbox item', () => {
       payload: { characterId: draft.id },
       cookies,
     });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('no_active_identity');
-    // Clear message, not a 500 — and the item survives for a second try.
+    // THIS USED TO BE REFUSED with `no_active_identity`. Requiring an operator
+    // to author Visual DNA before a character could hold any media inverted the
+    // real workflow: media arrives first and the DNA describing her is written
+    // later, if at all. The first upload now provisions the same minimal v1
+    // that quick-create has always created.
+    expect(res.statusCode).toBe(200);
+
+    const [identity] = await ctx.db
+      .select()
+      .from(characterVisualIdentities)
+      .where(eq(characterVisualIdentities.characterId, draft.id));
+    expect(identity!.status).toBe('active');
+    // It invents nothing about her appearance beyond the validator's own
+    // hard requirement.
+    expect(Object.keys(identity!.visualDna as object)).toEqual(['apparentAgeBand']);
+
+    // The intake still completed properly: the item is assigned, not stranded.
     const [row] = await ctx.db.select().from(contentInbox).where(eq(contentInbox.id, item.inboxId));
-    expect(row!.status).toBe('unassigned');
+    expect(row!.status).toBe('assigned');
+    expect(row!.assignedAssetId).toBeTruthy();
+
+    // And the new asset is still UNDER REVIEW and not canonical — provisioning
+    // an identity must never promote anything.
+    const [asset] = await ctx.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, row!.assignedAssetId!));
+    expect(asset!.status).toBe('under_review');
+    expect(asset!.isCanonical).toBe(false);
   });
 });
 

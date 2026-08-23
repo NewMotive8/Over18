@@ -7,9 +7,12 @@ import {
 } from '@over18/shared';
 import {
   audienceLabel,
+  bannerDraftFrom,
+  bannerFormFromView,
   creativeRequirementText,
   destinationLabel,
   dimensionsLabel,
+  emptyBannerForm,
   formatBytes,
   formatInZone,
   instantToWallTime,
@@ -520,5 +523,135 @@ describe('summarise', () => {
       needsAttention: 0,
       drafts: 0,
     });
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The editor's form <-> wire mapping, and the Home slot
+ *
+ * THE BUG THIS PINS. Home has two banner slots, the API accepted `slot` on
+ * both create and update, and ordering was already per slot — but the editor's
+ * payload builder simply did not include the field. Every banner made in Admin
+ * therefore took the column default, `below_results` was unreachable, and the
+ * banners list even told operators to "change the slot in the banner editor",
+ * where no such control existed.
+ *
+ * These assertions are on the mapping rather than the component because this
+ * repo's web tests run in node with no DOM and the editor's first paint is a
+ * loading state — which is precisely why a missing form field could ship
+ * unnoticed in the first place.
+ * ------------------------------------------------------------------ */
+
+describe('a new banner form', () => {
+  it('starts in the slot the column already defaults to', () => {
+    // The selector adds a CHOICE. It must not silently relocate banners that
+    // would previously have been created without one.
+    expect(emptyBannerForm('UTC').slot).toBe('before_search');
+  });
+
+  it('carries that slot into the create body', () => {
+    expect(bannerDraftFrom(emptyBannerForm('UTC')).slot).toBe('before_search');
+  });
+});
+
+describe('an existing banner loads its own slot into the editor', () => {
+  it('reads before_search back', () => {
+    expect(bannerFormFromView(banner({ slot: 'before_search' }), 'UTC').slot).toBe('before_search');
+  });
+
+  it('reads below_results back — not the default', () => {
+    // The regression to guard: a banner in the second slot must not open in the
+    // editor showing the first, because saving would then move it.
+    expect(bannerFormFromView(banner({ slot: 'below_results' }), 'UTC').slot).toBe('below_results');
+  });
+
+  it('round-trips unchanged through a save', () => {
+    for (const slot of ['before_search', 'below_results'] as const) {
+      const form = bannerFormFromView(banner({ slot }), 'UTC');
+      expect(bannerDraftFrom(form).slot).toBe(slot);
+    }
+  });
+});
+
+describe('changing the slot reaches the server', () => {
+  it('sends the newly chosen slot on update', () => {
+    const form = bannerFormFromView(banner({ slot: 'before_search' }), 'UTC');
+    const moved = { ...form, slot: 'below_results' as const };
+    expect(bannerDraftFrom(moved).slot).toBe('below_results');
+  });
+
+  it('sends the slot back the other way too', () => {
+    const form = bannerFormFromView(banner({ slot: 'below_results' }), 'UTC');
+    expect(bannerDraftFrom({ ...form, slot: 'before_search' }).slot).toBe('before_search');
+  });
+
+  it('always includes slot, so the field cannot be quietly dropped again', () => {
+    // The original defect was an OMISSION, not a wrong value. Asserting the key
+    // is present is what actually catches it coming back.
+    expect(Object.keys(bannerDraftFrom(emptyBannerForm('UTC')))).toContain('slot');
+    expect(Object.keys(bannerDraftFrom(bannerFormFromView(banner(), 'UTC')))).toContain('slot');
+  });
+
+  it('restates an unchanged slot rather than omitting it — a server no-op', () => {
+    // The server re-homes position only when the slot actually changes, so
+    // sending the current slot on every PATCH is safe and keeps the mapping
+    // total rather than conditional.
+    const form = bannerFormFromView(banner({ slot: 'below_results' }), 'UTC');
+    expect(bannerDraftFrom(form).slot).toBe('below_results');
+  });
+});
+
+describe('the mapping preserves everything it always did', () => {
+  it('trims copy and nulls the blanks', () => {
+    const form = { ...emptyBannerForm('UTC'), title: '  Autumn  ', subtitle: '   ', ctaLabel: '' };
+    const draft = bannerDraftFrom(form);
+    expect(draft.title).toBe('Autumn');
+    expect(draft.subtitle).toBeNull();
+    expect(draft.ctaLabel).toBeNull();
+  });
+
+  it('keeps the schedule conversion and only names a zone when a time is set', () => {
+    const bare = bannerDraftFrom(emptyBannerForm('Europe/London'));
+    expect(bare.startsAt).toBeNull();
+    expect(bare.endsAt).toBeNull();
+    expect(bare.scheduleTimezone).toBeNull();
+
+    const scheduled = bannerDraftFrom({
+      ...emptyBannerForm('Europe/London'),
+      startLocal: '2026-09-01T10:00',
+    });
+    expect(scheduled.startsAt).toBe('2026-09-01T09:00:00.000Z');
+    expect(scheduled.scheduleTimezone).toBe('Europe/London');
+  });
+
+  it("prefers the banner's own stored zone when reading it back", () => {
+    const form = bannerFormFromView(
+      banner({ scheduleTimezone: 'Europe/London', startsAt: '2026-09-01T09:00:00.000Z' }),
+      'UTC',
+    );
+    expect(form.timezone).toBe('Europe/London');
+    expect(form.startLocal).toBe('2026-09-01T10:00');
+  });
+
+  it('carries the destination and audience across unchanged', () => {
+    const form = bannerFormFromView(
+      banner({
+        audience: 'new_users',
+        destination: {
+          kind: 'external',
+          categoryId: null,
+          characterId: null,
+          assetId: null,
+          url: 'https://example.com/x',
+          label: 'example.com',
+        },
+      }),
+      'UTC',
+    );
+    const draft = bannerDraftFrom(form);
+    expect(draft.audience).toBe('new_users');
+    expect(draft.destinationKind).toBe('external');
+    expect(draft.destinationUrl).toBe('https://example.com/x');
+    expect(draft.destinationCategoryId).toBeNull();
   });
 });

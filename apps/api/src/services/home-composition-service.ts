@@ -12,6 +12,7 @@ import {
   characters,
   characterVisualAssets,
   homeHeroClips,
+  homePlayWithMeCharacters,
   homeRecentCharacters,
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
@@ -76,8 +77,22 @@ export interface PublicClipView {
 
 export interface PublicCharacterCardView {
   id: string;
+  /** Stable slug. The lobby's card components key their local clip manifest on it. */
+  name: string;
   displayName: string;
   shortBio: string;
+  /**
+   * The legacy display locator on `characters` — NOT a storage key. This column
+   * has always been an opaque locator chosen by an operator (a URL or a
+   * web-served path), never a filesystem path, so exposing it leaks nothing the
+   * media route protects. It is the card's last-resort image.
+   */
+  profileImage: string | null;
+  /**
+   * The App Categories this character's publicly reachable clips belong to.
+   * Real CMS membership — the card chips are editorial, not decoration.
+   */
+  categories: Array<{ slug: string; name: string }>;
   /** One representative approved clip, or null when the character has none. */
   clip: PublicClipView | null;
 }
@@ -182,18 +197,72 @@ export async function representativeClips(
 
 async function characterCards(
   db: Db,
-  rows: Array<{ id: string; displayName: string; shortBio: string }>,
+  rows: Array<{
+    id: string;
+    name: string;
+    displayName: string;
+    shortBio: string;
+    profileImage: string | null;
+  }>,
 ): Promise<PublicCharacterCardView[]> {
-  const clips = await representativeClips(
-    db,
-    rows.map((row) => row.id),
-  );
+  const ids = rows.map((row) => row.id);
+  const [clips, categories] = await Promise.all([
+    representativeClips(db, ids),
+    characterCategoryNames(db, ids),
+  ]);
   return rows.map((row) => ({
     id: row.id,
+    name: row.name,
     displayName: row.displayName,
     shortBio: row.shortBio,
+    profileImage: row.profileImage,
+    categories: categories.get(row.id) ?? [],
     clip: clips.get(row.id) ?? null,
   }));
+}
+
+/**
+ * Which enabled App Categories each character appears in, via a publicly
+ * reachable clip.
+ *
+ * The card chips in the lobby are these names. They were previously derived in
+ * the browser from `index + displayName.length`, which produced stable-looking
+ * but entirely invented tags; they are now real editorial membership, so what a
+ * visitor reads on a card matches what an operator assigned.
+ */
+async function characterCategoryNames(
+  db: Db,
+  characterIds: string[],
+): Promise<Map<string, Array<{ slug: string; name: string }>>> {
+  const found = new Map<string, Array<{ slug: string; name: string }>>();
+  if (characterIds.length === 0) return found;
+
+  const rows = await db
+    .selectDistinct({
+      characterId: characterVisualAssets.characterId,
+      slug: appCategories.slug,
+      name: appCategories.name,
+      position: appCategories.position,
+    })
+    .from(appCategoryAssets)
+    .innerJoin(appCategories, eq(appCategories.id, appCategoryAssets.categoryId))
+    .innerJoin(characterVisualAssets, eq(characterVisualAssets.id, appCategoryAssets.assetId))
+    .where(
+      and(
+        inArray(characterVisualAssets.characterId, characterIds),
+        eq(appCategories.enabled, true),
+        eq(appCategories.homePublished, true),
+        publiclyReachableCondition(),
+      ),
+    )
+    .orderBy(asc(appCategories.position), asc(appCategories.slug));
+
+  for (const row of rows) {
+    const list = found.get(row.characterId) ?? [];
+    list.push({ slug: row.slug, name: row.name });
+    found.set(row.characterId, list);
+  }
+  return found;
 }
 
 /* ------------------------------------------------------------------ *
@@ -243,11 +312,39 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
  * membership is simply "active", which is the only truth the schema holds.
  */
 export async function listPlayWithMe(db: Db): Promise<PublicCharacterCardView[]> {
+  // CURATED WINS WHOLE. A single row in the override table makes that list the
+  // rail entirely — the automatic rule below is not consulted, so an operator's
+  // arrangement is never topped up with characters they did not choose. Same
+  // rule Recently Added and the Hero already follow.
+  const curated = await db
+    .select({
+      id: characters.id,
+      displayName: characters.displayName,
+      name: characters.name,
+      shortBio: characters.shortBio,
+      profileImage: characters.profileImage,
+      position: homePlayWithMeCharacters.position,
+    })
+    .from(homePlayWithMeCharacters)
+    .innerJoin(characters, eq(characters.id, homePlayWithMeCharacters.characterId))
+    // A curated character who is retired still leaves the rail: publication
+    // gating is not something curation can override.
+    .where(eq(characters.status, 'active'))
+    .orderBy(
+      asc(homePlayWithMeCharacters.position),
+      asc(homePlayWithMeCharacters.characterId),
+    );
+
+  if (curated.length > 0) return characterCards(db, curated);
+
+  // AUTOMATIC, unchanged: every active character, alphabetically.
   const rows = await db
     .select({
       id: characters.id,
       displayName: characters.displayName,
+      name: characters.name,
       shortBio: characters.shortBio,
+      profileImage: characters.profileImage,
     })
     .from(characters)
     .where(eq(characters.status, 'active'))
@@ -276,7 +373,9 @@ export async function listRecentlyAdded(db: Db): Promise<PublicCharacterCardView
     .select({
       id: characters.id,
       displayName: characters.displayName,
+      name: characters.name,
       shortBio: characters.shortBio,
+      profileImage: characters.profileImage,
       position: homeRecentCharacters.position,
     })
     .from(homeRecentCharacters)
@@ -290,7 +389,9 @@ export async function listRecentlyAdded(db: Db): Promise<PublicCharacterCardView
     .select({
       id: characters.id,
       displayName: characters.displayName,
+      name: characters.name,
       shortBio: characters.shortBio,
+      profileImage: characters.profileImage,
     })
     .from(characters)
     .where(eq(characters.status, 'active'))
@@ -446,15 +547,163 @@ export async function composeHome(
   storage: BannerCreativeStorage,
   options: { now: Date; viewer: BannerViewer },
 ): Promise<PublicHomeView> {
-  const [banners, hero, playWithMe, recentlyAdded, categories] = await Promise.all([
+  const [banners, assignedHero, playWithMe, recentlyAdded, categories] = await Promise.all([
     listHomeBannerSlots(db, storage, options),
     listHeroClips(db),
     listPlayWithMe(db),
     listRecentlyAdded(db),
     listHomeCategoryRails(db),
   ]);
+  // AN UNCONFIGURED HERO FALLS BACK; A CONFIGURED ONE NEVER DOES. See
+  // heroFallback: assignment is the operator's statement of intent, and once
+  // they have made it nothing may add to or override it.
+  const hero = assignedHero.length > 0 ? assignedHero : heroFallback(playWithMe);
   return { banners, hero, playWithMe, recentlyAdded, categories };
+}
+
+/** How many characters the unconfigured Hero shows. Matches what it always showed. */
+export const HERO_FALLBACK_LIMIT = 3;
+
+/**
+ * The Hero when an operator has assigned no clips.
+ *
+ * WHY THERE IS A FALLBACK AT ALL. The Hero is the first thing on Home. Before
+ * the CMS existed it always rendered something, and an empty page-top is a
+ * worse default than a reasonable one — so an unconfigured Hero borrows the
+ * clips Play with Me already resolved rather than going blank.
+ *
+ * WHY IT IS SAFE. It invents nothing and relaxes nothing. Every clip here came
+ * from `representativeClips`, which applies `publiclyReachableCondition` — the
+ * same predicate the media route enforces — so the fallback can only ever show
+ * a clip that was already public on this page. Characters with no publicly
+ * reachable clip contribute nothing, and if none qualify the Hero is empty,
+ * exactly as before.
+ *
+ * WHY IT IS NOT A MERGE. The moment an operator assigns one clip, that list is
+ * the Hero, whole. A fallback that topped up a short assigned list would put
+ * clips on the front page that nobody chose.
+ */
+export function heroFallback(cards: readonly PublicCharacterCardView[]): PublicClipView[] {
+  const clips: PublicClipView[] = [];
+  for (const card of cards) {
+    if (clips.length >= HERO_FALLBACK_LIMIT) break;
+    if (card.clip) clips.push(card.clip);
+  }
+  return clips;
 }
 
 /** Re-exported so callers do not reach past this module for the audience rule. */
 export { audienceMatches };
+
+/* ------------------------------------------------------------------ *
+ * The lobby's browse surface: pills and the character grid
+ *
+ * ONE EDITORIAL SYSTEM. The pills are App Categories — the same categories an
+ * operator merchandises, with the same explicit membership and the same
+ * operator-chosen order. Discovery categories are NOT exposed here: they remain
+ * the keyword index behind free-text search and the landing point for future
+ * automatic tagging, so nobody has to understand two category systems to put a
+ * clip on the front page.
+ *
+ * A CATEGORY HOLDS CLIPS; THE LOBBY SHOWS CHARACTERS. Selecting a pill
+ * therefore asks "which characters have at least one publicly reachable clip in
+ * this category" — computed here, once, rather than guessed in the browser.
+ * ------------------------------------------------------------------ */
+
+export interface PublicCategoryPillView {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+/**
+ * The pills, in the operator's CMS order.
+ *
+ * PUBLISHED IS THE PUBLIC GATE, and it is one switch. A pill is offered only
+ * for a category that is both enabled and published to Home — the same
+ * condition that makes its clips publicly reachable at all. Offering a pill for
+ * an unpublished category would put a filter on the front page that is
+ * guaranteed to return nobody, which reads as a broken app rather than as
+ * unpublished configuration.
+ */
+export async function listPublicCategoryPills(db: Db): Promise<PublicCategoryPillView[]> {
+  const rows = await db
+    .select({ id: appCategories.id, slug: appCategories.slug, name: appCategories.name })
+    .from(appCategories)
+    .where(and(eq(appCategories.enabled, true), eq(appCategories.homePublished, true)))
+    .orderBy(asc(appCategories.position), asc(appCategories.id));
+  return rows;
+}
+
+/**
+ * The character grid: active characters, newest first, optionally narrowed by a
+ * category pill and/or the search box.
+ *
+ * NO CATEGORY MEANS NO CATEGORY FILTER — the unfiltered "All" state. That is
+ * the default and it is why search works before any category exists. An unknown
+ * slug is treated the same way rather than returning nothing, so a stale link
+ * degrades to browsing instead of to an empty page.
+ *
+ * The category clause requires a publicly reachable clip in that category, so a
+ * pill can never advertise a character whose clips are all unapproved, retired
+ * or otherwise not servable. Both filters are independent and combine with AND.
+ */
+export async function browsePublicCharacters(
+  db: Db,
+  options: { categorySlug?: string | null; query?: string | null } = {},
+): Promise<PublicCharacterCardView[]> {
+  const conditions = [eq(characters.status, 'active')];
+
+  const slug = options.categorySlug?.trim();
+  if (slug) {
+    // Membership is resolved to asset ids FIRST rather than correlated inline.
+    // `publiclyReachableCondition` is written against `character_visual_assets`
+    // as the outer table, so embedding it in a subquery that joins that same
+    // table again would correlate the wrong row — a class of bug that silently
+    // returns nothing rather than failing.
+    const memberIds = await db
+      .select({ characterId: characterVisualAssets.characterId })
+      .from(appCategoryAssets)
+      .innerJoin(appCategories, eq(appCategories.id, appCategoryAssets.categoryId))
+      .innerJoin(
+        characterVisualAssets,
+        eq(characterVisualAssets.id, appCategoryAssets.assetId),
+      )
+      .where(
+        and(
+          eq(appCategories.slug, slug),
+          eq(appCategories.enabled, true),
+          eq(appCategories.homePublished, true),
+          publiclyReachableCondition(),
+        ),
+      );
+    const characterIds = [...new Set(memberIds.map((row) => row.characterId))];
+    // An empty or unknown category matches NOTHING, never everything — the
+    // same rule discovery applies. Silently widening to the whole roster would
+    // make a misconfigured pill look like it was working.
+    if (characterIds.length === 0) return [];
+    conditions.push(inArray(characters.id, characterIds));
+  }
+
+  const query = options.query?.trim();
+  if (query) {
+    // Escaped so a literal % or _ typed by a visitor is matched, not treated as
+    // a wildcard. Same rule the discovery search uses.
+    const escaped = query.replace(/[\\%_]/g, (c) => `\\${c}`);
+    conditions.push(sql`${characters.displayName} ilike ${'%' + escaped + '%'} escape '\\'`);
+  }
+
+  const rows = await db
+    .select({
+      id: characters.id,
+      name: characters.name,
+      displayName: characters.displayName,
+      shortBio: characters.shortBio,
+      profileImage: characters.profileImage,
+    })
+    .from(characters)
+    .where(and(...conditions))
+    .orderBy(desc(characters.createdAt), asc(characters.id));
+
+  return characterCards(db, rows);
+}
