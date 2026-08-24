@@ -294,3 +294,108 @@ describe('deriveMediaContext', () => {
     expect(detectMediaRequest('how are you?', deriveMediaContext(history))).toBeNull();
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * 7. Stating a want, not issuing an order.
+ *
+ * REPORTED FROM PRODUCTION. A user wrote "I need to see a picture from you",
+ * the detector returned null, no `requestMedia` reached the API, and the
+ * character — given no media guidance at all — wrote her own flat refusal. The
+ * cue list was built entirely around imperatives (send me, show me) and had no
+ * verb for the commoner way people ask: saying what they want.
+ *
+ * The exact phrases below are the ones tested against production, kept verbatim
+ * so this describes the reported failure rather than an invented one.
+ * ------------------------------------------------------------------ */
+
+describe('a stated want is a request', () => {
+  it.each([
+    ['I need to see a picture from you', 'image'],
+    ['I want a picture from you', 'image'],
+    ['I need a video from you', 'video'],
+    ['can you send me a photo?', 'image'],
+    ['send me a picture', 'image'],
+    ['show me a picture', 'image'],
+    ['show me a video', 'video'],
+  ] as const)('%s -> %s', (text, expected) => {
+    expect(detectMediaRequest(text)).toBe(expected);
+  });
+
+  it('the imperative cues are untouched', () => {
+    // Widening the list must not have disturbed what already worked.
+    expect(detectMediaRequest('share a pic with me')).toBe('image');
+    expect(detectMediaRequest('give me a video')).toBe('video');
+    expect(detectMediaRequest('post a selfie')).toBe('image');
+  });
+
+});
+
+describe('"got" is deliberately NOT a cue', () => {
+  /**
+   * `got` would have caught "have you got a picture?", which is a genuine ask.
+   * But English uses `got` mostly in the PAST tense, so a plain statement of
+   * fact would have become a request — and a character sending a photo because
+   * the user mentioned receiving one from someone else is worse than missing
+   * the occasional "have you got".
+   *
+   * `want` and `need` carry no such reading: wanting is forward-looking.
+   */
+  it('"I got a picture from my friend" is a statement, not a request', () => {
+    expect(detectMediaRequest('I got a picture from my friend')).toBeNull();
+    // ...and not even right after a media exchange, where the follow-up path
+    // is live and the noun alone might otherwise carry it.
+    expect(detectMediaRequest('I got a picture from my friend', AFTER_IMAGE)).toBeNull();
+  });
+
+  it('other past-tense "got" sentences stay silent too', () => {
+    expect(detectMediaRequest('I got your video message yesterday')).toBeNull();
+    expect(detectMediaRequest('she got some photos developed')).toBeNull();
+  });
+});
+
+describe('a NEGATED want is not a request', () => {
+  it.each([
+    "I don't need a picture",
+    "I don't want a picture",
+    "I don't need a video",
+    "I don't want another picture",
+    'I do not want a photo',
+    'I never want another video',
+  ])('suppresses: %s', (text) => {
+    expect(detectMediaRequest(text)).toBeNull();
+    // ...and still does not, even right after a media exchange, where the
+    // anaphoric path ("another") would otherwise be live.
+    expect(detectMediaRequest(text, AFTER_IMAGE)).toBeNull();
+  });
+});
+
+describe('the new cues cannot fire without a media noun', () => {
+  it.each([
+    'I need coffee',
+    'I want to talk to you',
+    "I've got to go",
+    'I need to tell you something',
+    'what do you want to do tonight?',
+    'I got home late',
+  ])('does not trigger: %s', (text) => {
+    expect(detectMediaRequest(text)).toBeNull();
+  });
+});
+
+describe('"see" is deliberately NOT a cue', () => {
+  /**
+   * Looking at something is not asking for it. `see` was left out of the cue
+   * list precisely so a message that mentions a picture in passing cannot
+   * become a request for one.
+   */
+  it('does not treat looking as asking', () => {
+    expect(detectMediaRequest('did you see that picture?')).toBeNull();
+    expect(detectMediaRequest('I saw your photo')).toBeNull();
+    expect(detectMediaRequest('you should see the video I watched')).toBeNull();
+  });
+
+  it('but a want ABOUT seeing still counts', () => {
+    // "need ... see" is a request because of `need`, not because of `see`.
+    expect(detectMediaRequest('I need to see a picture from you')).toBe('image');
+  });
+});

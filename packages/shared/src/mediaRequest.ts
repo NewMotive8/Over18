@@ -54,16 +54,43 @@ export const FOLLOW_UP_WINDOW_MESSAGES = 6;
 /**
  * Asking to be given something. `\bsend\b` deliberately does not match "sent",
  * so "I already sent you a picture" is not a request.
+ *
+ * WHY `want|need` ARE HERE. Observed in production: a user wrote "I need to see
+ * a picture from you", the detector returned null, no `requestMedia` reached
+ * the API, and the character — given no media guidance at all — wrote her own
+ * flat refusal. The cue list was built around imperatives (send me, show me)
+ * and simply had no verb for the way people more often ask: stating a want
+ * rather than issuing an order.
+ *
+ * TWO VERBS THAT WERE CONSIDERED AND REJECTED, both for the same reason — they
+ * describe looking at or possessing media rather than asking for it:
+ *
+ *   `see` — "did you see that picture?" carries a media noun and would become
+ *           a request, which it plainly is not.
+ *   `got` — it would catch "have you got a picture?", but English uses `got`
+ *           mostly in the past tense, so "I got a picture from my friend" — a
+ *           statement of fact — would become a request for one.
+ *
+ * `want` and `need` do not have that problem: wanting is inherently
+ * forward-looking, so there is no past-tense reading to collide with.
+ *
+ * THE NOUN REQUIREMENT IS WHAT KEEPS THIS SAFE. A cue alone is never enough —
+ * `detectMediaRequest` needs a cue AND a media noun — so "I need coffee",
+ * "I want to talk" and "I've got to go" cannot reach the media path.
  */
-const REQUEST_CUE = /\b(send|show|share|give|post)\b/i;
+const REQUEST_CUE = /\b(send|show|share|give|post|want|need)\b/i;
 
 /**
  * A negated request. Scoped tightly to negation IMMEDIATELY before the cue, so
  * "send me a picture, not a video" still counts as a request — a loose `not`
  * check would swallow it. Applies to follow-ups too.
+ *
+ * KEPT IN STEP WITH `REQUEST_CUE`. Every verb that can open a request has to be
+ * negatable, or widening the cue list quietly turns "I don't need a picture"
+ * into one. The two lists are the same set and must stay that way.
  */
 const NEGATED_REQUEST =
-  /\b(?:don'?t|do not|never|stop|quit|no)\s+(?:send|show|share|give|post|more)\b/i;
+  /\b(?:don'?t|do not|never|stop|quit|no)\s+(?:send|show|share|give|post|want|need|more)\b/i;
 
 const IMAGE_NOUN = /\b(pic|pics|picture|pictures|photo|photos|selfie|selfies|image|images)\b/i;
 const VIDEO_NOUN = /\b(video|videos|vid|vids|clip|clips)\b/i;

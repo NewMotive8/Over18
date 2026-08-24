@@ -186,6 +186,61 @@ describe('POC: plain-language request attaches media', () => {
     expect(res.json().characterMessage.media.type).toBe('video');
   });
 
+  /**
+   * THE REPORTED PRODUCTION FAILURE, end to end.
+   *
+   * A user wrote exactly this to Ember. The detector returned null, no
+   * `requestMedia` reached the API, the media path was never entered, and the
+   * character — given no guidance at all — wrote her own flat refusal. This
+   * test runs the REAL detector through `sendAsClient`, so it fails if the cue
+   * list ever loses `need`/`want` again, not merely if the selector breaks.
+   */
+  it('"I need to see a picture from you" attaches an image', async () => {
+    const user = await setupUser('poc.need@example.com');
+    const assetId = await makeAsset('image');
+
+    const res = await sendAsClient(
+      user.cookies,
+      user.conversationId,
+      'I need to see a picture from you',
+    );
+    expect(res.statusCode).toBe(201);
+    const message = res.json().characterMessage;
+    expect(message.media?.type).toBe('image');
+
+    const [row] = await on.db.select().from(messages).where(eq(messages.id, message.id));
+    expect(row!.mediaAssetId).toBe(assetId);
+  });
+
+  it('"I want a picture from you" and "I need a video from you" both work', async () => {
+    const user = await setupUser('poc.want@example.com');
+    await makeAsset('image');
+    await makeAsset('video');
+
+    const img = await sendAsClient(user.cookies, user.conversationId, 'I want a picture from you');
+    expect(img.json().characterMessage.media?.type).toBe('image');
+
+    const vid = await sendAsClient(user.cookies, user.conversationId, 'I need a video from you');
+    expect(vid.json().characterMessage.media?.type).toBe('video');
+  });
+
+  it('a NEGATED want sends nothing, and says nothing about media', async () => {
+    // The negation list has to move with the cue list. Were it left behind,
+    // "I don't need a picture" would now attach one.
+    const user = await setupUser('poc.negated@example.com');
+    await makeAsset('image');
+
+    const res = await sendAsClient(user.cookies, user.conversationId, "I don't need a picture");
+    expect(res.statusCode).toBe(201);
+    expect(res.json().characterMessage.media).toBeUndefined();
+
+    const rows = await on.db
+      .select()
+      .from(messages)
+      .where(eq(messages.conversationId, user.conversationId));
+    expect(rows.every((r) => r.mediaAssetId === null)).toBe(true);
+  });
+
   it('an image request never picks a video, and vice versa', async () => {
     const user = await setupUser('poc.kind@example.com');
     await makeAsset('image');
