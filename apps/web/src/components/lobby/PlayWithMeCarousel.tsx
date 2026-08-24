@@ -30,7 +30,10 @@ function PlayWithMeCard({ character }: { character: PublicCharacterCard }) {
       aria-label={`Open ${character.displayName}, ${age}`}
       className="group relative block aspect-[3/4] w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-white/5 bg-zinc-900"
     >
-      <HeroMedia media={media} alt={character.displayName} />
+      {/* Deferred loading: a rail mounts a card per character, and off-screen
+          cards were downloading and playing before anyone swiped to them. The
+          card, its dimensions and the scroll-snap geometry are unchanged. */}
+      <HeroMedia media={media} alt={character.displayName} lazy />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-zinc-950 via-zinc-950/50 to-transparent" />
       <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/50 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 backdrop-blur">
         <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Online

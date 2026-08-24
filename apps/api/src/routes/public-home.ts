@@ -1,4 +1,4 @@
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/client.js';
 import {
@@ -13,6 +13,14 @@ import {
   DISCOVERY_CLIPS_MAX_LIMIT,
 } from '../services/discovery-service.js';
 import { getPublicAsset, resolvePublicMedia } from '../services/public-media-service.js';
+import {
+  contentRangeHeader,
+  etagFor,
+  isNotModified,
+  MEDIA_CACHE_CONTROL,
+  parseRange,
+  rangeLength,
+} from '../services/media-range.js';
 import {
   getPubliclyVisibleBannerCreative,
   resolveBannerCreative,
@@ -226,10 +234,72 @@ export default async function publicHomeRoutes(
       if ('failure' in resolved) return notFound();
       if (!existsSync(resolved.path)) return notFound();
 
+      /* ------------------------------------------------------------------ *
+       * Everything above this line is the authorization path and is
+       * UNCHANGED: a uuid check, `getPublicAsset` (approved AND publicly
+       * reachable, enforced in SQL), a storage-root check, and an existence
+       * check. Nothing below can widen what is served — a Range header only
+       * ever narrows the response to a slice of a file the caller has already
+       * been cleared for, and a conditional request only ever replaces a body
+       * with a 304. A withdrawn asset still 404s here on the very next
+       * request, exactly as before.
+       * ------------------------------------------------------------------ */
+
+      let stat;
+      try {
+        stat = statSync(resolved.path);
+      } catch {
+        // Raced with a delete between existsSync and here.
+        return notFound();
+      }
+
+      const etag = etagFor(stat);
+      const lastModified = new Date(stat.mtimeMs).toUTCString();
+
+      // Headers every response carries, including 304 and 416, so a cached
+      // client keeps a complete picture of the representation.
       reply.header('content-type', resolved.contentType);
-      // Public bytes, but short-lived: unpublishing must take effect quickly.
-      reply.header('cache-control', 'public, max-age=300');
+      reply.header('cache-control', MEDIA_CACHE_CONTROL);
       reply.header('x-content-type-options', 'nosniff');
+      reply.header('accept-ranges', 'bytes');
+      reply.header('etag', etag);
+      reply.header('last-modified', lastModified);
+
+      // A still-fresh copy: answer with no body at all.
+      if (
+        isNotModified(
+          {
+            ifNoneMatch: request.headers['if-none-match'],
+            ifModifiedSince: request.headers['if-modified-since'],
+          },
+          { etag, mtimeMs: stat.mtimeMs },
+        )
+      ) {
+        return reply.code(304).send();
+      }
+
+      const outcome = parseRange(request.headers.range, stat.size);
+
+      if (outcome.kind === 'unsatisfiable') {
+        reply.header('content-range', contentRangeHeader(null, stat.size));
+        // The media content-type is already set above; a JSON body under it
+        // would make Fastify refuse to serialise. 416 carries no body anyway —
+        // `Content-Range: bytes *​/size` is the entire answer.
+        reply.header('content-type', 'application/json; charset=utf-8');
+        return reply.code(416).send(JSON.stringify({ error: 'range_not_satisfiable' }));
+      }
+
+      if (outcome.kind === 'partial') {
+        const { range } = outcome;
+        reply.code(206);
+        reply.header('content-range', contentRangeHeader(range, stat.size));
+        reply.header('content-length', rangeLength(range));
+        return reply.send(createReadStream(resolved.path, { start: range.start, end: range.end }));
+      }
+
+      // Whole file — but now with a length, so the element is seekable and a
+      // loop rewinds instead of re-downloading.
+      reply.header('content-length', stat.size);
       return reply.send(createReadStream(resolved.path));
     },
   );

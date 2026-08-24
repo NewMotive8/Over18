@@ -3221,3 +3221,177 @@ describe('Play with Me has no admin surface at all', () => {
   });
 });
 
+
+/* ------------------------------------------------------------------ *
+ * MEDIA DELIVERY: ranges, validators, and the security that must survive them
+ *
+ * The route used to stream every file with no length, no validator and no
+ * range support, so a looping clip re-downloaded itself once per loop. These
+ * assert the new delivery contract AND that none of it can be used to reach a
+ * byte the authorization path would refuse.
+ * ------------------------------------------------------------------ */
+
+describe('media delivery supports ranges and conditional requests', () => {
+  async function publishedVideo() {
+    const asset = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(asset.id, `range${++seq}`);
+    return asset.id;
+  }
+
+  it('advertises range support, a length and validators on a plain GET', async () => {
+    const id = await publishedVideo();
+    const res = await api.media(id);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['accept-ranges']).toBe('bytes');
+    expect(res.headers['content-length']).toBeDefined();
+    expect(res.headers['etag']).toBeDefined();
+    expect(res.headers['last-modified']).toBeDefined();
+    // The length must be the truth, not a guess.
+    expect(Number(res.headers['content-length'])).toBe(res.rawPayload.length);
+  });
+
+  it('answers bytes=0- with 206 — the form a <video> opens with', async () => {
+    const id = await publishedVideo();
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/media/assets/${id}/file`,
+      headers: { range: 'bytes=0-' },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.headers['content-range']).toMatch(/^bytes 0-\d+\/\d+$/);
+  });
+
+  it('returns ONLY the requested slice, not the whole file', async () => {
+    const id = await publishedVideo();
+    const full = await api.media(id);
+    const size = full.rawPayload.length;
+    expect(size).toBeGreaterThan(16);
+
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/media/assets/${id}/file`,
+      headers: { range: 'bytes=0-15' },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.rawPayload.length).toBe(16);
+    expect(Number(res.headers['content-length'])).toBe(16);
+    expect(res.headers['content-range']).toBe(`bytes 0-15/${size}`);
+    // And the bytes are the RIGHT ones.
+    expect(res.rawPayload.equals(full.rawPayload.subarray(0, 16))).toBe(true);
+  });
+
+  it('serves a mid-file seek, which is what makes a loop rewind instead of re-download', async () => {
+    const id = await publishedVideo();
+    const full = await api.media(id);
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/media/assets/${id}/file`,
+      headers: { range: 'bytes=8-23' },
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.rawPayload.equals(full.rawPayload.subarray(8, 24))).toBe(true);
+  });
+
+  it('refuses an out-of-range request with 416 and reports the true size', async () => {
+    const id = await publishedVideo();
+    const size = (await api.media(id)).rawPayload.length;
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/media/assets/${id}/file`,
+      headers: { range: 'bytes=99999999-' },
+    });
+    expect(res.statusCode).toBe(416);
+    expect(res.headers['content-range']).toBe(`bytes */${size}`);
+  });
+
+  it('answers a matching ETag with 304 and NO body', async () => {
+    const id = await publishedVideo();
+    const first = await api.media(id);
+    const etag = first.headers['etag'] as string;
+
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/media/assets/${id}/file`,
+      headers: { 'if-none-match': etag },
+    });
+    expect(res.statusCode).toBe(304);
+    expect(res.rawPayload.length).toBe(0);
+  });
+
+  it('re-sends the file when the client holds a stale validator', async () => {
+    const id = await publishedVideo();
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/media/assets/${id}/file`,
+      headers: { 'if-none-match': '"stale"' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the five-minute revocation window — no immutable, no year-long cache', async () => {
+    const id = await publishedVideo();
+    const res = await api.media(id);
+    expect(res.headers['cache-control']).toContain('max-age=300');
+    expect(res.headers['cache-control']).toContain('must-revalidate');
+    expect(res.headers['cache-control']).not.toContain('immutable');
+  });
+
+  /* ---------------- the part that must NOT have changed ---------------- */
+
+  it('a RANGE header cannot reach an unpublished asset', async () => {
+    // Approved but placed nowhere: still refused, byte-range or not.
+    const orphan = await makeApprovedVideoAsset(LUNA.id);
+    for (const headers of [{}, { range: 'bytes=0-10' }, { 'if-none-match': '*' }]) {
+      const res = await on.app.inject({
+        method: 'GET',
+        url: `/api/media/assets/${orphan.id}/file`,
+        headers,
+      });
+      expect(res.statusCode).toBe(404);
+    }
+  });
+
+  it('a RANGE header cannot reach an unapproved asset', async () => {
+    const pending = await makeUnapprovedAsset(LUNA.id);
+    await publishViaKeyword(pending.id, `rangepending${++seq}`);
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/media/assets/${pending.id}/file`,
+      headers: { range: 'bytes=0-10' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('withdrawing an asset takes effect on the very next request, range or not', async () => {
+    const id = await publishedVideo();
+    expect((await api.media(id)).statusCode).toBe(200);
+
+    // Take her offline — the same revocation the route has always enforced.
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, LUNA.id));
+
+    for (const headers of [{}, { range: 'bytes=0-10' }, { 'if-none-match': '*' }]) {
+      const res = await on.app.inject({
+        method: 'GET',
+        url: `/api/media/assets/${id}/file`,
+        headers,
+      });
+      expect(res.statusCode).toBe(404);
+    }
+  });
+
+  it('still leaks no storage key or path in any response variant', async () => {
+    const id = await publishedVideo();
+    for (const headers of [{}, { range: 'bytes=0-10' }, { range: 'bytes=99999999-' }]) {
+      const res = await on.app.inject({
+        method: 'GET',
+        url: `/api/media/assets/${id}/file`,
+        headers,
+      });
+      const blob = JSON.stringify(res.headers) + res.payload;
+      expect(blob).not.toContain('storageKey');
+      expect(blob).not.toContain('/app/var/media');
+      expect(blob).not.toContain(testEnv.media.storageDir);
+    }
+  });
+});

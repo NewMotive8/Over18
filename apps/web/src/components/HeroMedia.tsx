@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useInViewport } from '../hooks/useInViewport';
 import type { HeroMedia as HeroMediaModel } from '../lib/media';
 
 /**
@@ -31,6 +32,7 @@ export default function HeroMedia({
   alt,
   className,
   fit = 'cover',
+  lazy = false,
 }: {
   media: HeroMediaModel;
   alt: string;
@@ -47,10 +49,24 @@ export default function HeroMedia({
    * seen whole rather than cropped to a card's shape.
    */
   fit?: 'cover' | 'contain';
+  /**
+   * OPT-IN deferred loading, for surfaces that mount many of these at once.
+   *
+   * Off by default on purpose. This component also backs chat media, the media
+   * viewer, the swipe deck and Character Detail — surfaces where the media is
+   * the thing the user just asked for, and where waiting for an observer would
+   * be a regression rather than a saving. Only the Play with me rail, which
+   * mounts a card per character, opts in.
+   */
+  lazy?: boolean;
 }) {
   const [videoFailed, setVideoFailed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
   const [ready, setReady] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const { near, visible } = useInViewport(videoRef, { disabled: !lazy });
+  const [fetched, setFetched] = useState(false);
+  const shouldLoad = !lazy || near || fetched;
 
   // Reset transient state whenever the underlying media changes (e.g. deck advances).
   const mediaKey = media.kind === 'placeholder' ? `p:${media.initial}` : `${media.kind}:${media.src}`;
@@ -70,6 +86,26 @@ export default function HeroMedia({
     media.kind === 'image' ? media : posterAsImage ? posterAsImage : null;
   const showImage = !!effectiveImage && !imageFailed;
 
+  useEffect(() => {
+    if (shouldLoad && !fetched) setFetched(true);
+  }, [shouldLoad, fetched]);
+
+  // Pause an off-screen card rather than leaving a decoder running on something
+  // nobody can see. Buffered bytes are kept; only the work stops.
+  useEffect(() => {
+    if (!lazy) return;
+    const el = videoRef.current;
+    if (!el || !showVideo || !shouldLoad) return;
+    if (visible) {
+      const attempt = el.play();
+      if (attempt && typeof attempt.catch === 'function') attempt.catch(() => {});
+    } else {
+      // Unconditional, for the same reason ClipMedia does it: a `paused` check
+      // loses the race against an autoplay that has not begun yet.
+      el.pause();
+    }
+  }, [lazy, visible, showVideo, shouldLoad]);
+
   const initial =
     media.kind === 'placeholder' ? media.initial : (alt.charAt(0) || '?').toUpperCase();
 
@@ -78,9 +114,10 @@ export default function HeroMedia({
       {showVideo ? (
         <video
           key={mediaKey}
-          src={media.src}
+          ref={videoRef}
+          {...(shouldLoad ? { src: media.src } : {})}
           poster={media.poster}
-          autoPlay
+          autoPlay={!lazy || visible}
           muted
           loop
           playsInline

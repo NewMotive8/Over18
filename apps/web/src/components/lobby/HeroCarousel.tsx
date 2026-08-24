@@ -47,10 +47,16 @@ export default function HeroCarousel({ clips }: { clips: PublicClip[] }) {
         onScroll={onScroll}
         className="flex snap-x snap-mandatory overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
-        {clips.map((clip) => (
+        {clips.map((clip, i) => (
           <div key={clip.id} className="relative aspect-[16/11] w-full shrink-0 snap-center">
             <div className="absolute inset-0">
-              <ClipMedia clip={clip} autoPlay />
+              {/* ONLY THE ACTIVE SLIDE PLAYS. All three used to autoplay at
+                  once: measured at readyState=4 with slides 2 and 3 decoding
+                  off screen. `active` stops the decode; the neighbouring slide
+                  still LOADS via ClipMedia's viewport margin, so swiping to it
+                  finds bytes already arriving. Dimensions, crop, gradient,
+                  overlay and scroll-snap are untouched. */}
+              <ClipMedia clip={clip} autoPlay active={i === active} />
             </div>
             <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent" />
             <div className="absolute inset-x-0 bottom-0 flex flex-col items-start gap-2 p-5">

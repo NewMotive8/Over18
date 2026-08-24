@@ -3,6 +3,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { eq } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { characterVisualAssets, type CharacterVisualAssetRow } from '../db/schema.js';
+import { codecLabel, inspectVideoCodec } from './video-codec.js';
 import {
   activateVisualIdentityVersion,
   createVisualIdentityVersion,
@@ -67,7 +68,11 @@ export function acceptedExtensionOf(mimeType: string): string | null {
   return ACCEPTED[mimeType]?.ext ?? null;
 }
 
-export type LibraryUploadErrorKind = 'unsupported_type' | 'empty_file' | 'no_active_identity';
+export type LibraryUploadErrorKind =
+  | 'unsupported_type'
+  | 'unsupported_codec'
+  | 'empty_file'
+  | 'no_active_identity';
 
 export class LibraryUploadError extends Error {
   constructor(
@@ -200,6 +205,29 @@ export async function uploadLibraryAsset(
   }
   if (input.bytes.length === 0) {
     throw new LibraryUploadError('empty_file', 'The selected file is empty.');
+  }
+
+  /**
+   * THE CONTAINER IS NOT THE CODEC. An HEVC/H.265 file declares itself
+   * `video/mp4` and sails past the check above, then fails to decode in Chrome
+   * on Android and most desktop Chrome — an operator sees a working clip, a
+   * visitor sees a tile that never starts. Caught here, at the moment of
+   * upload, rather than becoming a published asset nobody can watch.
+   *
+   * Reads the bytes already in memory; it does NOT shell out to ffprobe, which
+   * the API image does not ship. Anything unrecognised or unparseable is
+   * allowed through unchanged — this only rejects a codec it positively
+   * identified as unplayable.
+   */
+  if (accepted.media === 'video') {
+    const { unsupported } = inspectVideoCodec(input.bytes, input.mimeType);
+    if (unsupported.length > 0) {
+      const names = unsupported.map(codecLabel).join(', ');
+      throw new LibraryUploadError(
+        'unsupported_codec',
+        `This video uses ${names}, which most browsers cannot play. Re-export it as H.264 (or VP9/AV1) and upload again.`,
+      );
+    }
   }
 
   // An upload attaches to a specific identity VERSION. Unless one is named it
