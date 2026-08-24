@@ -5,11 +5,14 @@ import {
   assetActions,
   categoryChoices,
   characterReadiness,
+  CONTENT_SECTIONS,
   groupBySection,
   groupCharacterContent,
   isUnplaced,
   placementLabel,
   sectionSummary,
+  SECTION_ACCEPTS,
+  SECTION_FILE_ACCEPT,
   SECTION_RATING,
   shelfSummary,
   keywordsDiffer,
@@ -508,5 +511,102 @@ describe('the shelf count reads as videos, not items', () => {
   it('is singular for one and plural beyond that', () => {
     expect(sectionSummary([asset()])).toBe('1 video');
     expect(sectionSummary([asset({ assetId: 'a' }), asset({ assetId: 'b' })])).toBe('2 videos');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Phase 2 — the Chat Content shelf.
+ *
+ * The bug this prevents is the one the architecture review was written to
+ * avoid: an Admin UI that says "Chat Content" while the runtime still pulls
+ * from the generic pool. The shelf an operator uploads through has to be
+ * recoverable from the STORED asset, not from a label, and `kind` is where it
+ * is stored.
+ * ------------------------------------------------------------------ */
+
+describe('Chat Content is its own shelf, decided by kind', () => {
+  it('puts a chat VIDEO on the Chat shelf, not on Regular', () => {
+    const shelves = groupBySection([asset({ assetId: 'c', kind: 'chat', mediaType: 'video' })]);
+    expect(shelves.chat.map((a) => a.assetId)).toEqual(['c']);
+    expect(shelves.regular).toEqual([]);
+    expect(shelves.explicit).toEqual([]);
+  });
+
+  it('puts a chat IMAGE on the Chat shelf rather than hiding it', () => {
+    // Regular and Explicit exclude images. Chat accepts them, so an image
+    // there must be shown, not swept into `excluded`.
+    const shelves = groupBySection([asset({ assetId: 'i', kind: 'chat', mediaType: 'image' })]);
+    expect(shelves.chat.map((a) => a.assetId)).toEqual(['i']);
+    expect(shelves.excluded).toEqual([]);
+  });
+
+  it('decides by KIND BEFORE rating — a chat asset is never Explicit content', () => {
+    // The two axes are orthogonal. Were rating consulted first, a chat asset
+    // carrying `explicit` would land on the Explicit shelf and read as
+    // merchandisable content.
+    const shelves = groupBySection([
+      asset({ assetId: 'x', kind: 'chat', contentRating: 'explicit' }),
+    ]);
+    expect(shelves.chat.map((a) => a.assetId)).toEqual(['x']);
+    expect(shelves.explicit).toEqual([]);
+  });
+
+  it('keeps the three shelves disjoint', () => {
+    const shelves = groupBySection([
+      asset({ assetId: 'r', kind: 'generated', contentRating: 'sfw' }),
+      asset({ assetId: 'e', kind: 'generated', contentRating: 'explicit' }),
+      asset({ assetId: 'cv', kind: 'chat', mediaType: 'video' }),
+      asset({ assetId: 'ci', kind: 'chat', mediaType: 'image' }),
+    ]);
+    expect(shelves.regular.map((a) => a.assetId)).toEqual(['r']);
+    expect(shelves.explicit.map((a) => a.assetId)).toEqual(['e']);
+    expect(shelves.chat.map((a) => a.assetId)).toEqual(['cv', 'ci']);
+    expect(shelves.excluded).toEqual([]);
+  });
+
+  it('still accounts for EVERY asset across all four lists', () => {
+    const input = [
+      asset({ assetId: '1' }),
+      asset({ assetId: '2', contentRating: 'explicit' }),
+      asset({ assetId: '3', kind: 'chat', mediaType: 'image' }),
+      asset({ assetId: '4', kind: 'reference' }),
+      asset({ assetId: '5', mediaType: 'image' }),
+    ];
+    const s = groupBySection(input);
+    const seen = [...s.regular, ...s.explicit, ...s.chat, ...s.excluded];
+    expect(seen).toHaveLength(input.length);
+    expect(new Set(seen.map((a) => a.assetId)).size).toBe(input.length);
+  });
+
+  it('maps every section to exactly one rating and one accepted media set', () => {
+    expect(SECTION_RATING.chat).toBe('sfw');
+    expect(SECTION_ACCEPTS.regular).toBe('video');
+    expect(SECTION_ACCEPTS.explicit).toBe('video');
+    expect(SECTION_ACCEPTS.chat).toBe('both');
+  });
+
+  it("offers images in the Chat file picker and nowhere else", () => {
+    expect(SECTION_FILE_ACCEPT.chat).toContain('image/');
+    expect(SECTION_FILE_ACCEPT.chat).toContain('video/');
+    expect(SECTION_FILE_ACCEPT.regular).not.toContain('image/');
+    expect(SECTION_FILE_ACCEPT.explicit).not.toContain('image/');
+  });
+
+  it('renders exactly three shelves, in order', () => {
+    expect(CONTENT_SECTIONS).toEqual(['regular', 'explicit', 'chat']);
+  });
+});
+
+describe('the shelf count says what the shelf actually holds', () => {
+  it('counts videos on the video shelves', () => {
+    expect(sectionSummary([], 'regular')).toBe('No videos yet.');
+    expect(sectionSummary([asset()], 'explicit')).toBe('1 video');
+  });
+
+  it('counts ITEMS on Chat, which holds a mix', () => {
+    expect(sectionSummary([], 'chat')).toBe('No items yet.');
+    expect(sectionSummary([asset({ assetId: 'a' }), asset({ assetId: 'b' })], 'chat')).toBe(
+      '2 items',
+    );
   });
 });

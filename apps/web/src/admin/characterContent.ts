@@ -290,50 +290,87 @@ export function characterReadiness(character: {
  * and no migration is involved — the field existed and was simply never
  * surfaced as a place to put things.
  */
-export type ContentSection = 'regular' | 'explicit';
+export type ContentSection = 'regular' | 'explicit' | 'chat';
 
-/** The rating a section uploads with. One direction, stated once. */
+/** The shelves the Content area renders, in the order an operator reads them. */
+export const CONTENT_SECTIONS: readonly ContentSection[] = ['regular', 'explicit', 'chat'];
+
+/**
+ * The rating a section uploads with. One direction, stated once.
+ *
+ * Chat Content is `sfw` because the chat selector only ever considers sfw
+ * assets — sending an explicit clip unprompted in a conversation is a separate
+ * product decision nobody has made. The rating axis stays orthogonal to the
+ * kind axis, which is why chat is not a rating.
+ */
 export const SECTION_RATING: Record<ContentSection, 'sfw' | 'explicit'> = {
   regular: 'sfw',
   explicit: 'explicit',
+  chat: 'sfw',
+};
+
+/** What each shelf will let an operator pick, and what the server enforces. */
+export const SECTION_ACCEPTS: Record<ContentSection, 'video' | 'both'> = {
+  regular: 'video',
+  explicit: 'video',
+  chat: 'both',
+};
+
+/** The `accept` attribute for each shelf's file input. */
+export const SECTION_FILE_ACCEPT: Record<ContentSection, string> = {
+  regular: 'video/mp4,video/webm,video/quicktime',
+  explicit: 'video/mp4,video/webm,video/quicktime',
+  chat: 'image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime',
 };
 
 export interface SectionShelves {
   regular: CharacterContentAsset[];
   explicit: CharacterContentAsset[];
+  /** Chat Content — private conversation media. Never a public surface. */
+  chat: CharacterContentAsset[];
   /**
-   * Everything the two shelves deliberately do not show: identity references,
-   * and any image that predates the video-only rule.
+   * Everything the three shelves deliberately do not show: identity
+   * references, and any image that predates the video-only rule on Regular and
+   * Explicit.
    *
    * NAMED AND RETURNED rather than dropped inside the loop, so the split is
    * exhaustive and can be tested as such — every asset lands in exactly one of
-   * the three lists. The Character page renders only `regular` and `explicit`;
-   * these rows stay in the database, untouched, and are managed from the
-   * screens that own them.
+   * the four lists. The Character page renders the three shelves; these rows
+   * stay in the database, untouched, and are managed from the screens that own
+   * them.
    */
   excluded: CharacterContentAsset[];
 }
 
 /**
- * Splits a character's assets into the Regular and Explicit shelves.
+ * Splits a character's assets into the three shelves.
+ *
+ * KIND DECIDES FIRST, and that ordering is the point. A Chat asset is
+ * `kind: 'chat'` whatever its media type or rating, so it lands on the Chat
+ * shelf and can never be mistaken for a Regular clip — which is exactly the
+ * ambiguity that existed while chat media and Regular content were the same
+ * rows on the same columns.
  *
  * REFERENCES ARE NOT CONTENT. A canonical portrait is `kind: 'reference'` and
  * belongs to Visual identity, which has its own section on this page. Left in,
  * it would land under Regular — every reference carries the default `sfw`
  * rating — and read as a clip she had uploaded.
  *
- * IMAGES ARE NOT ON THESE SHELVES either. Both are video shelves and the
- * upload path refuses images, but assets uploaded before that rule exist, so
- * they are separated rather than assumed away.
+ * IMAGES ARE NOT ON REGULAR OR EXPLICIT. Both are video shelves and the upload
+ * path refuses images, but assets uploaded before that rule exist, so they are
+ * separated rather than assumed away. Chat Content accepts both, so no such
+ * exclusion applies there.
  *
- * Every asset lands in exactly one of the three lists.
+ * Every asset lands in exactly one of the four lists.
  */
 export function groupBySection(
   assets: readonly CharacterContentAsset[],
 ): SectionShelves {
-  const shelves: SectionShelves = { regular: [], explicit: [], excluded: [] };
+  const shelves: SectionShelves = { regular: [], explicit: [], chat: [], excluded: [] };
   for (const asset of assets) {
-    if (asset.kind === 'reference' || asset.mediaType !== 'video') {
+    if (asset.kind === 'chat') {
+      shelves.chat.push(asset);
+    } else if (asset.kind === 'reference' || asset.mediaType !== 'video') {
       shelves.excluded.push(asset);
     } else if (asset.contentRating === 'explicit') {
       shelves.explicit.push(asset);
@@ -344,8 +381,17 @@ export function groupBySection(
   return shelves;
 }
 
-/** One shelf's count, said plainly. */
-export function sectionSummary(items: readonly CharacterContentAsset[]): string {
-  if (items.length === 0) return 'No videos yet.';
-  return `${items.length} video${items.length === 1 ? '' : 's'}`;
+/**
+ * One shelf's count, said plainly.
+ *
+ * Regular and Explicit hold videos and say so. Chat Content holds both, so it
+ * counts "items" rather than claiming a mix is all video.
+ */
+export function sectionSummary(
+  items: readonly CharacterContentAsset[],
+  section: ContentSection = 'regular',
+): string {
+  const noun = SECTION_ACCEPTS[section] === 'video' ? 'video' : 'item';
+  if (items.length === 0) return `No ${noun}s yet.`;
+  return `${items.length} ${noun}${items.length === 1 ? '' : 's'}`;
 }

@@ -9,6 +9,7 @@ import {
 } from '../db/schema.js';
 import { PUBLISHABLE_STATUS, assetPreviewUrl } from './app-merchandising-service.js';
 import { mediaTypeOf } from './content-review-service.js';
+import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 
 /**
  * Home composition — the ADMIN side (US-102.4).
@@ -254,7 +255,11 @@ export async function listHeroClipsForAdmin(db: Db): Promise<HeroClipAdminView[]
   }));
 }
 
-export type HeroAddRejection = 'not_found' | 'not_approved' | 'already_present';
+export type HeroAddRejection =
+  | 'not_found'
+  | 'not_approved'
+  | 'already_present'
+  | 'not_content';
 
 export interface HeroAddOutcome {
   assetId: string;
@@ -285,7 +290,11 @@ export async function addHeroClips(db: Db, assetIds: string[]): Promise<HeroAddO
   if (unique.length === 0) return rejected;
 
   const assets = await db
-    .select({ id: characterVisualAssets.id, status: characterVisualAssets.status })
+    .select({
+      id: characterVisualAssets.id,
+      status: characterVisualAssets.status,
+      kind: characterVisualAssets.kind,
+    })
     .from(characterVisualAssets)
     .where(inArray(characterVisualAssets.id, unique));
   const byId = new Map(assets.map((a) => [a.id, a]));
@@ -310,6 +319,15 @@ export async function addHeroClips(db: Db, assetIds: string[]): Promise<HeroAddO
     }
     if (already.has(assetId)) {
       outcomes.push({ assetId, added: false, reason: 'already_present' });
+      continue;
+    }
+    /**
+     * The write-side half of the picker's kind rule. `listHeroClips` reads
+     * `home_hero_clips` directly and applies no kind filter of its own, so a
+     * row that gets in here is on the front page — this is the gate.
+     */
+    if (!(PUBLIC_CONTENT_KINDS as readonly string[]).includes(asset.kind)) {
+      outcomes.push({ assetId, added: false, reason: 'not_content', status: asset.status });
       continue;
     }
     if (asset.status !== PUBLISHABLE_STATUS) {
@@ -393,6 +411,19 @@ export async function listHeroCandidates(db: Db, limit = 100) {
       and(
         eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
         eq(characters.status, 'active'),
+        /**
+         * CONTENT ONLY.
+         *
+         * This picker had no kind filter at all, so it offered identity
+         * portraits alongside content — and would have offered chat media the
+         * moment that kind existed. The Hero is the most public surface in the
+         * product; an operator should not be able to put a character's private
+         * chat clip or her profile portrait on the front page by picking it
+         * from a list that never should have shown it.
+         *
+         * An allow-list, so a future kind is excluded by default.
+         */
+        inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
       ),
     )
     .orderBy(desc(characterVisualAssets.approvedAt), asc(characterVisualAssets.id))

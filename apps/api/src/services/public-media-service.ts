@@ -1,4 +1,4 @@
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
   appCategories,
@@ -14,6 +14,7 @@ import {
 } from '../db/schema.js';
 import { resolveMediaFile, type ResolvedMediaFile } from './message-media-service.js';
 import { PUBLISHABLE_STATUS } from './app-merchandising-service.js';
+import { PUBLICLY_REACHABLE_KINDS } from './asset-kinds.js';
 
 /**
  * Public media access (US-102.4).
@@ -87,6 +88,20 @@ export function publicAssetUrl(assetId: string, storageKey: string | null): stri
 export function publiclyReachableCondition() {
   return and(
     eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+    /**
+     * THE KIND GATE, and it is deliberately the FIRST condition.
+     *
+     * Chat media is authorised per-message per-user by the conversation route
+     * and has no business being reachable by id. Without this line the four
+     * `or` arms below would each let it out: an operator tagging a chat clip
+     * with a keyword that some enabled discovery category happens to query
+     * would publish it, silently, with no admin action that looks like
+     * publishing.
+     *
+     * An ALLOW-LIST, not `kind != 'chat'`: the next kind anyone adds is
+     * excluded by default rather than admitted by default.
+     */
+    inArray(characterVisualAssets.kind, [...PUBLICLY_REACHABLE_KINDS]),
     // The owning character must still be active — see condition 3 above.
     sql`exists (
       select 1 from ${characters}

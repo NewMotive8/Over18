@@ -22,7 +22,12 @@ import {
  * cross-version isolation is enforced here.
  */
 
-export type VisualAssetKind = 'reference' | 'generated';
+/**
+ * Mirrors the `visual_asset_kind` enum. `chat` is Chat Content — media a
+ * character may send in a private conversation and which no public surface
+ * will serve. See `services/asset-kinds.ts` for which surfaces admit which.
+ */
+export type VisualAssetKind = 'reference' | 'generated' | 'chat';
 export type VisualAssetStatus = 'generated' | 'under_review' | 'approved' | 'rejected';
 export type ContentRating = 'sfw' | 'explicit';
 

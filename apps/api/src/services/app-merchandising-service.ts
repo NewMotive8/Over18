@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
   appCategories,
@@ -7,6 +7,7 @@ import {
   characterVisualAssets,
 } from '../db/schema.js';
 import { mediaTypeOf } from './content-review-service.js';
+import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 
 /**
  * Content distribution & category merchandising (US-102.2).
@@ -63,7 +64,7 @@ export class MerchandisingOrderError extends Error {
 }
 
 /** Why an asset could not be added. Reported per asset, never as a batch failure. */
-export type AddRejection = 'not_found' | 'not_approved' | 'already_present';
+export type AddRejection = 'not_found' | 'not_approved' | 'already_present' | 'not_content';
 
 export interface AddOutcome {
   assetId: string;
@@ -193,6 +194,10 @@ export async function listPublishableCategoryAssets(
   categoryId: string,
 ): Promise<CategoryAssetView[]> {
   const all = await listCategoryAssetsForAdmin(db, categoryId);
+  // Approved AND content. The admin view above deliberately shows everything
+  // that was ever linked, including rows that have since lost approval; the
+  // PUBLIC view must additionally refuse any kind that has no business on a
+  // public surface, whatever a link row says.
   const rows = await db
     .select({ assetId: characterVisualAssets.id })
     .from(appCategoryAssets)
@@ -201,6 +206,7 @@ export async function listPublishableCategoryAssets(
       and(
         eq(appCategoryAssets.categoryId, categoryId),
         eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+        inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
       ),
     );
   const publishable = new Set(rows.map((row) => row.assetId));
@@ -258,7 +264,7 @@ export async function listAssignmentCandidates(
      * so no ordering change and no client default can bring it back. Visual
      * identity remains the place identity images are managed.
      */
-    ne(characterVisualAssets.kind, 'reference'),
+    inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
   ];
   if (filter.characterId) {
     conditions.push(eq(characterVisualAssets.characterId, filter.characterId));
@@ -370,10 +376,11 @@ export async function addAssetsToCategory(
       .select({
         id: characterVisualAssets.id,
         status: characterVisualAssets.status,
+        kind: characterVisualAssets.kind,
       })
       .from(characterVisualAssets)
       .where(inArray(characterVisualAssets.id, unique));
-    const statusById = new Map(found.map((row) => [row.id, row.status]));
+    const rowById = new Map(found.map((row) => [row.id, row]));
 
     const existing = await tx
       .select({ assetId: appCategoryAssets.assetId })
@@ -390,13 +397,27 @@ export async function addAssetsToCategory(
     const outcomes: AddOutcome[] = [];
 
     for (const assetId of unique) {
-      const status = statusById.get(assetId);
-      if (status === undefined) {
+      const row = rowById.get(assetId);
+      const status = row?.status;
+      if (row === undefined || status === undefined) {
         outcomes.push({ assetId, added: false, reason: 'not_found' });
         continue;
       }
       if (alreadyIn.has(assetId)) {
         outcomes.push({ assetId, added: false, reason: 'already_present' });
+        continue;
+      }
+      /**
+       * THE WRITE-SIDE HALF OF THE KIND RULE.
+       *
+       * `listAssignmentCandidates` already refuses to OFFER an identity
+       * reference or a chat asset, but the picker is not the only way into this
+       * function — an id can be posted directly. A category is a public
+       * surface, so the boundary has to hold on the write too, not only on the
+       * list the operator happened to be shown.
+       */
+      if (!(PUBLIC_CONTENT_KINDS as readonly string[]).includes(row.kind)) {
+        outcomes.push({ assetId, added: false, reason: 'not_content', status });
         continue;
       }
       if (status !== PUBLISHABLE_STATUS) {

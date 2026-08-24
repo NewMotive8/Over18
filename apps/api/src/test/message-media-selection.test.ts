@@ -79,7 +79,7 @@ async function makeAsset(options: {
   status?: 'generated' | 'under_review' | 'approved' | 'rejected';
   contentRating?: 'sfw' | 'explicit';
   canonical?: boolean;
-  kind?: 'reference' | 'generated';
+  kind?: 'reference' | 'generated' | 'chat';
   writeFile?: boolean;
   dir?: string;
 } = {}): Promise<string> {
@@ -89,7 +89,15 @@ async function makeAsset(options: {
   const asset = await createVisualAsset(on.db, {
     characterId: character.id,
     visualIdentityId: identity.id,
-    kind: options.kind ?? 'generated',
+    /**
+     * CHAT CONTENT.
+     *
+     * These fixtures exist to be SENT IN A CONVERSATION, which since Phase 2
+     * means `kind: 'chat'` — the selector's pool. They were `'generated'` while
+     * chat media and Regular content were the same rows; the assertions below
+     * are unchanged, only the shelf the fixture belongs to is now stated.
+     */
+    kind: options.kind ?? 'chat',
     status: options.status ?? 'approved',
     contentRating: options.contentRating ?? 'sfw',
   });

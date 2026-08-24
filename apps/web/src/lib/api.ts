@@ -227,18 +227,23 @@ export const contentLibraryApi = {
       /** 'sfw' is Regular, 'explicit' is Explicit. Omitted, the server defaults. */
       contentRating?: 'sfw' | 'explicit';
       /**
-       * Skip Review and land approved. Character content sends this; the
-       * Content Library deliberately does not, so its uploads keep queueing
-       * for Review exactly as before. The server also requires video when it
-       * is set.
+       * Which Character-page shelf this upload came from.
+       *
+       * The client names a SHELF and nothing else. The server derives the
+       * asset's kind, its approval and which media types it will accept — a
+       * browser can never say `kind`, because `kind` is what decides whether an
+       * asset can reach a public surface or a private conversation.
+       *
+       * Omitted is the Content Library, which still queues for Review exactly
+       * as it always has.
        */
-      approve?: boolean;
+      section?: 'regular' | 'explicit' | 'chat';
     } = {},
   ): Promise<LibraryAssetView> => {
     const form = new FormData();
     form.append('characterId', characterId);
     if (options.contentRating) form.append('contentRating', options.contentRating);
-    if (options.approve) form.append('approve', 'true');
+    if (options.section) form.append('section', options.section);
     form.append('file', file);
     const res = await fetch(`${API_URL}/admin/content/uploads`, {
       method: 'POST',

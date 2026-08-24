@@ -100,8 +100,14 @@ export interface LibraryUploadInput {
    * character's visual identity: approveVisualAsset promotes only references
    * to canonical, so the same upload path produces the identity's reference
    * set without a second storage mechanism or a duplicated file.
+   *
+   * 'chat' is Chat Content: media a character may send inside a private
+   * conversation and nowhere else. It is excluded from every public surface by
+   * `PUBLIC_CONTENT_KINDS` / `PUBLICLY_REACHABLE_KINDS`, and it is the ONLY
+   * pool the chat selector reads. Callers never take this value from a
+   * request body — the route derives it from the Character-page section.
    */
-  kind?: 'reference' | 'generated';
+  kind?: 'reference' | 'generated' | 'chat';
   /**
    * Which identity VERSION this asset belongs to. Defaults to the character's
    * active identity (the pre-existing behaviour). Naming it explicitly is what

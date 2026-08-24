@@ -131,7 +131,15 @@ async function makeAsset(mediaType: 'image' | 'video'): Promise<string> {
   const asset = await createVisualAsset(on.db, {
     characterId: LUNA.id,
     visualIdentityId: identity.id,
-    kind: 'generated',
+    /**
+     * CHAT CONTENT.
+     *
+     * These fixtures exist to be SENT IN A CONVERSATION, which since Phase 2
+     * means `kind: 'chat'` — the selector's pool. They were `'generated'` while
+     * chat media and Regular content were the same rows; the assertions below
+     * are unchanged, only the shelf the fixture belongs to is now stated.
+     */
+    kind: 'chat',
     status: 'approved',
     contentRating: 'sfw',
   });

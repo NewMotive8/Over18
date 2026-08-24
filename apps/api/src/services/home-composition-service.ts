@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   audienceMatches,
   HOME_BANNER_SLOTS,
@@ -15,6 +15,7 @@ import {
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
 import { PUBLISHABLE_STATUS } from './app-merchandising-service.js';
+import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 import { mediaTypeOf } from './content-review-service.js';
 import { publicAssetUrl, publiclyReachableCondition } from './public-media-service.js';
 import { listEligibleHomeBanners } from './home-banner-service.js';
@@ -196,7 +197,7 @@ export async function listPublicCharacterClips(
     .where(
       and(
         eq(characterVisualAssets.characterId, characterId),
-        ne(characterVisualAssets.kind, 'reference'),
+        inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
         publiclyReachableCondition(),
       ),
     )
@@ -268,7 +269,7 @@ export async function representativeClips(
         // A reference asset is the character's identity image, not her content.
         // Excluded here rather than de-prioritised, so no ordering change can
         // ever let it back in.
-        ne(characterVisualAssets.kind, 'reference'),
+        inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
         // The SAME predicate the media route enforces. Choosing a clip the media
         // route would refuse gives every card a broken image; this makes the two
         // agree by construction rather than by coincidence.
@@ -386,7 +387,18 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
     // Approved AND owned by an active character: every rail links to a
     // character profile, and a retired character's profile is a 404.
-    .where(and(eq(characterVisualAssets.status, PUBLISHABLE_STATUS), eq(characters.status, 'active')))
+    //
+    // The kind allow-list is defence in depth. `addHeroClips` already refuses
+    // anything that is not content, so no row here can be private chat media —
+    // but the Hero is the most public surface in the product, and it should not
+    // depend on a write path having been correct for every row ever inserted.
+    .where(
+      and(
+        eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+        eq(characters.status, 'active'),
+        inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
+      ),
+    )
     .orderBy(asc(homeHeroClips.position), asc(homeHeroClips.assetId));
 
   return rows
@@ -498,6 +510,11 @@ export async function listHomeCategoryRails(db: Db): Promise<PublicCategoryRailV
         // Same rule as the Hero: a retired character's clips leave the app with
         // them, rather than becoming tiles that link to a 404.
         eq(characters.status, 'active'),
+        // CONTENT ONLY. This rail reads `app_category_assets` directly, so it
+        // shows whatever was ever linked — it does not re-ask
+        // `publiclyReachableCondition`. Without this, a link row pointing at
+        // private chat media would render it on Home.
+        inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
       ),
     )
     .orderBy(asc(appCategoryAssets.position), asc(appCategoryAssets.assetId));
@@ -793,7 +810,7 @@ export async function browsePublicClips(
 ): Promise<PublicClipView[]> {
   const conditions = [
     eq(characters.status, 'active'),
-    ne(characterVisualAssets.kind, 'reference'),
+    inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
     publiclyReachableCondition(),
   ];
 

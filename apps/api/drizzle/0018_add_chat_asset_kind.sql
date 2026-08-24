@@ -1,0 +1,1 @@
+ALTER TYPE "public"."visual_asset_kind" ADD VALUE 'chat';

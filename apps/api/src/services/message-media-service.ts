@@ -10,6 +10,7 @@ import {
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
 import { mediaTypeOf } from './content-review-service.js';
+import { CHAT_ASSET_KIND } from './asset-kinds.js';
 import { uploadedMimeTypeOf, uploadedPathOf } from './library-upload-service.js';
 
 /**
@@ -209,7 +210,7 @@ export type MediaSelector = (
  * here. The eligibility rules are the whole policy:
  *
  *   character_id = the conversation's character   (A can never send B's asset)
- *   kind         = 'generated'                    (the Library's own filter)
+ *   kind         = 'chat'                         (the Chat Content shelf ONLY)
  *   status       = 'approved'                     (never unreviewed/rejected)
  *   is_canonical = false                          (never the public gallery)
  *   content_rating = 'sfw'                        (explicit is never eligible)
@@ -244,7 +245,25 @@ export function createDeterministicMediaSelector(storageDir: string): MediaSelec
 
     const conditions = [
       eq(characterVisualAssets.characterId, context.characterId),
-      eq(characterVisualAssets.kind, 'generated'),
+      /**
+       * CHAT CONTENT ONLY — the single most important line in this function.
+       *
+       * It used to read `'generated'`, which is exactly what an upload to the
+       * Regular shelf writes. Regular content and chat media were therefore the
+       * SAME pool: every clip an operator published to a category was also
+       * something the character could send privately, and there was no way to
+       * intend one without the other. Nobody chose that; it was what "no
+       * distinction exists" looks like at runtime.
+       *
+       * `kind = 'chat'` is set by the server from the Character-page section
+       * the operator uploaded through — never by the browser — so the shelf an
+       * asset was uploaded to IS the rule about where it may appear.
+       *
+       * Consequence worth stating plainly: existing Regular and Explicit
+       * assets are no longer eligible for chat, and nothing reclassifies them.
+       * The chat pool starts empty until Chat Content is uploaded.
+       */
+      eq(characterVisualAssets.kind, CHAT_ASSET_KIND),
       eq(characterVisualAssets.status, 'approved'),
       eq(characterVisualAssets.isCanonical, false),
       eq(characterVisualAssets.contentRating, 'sfw'),

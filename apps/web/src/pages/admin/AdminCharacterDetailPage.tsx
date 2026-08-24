@@ -11,6 +11,7 @@ import {
   groupBySection,
   sectionSummary,
   SECTION_RATING,
+  SECTION_FILE_ACCEPT,
   type ContentSection,
 } from '../../admin/characterContent';
 import {
@@ -48,6 +49,15 @@ const DNA_FIELDS: ReadonlyArray<{ key: string; label: string; required?: boolean
   { key: 'body', label: 'Body' },
   { key: 'distinctiveFeatures', label: 'Distinctive features' },
 ];
+
+/** What an operator is told after a successful upload, per shelf. */
+const NOTICE: Record<ContentSection, string> = {
+  regular:
+    'Uploaded to Regular. Approved — no review needed. Place it in a category or the Hero to show it publicly.',
+  explicit:
+    'Uploaded to Explicit. Approved — no review needed. Place it in a category or the Hero to show it publicly.',
+  chat: 'Uploaded to Chat Content. She can send it in a conversation. It will never appear anywhere public.',
+};
 
 function dnaToForm(dna: Record<string, unknown> | undefined): Record<string, string> {
   const out: Record<string, string> = {};
@@ -168,9 +178,14 @@ export default function AdminCharacterDetailPage() {
    * Library unusable for a new character in the first place.
    *
    * IT DIFFERS FROM THE LIBRARY IN EXACTLY TWO FIELDS, both set below: the
-   * rating the shelf implies, and the explicit request to approve. Everything
-   * else — the route, the validation, the storage, the response — is the path
-   * that already existed.
+   * rating the shelf implies, and the SHELF ITSELF. Everything else — the
+   * route, the validation, the storage, the response — is the path that
+   * already existed.
+   *
+   * THE CLIENT NAMES A SHELF, NEVER A KIND. The server turns `section: 'chat'`
+   * into `kind: 'chat'`, and that column is what keeps chat media off every
+   * public surface and makes it the only pool a conversation can draw from. A
+   * browser that could set it could publish its own private media.
    */
   async function uploadContent(file: File | undefined, section: ContentSection) {
     if (!file || !characterId || uploadingContent) return;
@@ -182,23 +197,19 @@ export default function AdminCharacterDetailPage() {
        * Character content skips Review and lands approved.
        *
        * `SECTION_RATING` is the single place the section-to-rating mapping
-       * lives, so a Regular upload cannot arrive as Explicit or the reverse —
-       * the shelf the operator pressed Upload in decides it, and the server
-       * validates the value it receives.
+       * lives, and `section` is the single thing that tells the server which
+       * shelf this is — so a Regular upload cannot arrive as Explicit or as
+       * Chat, and the reverse is equally impossible.
        *
-       * The Content Library's upload calls this same function WITHOUT these
-       * options and still queues for Review, unchanged.
+       * The Content Library's upload calls this same function WITHOUT a
+       * section and still queues for Review, unchanged.
        */
       await contentLibraryApi.upload(file, characterId, {
         contentRating: SECTION_RATING[section],
-        approve: true,
+        section,
       });
       await reloadContent();
-      setContentNotice(
-        section === 'explicit'
-          ? 'Uploaded to Explicit. Approved — no review needed. Place it in a category or the Hero to show it publicly.'
-          : 'Uploaded to Regular. Approved — no review needed. Place it in a category or the Hero to show it publicly.',
-      );
+      setContentNotice(NOTICE[section]);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Upload failed.');
     } finally {
@@ -695,10 +706,16 @@ export default function AdminCharacterDetailPage() {
       */}
       {(
         [
-          ['regular', 'Regular', 'Everyday video for this character.'],
-          ['explicit', 'Explicit', 'Adult video for this character.'],
-        ] as Array<[ContentSection, string, string]>
-      ).map(([section, heading, blurb]) => {
+          ['regular', 'Regular', 'Everyday video for this character.', 'video'],
+          ['explicit', 'Explicit', 'Adult video for this character.', 'video'],
+          [
+            'chat',
+            'Chat Content',
+            'Photos and clips she can send inside a conversation.',
+            'chat',
+          ],
+        ] as Array<[ContentSection, string, string, 'video' | 'chat']>
+      ).map(([section, heading, blurb, mode]) => {
         const items = shelves[section];
         return (
           <section key={section}>
@@ -708,31 +725,48 @@ export default function AdminCharacterDetailPage() {
               </h2>
               <div className="flex items-center gap-3">
                 <p className="text-xs text-zinc-500">
-                  {content === null ? 'Loading…' : sectionSummary(items)}
+                  {content === null ? 'Loading…' : sectionSummary(items, section)}
                 </p>
                 <button
                   type="button"
                   onClick={() => {
                     uploadSection.current = section;
-                    contentFileInput.current?.click();
+                    // Set imperatively rather than from state: `.click()` runs
+                    // on the very next line, before any re-render could apply
+                    // a state change, so the picker would otherwise offer the
+                    // PREVIOUS shelf's file types.
+                    const el = contentFileInput.current;
+                    if (!el) return;
+                    el.accept = SECTION_FILE_ACCEPT[section];
+                    el.click();
                   }}
                   disabled={uploadingContent || busy}
                   className="rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:border-zinc-600 disabled:cursor-not-allowed disabled:text-zinc-600"
                 >
-                  {uploadingContent ? 'Uploading…' : `Upload ${heading.toLowerCase()} video`}
+                  {uploadingContent
+                    ? 'Uploading…'
+                    : mode === 'chat'
+                      ? 'Upload image or video'
+                      : `Upload ${heading.toLowerCase()} video`}
                 </button>
               </div>
             </div>
             <p className="mb-3 text-xs leading-relaxed text-zinc-500">
-              {blurb} Video only, and approved the moment it uploads — no review step. Approved
-              is not the same as public: each item below says where it appears.
+              {blurb}{' '}
+              {mode === 'chat'
+                ? 'Images and videos, approved the moment they upload — no review step. Chat Content is private: it is never shown in Search, Posts, Play with me, categories or the Hero, and it is the only media she can send in a chat.'
+                : 'Video only, and approved the moment it uploads — no review step. Approved is not the same as public: each item below says where it appears.'}
             </p>
 
             {content !== null && items.length === 0 && (
               <div className="rounded-lg border border-dashed border-zinc-800 bg-zinc-900/40 px-6 py-8 text-center">
-                <p className="text-sm text-zinc-300">No {heading.toLowerCase()} video yet</p>
+                <p className="text-sm text-zinc-300">
+                  {mode === 'chat' ? 'No chat media yet' : `No ${heading.toLowerCase()} video yet`}
+                </p>
                 <p className="mt-1 text-sm text-zinc-500">
-                  Use Upload {heading.toLowerCase()} video above.
+                  {mode === 'chat'
+                    ? 'Use Upload image or video above. Until something is here, she sends text only.'
+                    : `Use Upload ${heading.toLowerCase()} video above.`}
                 </p>
               </div>
             )}
@@ -745,13 +779,25 @@ export default function AdminCharacterDetailPage() {
                     className="overflow-hidden rounded-lg border border-zinc-800"
                   >
                     <div className={`w-full ${tileFrameClass()}`}>
+                      {/* Chat Content holds both, so the tile follows the
+                          asset rather than assuming video. Regular and
+                          Explicit are video-only and are unaffected. */}
                       {asset.previewUrl ? (
-                        <video
-                          src={`${API_URL}${asset.previewUrl}`}
-                          {...TILE_VIDEO_PLAYBACK}
-                          preload="metadata"
-                          className={TILE_MEDIA_CLASS}
-                        />
+                        asset.mediaType === 'video' ? (
+                          <video
+                            src={`${API_URL}${asset.previewUrl}`}
+                            {...TILE_VIDEO_PLAYBACK}
+                            preload="metadata"
+                            className={TILE_MEDIA_CLASS}
+                          />
+                        ) : (
+                          <img
+                            src={`${API_URL}${asset.previewUrl}`}
+                            alt=""
+                            loading="lazy"
+                            className={TILE_MEDIA_CLASS}
+                          />
+                        )
                       ) : (
                         <div className="flex h-full w-full items-center justify-center text-[11px] text-zinc-600">
                           No file
@@ -873,7 +919,7 @@ export default function AdminCharacterDetailPage() {
       <input
         ref={contentFileInput}
         type="file"
-        accept="video/mp4,video/webm,video/quicktime"
+        accept={SECTION_FILE_ACCEPT.regular}
         onChange={(e) => void uploadContent(e.target.files?.[0], uploadSection.current)}
         className="hidden"
       />

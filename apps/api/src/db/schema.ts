@@ -214,7 +214,28 @@ export const visualIdentityStatus = pgEnum('visual_identity_status', [
   'active',
   'retired',
 ]);
-export const visualAssetKind = pgEnum('visual_asset_kind', ['reference', 'generated']);
+/**
+ * What ROLE an asset plays. Not a status, not a rating — a role.
+ *
+ *  reference — the character's identity images. Visual Identity owns them.
+ *  generated — her CONTENT: the Regular and Explicit shelves, and anything the
+ *              generation pipeline or the Content Library produces.
+ *  chat      — media a character may send inside a private conversation, and
+ *              NOTHING else.
+ *
+ * WHY `chat` IS A KIND AND NOT A RATING OR A FLAG. Before it existed, a chat
+ * asset and a Regular video were byte-identical on every column — same kind,
+ * same status, same is_canonical, same content_rating — so "may this be sent in
+ * a chat?" and "may this be merchandised into a public category?" had literally
+ * the same answer for the same row. `kind` is already the axis that answers
+ * "what is this FOR", and it is already the axis every public query excludes
+ * `reference` on, so the boundary lands where the existing ones live.
+ *
+ * IT IS SERVER-SET, ALWAYS. No upload route accepts a kind from the client;
+ * the server derives it from the Character-page section that was used. A
+ * browser can name a shelf, never an enum value.
+ */
+export const visualAssetKind = pgEnum('visual_asset_kind', ['reference', 'generated', 'chat']);
 export const visualAssetStatus = pgEnum('visual_asset_status', [
   'generated',
   'under_review',

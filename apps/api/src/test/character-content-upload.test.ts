@@ -17,9 +17,9 @@ import {
 /**
  * PHASE 1 — Character content uploads skip Review.
  *
- * WHAT CHANGED, IN ONE SENTENCE: the upload route learned an OPT-IN
- * `approve=true` field, and the Character page's Regular and Explicit shelves
- * are the only caller that sends it.
+ * WHAT CHANGED, IN ONE SENTENCE: the upload route learned an opt-in `section`
+ * field naming a Character-page shelf, and the server derives the asset's
+ * kind, its approval and its accepted media types from that shelf.
  *
  * WHAT DID NOT CHANGE, AND IS PINNED HERE: Review still exists, still queues
  * everything that reaches it by any other path, and still approves. The
@@ -97,7 +97,7 @@ async function uploadFromShelf(
     {
       characterId: LUNA.id,
       contentRating: section === 'explicit' ? 'explicit' : 'sfw',
-      approve: 'true',
+      section,
     },
     file,
   );
@@ -236,7 +236,7 @@ describe('Regular and Explicit cannot be crossed', () => {
   it('refuses a rating that is neither, rather than guessing one', async () => {
     const cookie = await adminCookie();
     const { payload, headers } = multipart(
-      { characterId: LUNA.id, contentRating: 'spicy', approve: 'true' },
+      { characterId: LUNA.id, contentRating: 'spicy', section: 'regular' },
       { filename: 'clip.mp4', contentType: 'video/mp4', bytes: MP4 },
     );
     const res = await ctx.app.inject({
@@ -373,11 +373,13 @@ describe('Review is untouched', () => {
     expect(await reviewQueue(cookie)).toContain(asset.assetId);
   });
 
-  it('does not treat any value other than the exact opt-in as approval', async () => {
+  it('refuses an unrecognised section rather than guessing one', async () => {
+    // A typo must not silently fall back to the Library path, and must
+    // certainly not fall back to an approved one.
     const cookie = await adminCookie();
-    for (const value of ['false', '1', 'yes', 'TRUE', '']) {
+    for (const value of ['Regular', 'chatt', 'true', 'reference', '']) {
       const { payload, headers } = multipart(
-        { characterId: LUNA.id, approve: value },
+        { characterId: LUNA.id, section: value },
         { filename: 'clip.mp4', contentType: 'video/mp4', bytes: MP4 },
       );
       const res = await ctx.app.inject({
@@ -386,9 +388,34 @@ describe('Review is untouched', () => {
         headers: { ...headers, cookie },
         payload,
       });
-      expect(res.statusCode).toBe(201);
-      expect(res.json().status).toBe('under_review');
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('invalid_request');
     }
+  });
+
+  it('cannot be handed a KIND by the browser', async () => {
+    // The whole boundary rests on `kind` being server-derived. A client that
+    // could name it could publish its own private media, or hide its own
+    // public media. An unknown multipart field is simply ignored, so the
+    // upload lands as an ordinary Library item.
+    const cookie = await adminCookie();
+    const { payload, headers } = multipart(
+      { characterId: LUNA.id, kind: 'chat' },
+      { filename: 'clip.mp4', contentType: 'video/mp4', bytes: MP4 },
+    );
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/admin/content/uploads',
+      headers: { ...headers, cookie },
+      payload,
+    });
+    expect(res.statusCode).toBe(201);
+    const [row] = await ctx.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, res.json().assetId));
+    expect(row!.kind).toBe('generated');
+    expect(row!.status).toBe('under_review');
   });
 
   it('still refuses an anonymous caller at the upload route', async () => {

@@ -61,6 +61,18 @@ import { resolveMediaFile } from '../services/message-media-service.js';
  * provenance survives.
  */
 const RATINGS: ContentRating[] = ['sfw', 'explicit'];
+
+/**
+ * The Character page's content shelves.
+ *
+ * The upload route accepts a SHELF NAME and derives the asset's kind, approval
+ * and accepted media types from it. It deliberately does NOT accept a kind: a
+ * client that could name a kind could put its own upload on the front page, or
+ * keep it off every surface — `kind` is the axis the public boundary is built
+ * on, so it stays the server's to decide.
+ */
+const CHARACTER_SHELVES = ['regular', 'explicit', 'chat'] as const;
+type CharacterShelf = (typeof CHARACTER_SHELVES)[number];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function assetView(a: Awaited<ReturnType<typeof getReviewAsset>>) {
@@ -235,38 +247,47 @@ export default async function adminContentRoutes(
     }
 
     /**
-     * CHARACTER CONTENT opts OUT of Review; everything else still opts in.
+     * WHICH CHARACTER-PAGE SHELF THIS UPLOAD CAME FROM, if any.
      *
-     * The Character page's Regular and Explicit shelves send `approve=true`,
-     * because an operator uploading a clip to a character has already made the
-     * editorial decision — a second queue to re-make it was ceremony, not
-     * safety. `uploadLibraryAsset` has always supported this and the Visual
-     * Identity reference upload has always used it; this simply lets the
-     * character-content path do the same.
+     * The browser names a SHELF. It never names a kind, a status or an
+     * approval — the server derives all three from the shelf below. That
+     * asymmetry is the whole security property: `kind` decides which surfaces
+     * an asset may ever reach, so a client that could set it could publish its
+     * own private media or hide its own public media.
      *
-     * THE DEFAULT IS UNCHANGED. Omit the field — as the Content Library does —
-     * and the upload lands in Review exactly as before. Review's meaning, its
-     * queue, its routes and every asset already in it are untouched.
+     * ABSENT is the Content Library, unchanged in every respect: the upload
+     * lands `under_review`, kind `generated`, and an operator decides in
+     * Review exactly as before.
      */
-    const approveRequested =
-      (file.fields.approve as { value?: string } | undefined)?.value === 'true';
+    const section = (file.fields.section as { value?: string } | undefined)?.value;
+    if (section !== undefined && !CHARACTER_SHELVES.includes(section as CharacterShelf)) {
+      return reply.code(400).send({
+        error: 'invalid_request',
+        message: 'section must be regular, explicit or chat.',
+      });
+    }
+    const shelf = section as CharacterShelf | undefined;
 
     /**
-     * Auto-approved uploads are VIDEO ONLY.
+     * The shelf's rules, in one place.
      *
-     * Regular and Explicit are video shelves. An image reaching them would
-     * become approved content that the public clip surfaces would then have to
-     * filter out again, which is the class of leak this product has already
-     * fixed twice. Refused here, at the door.
+     * Regular and Explicit are VIDEO shelves: an image there would become
+     * approved content that every public clip surface then has to filter out
+     * again, which is the class of leak this product has already fixed twice.
      *
-     * Images are still perfectly uploadable through the Content Library and
-     * through Visual Identity — neither sends this flag, so neither is affected.
+     * Chat Content accepts BOTH, because a character sending a photo in a
+     * conversation is the ordinary case — and it is safe to accept here
+     * precisely because `kind: 'chat'` keeps it off every public surface.
      */
-    if (approveRequested && acceptedMediaTypeOf(file.mimetype) !== 'video') {
-      return reply.code(400).send({
-        error: 'unsupported_type',
-        message: 'Regular and Explicit accept video only. Upload an image through Visual identity or the Content Library.',
-      });
+    const uploadedType = acceptedMediaTypeOf(file.mimetype);
+    if (shelf === 'regular' || shelf === 'explicit') {
+      if (uploadedType !== 'video') {
+        return reply.code(400).send({
+          error: 'unsupported_type',
+          message:
+            'Regular and Explicit accept video only. Upload an image through Chat Content, Visual identity or the Content Library.',
+        });
+      }
     }
 
     const requested = await resolveRequirementKey(
@@ -292,9 +313,21 @@ export default async function adminContentRoutes(
         originalName: file.filename,
         contentRating: rating as ContentRating | undefined,
         uploadedBy: request.currentUser?.id,
-        // Review by default; character content opts out explicitly. See the
-        // note above — this is the ONLY behavioural switch in this path.
-        approve: approveRequested,
+        /**
+         * SERVER-DERIVED, never client-supplied.
+         *
+         * Chat Content is its own kind so that one column answers "where may
+         * this asset appear?" — the chat selector reads `kind='chat'` and every
+         * public surface refuses it. Regular and Explicit stay `generated`,
+         * which is what they have always been, so no existing asset changes
+         * meaning.
+         */
+        kind: shelf === 'chat' ? 'chat' : undefined,
+        // Review by default; a Character-page shelf opts out. Uploading to a
+        // character IS the editorial decision — a second queue to re-make it
+        // was ceremony, not safety. The Content Library omits `section` and is
+        // therefore untouched.
+        approve: shelf !== undefined,
         // Optional, and never defaulted: the operator may say which requirement
         // this satisfies at upload time, or leave it for triage in Review.
         requirementKey,
