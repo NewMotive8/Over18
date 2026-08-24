@@ -74,6 +74,18 @@ export const charactersApi = {
       `/api/characters/${encodeURIComponent(characterId)}/visual-identity`,
     );
   },
+  /**
+   * Her CONTENT collection — every publicly reachable clip she has, in full.
+   *
+   * Distinct from `visualIdentity`, which returns her canonical REFERENCE
+   * images. Identity is who she is; this is what she has posted, and the Posts
+   * tab must never substitute one for the other.
+   */
+  clips(characterId: string): Promise<{ clips: PublicClip[] }> {
+    return request<{ clips: PublicClip[] }>(
+      `/api/characters/${encodeURIComponent(characterId)}/clips`,
+    );
+  },
 };
 
 export const conversationsApi = {

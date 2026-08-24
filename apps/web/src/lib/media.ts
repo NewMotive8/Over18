@@ -126,6 +126,37 @@ function cmsVideoUrl(character: MediaCharacter): string | undefined {
 }
 
 /**
+ * Media for a HOME CHARACTER RAIL — Play with me and Recently Added.
+ *
+ * CLIP-ONLY, BY CONSTRUCTION. These rails represent a character by her own
+ * content and nothing else. The one and only source here is the server's
+ * representative clip, which `representativeClips` has already restricted to a
+ * publicly reachable, non-reference VIDEO belonging to that character.
+ *
+ * WHAT THIS DELIBERATELY CANNOT DO, and why it is a separate function rather
+ * than a flag on `resolveHeroMedia`: it cannot reach her canonical image, her
+ * `profileImage`, her visual-identity image, or the hard-coded local manifest.
+ * The card used to show her portrait when she had no video, which read as "here
+ * is her clip" and was not. None of those sources are in scope here, so no
+ * future edit to the fallback chain can reintroduce them on a rail.
+ *
+ * NO ELIGIBLE VIDEO ⇒ the existing neutral placeholder — the same
+ * initial-letter treatment `HeroMedia` already renders. No new visual design,
+ * no substitute image, and the operator's curation is still honoured: she keeps
+ * her place on the rail rather than silently vanishing.
+ *
+ * `resolveHeroMedia` is untouched and still serves the discovery grid, the
+ * swipe card and the Character page, where showing a character's own image is
+ * correct and intended.
+ */
+export function resolveRailMedia(character: MediaCharacter): HeroMedia {
+  const src = cmsVideoUrl(character);
+  if (src) return { kind: 'video', src };
+  const source = character.displayName || character.name || '?';
+  return { kind: 'placeholder', initial: source.charAt(0).toUpperCase() };
+}
+
+/**
  * Resolves the hero media for a character, video-first:
  *  1. a valid video → video, using the best available still as its poster;
  *  2. otherwise the active Visual Identity's first canonical image, else the

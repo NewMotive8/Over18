@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import {
   audienceMatches,
   HOME_BANNER_SLOTS,
@@ -140,18 +140,94 @@ function clipView(
 }
 
 /* ------------------------------------------------------------------ *
+ * A character's full public content collection
+ * ------------------------------------------------------------------ */
+
+/**
+ * EVERY publicly reachable content clip belonging to one character.
+ *
+ * Feeds the Character page's Posts tab, which previously had no data path at
+ * all: it read a hard-coded four-name manifest, sliced two entries off it,
+ * fabricated six more locked tiles by recycling whatever image it could find,
+ * and fell back to `profileImage`. Nothing it showed was a record.
+ *
+ * NO LIMIT. The collection is the collection — the tab shows what the character
+ * has. The old "8" was 2 invented tiles plus 6 invented tiles, never a count.
+ *
+ * REFERENCE ASSETS ARE EXCLUDED, for the same reason the rails exclude them: a
+ * canonical reference is the character's identity image, not a post. This is
+ * the one place that could be argued either way, and it is settled the same way
+ * everywhere so a "clip" means one thing across the product.
+ *
+ * SECURITY IS BORROWED, NEVER RESTATED. `publiclyReachableCondition` is the
+ * same predicate the media route enforces, so this endpoint cannot list
+ * anything whose bytes that route would refuse: unapproved, retired, belonging
+ * to an inactive character, or reachable from nowhere. `inArray` on a single id
+ * keeps the result the requested character's own — one character can never be
+ * handed another's content.
+ *
+ * `clipView` produces the opaque id-keyed URL, so no storage key or filesystem
+ * path can reach the browser.
+ *
+ * Newest first: this is a feed, and a feed leads with what is new.
+ */
+export async function listPublicCharacterClips(
+  db: Db,
+  characterId: string,
+): Promise<PublicClipView[]> {
+  const rows = await db
+    .select({
+      id: characterVisualAssets.id,
+      characterId: characterVisualAssets.characterId,
+      storageKey: characterVisualAssets.storageKey,
+      provenance: characterVisualAssets.provenance,
+      characterName: characters.displayName,
+    })
+    .from(characterVisualAssets)
+    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+    .where(
+      and(
+        eq(characterVisualAssets.characterId, characterId),
+        ne(characterVisualAssets.kind, 'reference'),
+        publiclyReachableCondition(),
+      ),
+    )
+    .orderBy(desc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
+
+  return rows
+    .map((row) => clipView(row, row.characterName))
+    .filter((clip): clip is PublicClipView => clip !== null);
+}
+
+/* ------------------------------------------------------------------ *
  * Representative clip for a character card
  * ------------------------------------------------------------------ */
 
 /**
- * One approved clip to represent a character on a card.
+ * One approved VIDEO CLIP to represent a character on a card.
  *
- * Deterministic and preference-ordered rather than random or "featured": a
- * canonical reference first (that is what the character has chosen to look
- * like), then any approved asset, oldest first so the choice is stable between
- * requests. A character with no approved content gets a null clip and the card
- * renders its fallback — it is NOT dropped from the rail, because presence in
- * Play with Me is about the character, not about their media.
+ * A REFERENCE ASSET IS NOT A CLIP. This used to order by `isCanonical` DESC,
+ * which made a character's canonical reference — her primary identity image —
+ * beat every piece of content she actually has. The card then showed her
+ * portrait and the payload called it a clip. Reference assets are now excluded
+ * outright: these rails represent a character by her CONTENT, and her identity
+ * image is not content.
+ *
+ * VIDEO ONLY. The character rails are video surfaces; an image asset, even an
+ * approved uploaded one, is not what they render. Media type is derived by the
+ * shared `mediaTypeOf` (through `clipView`) rather than re-decided here, so the
+ * definition of "video" cannot drift from the rest of the system.
+ *
+ * Deterministic: oldest content first, id as the tie-break, so the choice is
+ * stable between requests.
+ *
+ * A character with no eligible video gets NO entry, and her card's clip is
+ * null. That null is the whole point — the caller must not turn it back into an
+ * image.
+ *
+ * Ownership and reachability are unchanged and NOT relaxed: `inArray` keeps
+ * every candidate the character's own, and `publiclyReachableCondition` is the
+ * same predicate the media route enforces.
  *
  * Fetched for the whole rail in one query rather than per character: N cards
  * must not become N round trips.
@@ -175,22 +251,28 @@ export async function representativeClips(
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
     .where(
-      // The SAME predicate the media route enforces. Choosing a clip the media
-      // route would refuse gives every card a broken image; this makes the two
-      // agree by construction rather than by coincidence.
-      and(inArray(characterVisualAssets.characterId, characterIds), publiclyReachableCondition()),
+      and(
+        inArray(characterVisualAssets.characterId, characterIds),
+        // A reference asset is the character's identity image, not her content.
+        // Excluded here rather than de-prioritised, so no ordering change can
+        // ever let it back in.
+        ne(characterVisualAssets.kind, 'reference'),
+        // The SAME predicate the media route enforces. Choosing a clip the media
+        // route would refuse gives every card a broken image; this makes the two
+        // agree by construction rather than by coincidence.
+        publiclyReachableCondition(),
+      ),
     )
-    // Canonical first, then oldest — a stable, explainable choice.
-    .orderBy(
-      desc(characterVisualAssets.isCanonical),
-      asc(characterVisualAssets.createdAt),
-      asc(characterVisualAssets.id),
-    );
+    // Oldest content first, id as the tie-break — stable between requests.
+    .orderBy(asc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
 
   for (const row of rows) {
     if (found.has(row.characterId)) continue;
     const view = clipView(row, row.characterName);
-    if (view) found.set(row.characterId, view);
+    // VIDEO ONLY. `clipView` has already applied the shared media-type rule, so
+    // an image asset is skipped and the search continues through this
+    // character's remaining content rather than settling for it.
+    if (view && view.mediaType === 'video') found.set(row.characterId, view);
   }
   return found;
 }

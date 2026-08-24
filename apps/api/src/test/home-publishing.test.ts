@@ -41,6 +41,7 @@ import {
  */
 
 const LUNA = SEED_CHARACTERS.find((c) => c.name === 'luna')!;
+const EMBER = SEED_CHARACTERS.find((c) => c.name === 'ember')!;
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
@@ -108,6 +109,39 @@ async function makeApprovedAsset(characterId = LUNA.id) {
     .set({ storageKey: path })
     .where(eq(characterVisualAssets.id, asset.id));
   return { ...asset, storageKey: path };
+}
+
+/**
+ * An approved VIDEO asset, stored under a .webm key.
+ *
+ * The character rails are video surfaces and `mediaTypeOf` reads the extension,
+ * so a test that needs a rail to render something must create one of these —
+ * `makeApprovedAsset` writes a .png and is, correctly, never chosen by
+ * `representativeClips`.
+ */
+async function makeApprovedVideoAsset(characterId = LUNA.id) {
+  const identity = (await getActiveVisualIdentity(on.db, characterId))!;
+  const asset = await createVisualAsset(on.db, {
+    characterId,
+    visualIdentityId: identity.id,
+    kind: 'generated',
+    status: 'approved',
+    contentRating: 'sfw',
+  });
+  const path = join(testEnv.media.storageDir, 'home-test', `${asset.id}.webm`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, WEBM);
+  await on.db
+    .update(characterVisualAssets)
+    .set({ storageKey: path })
+    .where(eq(characterVisualAssets.id, asset.id));
+  return { ...asset, storageKey: path };
+}
+
+/** Makes an approved video PUBLICLY REACHABLE via a discovery keyword. */
+async function publishViaKeyword(assetId: string, keyword = 'railtest') {
+  await api.createDiscovery({ name: `Rail ${keyword} ${++seq}`, keywords: [keyword] });
+  await api.setAssetKeywords(assetId, [keyword]);
 }
 
 async function makeUnapprovedAsset(characterId = LUNA.id) {
@@ -619,8 +653,12 @@ describe('public media security', () => {
 
 describe('Play with Me', () => {
   it('gives each character exactly ONE card, however many clips they have', async () => {
-    await makeApprovedAsset();
-    await makeApprovedAsset();
+    // Videos, because the rails are video surfaces — the assertion under test
+    // is the card COUNT, which must stay 1 however many clips exist.
+    const a = await makeApprovedVideoAsset();
+    const b = await makeApprovedVideoAsset();
+    await publishViaKeyword(a.id, 'onecard');
+    await api.setAssetKeywords(b.id, ['onecard']);
     const home = (await api.home()).json();
     expect(home.playWithMe.filter((c: { id: string }) => c.id === LUNA.id)).toHaveLength(1);
     const luna = home.playWithMe.find((c: { id: string }) => c.id === LUNA.id);
@@ -628,63 +666,148 @@ describe('Play with Me', () => {
     expect(luna.clip.characterId).toBe(LUNA.id);
   });
 
-  it('prefers the canonical reference as the representative clip', async () => {
-    // The seed gives Luna an approved canonical reference. A newer generated
-    // asset must NOT displace it: the canonical image is what the character has
-    // chosen to look like, and the choice has to be stable between requests.
-    const [canonical] = await on.db
+  /* ---------------------------------------------------------------- *
+   * THE REGRESSION THIS SUITE EXISTS FOR.
+   *
+   * These previously asserted that the canonical REFERENCE won — the
+   * character's primary identity image, served to the rail and called a clip.
+   * That was the defect. A rail represents a character by her CONTENT.
+   * ---------------------------------------------------------------- */
+
+  it('NEVER returns the canonical reference image as the representative clip', async () => {
+    // Fixture: reference image = asset A (seeded canonical), video = asset B.
+    const [assetA] = await on.db
       .select()
       .from(characterVisualAssets)
-      .where(and(eq(characterVisualAssets.characterId, LUNA.id), eq(characterVisualAssets.isCanonical, true)));
-    expect(canonical).toBeDefined();
-    await makeApprovedAsset();
+      .where(
+        and(
+          eq(characterVisualAssets.characterId, LUNA.id),
+          eq(characterVisualAssets.isCanonical, true),
+        ),
+      );
+    expect(assetA).toBeDefined();
+    expect(assetA!.kind).toBe('reference');
+
+    const assetB = await makeApprovedVideoAsset();
+    await publishViaKeyword(assetB.id);
+
+    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(luna.clip).not.toBeNull();
+    expect(luna.clip.id).toBe(assetB.id);
+    // The whole point, stated as its own assertion.
+    expect(luna.clip.id).not.toBe(assetA!.id);
+    expect(luna.clip.mediaType).toBe('video');
+  });
+
+  it('a character with a canonical image AND an approved video gets the VIDEO', async () => {
+    const video = await makeApprovedVideoAsset();
+    await publishViaKeyword(video.id);
+    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(luna.clip.id).toBe(video.id);
+    // Stable across reads — the choice is deterministic, not sampled.
+    const again = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(again.clip.id).toBe(video.id);
+  });
+
+  it('the representative video belongs to THAT character and no other', async () => {
+    const lunaVideo = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(lunaVideo.id, 'lunaonly');
+    const emberVideo = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(emberVideo.id, 'emberonly');
 
     const home = (await api.home()).json();
     const luna = home.playWithMe.find((c: { id: string }) => c.id === LUNA.id);
-    expect(luna.clip.id).toBe(canonical!.id);
-    // Stable across reads.
-    const again = (await api.home()).json();
-    expect(again.playWithMe.find((c: { id: string }) => c.id === LUNA.id).clip.id).toBe(canonical!.id);
+    const ember = home.playWithMe.find((c: { id: string }) => c.id === EMBER.id);
+    expect(luna.clip.id).toBe(lunaVideo.id);
+    expect(luna.clip.characterId).toBe(LUNA.id);
+    expect(ember.clip.id).toBe(emberVideo.id);
+    expect(ember.clip.characterId).toBe(EMBER.id);
+    // No cross-contamination in either direction.
+    expect(luna.clip.id).not.toBe(emberVideo.id);
+    expect(ember.clip.id).not.toBe(lunaVideo.id);
   });
 
-  it('falls back to another PUBLICLY REACHABLE clip when there is no canonical one', async () => {
+  it('does NOT select an unapproved video', async () => {
+    const identity = (await getActiveVisualIdentity(on.db, LUNA.id))!;
+    const pending = await createVisualAsset(on.db, {
+      characterId: LUNA.id,
+      visualIdentityId: identity.id,
+      kind: 'generated',
+      status: 'under_review',
+      contentRating: 'sfw',
+    });
+    const path = join(testEnv.media.storageDir, 'home-test', `${pending.id}.webm`);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, WEBM);
     await on.db
       .update(characterVisualAssets)
-      .set({ isCanonical: false, status: 'rejected' })
-      .where(eq(characterVisualAssets.characterId, LUNA.id));
-    const asset = await makeApprovedAsset();
-    // Approved is not enough: a card must never choose media the public media
-    // route would refuse, or the card renders a broken image. A keyword a
-    // visible discovery category queries is what publishes it.
-    await api.createDiscovery({ name: 'Sexy', keywords: ['sexy'] });
-    await api.setAssetKeywords(asset.id, ['sexy']);
+      .set({ storageKey: path })
+      .where(eq(characterVisualAssets.id, pending.id));
 
-    const home = (await api.home()).json();
-    expect(home.playWithMe.find((c: { id: string }) => c.id === LUNA.id).clip.id).toBe(asset.id);
-    expect((await api.media(asset.id)).statusCode).toBe(200);
-  });
-
-  it('leaves the card clip NULL rather than choosing unservable media', async () => {
-    await on.db
-      .update(characterVisualAssets)
-      .set({ isCanonical: false, status: 'rejected' })
-      .where(eq(characterVisualAssets.characterId, LUNA.id));
-    // Approved, but in no category, no Hero and carrying no keyword.
-    await makeApprovedAsset();
-    const home = (await api.home()).json();
-    expect(home.playWithMe.find((c: { id: string }) => c.id === LUNA.id).clip).toBeNull();
-  });
-
-  it('keeps a character with no approved content, with a null clip', async () => {
-    // Presence in Play with Me is about the character, not their media.
-    await on.db
-      .update(characterVisualAssets)
-      .set({ status: 'rejected' })
-      .where(eq(characterVisualAssets.characterId, LUNA.id));
-    const home = (await api.home()).json();
-    const luna = home.playWithMe.find((c: { id: string }) => c.id === LUNA.id);
-    expect(luna).toBeDefined();
+    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
     expect(luna.clip).toBeNull();
+  });
+
+  it('does NOT select a video that is approved but not publicly reachable', async () => {
+    // Approved, but in no category, no Hero and carrying no keyword.
+    await makeApprovedVideoAsset();
+    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(luna.clip).toBeNull();
+  });
+
+  it('does NOT select a video belonging to an INACTIVE character', async () => {
+    const video = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(video.id, 'emberinactive');
+    // Reachable while she is live...
+    expect(
+      (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === EMBER.id).clip.id,
+    ).toBe(video.id);
+
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, EMBER.id));
+    const home = (await api.home()).json();
+    // ...and gone entirely once she is not.
+    expect(home.playWithMe.map((c: { id: string }) => c.id)).not.toContain(EMBER.id);
+    expect((await api.media(video.id)).statusCode).toBe(404);
+  });
+
+  it('a character with NO eligible video gets clip=null and NO image substitute', async () => {
+    // Fixture: reference image = asset A, no eligible video anywhere.
+    const [assetA] = await on.db
+      .select()
+      .from(characterVisualAssets)
+      .where(
+        and(
+          eq(characterVisualAssets.characterId, LUNA.id),
+          eq(characterVisualAssets.isCanonical, true),
+        ),
+      );
+    expect(assetA).toBeDefined();
+
+    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(luna).toBeDefined();
+    // She keeps her place on the rail — presence is about the character.
+    expect(luna.clip).toBeNull();
+    // And the payload carries NOTHING that could be mistaken for her media.
+    expect(JSON.stringify(luna)).not.toContain(assetA!.id);
+  });
+
+  it('an approved IMAGE clip is not a rail clip either', async () => {
+    // An uploaded image is legitimate content, but these rails are video
+    // surfaces. It must not become the card's media.
+    const image = await makeApprovedAsset();
+    await publishViaKeyword(image.id, 'imageonly');
+    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(luna.clip).toBeNull();
+  });
+
+  it('picks the OLDEST eligible video when a character has several', async () => {
+    const first = await makeApprovedVideoAsset();
+    await publishViaKeyword(first.id, 'multi');
+    const second = await makeApprovedVideoAsset();
+    await api.setAssetKeywords(second.id, ['multi']);
+
+    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(luna.clip.id).toBe(first.id);
   });
 
   it('excludes inactive characters', async () => {
@@ -2134,6 +2257,17 @@ describe('requirement quantities are targets, never limits', () => {
 });
 
 describe('the Hero falls back rather than disappearing', () => {
+  /**
+   * The fallback borrows from Play with Me, and those cards are now VIDEO-only
+   * (a reference image is no longer passed off as a clip). So a borrowable
+   * video has to exist for there to be anything to borrow — that is the new
+   * rule showing through, not a weakened assertion.
+   */
+  beforeEach(async () => {
+    const video = await makeApprovedVideoAsset();
+    await publishViaKeyword(video.id, 'herofallback');
+  });
+
   it('shows representative clips when no Hero clip is configured', async () => {
     const home = (await api.home()).json();
     expect(home.hero.length).toBeGreaterThan(0);
@@ -2479,6 +2613,18 @@ describe('manual content workflow, end to end', () => {
 });
 
 describe('the Hero fallback is never persisted', () => {
+  /**
+   * Same reason as the suite above, and TWO characters' videos rather than one:
+   * a test below asserts the fallback borrows more than a single clip before a
+   * configured clip replaces the whole of it.
+   */
+  beforeEach(async () => {
+    const luna = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(luna.id, 'heropersist');
+    const ember = await makeApprovedVideoAsset(EMBER.id);
+    await api.setAssetKeywords(ember.id, ['heropersist']);
+  });
+
   it('an unconfigured Hero writes nothing — the assigned list stays empty', async () => {
     const publicHero = (await api.home()).json().hero;
     expect(publicHero.length).toBeGreaterThan(0);
@@ -2894,5 +3040,153 @@ describe('an uploaded video becomes the public card’s clip', () => {
     expect(
       (await api.adminHome()).json().hero.map((c: { assetId: string }) => c.assetId),
     ).toContain(assetId);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The Character page's content collection — GET /api/characters/:id/clips
+ *
+ * The tab this feeds previously had NO data path: a four-name manifest, two
+ * entries sliced off it, six fabricated locked tiles, and `profileImage` as the
+ * fallback. Nothing it displayed was a record. These tests pin the replacement:
+ * the collection is the collection, and it is bounded only by what she has.
+ * ------------------------------------------------------------------ */
+
+describe('a character’s public content collection', () => {
+  const clipsFor = (characterId: string) =>
+    on.app.inject({ method: 'GET', url: `/api/characters/${characterId}/clips` });
+
+  it('returns ALL eligible clips — twelve means twelve, with no limit of 8', async () => {
+    const made: string[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      const asset = await makeApprovedVideoAsset(LUNA.id);
+      made.push(asset.id);
+      if (i === 0) await publishViaKeyword(asset.id, 'collection');
+      else await api.setAssetKeywords(asset.id, ['collection']);
+    }
+
+    const res = await clipsFor(LUNA.id);
+    expect(res.statusCode).toBe(200);
+    const clips = res.json().clips as Array<{ id: string; characterId: string }>;
+    expect(clips).toHaveLength(12);
+    expect(clips.length).toBeGreaterThan(8);
+    expect(clips.map((c) => c.id).sort()).toEqual([...made].sort());
+  });
+
+  it('returns only THIS character’s clips', async () => {
+    const mine = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(mine.id, 'ownership');
+    const hers = await makeApprovedVideoAsset(EMBER.id);
+    await api.setAssetKeywords(hers.id, ['ownership']);
+
+    const lunaClips = (await clipsFor(LUNA.id)).json().clips as Array<{
+      id: string;
+      characterId: string;
+    }>;
+    expect(lunaClips.map((c) => c.id)).toContain(mine.id);
+    expect(lunaClips.map((c) => c.id)).not.toContain(hers.id);
+    for (const clip of lunaClips) expect(clip.characterId).toBe(LUNA.id);
+  });
+
+  it('excludes UNAPPROVED assets', async () => {
+    const pending = await makeUnapprovedAsset(LUNA.id);
+    const clips = (await clipsFor(LUNA.id)).json().clips as Array<{ id: string }>;
+    expect(clips.map((c) => c.id)).not.toContain(pending.id);
+  });
+
+  it('excludes everything once the character is INACTIVE', async () => {
+    const asset = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(asset.id, 'goesoffline');
+    expect(
+      ((await clipsFor(EMBER.id)).json().clips as Array<{ id: string }>).map((c) => c.id),
+    ).toContain(asset.id);
+
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, EMBER.id));
+    // The route itself reads as not-found, matching the sibling public routes.
+    expect((await clipsFor(EMBER.id)).statusCode).toBe(404);
+  });
+
+  it('excludes assets that are approved but NOT publicly reachable', async () => {
+    // Approved, but in no category, no Hero and carrying no keyword.
+    const orphan = await makeApprovedVideoAsset(LUNA.id);
+    const clips = (await clipsFor(LUNA.id)).json().clips as Array<{ id: string }>;
+    expect(clips.map((c) => c.id)).not.toContain(orphan.id);
+    expect((await api.media(orphan.id)).statusCode).toBe(404);
+  });
+
+  it('NEVER returns a reference/primary asset as a content clip', async () => {
+    const [reference] = await on.db
+      .select()
+      .from(characterVisualAssets)
+      .where(
+        and(
+          eq(characterVisualAssets.characterId, LUNA.id),
+          eq(characterVisualAssets.kind, 'reference'),
+        ),
+      );
+    expect(reference).toBeDefined();
+
+    const content = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(content.id, 'noreference');
+
+    const clips = (await clipsFor(LUNA.id)).json().clips as Array<{ id: string }>;
+    expect(clips.map((c) => c.id)).toContain(content.id);
+    expect(clips.map((c) => c.id)).not.toContain(reference!.id);
+  });
+
+  it('returns a browser-usable public URL that actually serves bytes', async () => {
+    const asset = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(asset.id, 'servable');
+    const [clip] = (await clipsFor(LUNA.id)).json().clips as Array<{
+      url: string;
+      mediaType: string;
+    }>;
+    expect(clip!.url).toBe(`/api/media/assets/${asset.id}/file`);
+    expect(clip!.mediaType).toBe('video');
+    // The listing and the media route agree, by construction.
+    expect((await on.app.inject({ method: 'GET', url: clip!.url })).statusCode).toBe(200);
+  });
+
+  it('NEVER exposes a storage key or filesystem path', async () => {
+    const asset = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(asset.id, 'nopaths');
+    const body = (await clipsFor(LUNA.id)).payload;
+    expect(body).not.toContain('storageKey');
+    expect(body).not.toContain('storagePath');
+    expect(body).not.toContain(testEnv.media.storageDir);
+    expect(body).not.toContain('.webm');
+  });
+
+  it('carries an IMAGE content asset as an image, not as a character portrait', async () => {
+    // An approved uploaded image is legitimate CONTENT. It is not her
+    // reference image, and the collection is allowed to include it.
+    const image = await makeApprovedAsset(LUNA.id);
+    await publishViaKeyword(image.id, 'contentimage');
+    const clips = (await clipsFor(LUNA.id)).json().clips as Array<{
+      id: string;
+      mediaType: string;
+    }>;
+    const found = clips.find((c) => c.id === image.id);
+    expect(found).toBeDefined();
+    expect(found!.mediaType).toBe('image');
+  });
+
+  it('is empty, not fabricated, for a character with no content', async () => {
+    const bare = (await createCharacterByName('BareCollection')).json().character as { id: string };
+    await on.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${bare.id}`,
+      payload: { shortBio: 'b', personality: 'p', conversationStyle: 'c', systemPrompt: 's', status: 'active' },
+      cookies: adminCookies,
+    });
+    const res = await clipsFor(bare.id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().clips).toEqual([]);
+  });
+
+  it('404s for an unknown or malformed id', async () => {
+    for (const id of ['11111111-1111-4111-8111-111111111111', 'not-a-uuid']) {
+      expect((await clipsFor(id)).statusCode).toBe(404);
+    }
   });
 });

@@ -5,6 +5,7 @@ import {
   characterMediaList,
   firstCanonicalImage,
   resolveHeroMedia,
+  resolveRailMedia,
 } from './media';
 
 function character(overrides: Partial<PublicCharacter> = {}): PublicCharacter {
@@ -215,5 +216,89 @@ describe('the seeded characters keep working', () => {
   it('a CMS VIDEO outranks the manifest — an operator’s choice beats a constant', () => {
     const media = resolveHeroMedia(character({ name: 'luna', clip: clip('video', 'new') } as never));
     expect(media.kind === 'video' && media.src).toContain('/api/media/assets/new/file');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The HOME CHARACTER RAILS are clip-only
+ *
+ * THE DEFECT THIS CLOSES. Play with me rendered `resolveHeroMedia`, which uses
+ * the CMS clip only when it is a VIDEO and otherwise falls through to
+ * `firstCanonicalImage(visual) ?? profileImage` — the character's identity
+ * image, shown as though it were her clip. `resolveRailMedia` cannot reach any
+ * of those sources at all.
+ * ------------------------------------------------------------------ */
+
+describe('the character rails render a clip or nothing', () => {
+  const video = { url: '/api/media/assets/vid/file', mediaType: 'video' as const };
+  const image = { url: '/api/media/assets/img/file', mediaType: 'image' as const };
+
+  it('renders the character’s own approved VIDEO', () => {
+    const media = resolveRailMedia(character({ clip: video } as never));
+    expect(media.kind).toBe('video');
+    expect(media.kind === 'video' && media.src).toContain('/api/media/assets/vid/file');
+  });
+
+  it('NEVER falls back to profileImage when there is no video', () => {
+    // `character()` carries profileImage 'https://img.example/nova.png'.
+    const media = resolveRailMedia(character({ clip: null } as never));
+    expect(media.kind).toBe('placeholder');
+    expect(JSON.stringify(media)).not.toContain('img.example');
+  });
+
+  it('NEVER falls back to the canonical/visual-identity image', () => {
+    // resolveRailMedia takes no `visual` argument at all — the identity image
+    // is not reachable from here by construction, not by convention.
+    expect(resolveRailMedia.length).toBe(1);
+    const media = resolveRailMedia(character({ clip: null } as never));
+    expect(media.kind).toBe('placeholder');
+  });
+
+  it('NEVER falls back to the hard-coded manifest, even for a seeded name', () => {
+    // Luna has a manifest entry. On a rail it must not be used.
+    const media = resolveRailMedia(character({ name: 'luna', clip: null } as never));
+    expect(media.kind).toBe('placeholder');
+    expect(JSON.stringify(media)).not.toContain('/media/luna');
+  });
+
+  it('does NOT treat an image clip as rail media', () => {
+    const media = resolveRailMedia(character({ clip: image } as never));
+    expect(media.kind).toBe('placeholder');
+    expect(JSON.stringify(media)).not.toContain('/assets/img/file');
+  });
+
+  it('uses the existing neutral placeholder, keyed to her initial', () => {
+    const media = resolveRailMedia(character({ displayName: 'Nova', clip: null } as never));
+    expect(media).toEqual({ kind: 'placeholder', initial: 'N' });
+  });
+
+  it('a seeded character WITH an approved video plays that video', () => {
+    // Maria/Ember/Luna resolve from their own content, not their reference image.
+    const media = resolveRailMedia(character({ name: 'maria', clip: video } as never));
+    expect(media.kind === 'video' && media.src).toContain('/api/media/assets/vid/file');
+    expect(JSON.stringify(media)).not.toContain('/media/maria');
+  });
+});
+
+describe('the OTHER surfaces keep their image behaviour', () => {
+  // resolveHeroMedia still serves the discovery grid, the swipe card and the
+  // Character page, where showing a character's own image is correct. This
+  // fix must not have leaked into them.
+  it('resolveHeroMedia still falls back to profileImage', () => {
+    const media = resolveHeroMedia(character({ name: 'not-in-manifest' }));
+    expect(media.kind).toBe('image');
+    expect(media.kind === 'image' && media.src).toBe('https://img.example/nova.png');
+  });
+
+  it('resolveHeroMedia still prefers the canonical image over profileImage', () => {
+    const media = resolveHeroMedia(
+      character({ name: 'not-in-manifest' }),
+      visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
+    );
+    expect(media.kind === 'image' && media.src).toContain('/assets/i1/file');
+  });
+
+  it('resolveHeroMedia still serves the seeded manifest videos', () => {
+    expect(resolveHeroMedia(character({ name: 'luna' })).kind).toBe('video');
   });
 });

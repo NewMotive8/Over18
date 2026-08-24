@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
-import { ApiRequestError, charactersApi, conversationsApi } from '../lib/api';
+import { API_URL, ApiRequestError, charactersApi, conversationsApi, type PublicClip } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
 import { apparentAge, resolveHeroMedia, type CharacterMediaItem } from '../lib/media';
 import { characterVideoItems } from '../lib/characterMedia';
@@ -51,6 +51,15 @@ export default function CharacterDetailPage() {
   const [tab, setTab] = useState<ProfileTab>('about');
   const [viewer, setViewer] = useState<{ items: CharacterMediaItem[]; index: number } | null>(null);
   const [gateOpen, setGateOpen] = useState(false);
+  /**
+   * Her real content collection, for the Posts tab.
+   *
+   * A separate request from the visual identity on purpose: identity is who she
+   * is, this is what she has posted, and the tab must never substitute one for
+   * the other. Failure degrades to an empty collection rather than to her
+   * profile image — showing nothing is honest, showing her portrait is not.
+   */
+  const [clips, setClips] = useState<PublicClip[]>([]);
 
   const startChat = useCallback(
     async (character: PublicCharacter) => {
@@ -99,6 +108,19 @@ export default function CharacterDetailPage() {
       .visualIdentity(characterId)
       .then((data) => !cancelled && setVisual({ status: 'ready', data }))
       .catch(() => !cancelled && setVisual({ status: 'error' }));
+    return () => {
+      cancelled = true;
+    };
+  }, [characterId, attempt]);
+
+  useEffect(() => {
+    if (!characterId) return;
+    let cancelled = false;
+    setClips([]);
+    charactersApi
+      .clips(characterId)
+      .then((res) => !cancelled && setClips(res.clips))
+      .catch(() => !cancelled && setClips([]));
     return () => {
       cancelled = true;
     };
@@ -177,6 +199,21 @@ export default function CharacterDetailPage() {
     videoItems.length > 0
       ? videoItems
       : [{ id: 'hero', media: resolveHeroMedia(character, visualData), premium: false }];
+  /**
+   * The viewer items for the Posts tab — her posts, in the order shown.
+   *
+   * Previously the tab handed the viewer `heroItems`, so tapping the third post
+   * opened whatever the hero deck had at index 2. Indexes now address the same
+   * list the grid rendered.
+   */
+  const postItems: CharacterMediaItem[] = clips.map((clip) => ({
+    id: clip.id,
+    media:
+      clip.mediaType === 'video'
+        ? { kind: 'video', src: `${API_URL}${clip.url}` }
+        : { kind: 'image', src: `${API_URL}${clip.url}` },
+    premium: false,
+  }));
   const age = adultAgeFromBand(apparentAge(visualData));
   const first = heroItems[0]!.media;
   const avatarPoster =
@@ -210,7 +247,7 @@ export default function CharacterDetailPage() {
 
         <RelationshipTracker state={relationship} />
 
-        <ProfileTabs active={tab} onChange={setTab} postsCount={8} />
+        <ProfileTabs active={tab} onChange={setTab} postsCount={clips.length} />
 
         {tab === 'about' ? (
           <AboutTab
@@ -220,9 +257,8 @@ export default function CharacterDetailPage() {
           />
         ) : (
           <PostsTab
-            character={character}
-            onOpenClip={(index) => setViewer({ items: heroItems, index })}
-            onLocked={() => setGateOpen(true)}
+            clips={clips}
+            onOpenClip={(index) => setViewer({ items: postItems, index })}
           />
         )}
       </div>

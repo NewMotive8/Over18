@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import type { PublicCharacterCard } from '../../lib/api';
-import { apparentAge, resolveHeroMedia } from '../../lib/media';
+import { apparentAge, resolveRailMedia } from '../../lib/media';
 import { adultAgeFromBand } from '../../lib/lobbyContent';
 import { useCharacterVisual } from '../../hooks/useCharacterVisual';
 import HeroMedia from '../HeroMedia';
@@ -8,7 +8,10 @@ import HeroMedia from '../HeroMedia';
 /** A single portrait, video-first persona card for the horizontal rail. */
 function PlayWithMeCard({ character }: { character: PublicCharacterCard }) {
   const { visual } = useCharacterVisual(character.id);
-  const media = resolveHeroMedia(character, visual);
+  // CLIP-ONLY. The rail shows this character's own approved video and nothing
+  // else — never her canonical/profile image, never the local manifest. The
+  // visual identity is still read, but only for her apparent age.
+  const media = resolveRailMedia(character);
   const age = adultAgeFromBand(apparentAge(visual));
   // Real App Category membership, where the old version invented tags from the
   // card's index. Same chips, same place — sourced from the CMS instead.
