@@ -302,14 +302,25 @@ export interface CharacterClipRef {
  * the page already holds; it does not widen a payload, relax a rule, or add a
  * source of visibility.
  *
- * ── PRECEDENCE IS DELIBERATELY UNCHANGED ─────────────────────────────────────
+ * ── PRECEDENCE: THE CMS WINS ─────────────────────────────────────────────────
  *
- * The manifest still wins where it has entries, exactly as before, so the four
- * seeded characters are byte-for-byte what they were. The CMS clips are a NEW
- * source inserted between the manifest and the still fallback — strictly
- * additive. Whether an operator's upload ought to outrank a constant in the
- * source here (as it already does in `resolveHeroMedia`) is a product decision,
- * not one to smuggle in with a bug fix.
+ * An operator's published video outranks a constant in the source. This used to
+ * be the other way round, and the consequence was reported from production:
+ * Ember, Maria and Luna each had approved, publicly reachable CMS videos —
+ * already powering their Play with me cards and, for two of them, Home Hero
+ * slots — while their Character headers still played the bundled demo clips
+ * from `characterMedia.ts`. Uploading real content to a seeded character
+ * changed nothing an operator could see on her own page.
+ *
+ * IT ALSO SETTLES A CONTRADICTION. `resolveHeroMedia` has always put the CMS
+ * clip ahead of the manifest. Two functions answering the same question in
+ * opposite orders is not a policy, it is an accident waiting to be discovered
+ * one surface at a time.
+ *
+ * THE MANIFEST IS NOW A FALLBACK, not a deletion. luna/ember/sage/maria still
+ * ship real files on disk, and a seeded character who has no CMS video yet must
+ * not lose her header to a still. Removing those files is a separate,
+ * deliberate release.
  *
  * VIDEO ONLY. An image clip is not a header clip; the fallback below is the one
  * place a still may appear, and it is the still the design already used.
@@ -321,9 +332,8 @@ export function characterHeaderItems(
   clips: readonly CharacterClipRef[],
   visual?: CharacterVisualIdentityResponse | null,
 ): CharacterMediaItem[] {
-  const manifest = characterVideoItems(character);
-  if (manifest.length > 0) return manifest;
-
+  // 1. What the operator actually published. `clips` is already reference-free
+  //    and approval-gated by the server, so nothing here widens visibility.
   const videos: CharacterMediaItem[] = [];
   for (const clip of clips) {
     if (clip.mediaType !== 'video') continue;
@@ -333,9 +343,13 @@ export function characterHeaderItems(
   }
   if (videos.length > 0) return videos;
 
-  // The pre-existing fallback, untouched: her canonical still, then her
-  // profileImage, then the initial-letter placeholder. No new artwork, and no
-  // unrelated image is substituted.
+  // 2. The bundled manifest, for a seeded character with nothing uploaded yet.
+  const manifest = characterVideoItems(character);
+  if (manifest.length > 0) return manifest;
+
+  // 3. The pre-existing fallback, untouched: her canonical still, then her
+  //    profileImage, then the initial-letter placeholder. No new artwork, and
+  //    no unrelated image is substituted.
   return [{ id: 'hero', media: resolveHeroMedia(character, visual), premium: false }];
 }
 

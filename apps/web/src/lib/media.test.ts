@@ -377,12 +377,117 @@ describe('the Character header plays her own videos', () => {
     expect(items[0]!.media.kind).toBe('placeholder');
   });
 
-  it('keeps the seeded manifest characters exactly as they were', () => {
-    // luna/ember/sage/maria ship real files on disk; this fix must not move them.
-    const items = characterHeaderItems(character({ name: 'luna' }), [headerClip('v1')], null);
+  it('uses the manifest for a seeded character who has NO CMS video yet', () => {
+    // luna/ember/sage/maria ship real files on disk. The manifest is a
+    // fallback now, not a deletion — a seeded character with nothing uploaded
+    // must not lose her header to a still.
+    const items = characterHeaderItems(character({ name: 'luna' }), [], null);
     expect(items).toHaveLength(1);
     const only = items[0]!.media;
     expect(only.kind === 'video' && only.src).toBe('/media/luna/profile-04.mp4');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * PRECEDENCE: an operator's upload beats a constant in the source.
+ *
+ * REPORTED FROM PRODUCTION. Ember, Maria and Luna each had approved, publicly
+ * reachable CMS videos — already powering their Play with me cards, and for
+ * two of them Home Hero slots — while their Character headers still played the
+ * bundled demo clips. Uploading real content to a seeded character changed
+ * nothing an operator could see on her own page.
+ *
+ * The ids below are the REAL production asset ids, so these tests describe the
+ * situation that was actually observed rather than an invented one.
+ * ------------------------------------------------------------------ */
+
+describe('a real CMS video beats the bundled manifest', () => {
+  const PRODUCTION: Record<string, { clips: string[]; manifestHero: string }> = {
+    ember: {
+      clips: ['65e7dcc5-787a-4837-8dbc-834f8a4c3338', '09a81ef5-987d-4d75-83e6-ca766108cb90'],
+      manifestHero: '/media/ember/hero.mp4',
+    },
+    maria: {
+      clips: ['bfb0e247-ff9f-4b56-8ad7-cba83ad49e24', 'f8503c47-0111-431b-83f2-07a26a766675'],
+      manifestHero: '/media/maria/hero.mp4',
+    },
+    luna: {
+      clips: ['1834e683-7eec-466c-b6fb-6aa17a7632f3', '26ea99ed-23a9-4790-ae5e-75243b988829'],
+      manifestHero: '/media/luna/profile-04.mp4',
+    },
+  };
+
+  for (const [name, { clips, manifestHero }] of Object.entries(PRODUCTION)) {
+    it(`${name}: plays her own videos, not ${manifestHero}`, () => {
+      const items = characterHeaderItems(
+        character({ name }),
+        clips.map((id) => headerClip(id)),
+        null,
+      );
+
+      expect(items).toHaveLength(clips.length);
+      const srcs = items.map((i) => (i.media.kind === 'video' ? i.media.src : ''));
+      for (const id of clips) {
+        expect(srcs.some((s) => s.includes(id))).toBe(true);
+      }
+      // Not one bundled file survives in her header.
+      expect(srcs.every((s) => !s.startsWith('/media/'))).toBe(true);
+      expect(srcs).not.toContain(manifestHero);
+    });
+  }
+
+  it('falls back to the manifest the moment her CMS videos are all images', () => {
+    // The ordering must not be "CMS list is non-empty" — it must be "CMS list
+    // contains a VIDEO". An image-only collection is not a header.
+    const items = characterHeaderItems(
+      character({ name: 'ember' }),
+      [headerClip('an-image', 'image')],
+      null,
+    );
+    expect(items[0]!.media.kind === 'video' && items[0]!.media.src).toBe('/media/ember/hero.mp4');
+  });
+
+  it('keeps the still fallback for a character with neither', () => {
+    const items = characterHeaderItems(
+      character({ name: 'not-in-manifest' }),
+      [],
+      visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]!.media.kind).toBe('image');
+    expect(items[0]!.media.kind === 'image' && items[0]!.media.src).toContain('/assets/i1/file');
+  });
+});
+
+describe('resolveHeroMedia is NOT affected by the header precedence change', () => {
+  /**
+   * The header and the swipe card resolve media through different functions.
+   * Only `characterHeaderItems` changed; these pin `resolveHeroMedia`'s own
+   * behaviour so a future edit cannot quietly move Home Hero, Play with me or
+   * the swipe deck while "fixing the header".
+   */
+  it('still serves the manifest clip for a seeded character', () => {
+    const media = resolveHeroMedia(character({ name: 'ember' }));
+    expect(media.kind === 'video' && media.src).toBe('/media/ember/hero.mp4');
+  });
+
+  it('still prefers a CMS clip over the manifest, exactly as it always has', () => {
+    const withClip = {
+      ...character({ name: 'ember' }),
+      clip: { url: '/api/media/assets/cms/file', mediaType: 'video' as const },
+    };
+    const media = resolveHeroMedia(withClip, null);
+    expect(media.kind === 'video' && media.src).toContain('/api/media/assets/cms/file');
+  });
+
+  it('still falls back to the still image for a character with no video', () => {
+    const media = resolveHeroMedia(character({ name: 'not-in-manifest' }));
+    expect(media.kind).toBe('image');
+    expect(media.kind === 'image' && media.src).toBe('https://img.example/nova.png');
+  });
+
+  it('rail media is still clip-only and never reaches the manifest', () => {
+    expect(resolveRailMedia(character({ name: 'ember' }))).toBeNull();
   });
 });
 
