@@ -5,9 +5,12 @@ import {
   assetActions,
   categoryChoices,
   characterReadiness,
+  groupBySection,
   groupCharacterContent,
   isUnplaced,
   placementLabel,
+  sectionSummary,
+  SECTION_RATING,
   shelfSummary,
   keywordsDiffer,
   normaliseKeyword,
@@ -413,5 +416,97 @@ describe('whether the draft needs saving', () => {
 
   it('sees clearing everything as a change', () => {
     expect(keywordsDiffer(['a'], [])).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Phase 1 — the Regular / Explicit video shelves.
+ *
+ * The product question these answer is the one an operator asked: "I uploaded
+ * a clip to Maria; where did it go?" Previously it went into a single mixed
+ * shelf and then into a review queue. Now the shelf the operator uploaded from
+ * decides its rating, and the two shelves are the whole content surface.
+ *
+ * The rating axis is `content_rating`, which the column has always carried —
+ * no new enum, no new column, no migration.
+ * ------------------------------------------------------------------ */
+
+describe('Regular and Explicit are split by content rating', () => {
+  it('puts an sfw video on Regular and an explicit video on Explicit', () => {
+    const shelves = groupBySection([
+      asset({ assetId: 'r', contentRating: 'sfw' }),
+      asset({ assetId: 'x', contentRating: 'explicit' }),
+    ]);
+    expect(shelves.regular.map((a) => a.assetId)).toEqual(['r']);
+    expect(shelves.explicit.map((a) => a.assetId)).toEqual(['x']);
+  });
+
+  it('never lets a Regular item appear on Explicit, or the reverse', () => {
+    const shelves = groupBySection([
+      asset({ assetId: 'r', contentRating: 'sfw' }),
+      asset({ assetId: 'x', contentRating: 'explicit' }),
+    ]);
+    expect(shelves.regular.some((a) => a.contentRating === 'explicit')).toBe(false);
+    expect(shelves.explicit.some((a) => a.contentRating === 'sfw')).toBe(false);
+  });
+
+  it('shows items of EVERY status on its shelf, not just approved ones', () => {
+    // Uploads land approved now, but anything already in review must still be
+    // visible on her page rather than only inside Review.
+    const shelves = groupBySection([
+      asset({ assetId: 'a', status: 'approved' }),
+      asset({ assetId: 'u', status: 'under_review' }),
+      asset({ assetId: 'g', status: 'generated' }),
+      asset({ assetId: 'j', status: 'rejected' }),
+    ]);
+    expect(shelves.regular.map((a) => a.assetId)).toEqual(['a', 'u', 'g', 'j']);
+  });
+
+  it('keeps identity references OFF the shelves — they are not content', () => {
+    // A reference carries the default `sfw` rating, so without this it would
+    // read as a clip she had uploaded to Regular.
+    const shelves = groupBySection([asset({ assetId: 'p', kind: 'reference', isPrimary: true })]);
+    expect(shelves.regular).toEqual([]);
+    expect(shelves.explicit).toEqual([]);
+    expect(shelves.excluded.map((a) => a.assetId)).toEqual(['p']);
+  });
+
+  it('keeps images OFF the shelves — both shelves are video-only', () => {
+    const shelves = groupBySection([
+      asset({ assetId: 'img', mediaType: 'image' }),
+      asset({ assetId: 'imgx', mediaType: 'image', contentRating: 'explicit' }),
+    ]);
+    expect(shelves.regular).toEqual([]);
+    expect(shelves.explicit).toEqual([]);
+    expect(shelves.excluded.map((a) => a.assetId)).toEqual(['img', 'imgx']);
+  });
+
+  it('accounts for EVERY asset — nothing is silently dropped', () => {
+    const input = [
+      asset({ assetId: '1' }),
+      asset({ assetId: '2', contentRating: 'explicit' }),
+      asset({ assetId: '3', mediaType: 'image' }),
+      asset({ assetId: '4', kind: 'reference' }),
+    ];
+    const shelves = groupBySection(input);
+    const seen = [...shelves.regular, ...shelves.explicit, ...shelves.excluded];
+    expect(seen).toHaveLength(input.length);
+    expect(new Set(seen.map((a) => a.assetId)).size).toBe(input.length);
+  });
+
+  it('maps each section to exactly one rating, in one direction', () => {
+    expect(SECTION_RATING.regular).toBe('sfw');
+    expect(SECTION_RATING.explicit).toBe('explicit');
+  });
+});
+
+describe('the shelf count reads as videos, not items', () => {
+  it('says so plainly when a shelf is empty', () => {
+    expect(sectionSummary([])).toBe('No videos yet.');
+  });
+
+  it('is singular for one and plural beyond that', () => {
+    expect(sectionSummary([asset()])).toBe('1 video');
+    expect(sectionSummary([asset({ assetId: 'a' }), asset({ assetId: 'b' })])).toBe('2 videos');
   });
 });

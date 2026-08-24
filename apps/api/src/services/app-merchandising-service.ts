@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
   appCategories,
@@ -224,18 +224,42 @@ export interface CandidateFilter {
 }
 
 /**
- * The picker's source list: APPROVED Library content only.
+ * The picker's source list: APPROVED, NON-REFERENCE, VIDEO content.
  *
  * Approval is a SQL condition here too, so a non-approved asset is never even
  * offered — the operator cannot select something the write path would then
  * refuse. Rating and Primary status are returned as visible facts, never used
  * to exclude anything.
+ *
+ * VIDEO-ONLY IS NOT A FILTER. An App Category is a public surface, and every
+ * public surface in this product is already clip-only — Play with Me, Search
+ * and the Hero each had to close that separately. Offering an approved image
+ * here left the one door through which one could still reach them: a category
+ * assignment. So it is enforced, not defaulted, and `filter.mediaType` can
+ * only ever narrow further — asking for images returns nothing rather than
+ * re-opening the door.
  */
 export async function listAssignmentCandidates(
   db: Db,
   filter: CandidateFilter = {},
 ): Promise<CandidateAssetView[]> {
-  const conditions = [eq(characterVisualAssets.status, PUBLISHABLE_STATUS)];
+  const conditions = [
+    eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+    /**
+     * A REFERENCE IS NOT MERCHANDISE.
+     *
+     * The picker offered identity images alongside content: a character's
+     * canonical portrait is approved, so it satisfied the only condition here
+     * and could be assigned to an App Category — which is a public surface.
+     * That is the same leak the Home rails and Search each had to close
+     * separately, still open at its source.
+     *
+     * Excluded by kind rather than by de-prioritising or filtering in the UI,
+     * so no ordering change and no client default can bring it back. Visual
+     * identity remains the place identity images are managed.
+     */
+    ne(characterVisualAssets.kind, 'reference'),
+  ];
   if (filter.characterId) {
     conditions.push(eq(characterVisualAssets.characterId, filter.characterId));
   }
@@ -261,9 +285,25 @@ export async function listAssignmentCandidates(
     characterName,
     mediaType: mediaTypeFor(asset.storageKey, asset.provenance as Record<string, unknown> | null),
   }));
-  const typed = filter.mediaType
-    ? withMedia.filter((row) => row.mediaType === filter.mediaType)
-    : withMedia;
+  /**
+   * VIDEO ONLY, unconditionally.
+   *
+   * Applied in TS rather than SQL for the reason above: the stored media type
+   * is not readable from the row without `mediaTypeFor`. It is the same place
+   * the optional filter was already applied, so this adds a condition rather
+   * than a second pass.
+   *
+   * `mediaTypeFor` answers 'image' whenever it cannot prove 'video', so an
+   * asset whose type is unclear is EXCLUDED. That is the correct direction to
+   * fail for a rule about what may reach the public app.
+   *
+   * The caller's `mediaType` is still honoured, but only to narrow: asking for
+   * images now yields an empty list, which is the truthful answer.
+   */
+  const typed = withMedia.filter(
+    (row) =>
+      row.mediaType === 'video' && (filter.mediaType ? row.mediaType === filter.mediaType : true),
+  );
 
   // How many categories each candidate already appears in, so the picker can
   // show that adding one here does not remove it from anywhere else.

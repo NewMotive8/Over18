@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest';
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import {
   apparentAge,
+  characterHeaderItems,
   characterMediaList,
   firstCanonicalImage,
   resolveHeroMedia,
   resolveRailMedia,
+  type CharacterClipRef,
 } from './media';
 
 function character(overrides: Partial<PublicCharacter> = {}): PublicCharacter {
@@ -305,5 +307,105 @@ describe('the OTHER surfaces keep their image behaviour', () => {
 
   it('resolveHeroMedia still serves the seeded manifest videos', () => {
     expect(resolveHeroMedia(character({ name: 'luna' })).kind).toBe('video');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The Character page's header deck.
+ *
+ * THE BUG THESE PIN. The header consulted exactly two sources: a hard-coded
+ * four-name manifest (luna, ember, sage, maria) and `character.clip`. The
+ * detail endpoint `/api/characters/:id` returns `PublicCharacter`, which has no
+ * `clip` field at all — so for every character an operator created through the
+ * CMS both sources were empty, `resolveHeroMedia` fell through to the still
+ * image, and the header showed her canonical REFERENCE portrait as a static
+ * picture no matter how many videos she had published.
+ *
+ * Her real videos were already on the page: the Posts tab fetches
+ * `/api/characters/:id/clips`, which is reference-excluded and approval-gated
+ * server-side. The header simply never looked at them.
+ * ------------------------------------------------------------------ */
+
+const headerClip = (
+  id: string,
+  mediaType: 'image' | 'video' = 'video',
+): CharacterClipRef => ({
+  id,
+  mediaType,
+  url: `/api/media/assets/${id}/file`,
+});
+
+describe('the Character header plays her own videos', () => {
+  const cms = () => character({ name: 'not-in-manifest' });
+
+  it('builds the deck from her publicly reachable VIDEO clips', () => {
+    const items = characterHeaderItems(cms(), [headerClip('v1'), headerClip('v2')], null);
+    expect(items).toHaveLength(2);
+    expect(items.every((i) => i.media.kind === 'video')).toBe(true);
+    const first = items[0]!.media;
+    expect(first.kind === 'video' && first.src).toContain('/api/media/assets/v1/file');
+  });
+
+  it('resolves the locator against the API origin, not the web origin', () => {
+    // The clip url is API-relative; a root-relative src would resolve against
+    // the web app, which is a different origin in every deployment.
+    const first = characterHeaderItems(cms(), [headerClip('v1')], null)[0]!.media;
+    expect(first.kind === 'video' && first.src.startsWith('/api/')).toBe(false);
+  });
+
+  it('IGNORES image clips — the header is a video surface', () => {
+    const items = characterHeaderItems(cms(), [headerClip('img', 'image'), headerClip('v1')], null);
+    expect(items).toHaveLength(1);
+    const only = items[0]!.media;
+    expect(only.kind === 'video' && only.src).toContain('v1');
+  });
+
+  it('falls back to the EXISTING still when she has no video at all', () => {
+    const items = characterHeaderItems(
+      cms(),
+      [headerClip('img', 'image')],
+      visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]!.media.kind).toBe('image');
+    expect(items[0]!.media.kind === 'image' && items[0]!.media.src).toContain('/assets/i1/file');
+  });
+
+  it('never returns an empty deck — the header always has something to render', () => {
+    const items = characterHeaderItems(character({ name: 'nobody', profileImage: null }), [], null);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.media.kind).toBe('placeholder');
+  });
+
+  it('keeps the seeded manifest characters exactly as they were', () => {
+    // luna/ember/sage/maria ship real files on disk; this fix must not move them.
+    const items = characterHeaderItems(character({ name: 'luna' }), [headerClip('v1')], null);
+    expect(items).toHaveLength(1);
+    const only = items[0]!.media;
+    expect(only.kind === 'video' && only.src).toBe('/media/luna/profile-04.mp4');
+  });
+});
+
+describe("the header cannot show her identity image as a 'video'", () => {
+  /**
+   * DEFENCE IN DEPTH. `/api/characters/:id/clips` already excludes
+   * `kind = 'reference'` in SQL, so a canonical portrait never reaches this
+   * function. This proves the client half independently: even if a reference
+   * image were somehow in the list, it is an IMAGE and the video filter drops
+   * it — it can never be dressed up as a video item.
+   */
+  it('drops an identity image handed to it, rather than treating it as a clip', () => {
+    const identity = { id: 'ref', url: '/api/media/assets/ref/file', mediaType: 'image' as const };
+    const items = characterHeaderItems(character({ name: 'not-in-manifest' }), [identity], null);
+    expect(items.some((i) => i.media.kind === 'video')).toBe(false);
+  });
+
+  it('does not invent an image of its own when she has no media', () => {
+    const items = characterHeaderItems(
+      character({ name: 'not-in-manifest', profileImage: null }),
+      [],
+      null,
+    );
+    expect(items[0]!.media.kind).toBe('placeholder');
   });
 });

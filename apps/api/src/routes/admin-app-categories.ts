@@ -245,7 +245,13 @@ export default async function adminAppCategoryRoutes(app: FastifyInstance, opts:
    *
    * Declared before the `:categoryId` routes so "candidates" is never read as
    * an id. Rating and Primary status are returned as visible facts and are
-   * never used to exclude anything — approval is the only publishability rule.
+   * never used to exclude anything.
+   *
+   * THREE conditions now, not one: approved, not an identity reference, and a
+   * video. A category is a public surface, and identity portraits and approved
+   * images could both reach one through an assignment. Both exclusions live in
+   * `listAssignmentCandidates`, so no query string reaches past them —
+   * `mediaType` can narrow the list but never widen it.
    */
   app.get<{
     Querystring: {

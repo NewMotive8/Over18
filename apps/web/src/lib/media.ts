@@ -26,7 +26,7 @@ export type MediaCharacter = Pick<
    */
   clip?: { url: string; mediaType: 'image' | 'video' } | null;
 };
-import { characterHeroVideo } from './characterMedia';
+import { characterHeroVideo, characterVideoItems } from './characterMedia';
 import { API_URL } from './api';
 
 /**
@@ -259,6 +259,84 @@ export function characterMediaList(
   }
 
   return items;
+}
+
+/**
+ * One item of a character's public content collection, as
+ * `/api/characters/:id/clips` returns it.
+ *
+ * Structural, not imported from the api module, so this stays a pure module
+ * the node-environment tests can exercise without a network shape.
+ */
+export interface CharacterClipRef {
+  id: string;
+  /** API-relative opaque locator — never a storage key or a path. */
+  url: string;
+  mediaType: 'image' | 'video';
+}
+
+/**
+ * The Character page's HEADER DECK.
+ *
+ * ── THE BUG THIS FIXES ───────────────────────────────────────────────────────
+ *
+ * The header consulted exactly two sources: the hard-coded four-name manifest
+ * (luna, ember, sage, maria), and `character.clip`. But the detail endpoint
+ * `/api/characters/:id` returns `PublicCharacter`, and `PublicCharacter` has no
+ * `clip` field — that field exists only on the lobby's card payload. So for
+ * every character an operator created through the CMS, BOTH sources were empty,
+ * `resolveHeroMedia` fell through to the still image, and the header showed her
+ * canonical REFERENCE portrait as a static picture however many videos she had
+ * published.
+ *
+ * MEASURED, not assumed: for a CMS character with an approved, publicly
+ * reachable video the page computed
+ * `{"kind":"image","src":".../api/media/assets/<reference id>/file"}`.
+ *
+ * ── WHY NO API CHANGE WAS NEEDED ─────────────────────────────────────────────
+ *
+ * Her videos were already on the page. The Posts tab fetches
+ * `/api/characters/:id/clips`, which excludes `kind = 'reference'` in SQL and
+ * applies `publiclyReachableCondition` — the same predicate the media route
+ * enforces. The header simply never looked at that list. So this takes the data
+ * the page already holds; it does not widen a payload, relax a rule, or add a
+ * source of visibility.
+ *
+ * ── PRECEDENCE IS DELIBERATELY UNCHANGED ─────────────────────────────────────
+ *
+ * The manifest still wins where it has entries, exactly as before, so the four
+ * seeded characters are byte-for-byte what they were. The CMS clips are a NEW
+ * source inserted between the manifest and the still fallback — strictly
+ * additive. Whether an operator's upload ought to outrank a constant in the
+ * source here (as it already does in `resolveHeroMedia`) is a product decision,
+ * not one to smuggle in with a bug fix.
+ *
+ * VIDEO ONLY. An image clip is not a header clip; the fallback below is the one
+ * place a still may appear, and it is the still the design already used.
+ *
+ * ALWAYS AT LEAST ONE ITEM, so the header can never render an empty deck.
+ */
+export function characterHeaderItems(
+  character: MediaCharacter,
+  clips: readonly CharacterClipRef[],
+  visual?: CharacterVisualIdentityResponse | null,
+): CharacterMediaItem[] {
+  const manifest = characterVideoItems(character);
+  if (manifest.length > 0) return manifest;
+
+  const videos: CharacterMediaItem[] = [];
+  for (const clip of clips) {
+    if (clip.mediaType !== 'video') continue;
+    const src = absoluteMediaUrl(clip.url);
+    if (!src) continue;
+    videos.push({ id: clip.id, media: { kind: 'video', src }, premium: false });
+  }
+  if (videos.length > 0) return videos;
+
+  // The pre-existing fallback, untouched: her canonical still, then her
+  // profileImage, then the initial-letter placeholder. No new artwork, and no
+  // unrelated image is substituted.
+  return [{ id: 'hero', media: resolveHeroMedia(character, visual), premium: false }];
 }
 
 /**

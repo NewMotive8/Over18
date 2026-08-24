@@ -277,3 +277,75 @@ export function characterReadiness(character: {
     contentAllowed: true,
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Regular and Explicit — the Character page's two content shelves
+ * ------------------------------------------------------------------ */
+
+/**
+ * The two shelves a character's content is uploaded into.
+ *
+ * `contentRating` IS the distinction, reusing the column that has always
+ * carried it. Regular is `sfw`, Explicit is `explicit`. Nothing new is stored
+ * and no migration is involved — the field existed and was simply never
+ * surfaced as a place to put things.
+ */
+export type ContentSection = 'regular' | 'explicit';
+
+/** The rating a section uploads with. One direction, stated once. */
+export const SECTION_RATING: Record<ContentSection, 'sfw' | 'explicit'> = {
+  regular: 'sfw',
+  explicit: 'explicit',
+};
+
+export interface SectionShelves {
+  regular: CharacterContentAsset[];
+  explicit: CharacterContentAsset[];
+  /**
+   * Everything the two shelves deliberately do not show: identity references,
+   * and any image that predates the video-only rule.
+   *
+   * NAMED AND RETURNED rather than dropped inside the loop, so the split is
+   * exhaustive and can be tested as such — every asset lands in exactly one of
+   * the three lists. The Character page renders only `regular` and `explicit`;
+   * these rows stay in the database, untouched, and are managed from the
+   * screens that own them.
+   */
+  excluded: CharacterContentAsset[];
+}
+
+/**
+ * Splits a character's assets into the Regular and Explicit shelves.
+ *
+ * REFERENCES ARE NOT CONTENT. A canonical portrait is `kind: 'reference'` and
+ * belongs to Visual identity, which has its own section on this page. Left in,
+ * it would land under Regular — every reference carries the default `sfw`
+ * rating — and read as a clip she had uploaded.
+ *
+ * IMAGES ARE NOT ON THESE SHELVES either. Both are video shelves and the
+ * upload path refuses images, but assets uploaded before that rule exist, so
+ * they are separated rather than assumed away.
+ *
+ * Every asset lands in exactly one of the three lists.
+ */
+export function groupBySection(
+  assets: readonly CharacterContentAsset[],
+): SectionShelves {
+  const shelves: SectionShelves = { regular: [], explicit: [], excluded: [] };
+  for (const asset of assets) {
+    if (asset.kind === 'reference' || asset.mediaType !== 'video') {
+      shelves.excluded.push(asset);
+    } else if (asset.contentRating === 'explicit') {
+      shelves.explicit.push(asset);
+    } else {
+      shelves.regular.push(asset);
+    }
+  }
+  return shelves;
+}
+
+/** One shelf's count, said plainly. */
+export function sectionSummary(items: readonly CharacterContentAsset[]): string {
+  if (items.length === 0) return 'No videos yet.';
+  return `${items.length} video${items.length === 1 ? '' : 's'}`;
+}

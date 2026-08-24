@@ -220,9 +220,25 @@ export const contentLibraryApi = {
    * so the Content-Type header is left to the browser (it must supply the
    * boundary) — that is why this cannot use the JSON `request` helper.
    */
-  upload: async (file: File, characterId: string): Promise<LibraryAssetView> => {
+  upload: async (
+    file: File,
+    characterId: string,
+    options: {
+      /** 'sfw' is Regular, 'explicit' is Explicit. Omitted, the server defaults. */
+      contentRating?: 'sfw' | 'explicit';
+      /**
+       * Skip Review and land approved. Character content sends this; the
+       * Content Library deliberately does not, so its uploads keep queueing
+       * for Review exactly as before. The server also requires video when it
+       * is set.
+       */
+      approve?: boolean;
+    } = {},
+  ): Promise<LibraryAssetView> => {
     const form = new FormData();
     form.append('characterId', characterId);
+    if (options.contentRating) form.append('contentRating', options.contentRating);
+    if (options.approve) form.append('approve', 'true');
     form.append('file', file);
     const res = await fetch(`${API_URL}/admin/content/uploads`, {
       method: 'POST',

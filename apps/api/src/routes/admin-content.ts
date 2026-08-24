@@ -234,6 +234,41 @@ export default async function adminContentRoutes(
         .send({ error: 'invalid_request', message: 'contentRating must be sfw or explicit.' });
     }
 
+    /**
+     * CHARACTER CONTENT opts OUT of Review; everything else still opts in.
+     *
+     * The Character page's Regular and Explicit shelves send `approve=true`,
+     * because an operator uploading a clip to a character has already made the
+     * editorial decision — a second queue to re-make it was ceremony, not
+     * safety. `uploadLibraryAsset` has always supported this and the Visual
+     * Identity reference upload has always used it; this simply lets the
+     * character-content path do the same.
+     *
+     * THE DEFAULT IS UNCHANGED. Omit the field — as the Content Library does —
+     * and the upload lands in Review exactly as before. Review's meaning, its
+     * queue, its routes and every asset already in it are untouched.
+     */
+    const approveRequested =
+      (file.fields.approve as { value?: string } | undefined)?.value === 'true';
+
+    /**
+     * Auto-approved uploads are VIDEO ONLY.
+     *
+     * Regular and Explicit are video shelves. An image reaching them would
+     * become approved content that the public clip surfaces would then have to
+     * filter out again, which is the class of leak this product has already
+     * fixed twice. Refused here, at the door.
+     *
+     * Images are still perfectly uploadable through the Content Library and
+     * through Visual Identity — neither sends this flag, so neither is affected.
+     */
+    if (approveRequested && acceptedMediaTypeOf(file.mimetype) !== 'video') {
+      return reply.code(400).send({
+        error: 'unsupported_type',
+        message: 'Regular and Explicit accept video only. Upload an image through Visual identity or the Content Library.',
+      });
+    }
+
     const requested = await resolveRequirementKey(
       (file.fields.requirementKey as { value?: string } | undefined)?.value,
       acceptedMediaTypeOf(file.mimetype) ?? undefined,
@@ -257,8 +292,9 @@ export default async function adminContentRoutes(
         originalName: file.filename,
         contentRating: rating as ContentRating | undefined,
         uploadedBy: request.currentUser?.id,
-        // Content enters Review, never the Library directly.
-        approve: false,
+        // Review by default; character content opts out explicitly. See the
+        // note above — this is the ONLY behavioural switch in this path.
+        approve: approveRequested,
         // Optional, and never defaulted: the operator may say which requirement
         // this satisfies at upload time, or leave it for triage in Review.
         requirementKey,

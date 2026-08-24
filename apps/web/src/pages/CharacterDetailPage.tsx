@@ -3,8 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import { API_URL, ApiRequestError, charactersApi, conversationsApi, type PublicClip } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
-import { apparentAge, resolveHeroMedia, type CharacterMediaItem } from '../lib/media';
-import { characterVideoItems } from '../lib/characterMedia';
+import { apparentAge, characterHeaderItems, type CharacterMediaItem } from '../lib/media';
 import { adultAgeFromBand } from '../lib/lobbyContent';
 import { mockRelationship } from '../lib/relationship';
 import ProfileHero from '../components/profile/ProfileHero';
@@ -194,11 +193,16 @@ export default function CharacterDetailPage() {
   const { character } = state;
   const visualData = visual.status === 'ready' ? visual.data : null;
   const attributes = visualData?.identity?.attributes ?? [];
-  const videoItems = characterVideoItems(character);
-  const heroItems: CharacterMediaItem[] =
-    videoItems.length > 0
-      ? videoItems
-      : [{ id: 'hero', media: resolveHeroMedia(character, visualData), premium: false }];
+  /**
+   * The header deck: her own videos.
+   *
+   * `clips` is the collection the Posts tab already fetches — reference-free
+   * and approval-gated by the server. It used to be read only by that tab,
+   * which is why the header showed a still for every CMS-created character
+   * while her videos sat two tabs away. One function decides the whole deck;
+   * see `characterHeaderItems` for the precedence and the fallback.
+   */
+  const heroItems: CharacterMediaItem[] = characterHeaderItems(character, clips, visualData);
   /**
    * The viewer items for the Posts tab — her posts, in the order shown.
    *

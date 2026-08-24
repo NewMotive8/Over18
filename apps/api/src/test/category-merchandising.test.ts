@@ -136,12 +136,26 @@ async function makeCategory(name: string) {
   return res.json() as { id: string; slug: string; name: string };
 }
 
+/**
+ * `mediaType` DEFAULTS TO VIDEO, and is recorded in provenance.
+ *
+ * The merchandising picker offers video only — a category is a public surface
+ * and every public surface in this product is clip-only. So the default
+ * fixture has to be the thing the picker actually deals in, or every
+ * candidate assertion below would be testing an empty list.
+ *
+ * It goes in `provenance` because `mediaTypeOf` reads that first and falls
+ * back to sniffing the extension — and this fixture's storage key is
+ * deliberately an extensionless upload-style route, exactly like a real manual
+ * upload's.
+ */
 async function makeAsset(
   overrides: Partial<{
     status: 'generated' | 'under_review' | 'approved' | 'rejected';
     contentRating: 'sfw' | 'explicit';
     isCanonical: boolean;
     characterId: string;
+    mediaType: 'image' | 'video';
   }> = {},
 ) {
   const characterId = overrides.characterId ?? LUNA.id;
@@ -153,6 +167,7 @@ async function makeAsset(
     status: overrides.status ?? 'approved',
     contentRating: overrides.contentRating ?? 'sfw',
     storageKey: `/admin/content/uploads/x/file`,
+    provenance: { mediaType: overrides.mediaType ?? 'video' },
   });
   if (overrides.isCanonical) {
     await on.db
@@ -648,7 +663,7 @@ describe('ordering and featuring within a category', () => {
  * ------------------------------------------------------------------ */
 
 describe('finding content to assign', () => {
-  it('filters by character and by media type', async () => {
+  it('filters by character', async () => {
     const mine = await makeAsset({ characterId: LUNA.id });
     await makeAsset({ characterId: OTHER.id });
 
@@ -660,12 +675,37 @@ describe('finding content to assign', () => {
     );
     expect(byCharacter.map((a) => a.assetId)).toContain(mine.id);
     expect(byCharacter.every((a) => a.characterId === LUNA.id)).toBe(true);
+  });
 
-    const images = (await api.candidates('?mediaType=image')).json().assets as Array<{
+  /**
+   * VIDEO-ONLY IS ENFORCED, NOT FILTERED.
+   *
+   * This used to assert that `?mediaType=image` returned images — the picker
+   * treated media type as a preference. It is now a rule: an App Category is a
+   * public surface, and an approved image assigned to one was the last way
+   * onto a clip-only surface. The filter can narrow the list; it cannot widen
+   * it back.
+   */
+  it('offers videos only, and cannot be asked for images', async () => {
+    const video = await makeAsset({ mediaType: 'video' });
+    const image = await makeAsset({ mediaType: 'image' });
+
+    const unfiltered = (await api.candidates()).json().assets as Array<{
+      assetId: string;
       mediaType: string;
     }>;
-    expect(images.length).toBeGreaterThan(0);
-    expect(images.every((a) => a.mediaType === 'image')).toBe(true);
+    expect(unfiltered.map((a) => a.assetId)).toContain(video.id);
+    expect(unfiltered.map((a) => a.assetId)).not.toContain(image.id);
+    expect(unfiltered.every((a) => a.mediaType === 'video')).toBe(true);
+
+    // Asking for images by name returns nothing rather than the image.
+    expect((await api.candidates('?mediaType=image')).json().assets).toEqual([]);
+
+    const videos = (await api.candidates('?mediaType=video')).json().assets as Array<{
+      assetId: string;
+    }>;
+    expect(videos.map((a) => a.assetId)).toContain(video.id);
+    expect(videos.map((a) => a.assetId)).not.toContain(image.id);
   });
 
   it('searches by character name, case-insensitively', async () => {

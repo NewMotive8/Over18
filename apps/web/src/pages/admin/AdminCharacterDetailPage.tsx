@@ -3,29 +3,22 @@ import { Link, useParams } from 'react-router-dom';
 import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 import {
   addKeywords,
-  approveConsequence,
-  assetActions,
-  categoryChoices,
   keywordsDiffer,
   removeKeyword,
   characterReadiness,
-  groupCharacterContent,
-  isUnplaced,
   placementLabel,
-  shelfSummary,
   statusLabel,
-  type ContentShelf,
+  groupBySection,
+  sectionSummary,
+  SECTION_RATING,
+  type ContentSection,
 } from '../../admin/characterContent';
 import {
   API_URL,
   ApiRequestError,
   adminCharactersApi,
-  adminHomeApi,
-  appCategoriesApi,
   contentLibraryApi,
-  contentReviewApi,
   adminDiscoveryApi,
-  merchandisingApi,
   type AdminCharacterDetail,
   type VisualIdentityView,
   type CharacterContentAsset,
@@ -93,18 +86,28 @@ export default function AdminCharacterDetailPage() {
   /* ---------------- acting on her content, from here ----------------
    *
    * Every control below calls an endpoint that ALREADY EXISTS and is already
-   * used by another screen — the Content Library's upload, Review's
-   * approve/reject, the merchandising add, the Home composer's Hero add. No
-   * new backend logic, no second copy of a rule: the server stays the single
-   * authority and this page simply stops being the one place that could not
-   * reach it.
+   * used by another screen — the Content Library's upload, the Discovery
+   * screen's keyword editor. No new backend logic and no second copy of a
+   * rule: the server stays the single authority.
+   *
+   * WHAT DELIBERATELY IS NOT HERE ANY MORE. Approve/Reject, "Add to category"
+   * and "Add to Hero" used to be offered on every tile on this page. They are
+   * gone from it — not removed from the product. Approval still lives in
+   * Review, placement still lives in Merchandise and the Home composer, and
+   * both screens are untouched. One decision, one owner: a clip that could be
+   * approved from three screens had no obvious place to look when it went
+   * wrong.
    */
 
-  /** Existing App Categories, for the per-item "Add to category" menu. */
-  const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
-  /** Which item currently has its category menu open. One at a time. */
-  const [assignFor, setAssignFor] = useState<string | null>(null);
   const [uploadingContent, setUploadingContent] = useState(false);
+  /**
+   * Which shelf the hidden file input is currently acting for.
+   *
+   * A ref, not state: it is set immediately before `.click()` and read in the
+   * change handler, so it must be correct on the very next line rather than
+   * after a re-render.
+   */
+  const uploadSection = useRef<ContentSection>('regular');
   const [contentNotice, setContentNotice] = useState<string | null>(null);
   const contentFileInput = useRef<HTMLInputElement>(null);
 
@@ -150,14 +153,6 @@ export default function AdminCharacterDetailPage() {
 
   useEffect(load, [load]);
 
-  /** The category menu needs the category list; it never needs it twice. */
-  useEffect(() => {
-    appCategoriesApi
-      .list()
-      .then((res) => setCategories(res.categories.map((c) => ({ id: c.id, name: c.name }))))
-      .catch(() => setCategories([]));
-  }, []);
-
   /** Reloads only the shelf — used after an action that changes one item. */
   const reloadContent = useCallback(async () => {
     if (!characterId) return;
@@ -168,64 +163,48 @@ export default function AdminCharacterDetailPage() {
   /**
    * Upload straight to this character.
    *
-   * Identical call to the Content Library's, with the character fixed to the
-   * one whose page this is — which removes the step that made the Library
-   * unusable for a new character in the first place. It lands in review like
-   * every other upload; nothing here approves it.
+   * The same endpoint the Content Library posts to, with the character fixed
+   * to the one whose page this is — which removes the step that made the
+   * Library unusable for a new character in the first place.
+   *
+   * IT DIFFERS FROM THE LIBRARY IN EXACTLY TWO FIELDS, both set below: the
+   * rating the shelf implies, and the explicit request to approve. Everything
+   * else — the route, the validation, the storage, the response — is the path
+   * that already existed.
    */
-  async function uploadContent(file: File | undefined) {
+  async function uploadContent(file: File | undefined, section: ContentSection) {
     if (!file || !characterId || uploadingContent) return;
     setUploadingContent(true);
     setActionError(null);
     setContentNotice(null);
     try {
-      await contentLibraryApi.upload(file, characterId);
+      /**
+       * Character content skips Review and lands approved.
+       *
+       * `SECTION_RATING` is the single place the section-to-rating mapping
+       * lives, so a Regular upload cannot arrive as Explicit or the reverse —
+       * the shelf the operator pressed Upload in decides it, and the server
+       * validates the value it receives.
+       *
+       * The Content Library's upload calls this same function WITHOUT these
+       * options and still queues for Review, unchanged.
+       */
+      await contentLibraryApi.upload(file, characterId, {
+        contentRating: SECTION_RATING[section],
+        approve: true,
+      });
       await reloadContent();
-      setContentNotice('Uploaded. It is in review below — approve it when you are ready.');
+      setContentNotice(
+        section === 'explicit'
+          ? 'Uploaded to Explicit. Approved — no review needed. Place it in a category or the Hero to show it publicly.'
+          : 'Uploaded to Regular. Approved — no review needed. Place it in a category or the Hero to show it publicly.',
+      );
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Upload failed.');
     } finally {
       setUploadingContent(false);
       if (contentFileInput.current) contentFileInput.current.value = '';
     }
-  }
-
-  /** Review's own approve/reject, reached from here. `run` reloads the shelf. */
-  async function decide(assetId: string, decision: 'approve' | 'reject') {
-    setContentNotice(null);
-    await run(async () => {
-      if (decision === 'approve') await contentReviewApi.approve(assetId);
-      else await contentReviewApi.reject(assetId);
-    }, "Couldn't record that decision.");
-  }
-
-  /** The merchandising add, for one item and one category. */
-  async function assignToCategory(assetId: string, categoryId: string, categoryName: string) {
-    setAssignFor(null);
-    await run(async () => {
-      const res = await merchandisingApi.add(categoryId, [assetId]);
-      setContentNotice(
-        res.added > 0
-          ? `Added to ${categoryName}. It shows publicly once that category is published.`
-          : `Not added to ${categoryName} — ${res.outcomes[0]?.reason ?? 'it was refused'}.`,
-      );
-    }, "Couldn't add it to that category.");
-  }
-
-  /** Removes one item from one category. Link table only — the clip is kept. */
-  async function removeFromCategory(assetId: string, categoryId: string, categoryName: string) {
-    await run(async () => {
-      await merchandisingApi.remove(categoryId, [assetId]);
-      setContentNotice(`Removed from ${categoryName}. The clip itself is untouched.`);
-    }, "Couldn't remove it from that category.");
-  }
-
-  /** Removes one item from the Hero. The clip and its approval are untouched. */
-  async function removeFromHero(assetId: string) {
-    await run(async () => {
-      await adminHomeApi.removeHero(assetId);
-      setContentNotice('Removed from the Hero. The clip itself is untouched.');
-    }, "Couldn't remove it from the Hero.");
   }
 
   /* ---------------- keywords, per clip ---------------- */
@@ -282,18 +261,6 @@ export default function AdminCharacterDetailPage() {
     } finally {
       setKeywordBusy(false);
     }
-  }
-
-  /** The Home composer's Hero add, for one item. */
-  async function addToHero(assetId: string) {
-    await run(async () => {
-      const res = await adminHomeApi.addHero([assetId]);
-      setContentNotice(
-        res.clips.some((clip) => clip.assetId === assetId)
-          ? 'Added to the Hero, at the end. Reorder it in Categories & Publishing → Home.'
-          : "Not added to the Hero — the server refused it.",
-      );
-    }, "Couldn't add it to the Hero.");
   }
 
   async function run(action: () => Promise<unknown>, failure: string) {
@@ -363,6 +330,16 @@ export default function AdminCharacterDetailPage() {
   if (!detail) return <p className="px-6 py-8 text-sm text-zinc-500">Loading…</p>;
 
   const { character, identities, activeIdentity, primaryReferences } = detail;
+
+  /**
+   * Her content, split once per render rather than once per section.
+   *
+   * `groupBySection` accounts for EVERY asset — the two video shelves plus an
+   * `excluded` bucket — so the three lists below are exhaustive by
+   * construction and no row can fall between them.
+   */
+  const shelves = groupBySection(content ?? []);
+
   const seedFrom = (identity: VisualIdentityView | null) => {
     setDnaForm(dnaToForm(identity?.visualDna));
     setIdentityLabel('');
@@ -700,346 +677,216 @@ export default function AdminCharacterDetailPage() {
         )}
       </section>
 
-      {/* ---------------- All content ---------------- */}
-      <section>
-        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">Content</h2>
-          <div className="flex items-center gap-3">
-            <p className="text-xs text-zinc-500">
-              {content === null ? 'Loading…' : shelfSummary(groupCharacterContent(content))}
+      {/* ---------------- Content: Regular and Explicit ---------------- */}
+      {/*
+          Two video shelves, split by the `content_rating` the column has always
+          carried: `sfw` is Regular, `explicit` is Explicit. Nothing new is
+          stored for this and no migration was needed.
+
+          UPLOADS HERE SKIP REVIEW and land approved, because an operator
+          uploading a clip to a character has already made the editorial call. A
+          second queue to re-make it was ceremony. Review itself is untouched
+          and still serves everything that reaches it by any other path.
+
+          NO "ADD TO CATEGORY" AND NO "ADD TO HERO" on these shelves. Placement
+          belongs to Merchandise and the Home composer; offering it here as well
+          gave the same clip three different homes and no obvious owner. Where a
+          clip IS placed still shows, as text.
+      */}
+      {(
+        [
+          ['regular', 'Regular', 'Everyday video for this character.'],
+          ['explicit', 'Explicit', 'Adult video for this character.'],
+        ] as Array<[ContentSection, string, string]>
+      ).map(([section, heading, blurb]) => {
+        const items = shelves[section];
+        return (
+          <section key={section}>
+            <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+                {heading}
+              </h2>
+              <div className="flex items-center gap-3">
+                <p className="text-xs text-zinc-500">
+                  {content === null ? 'Loading…' : sectionSummary(items)}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    uploadSection.current = section;
+                    contentFileInput.current?.click();
+                  }}
+                  disabled={uploadingContent || busy}
+                  className="rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:border-zinc-600 disabled:cursor-not-allowed disabled:text-zinc-600"
+                >
+                  {uploadingContent ? 'Uploading…' : `Upload ${heading.toLowerCase()} video`}
+                </button>
+              </div>
+            </div>
+            <p className="mb-3 text-xs leading-relaxed text-zinc-500">
+              {blurb} Video only, and approved the moment it uploads — no review step. Approved
+              is not the same as public: each item below says where it appears.
             </p>
-            {/* Upload straight to her, rather than sending the operator to the
-                Library to re-pick the character they are already looking at.
-                Same endpoint, character pre-filled. */}
-            <input
-              ref={contentFileInput}
-              type="file"
-              accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
-              onChange={(e) => void uploadContent(e.target.files?.[0])}
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => contentFileInput.current?.click()}
-              disabled={uploadingContent || busy}
-              className="rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:border-zinc-600 disabled:cursor-not-allowed disabled:text-zinc-600"
-            >
-              {uploadingContent ? 'Uploading…' : 'Upload content'}
-            </button>
-          </div>
-        </div>
-        <p className="mb-3 text-xs leading-relaxed text-zinc-500">
-          Everything uploaded or generated for this character, whatever its state.{' '}
-          {approveConsequence(characterReadiness(character).live)}
+
+            {content !== null && items.length === 0 && (
+              <div className="rounded-lg border border-dashed border-zinc-800 bg-zinc-900/40 px-6 py-8 text-center">
+                <p className="text-sm text-zinc-300">No {heading.toLowerCase()} video yet</p>
+                <p className="mt-1 text-sm text-zinc-500">
+                  Use Upload {heading.toLowerCase()} video above.
+                </p>
+              </div>
+            )}
+
+            {items.length > 0 && (
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {items.map((asset) => (
+                  <li
+                    key={asset.assetId}
+                    className="overflow-hidden rounded-lg border border-zinc-800"
+                  >
+                    <div className={`w-full ${tileFrameClass()}`}>
+                      {asset.previewUrl ? (
+                        <video
+                          src={`${API_URL}${asset.previewUrl}`}
+                          {...TILE_VIDEO_PLAYBACK}
+                          preload="metadata"
+                          className={TILE_MEDIA_CLASS}
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-[11px] text-zinc-600">
+                          No file
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-0.5 p-2">
+                      <p className="truncate text-[11px] font-medium text-zinc-300">
+                        {statusLabel(asset)}
+                      </p>
+                      <p className="truncate text-[11px] text-zinc-500">
+                        {placementLabel(asset)}
+                      </p>
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => void openKeywords(asset.assetId)}
+                          disabled={busy}
+                          aria-expanded={keywordsFor === asset.assetId}
+                          className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600 disabled:opacity-50"
+                        >
+                          {keywordsFor === asset.assetId ? 'Close keywords' : 'Keywords'}
+                        </button>
+                      </div>
+                  {/* One clip's keywords. Chips with an obvious remove,
+                      a free-text add, and a single Save that PUTs the
+                      whole set for THIS asset only. */}
+                  {keywordsFor === asset.assetId && (
+                    <div className="mt-1.5 rounded border border-zinc-800 bg-zinc-950/60 p-2">
+                      <p className="text-[11px] font-medium text-zinc-300">Keywords</p>
+                      {keywordBusy && keywordDraft.length === 0 ? (
+                        <p className="mt-1 text-[11px] text-zinc-500">Loading…</p>
+                      ) : (
+                        <>
+                          <ul className="mt-1 flex flex-wrap gap-1">
+                            {keywordDraft.length === 0 && (
+                              <li className="text-[11px] text-zinc-500">
+                                No keywords yet.
+                              </li>
+                            )}
+                            {keywordDraft.map((keyword) => (
+                              <li
+                                key={keyword}
+                                className="flex items-center gap-1 rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-200"
+                              >
+                                {keyword}
+                                <button
+                                  type="button"
+                                  aria-label={`Remove keyword ${keyword}`}
+                                  onClick={() =>
+                                    setKeywordDraft((d) => removeKeyword(d, keyword))
+                                  }
+                                  disabled={keywordBusy}
+                                  className="text-zinc-500 hover:text-red-300 disabled:opacity-50"
+                                >
+                                  ×
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                            <label
+                              htmlFor={`keyword-entry-${asset.assetId}`}
+                              className="sr-only"
+                            >
+                              Add a keyword
+                            </label>
+                            <input
+                              id={`keyword-entry-${asset.assetId}`}
+                              value={keywordEntry}
+                              onChange={(e) => setKeywordEntry(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key !== 'Enter') return;
+                                e.preventDefault();
+                                setKeywordDraft((d) => addKeywords(d, keywordEntry));
+                                setKeywordEntry('');
+                              }}
+                              placeholder="beach, bikini…"
+                              disabled={keywordBusy}
+                              className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[11px] text-zinc-100 placeholder:text-zinc-600"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setKeywordDraft((d) => addKeywords(d, keywordEntry));
+                                setKeywordEntry('');
+                              }}
+                              disabled={keywordBusy || keywordEntry.trim() === ''}
+                              className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600 disabled:opacity-50"
+                            >
+                              Add keyword
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void saveKeywords(asset.assetId)}
+                              disabled={
+                                keywordBusy || !keywordsDiffer(keywordSaved, keywordDraft)
+                              }
+                              className="rounded border border-emerald-500/40 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40"
+                            >
+                              {keywordBusy ? 'Saving…' : 'Save keywords'}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        );
+      })}
+
+      {/* One hidden input serves both shelves; `uploadSection` says which one
+          opened it. Video only, matching what the server will accept. */}
+      <input
+        ref={contentFileInput}
+        type="file"
+        accept="video/mp4,video/webm,video/quicktime"
+        onChange={(e) => void uploadContent(e.target.files?.[0], uploadSection.current)}
+        className="hidden"
+      />
+
+      {contentNotice && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="rounded-lg border border-emerald-900 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200"
+        >
+          {contentNotice}
         </p>
-
-        {contentNotice && (
-          <p
-            role="status"
-            aria-live="polite"
-            className="mb-3 rounded-lg border border-emerald-900 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-200"
-          >
-            {contentNotice}
-          </p>
-        )}
-
-        {content !== null && content.length === 0 && (
-          <div className="rounded-lg border border-dashed border-zinc-800 bg-zinc-900/40 px-6 py-10 text-center">
-            <p className="text-sm text-zinc-300">No content yet</p>
-            <p className="mt-1 text-sm text-zinc-500">
-              Use Upload content above — clips and images arrive here straight away, in review.
-            </p>
-          </div>
-        )}
-
-        {content !== null && content.length > 0 && (
-          <div className="space-y-5">
-            {(
-              [
-                ['Primary references', 'primary'],
-                ['Approved', 'approved'],
-                ['In review', 'pending'],
-                ['Rejected', 'rejected'],
-              ] as Array<[string, keyof ContentShelf]>
-            ).map(([label, bucket]) => {
-              const items = groupCharacterContent(content)[bucket];
-              if (items.length === 0) return null;
-              return (
-                <div key={bucket}>
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                    {label} ({items.length})
-                  </h3>
-                  <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                    {items.map((asset) => (
-                      <li
-                        key={asset.assetId}
-                        className={`overflow-hidden rounded-lg border ${
-                          isUnplaced(asset) ? 'border-amber-500/40' : 'border-zinc-800'
-                        }`}
-                      >
-                        <div className={`w-full ${tileFrameClass()}`}>
-                          {asset.previewUrl ? (
-                            asset.mediaType === 'video' ? (
-                              <video
-                                src={`${API_URL}${asset.previewUrl}`}
-                                {...TILE_VIDEO_PLAYBACK}
-                                preload="metadata"
-                                className={TILE_MEDIA_CLASS}
-                              />
-                            ) : (
-                              <img
-                                src={`${API_URL}${asset.previewUrl}`}
-                                alt=""
-                                loading="lazy"
-                                className={TILE_MEDIA_CLASS}
-                              />
-                            )
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center text-[11px] text-zinc-600">
-                              No file
-                            </div>
-                          )}
-                        </div>
-                        <div className="space-y-0.5 p-2">
-                          <p className="truncate text-[11px] font-medium text-zinc-300">
-                            {statusLabel(asset)}
-                          </p>
-                          <p className="truncate text-[11px] text-zinc-500">
-                            {placementLabel(asset)}
-                          </p>
-                          {/* The actions this item actually allows. The rules
-                              are `assetActions`, which mirrors what the server
-                              will accept — an offered button always works. */}
-                          {(() => {
-                            const actions = assetActions(asset);
-                            const choices = categoryChoices(asset, categories);
-                            if (
-                              !actions.canApprove &&
-                              !actions.canReject &&
-                              !actions.canAddToCategory &&
-                              !actions.canAddToHero
-                            ) {
-                              return null;
-                            }
-                            return (
-                              <div className="flex flex-wrap gap-1 pt-1">
-                                {actions.canApprove && (
-                                  <button
-                                    type="button"
-                                    onClick={() => void decide(asset.assetId, 'approve')}
-                                    disabled={busy}
-                                    className="rounded border border-emerald-500/40 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
-                                  >
-                                    Approve
-                                  </button>
-                                )}
-                                {actions.canReject && (
-                                  <button
-                                    type="button"
-                                    onClick={() => void decide(asset.assetId, 'reject')}
-                                    disabled={busy}
-                                    className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
-                                  >
-                                    Reject
-                                  </button>
-                                )}
-                                {actions.canAddToHero && (
-                                  <button
-                                    type="button"
-                                    onClick={() => void addToHero(asset.assetId)}
-                                    disabled={busy}
-                                    className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600 disabled:opacity-50"
-                                  >
-                                    Add to Hero
-                                  </button>
-                                )}
-                                {actions.inHero && (
-                                  <button
-                                    type="button"
-                                    onClick={() => void removeFromHero(asset.assetId)}
-                                    disabled={busy}
-                                    className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
-                                  >
-                                    Remove from Hero
-                                  </button>
-                                )}
-                                {asset.placement.categories.map((category) => (
-                                  <button
-                                    key={category.id}
-                                    type="button"
-                                    onClick={() =>
-                                      void removeFromCategory(
-                                        asset.assetId,
-                                        category.id,
-                                        category.name,
-                                      )
-                                    }
-                                    disabled={busy}
-                                    className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 hover:border-zinc-600 disabled:opacity-50"
-                                  >
-                                    Remove from {category.name}
-                                  </button>
-                                ))}
-                                {(actions.canAddToCategory || actions.inHero) && (
-                                  <button
-                                    type="button"
-                                    onClick={() => void openKeywords(asset.assetId)}
-                                    disabled={busy}
-                                    aria-expanded={keywordsFor === asset.assetId}
-                                    className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600 disabled:opacity-50"
-                                  >
-                                    {keywordsFor === asset.assetId ? 'Close keywords' : 'Keywords'}
-                                  </button>
-                                )}
-                                {actions.canAddToCategory &&
-                                  (assignFor === asset.assetId ? (
-                                    <>
-                                      <label
-                                        htmlFor={`assign-${asset.assetId}`}
-                                        className="sr-only"
-                                      >
-                                        Add {statusLabel(asset)} to a category
-                                      </label>
-                                      <select
-                                        id={`assign-${asset.assetId}`}
-                                        defaultValue=""
-                                        disabled={busy}
-                                        onChange={(event) => {
-                                          const chosen = choices.find(
-                                            (c) => c.id === event.target.value,
-                                          );
-                                          if (chosen) {
-                                            void assignToCategory(
-                                              asset.assetId,
-                                              chosen.id,
-                                              chosen.name,
-                                            );
-                                          }
-                                        }}
-                                        className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[11px] text-zinc-200"
-                                      >
-                                        <option value="">Choose a category…</option>
-                                        {choices.map((category) => (
-                                          <option key={category.id} value={category.id}>
-                                            {category.name}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() => setAssignFor(asset.assetId)}
-                                      disabled={busy || choices.length === 0}
-                                      title={
-                                        categories.length === 0
-                                          ? 'No categories exist yet — create one in App Categories.'
-                                          : choices.length === 0
-                                            ? 'Already in every category.'
-                                            : undefined
-                                      }
-                                      className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600 disabled:cursor-not-allowed disabled:text-zinc-600"
-                                    >
-                                      Add to category
-                                    </button>
-                                  ))}
-                              </div>
-                            );
-                          })()}
-
-                          {/* One clip's keywords. Chips with an obvious remove,
-                              a free-text add, and a single Save that PUTs the
-                              whole set for THIS asset only. */}
-                          {keywordsFor === asset.assetId && (
-                            <div className="mt-1.5 rounded border border-zinc-800 bg-zinc-950/60 p-2">
-                              <p className="text-[11px] font-medium text-zinc-300">Keywords</p>
-                              {keywordBusy && keywordDraft.length === 0 ? (
-                                <p className="mt-1 text-[11px] text-zinc-500">Loading…</p>
-                              ) : (
-                                <>
-                                  <ul className="mt-1 flex flex-wrap gap-1">
-                                    {keywordDraft.length === 0 && (
-                                      <li className="text-[11px] text-zinc-500">
-                                        No keywords yet.
-                                      </li>
-                                    )}
-                                    {keywordDraft.map((keyword) => (
-                                      <li
-                                        key={keyword}
-                                        className="flex items-center gap-1 rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] text-zinc-200"
-                                      >
-                                        {keyword}
-                                        <button
-                                          type="button"
-                                          aria-label={`Remove keyword ${keyword}`}
-                                          onClick={() =>
-                                            setKeywordDraft((d) => removeKeyword(d, keyword))
-                                          }
-                                          disabled={keywordBusy}
-                                          className="text-zinc-500 hover:text-red-300 disabled:opacity-50"
-                                        >
-                                          ×
-                                        </button>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                                    <label
-                                      htmlFor={`keyword-entry-${asset.assetId}`}
-                                      className="sr-only"
-                                    >
-                                      Add a keyword
-                                    </label>
-                                    <input
-                                      id={`keyword-entry-${asset.assetId}`}
-                                      value={keywordEntry}
-                                      onChange={(e) => setKeywordEntry(e.target.value)}
-                                      onKeyDown={(e) => {
-                                        if (e.key !== 'Enter') return;
-                                        e.preventDefault();
-                                        setKeywordDraft((d) => addKeywords(d, keywordEntry));
-                                        setKeywordEntry('');
-                                      }}
-                                      placeholder="beach, bikini…"
-                                      disabled={keywordBusy}
-                                      className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[11px] text-zinc-100 placeholder:text-zinc-600"
-                                    />
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setKeywordDraft((d) => addKeywords(d, keywordEntry));
-                                        setKeywordEntry('');
-                                      }}
-                                      disabled={keywordBusy || keywordEntry.trim() === ''}
-                                      className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600 disabled:opacity-50"
-                                    >
-                                      Add keyword
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => void saveKeywords(asset.assetId)}
-                                      disabled={
-                                        keywordBusy || !keywordsDiffer(keywordSaved, keywordDraft)
-                                      }
-                                      className="rounded border border-emerald-500/40 px-2 py-0.5 text-[11px] text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40"
-                                    >
-                                      {keywordBusy ? 'Saving…' : 'Save keywords'}
-                                    </button>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+      )}
 
       {/* ---------------- Primary references ---------------- */}
       <section>
