@@ -18,7 +18,7 @@ import type { PublicCategoryRail, PublicCharacterCard, PublicClip, PublicHome } 
  */
 
 /** The fixed rail order. System rails first, then the operator's arrangement. */
-export type HomeSectionKind = 'hero' | 'play_with_me' | 'recently_added' | 'category';
+export type HomeSectionKind = 'hero' | 'play_with_me' | 'category';
 
 export interface HomeSection {
   kind: HomeSectionKind;
@@ -30,15 +30,18 @@ export interface HomeSection {
 }
 
 export const PLAY_WITH_ME_TITLE = 'Play with me';
-export const RECENTLY_ADDED_TITLE = 'Recently Added';
 
 /**
  * The rails, in the order Home renders them.
  *
- * Play with Me and Recently Added are FIXED system rails — the ticket places
- * Recently Added immediately after Play with Me and puts every published
- * category below it, so admin ordering applies only to the tail. Encoding that
- * here rather than in the page keeps it testable and keeps the page dumb.
+ * Play with Me is the one FIXED system rail; every published category follows
+ * it, so admin ordering applies only to the tail. Encoding that here rather
+ * than in the page keeps it testable and keeps the page dumb.
+ *
+ * RECENTLY ADDED IS NOT A SECTION KIND. It was removed as a product feature,
+ * not hidden: there is no branch here that could render it, no title constant
+ * to reach for, and no payload field to read. Home is Play with Me, then
+ * categories, then the search grid.
  *
  * A rail with no clips is dropped: publishing a category whose content is all
  * unapproved should show nothing, not an empty heading.
@@ -47,9 +50,6 @@ export function homeSections(home: PublicHome): HomeSection[] {
   const sections: HomeSection[] = [];
   if (home.playWithMe.length > 0) {
     sections.push({ kind: 'play_with_me', key: 'play-with-me', title: PLAY_WITH_ME_TITLE });
-  }
-  if (home.recentlyAdded.length > 0) {
-    sections.push({ kind: 'recently_added', key: 'recently-added', title: RECENTLY_ADDED_TITLE });
   }
   for (const rail of home.categories) {
     if (rail.clips.length === 0) continue;
@@ -63,7 +63,6 @@ export function homeIsEmpty(home: PublicHome): boolean {
   return (
     home.hero.length === 0 &&
     home.playWithMe.length === 0 &&
-    home.recentlyAdded.length === 0 &&
     home.categories.every((rail) => rail.clips.length === 0) &&
     home.banners.before_search.length === 0 &&
     home.banners.below_results.length === 0

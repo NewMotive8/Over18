@@ -931,17 +931,19 @@ export const homePlayWithMeCharacters = pgTable(
 );
 
 /**
- * home_recent_characters — the Recently Added rail's CURATED override
- * (US-102.4).
+ * home_recent_characters — RETAINED, UNUSED.
  *
- * EMPTY MEANS DEFAULT. When this table has no rows the rail is the 12 newest
- * active characters, computed per read. The moment an operator adds, removes or
- * reorders anything, the current list is materialised here and becomes the
- * explicit arrangement; clearing the table restores the automatic behaviour.
+ * RECENTLY ADDED HAS BEEN REMOVED as a product feature. No service reads this
+ * table, no route writes it, and no Admin control offers it. It is left defined
+ * here ONLY so that removing the feature needed no migration: dropping the
+ * table would mean a schema change, and this table holds nothing but operator
+ * arrangements for a rail that no longer exists.
  *
- * A curated list rather than a stored copy of the default: nothing periodically
- * rewrites these rows, so there is no job to run and no drift. This is not a
- * "recently added" algorithm — it is one default and one override.
+ * DO NOT BUILD ON IT. If Recently Added is ever wanted again it should be
+ * designed fresh — the automatic-unless-overridden rule this table encoded is
+ * exactly what made the rail impossible to curate, because in the automatic
+ * state the rail already contained every candidate and the picker had nothing
+ * left to offer.
  */
 export const homeRecentCharacters = pgTable(
   'home_recent_characters',

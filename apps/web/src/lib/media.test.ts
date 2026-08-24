@@ -229,53 +229,58 @@ describe('the seeded characters keep working', () => {
  * of those sources at all.
  * ------------------------------------------------------------------ */
 
-describe('the character rails render a clip or nothing', () => {
+describe('the Play with me rail renders a real video or NO CARD', () => {
   const video = { url: '/api/media/assets/vid/file', mediaType: 'video' as const };
   const image = { url: '/api/media/assets/img/file', mediaType: 'image' as const };
 
-  it('renders the character’s own approved VIDEO', () => {
+  it('renders the character\u2019s own approved VIDEO', () => {
     const media = resolveRailMedia(character({ clip: video } as never));
-    expect(media.kind).toBe('video');
-    expect(media.kind === 'video' && media.src).toContain('/api/media/assets/vid/file');
+    expect(media?.kind).toBe('video');
+    expect(media?.kind === 'video' && media.src).toContain('/api/media/assets/vid/file');
   });
 
-  it('NEVER falls back to profileImage when there is no video', () => {
+  it('returns NULL when she has no eligible video \u2014 no card, no substitute', () => {
     // `character()` carries profileImage 'https://img.example/nova.png'.
+    expect(resolveRailMedia(character({ clip: null } as never))).toBeNull();
+  });
+
+  it('NEVER falls back to profileImage', () => {
     const media = resolveRailMedia(character({ clip: null } as never));
-    expect(media.kind).toBe('placeholder');
     expect(JSON.stringify(media)).not.toContain('img.example');
   });
 
   it('NEVER falls back to the canonical/visual-identity image', () => {
-    // resolveRailMedia takes no `visual` argument at all — the identity image
+    // resolveRailMedia takes no `visual` argument at all \u2014 the identity image
     // is not reachable from here by construction, not by convention.
     expect(resolveRailMedia.length).toBe(1);
-    const media = resolveRailMedia(character({ clip: null } as never));
-    expect(media.kind).toBe('placeholder');
+    expect(resolveRailMedia(character({ clip: null } as never))).toBeNull();
   });
 
   it('NEVER falls back to the hard-coded manifest, even for a seeded name', () => {
     // Luna has a manifest entry. On a rail it must not be used.
     const media = resolveRailMedia(character({ name: 'luna', clip: null } as never));
-    expect(media.kind).toBe('placeholder');
+    expect(media).toBeNull();
     expect(JSON.stringify(media)).not.toContain('/media/luna');
+  });
+
+  it('NEVER renders a placeholder \u2014 the old lettered tile is gone', () => {
+    // It used to return { kind: 'placeholder', initial: 'N' }. A lettered tile
+    // among video tiles is still a card claiming she has content.
+    const media = resolveRailMedia(character({ displayName: 'Nova', clip: null } as never));
+    expect(media).toBeNull();
+    expect(JSON.stringify(media)).not.toContain('placeholder');
   });
 
   it('does NOT treat an image clip as rail media', () => {
     const media = resolveRailMedia(character({ clip: image } as never));
-    expect(media.kind).toBe('placeholder');
+    expect(media).toBeNull();
     expect(JSON.stringify(media)).not.toContain('/assets/img/file');
-  });
-
-  it('uses the existing neutral placeholder, keyed to her initial', () => {
-    const media = resolveRailMedia(character({ displayName: 'Nova', clip: null } as never));
-    expect(media).toEqual({ kind: 'placeholder', initial: 'N' });
   });
 
   it('a seeded character WITH an approved video plays that video', () => {
     // Maria/Ember/Luna resolve from their own content, not their reference image.
     const media = resolveRailMedia(character({ name: 'maria', clip: video } as never));
-    expect(media.kind === 'video' && media.src).toContain('/api/media/assets/vid/file');
+    expect(media?.kind === 'video' && media.src).toContain('/api/media/assets/vid/file');
     expect(JSON.stringify(media)).not.toContain('/media/maria');
   });
 });

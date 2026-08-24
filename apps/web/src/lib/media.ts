@@ -126,9 +126,9 @@ function cmsVideoUrl(character: MediaCharacter): string | undefined {
 }
 
 /**
- * Media for a HOME CHARACTER RAIL — Play with me and Recently Added.
+ * Media for the Play with me rail — a real CMS video, or nothing at all.
  *
- * CLIP-ONLY, BY CONSTRUCTION. These rails represent a character by her own
+ * CLIP-ONLY, BY CONSTRUCTION. The rail represents a character by her own
  * content and nothing else. The one and only source here is the server's
  * representative clip, which `representativeClips` has already restricted to a
  * publicly reachable, non-reference VIDEO belonging to that character.
@@ -140,20 +140,22 @@ function cmsVideoUrl(character: MediaCharacter): string | undefined {
  * is her clip" and was not. None of those sources are in scope here, so no
  * future edit to the fallback chain can reintroduce them on a rail.
  *
- * NO ELIGIBLE VIDEO ⇒ the existing neutral placeholder — the same
- * initial-letter treatment `HeroMedia` already renders. No new visual design,
- * no substitute image, and the operator's curation is still honoured: she keeps
- * her place on the rail rather than silently vanishing.
+ * NO ELIGIBLE VIDEO ⇒ NULL, and the caller renders no card.
  *
- * `resolveHeroMedia` is untouched and still serves the discovery grid, the
- * swipe card and the Character page, where showing a character's own image is
- * correct and intended.
+ * This used to return the neutral initial-letter placeholder, on the reasoning
+ * that a curated character should keep her place. That was wrong: a lettered
+ * tile among video tiles is still a card claiming she has content, and the rail
+ * is now defined as one character plus one real video. The server already drops
+ * these characters; returning null means the client cannot put one back even if
+ * a future payload carries one. A shorter rail is the honest answer.
+ *
+ * `resolveHeroMedia` is untouched and still serves the swipe card and the
+ * Character page, where showing a character's own image is correct and
+ * intended.
  */
-export function resolveRailMedia(character: MediaCharacter): HeroMedia {
+export function resolveRailMedia(character: MediaCharacter): HeroMedia | null {
   const src = cmsVideoUrl(character);
-  if (src) return { kind: 'video', src };
-  const source = character.displayName || character.name || '?';
-  return { kind: 'placeholder', initial: source.charAt(0).toUpperCase() };
+  return src ? { kind: 'video', src } : null;
 }
 
 /**

@@ -12,8 +12,6 @@ import {
   characters,
   characterVisualAssets,
   homeHeroClips,
-  homePlayWithMeCharacters,
-  homeRecentCharacters,
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
 import { PUBLISHABLE_STATUS } from './app-merchandising-service.js';
@@ -50,14 +48,25 @@ import {
  * and an admin-gated previewUrl. None of that may reach an anonymous browser,
  * so this module builds its own minimal view rather than forwarding one.
  *
- * TWO SYSTEM RAILS, THEN THE OPERATOR'S. Play with Me and Recently Added are
- * fixed and unordered by the admin; published CMS categories follow, in
- * `home_position` order. That ordering is a product decision recorded in the
- * ticket, not an emergent property of the queries.
+ * ONE SYSTEM RAIL, THEN THE OPERATOR'S. Play with Me is fixed and unordered by
+ * the admin; published CMS categories follow, in `home_position` order. That
+ * ordering is a product decision recorded in the ticket, not an emergent
+ * property of the queries.
+ *
+ * PLAY WITH ME HAS NO MERCHANDISING. It is one deterministic rule — active
+ * character, her newest publicly reachable video, one card — with no
+ * automatic/curated modes and no operator arrangement. Its override table is
+ * retained in the schema and read by nothing.
+ *
+ * RECENTLY ADDED IS GONE — removed as a product feature, not disabled. It was
+ * a rail whose contents no operator could see before publishing and whose
+ * "automatic unless overridden" rule made its Admin picker unusable: in the
+ * automatic state the rail already contained every candidate, so there was
+ * nothing left to add. Nothing here computes it, no route serves it, and no
+ * Admin control offers it. The `home_recent_characters` table is deliberately
+ * left in place and unreferenced so this removal needs no migration; it holds
+ * only operator arrangements for a rail that no longer exists.
  */
-
-/** Recently Added's default size when no operator override exists. */
-export const RECENTLY_ADDED_DEFAULT_LIMIT = 12;
 
 /** How many clips a Home category rail carries. Rails are previews, not pages. */
 export const CATEGORY_RAIL_LIMIT = 24;
@@ -120,7 +129,6 @@ export interface PublicHomeView {
   banners: Record<HomeBannerSlot, PublicHomeBannerView[]>;
   hero: PublicClipView[];
   playWithMe: PublicCharacterCardView[];
-  recentlyAdded: PublicCharacterCardView[];
   categories: PublicCategoryRailView[];
 }
 
@@ -218,12 +226,16 @@ export async function listPublicCharacterClips(
  * shared `mediaTypeOf` (through `clipView`) rather than re-decided here, so the
  * definition of "video" cannot drift from the rest of the system.
  *
- * Deterministic: oldest content first, id as the tie-break, so the choice is
- * stable between requests.
+ * DETERMINISTIC: NEWEST ELIGIBLE VIDEO FIRST, id as the tie-break. A character
+ * with several approved videos always yields the same one, and it is the most
+ * recent thing she has published — an operator who uploads a new clip expects
+ * to see it, not to wonder why the rail still shows her first ever upload. The
+ * id tie-break keeps two clips created in the same transaction from swapping
+ * between requests.
  *
  * A character with no eligible video gets NO entry, and her card's clip is
  * null. That null is the whole point — the caller must not turn it back into an
- * image.
+ * image, and `listPlayWithMe` drops the card rather than rendering it blank.
  *
  * Ownership and reachability are unchanged and NOT relaxed: `inArray` keeps
  * every candidate the character's own, and `publiclyReachableCondition` is the
@@ -263,8 +275,8 @@ export async function representativeClips(
         publiclyReachableCondition(),
       ),
     )
-    // Oldest content first, id as the tie-break — stable between requests.
-    .orderBy(asc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
+    // Newest content first, id as the tie-break — stable between requests.
+    .orderBy(desc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
 
   for (const row of rows) {
     if (found.has(row.characterId)) continue;
@@ -387,39 +399,41 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
  * ------------------------------------------------------------------ */
 
 /**
- * Every active character, one card each, represented by an approved clip.
+ * Play with Me. ONE RULE, NO MODES:
+ *
+ *     active character → newest approved/publicly-reachable VIDEO of hers → one card
+ *
+ * That sentence is the whole feature. There is no automatic-versus-curated
+ * state, no override table, no picker and no merchandising step, because there
+ * is nothing left for an operator to arrange: membership is a fact about the
+ * content, and the order is alphabetical and stable.
+ *
+ * WHY THE CURATION WAS DELETED RATHER THAN FIXED. The rail used to be
+ * "automatic unless overridden", and in the automatic state it already
+ * contained every candidate — so the Add picker had nothing left to offer and
+ * an operator could not put a character back. Layering a fix on that model
+ * meant keeping two states, a materialise-on-first-edit step and a reset, to
+ * arrange a list that the video rule already determines. The override table is
+ * retained in the schema but nothing reads or writes it, so this removal needs
+ * no migration.
+ *
+ * ONE CARD = ONE CHARACTER + ONE REAL CMS VIDEO. A character with no publicly
+ * reachable video is NOT on this rail — dropped, never rendered as a portrait,
+ * a placeholder or an empty frame. That is the point: the rail used to fall
+ * back to her canonical identity image, which made an operator believe her
+ * content was live when nothing of hers had been published. An honest rail is
+ * shorter than a dishonest one.
+ *
+ * NEVER AN IMAGE. `representativeClips` already restricts the choice to a
+ * non-reference VIDEO; the filter here restates that at the rail boundary so a
+ * change to card composition cannot quietly admit one.
  *
  * NOT a presence rail. This product has no online/offline state — the ticket
  * defers presence to later work and explicitly says not to fabricate it — so
- * membership is simply "active", which is the only truth the schema holds.
+ * membership is "active AND has a video", which is the only truth the schema
+ * holds.
  */
 export async function listPlayWithMe(db: Db): Promise<PublicCharacterCardView[]> {
-  // CURATED WINS WHOLE. A single row in the override table makes that list the
-  // rail entirely — the automatic rule below is not consulted, so an operator's
-  // arrangement is never topped up with characters they did not choose. Same
-  // rule Recently Added and the Hero already follow.
-  const curated = await db
-    .select({
-      id: characters.id,
-      displayName: characters.displayName,
-      name: characters.name,
-      shortBio: characters.shortBio,
-      profileImage: characters.profileImage,
-      position: homePlayWithMeCharacters.position,
-    })
-    .from(homePlayWithMeCharacters)
-    .innerJoin(characters, eq(characters.id, homePlayWithMeCharacters.characterId))
-    // A curated character who is retired still leaves the rail: publication
-    // gating is not something curation can override.
-    .where(eq(characters.status, 'active'))
-    .orderBy(
-      asc(homePlayWithMeCharacters.position),
-      asc(homePlayWithMeCharacters.characterId),
-    );
-
-  if (curated.length > 0) return characterCards(db, curated);
-
-  // AUTOMATIC, unchanged: every active character, alphabetically.
   const rows = await db
     .select({
       id: characters.id,
@@ -431,63 +445,9 @@ export async function listPlayWithMe(db: Db): Promise<PublicCharacterCardView[]>
     .from(characters)
     .where(eq(characters.status, 'active'))
     .orderBy(asc(characters.displayName), asc(characters.id));
-  return characterCards(db, rows);
-}
 
-/* ------------------------------------------------------------------ *
- * Recently Added — 12 newest by default, curated when overridden
- * ------------------------------------------------------------------ */
-
-/**
- * The Recently Added rail.
- *
- * EMPTY OVERRIDE TABLE MEANS DEFAULT: the 12 newest active characters, computed
- * per read. Once an operator adds, removes or reorders anything the table holds
- * the explicit list and that is used verbatim. Clearing it restores the
- * automatic behaviour — which is what makes the operator's changes reversible
- * without a second "mode" flag to get out of sync.
- *
- * Inactive characters are filtered from BOTH paths, so deactivating a character
- * removes them from a curated rail without the curation being rewritten.
- */
-export async function listRecentlyAdded(db: Db): Promise<PublicCharacterCardView[]> {
-  const curated = await db
-    .select({
-      id: characters.id,
-      displayName: characters.displayName,
-      name: characters.name,
-      shortBio: characters.shortBio,
-      profileImage: characters.profileImage,
-      position: homeRecentCharacters.position,
-    })
-    .from(homeRecentCharacters)
-    .innerJoin(characters, eq(characters.id, homeRecentCharacters.characterId))
-    .where(eq(characters.status, 'active'))
-    .orderBy(asc(homeRecentCharacters.position), asc(homeRecentCharacters.characterId));
-
-  if (curated.length > 0) return characterCards(db, curated);
-
-  const newest = await db
-    .select({
-      id: characters.id,
-      displayName: characters.displayName,
-      name: characters.name,
-      shortBio: characters.shortBio,
-      profileImage: characters.profileImage,
-    })
-    .from(characters)
-    .where(eq(characters.status, 'active'))
-    .orderBy(desc(characters.createdAt), asc(characters.id))
-    .limit(RECENTLY_ADDED_DEFAULT_LIMIT);
-  return characterCards(db, newest);
-}
-
-/** True when an operator has taken manual control of Recently Added. */
-export async function recentlyAddedIsCurated(db: Db): Promise<boolean> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(homeRecentCharacters);
-  return Number(row?.count ?? 0) > 0;
+  const cards = await characterCards(db, rows);
+  return cards.filter((card) => card.clip !== null && card.clip.mediaType === 'video');
 }
 
 /* ------------------------------------------------------------------ *
@@ -629,18 +589,17 @@ export async function composeHome(
   storage: BannerCreativeStorage,
   options: { now: Date; viewer: BannerViewer },
 ): Promise<PublicHomeView> {
-  const [banners, assignedHero, playWithMe, recentlyAdded, categories] = await Promise.all([
+  const [banners, assignedHero, playWithMe, categories] = await Promise.all([
     listHomeBannerSlots(db, storage, options),
     listHeroClips(db),
     listPlayWithMe(db),
-    listRecentlyAdded(db),
     listHomeCategoryRails(db),
   ]);
   // AN UNCONFIGURED HERO FALLS BACK; A CONFIGURED ONE NEVER DOES. See
   // heroFallback: assignment is the operator's statement of intent, and once
   // they have made it nothing may add to or override it.
   const hero = assignedHero.length > 0 ? assignedHero : heroFallback(playWithMe);
-  return { banners, hero, playWithMe, recentlyAdded, categories };
+  return { banners, hero, playWithMe, categories };
 }
 
 /** How many characters the unconfigured Hero shows. Matches what it always showed. */
@@ -788,4 +747,101 @@ export async function browsePublicCharacters(
     .orderBy(desc(characters.createdAt), asc(characters.id));
 
   return characterCards(db, rows);
+}
+
+/* ------------------------------------------------------------------ *
+ * The lobby's search grid: CONTENT CLIPS, never characters
+ * ------------------------------------------------------------------ */
+
+/**
+ * Every publicly reachable CONTENT asset, newest first, optionally narrowed by
+ * a category pill and/or the search box.
+ *
+ * WHY THIS EXISTS. The grid under the search box used to be a list of
+ * CHARACTERS rendered by a card that resolved its media through
+ * `resolveHeroMedia` — so a character with nothing published still appeared,
+ * wearing her canonical reference image, and the app presented her identity
+ * portrait as though it were content. Search now returns the content itself.
+ * A result IS an asset: it has an asset id, it belongs to exactly one
+ * character, and its bytes come from the one public media route.
+ *
+ * A REFERENCE ASSET IS NOT CONTENT, the same rule the character rails apply.
+ * Identity images, canonical or otherwise, are excluded by `kind` rather than
+ * by ordering, so nothing about how results are sorted can let one back in.
+ *
+ * BOTH MEDIA TYPES ARE CONTENT. An approved uploaded IMAGE is a legitimate
+ * content asset in this model and belongs in results; what is excluded is the
+ * identity image, not the medium. `clipView` applies the shared media-type
+ * rule so a caller can render each result correctly without re-deciding.
+ *
+ * THE QUERY MATCHES THE OWNING CHARACTER'S NAME, which is what the search box
+ * has always promised ("Search companions by name") and what a visitor typing
+ * "Nova" means. The escape keeps a literal % or _ from behaving as a wildcard.
+ *
+ * NO RESULT IS EVER MANUFACTURED. There is no fallback branch: no
+ * `profileImage`, no canonical image, no local manifest, no placeholder. When
+ * nothing matches, the answer is an empty array and the caller renders its
+ * empty state.
+ *
+ * Reachability is BORROWED, never restated — `publiclyReachableCondition` is
+ * the same predicate the media route enforces, so this grid cannot advertise a
+ * clip whose bytes that route would refuse.
+ */
+export async function browsePublicClips(
+  db: Db,
+  options: { categorySlug?: string | null; query?: string | null } = {},
+): Promise<PublicClipView[]> {
+  const conditions = [
+    eq(characters.status, 'active'),
+    ne(characterVisualAssets.kind, 'reference'),
+    publiclyReachableCondition(),
+  ];
+
+  const slug = options.categorySlug?.trim();
+  if (slug) {
+    // Membership resolved to asset ids FIRST, for the same reason
+    // `browsePublicCharacters` does it: `publiclyReachableCondition` is written
+    // against `character_visual_assets` as the OUTER table, so nesting it in a
+    // subquery that joins that table again correlates the wrong row and
+    // silently returns nothing.
+    const memberIds = await db
+      .select({ assetId: appCategoryAssets.assetId })
+      .from(appCategoryAssets)
+      .innerJoin(appCategories, eq(appCategories.id, appCategoryAssets.categoryId))
+      .where(
+        and(
+          eq(appCategories.slug, slug),
+          eq(appCategories.enabled, true),
+          eq(appCategories.homePublished, true),
+        ),
+      );
+    const assetIds = [...new Set(memberIds.map((row) => row.assetId))];
+    // An empty or unknown category matches NOTHING, never everything — a
+    // misconfigured pill must look empty, not look like it was ignored.
+    if (assetIds.length === 0) return [];
+    conditions.push(inArray(characterVisualAssets.id, assetIds));
+  }
+
+  const query = options.query?.trim();
+  if (query) {
+    const escaped = query.replace(/[\\%_]/g, (c) => `\\${c}`);
+    conditions.push(sql`${characters.displayName} ilike ${'%' + escaped + '%'} escape '\\'`);
+  }
+
+  const rows = await db
+    .select({
+      id: characterVisualAssets.id,
+      characterId: characterVisualAssets.characterId,
+      storageKey: characterVisualAssets.storageKey,
+      provenance: characterVisualAssets.provenance,
+      characterName: characters.displayName,
+    })
+    .from(characterVisualAssets)
+    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+    .where(and(...conditions))
+    .orderBy(desc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
+
+  return rows
+    .map((row) => clipView(row, row.characterName))
+    .filter((clip): clip is PublicClipView => clip !== null && clip.mediaType === 'video');
 }

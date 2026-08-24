@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   homeApi,
   type PublicCategoryPill,
-  type PublicCharacterCard,
+  type PublicClip,
   type PublicHome,
 } from '../lib/api';
 import { homeSections } from '../lib/homeContent';
@@ -10,7 +10,7 @@ import LobbyTopBar from '../components/lobby/LobbyTopBar';
 import HeroCarousel from '../components/lobby/HeroCarousel';
 import HomeBannerSlot from '../components/lobby/HomeBannerSlot';
 import PlayWithMeCarousel from '../components/lobby/PlayWithMeCarousel';
-import PersonaGridCard from '../components/lobby/PersonaGridCard';
+import ClipGridCard from '../components/lobby/ClipGridCard';
 import CategoryPills from '../components/lobby/CategoryPills';
 import ClipRail from '../components/lobby/ClipRail';
 import CommunityPromoCard from '../components/lobby/CommunityPromoCard';
@@ -33,11 +33,19 @@ import { DiscoverIcon, FilterIcon, SearchIcon, SparkleIcon } from '../components
  * pill, chip and card now comes from what an operator published.
  *
  * ONE EDITORIAL CATEGORY SYSTEM. The pills are App Categories — the same ones
- * merchandised in Admin, in the operator's own order. A category holds clips;
- * this page shows characters, so selecting a pill asks the server for the
- * characters with at least one publicly reachable clip in that category.
- * Discovery categories are not exposed here: they remain the keyword index
- * behind free-text matching and future automatic tagging.
+ * merchandised in Admin, in the operator's own order. Discovery categories are
+ * not exposed here: they remain the keyword index behind free-text matching and
+ * future automatic tagging.
+ *
+ * THE RESULTS GRID IS CLIPS, NOT CHARACTERS. It used to list characters, each
+ * card resolving its media through `resolveHeroMedia` — so a character with
+ * nothing published still appeared, wearing her canonical identity portrait,
+ * and the app presented that portrait as content. A result is now an ASSET: it
+ * has an asset id, one owning character, and bytes from the single public media
+ * route. A character with no publicly reachable content contributes no results.
+ *
+ * RECENTLY ADDED IS GONE, removed as a product feature rather than hidden.
+ * Home is Hero, Play with me, the published categories, then search.
  *
  * "ALL" IS THE DEFAULT AND MEANS NO FILTER. Nothing is auto-selected. That is
  * deliberate: pre-selecting the first pill made every search return nothing
@@ -72,7 +80,7 @@ export default function LobbyPage() {
   /** The original Advanced-filters toggle, restored from DiscoverySearch. */
   const [showFilters, setShowFilters] = useState(false);
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<PublicCharacterCard[]>([]);
+  const [results, setResults] = useState<PublicClip[]>([]);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const focusSearch = useCallback(() => {
@@ -98,13 +106,13 @@ export default function LobbyPage() {
     };
   }, [attempt]);
 
-  /* ---------------- The character grid ---------------- */
+  /* ---------------- The results grid: content clips ---------------- */
 
   useEffect(() => {
     let cancelled = false;
     homeApi
-      .browse({ category: activeCategory, q: query })
-      .then((res) => !cancelled && setResults(res.characters))
+      .browseClips({ category: activeCategory, q: query })
+      .then((res) => !cancelled && setResults(res.clips))
       .catch(() => !cancelled && setResults([]));
     return () => {
       cancelled = true;
@@ -160,12 +168,6 @@ export default function LobbyPage() {
           if (section.kind === 'play_with_me') {
             return <PlayWithMeCarousel key={section.key} characters={home.playWithMe} />;
           }
-          // RECENTLY ADDED IS NOT RENDERED PUBLICLY. The approved lobby design
-          // has no such rail, and this page must not introduce public sections
-          // the design does not have. The CMS feature is untouched: the server
-          // still composes it, `/api/home` still carries it, and the Home
-          // composer still curates it — it simply has no public surface yet.
-          if (section.kind === 'recently_added') return null;
           return <ClipRail key={section.key} rail={section.rail!} />;
         })}
 
@@ -231,7 +233,7 @@ export default function LobbyPage() {
           {results.length === 0 ? (
             <EmptyState
               icon={<DiscoverIcon />}
-              title="No companions match"
+              title="No clips match"
               description="Try a different category or clear your search."
               action={
                 <button
@@ -248,13 +250,13 @@ export default function LobbyPage() {
             />
           ) : (
             <div className="grid grid-cols-2 gap-3">
-              {results.slice(0, 2).map((character, index) => (
-                <PersonaGridCard key={character.id} character={character} index={index} />
+              {results.slice(0, 2).map((clip) => (
+                <ClipGridCard key={clip.id} clip={clip} />
               ))}
               {/* Unchanged and separate from the CMS banner slots. */}
               <CommunityPromoCard />
-              {results.slice(2).map((character, index) => (
-                <PersonaGridCard key={character.id} character={character} index={index + 2} />
+              {results.slice(2).map((clip) => (
+                <ClipGridCard key={clip.id} clip={clip} />
               ))}
             </div>
           )}

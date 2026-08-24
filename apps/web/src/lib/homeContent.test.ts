@@ -6,7 +6,6 @@ import {
   homeSections,
   nextView,
   PLAY_WITH_ME_TITLE,
-  RECENTLY_ADDED_TITLE,
   resultsLabel,
 } from './homeContent';
 import type { PublicCategoryRail, PublicCharacterCard, PublicClip, PublicHome } from './api';
@@ -50,29 +49,28 @@ function home(overrides: Partial<PublicHome> = {}): PublicHome {
     banners: { before_search: [], below_results: [] },
     hero: [],
     playWithMe: [],
-    recentlyAdded: [],
     categories: [],
     ...overrides,
   };
 }
 
 describe('rail order is fixed, and the operator controls only the tail', () => {
-  it('puts Play with me first, then Recently Added, then the CMS categories', () => {
+  it('puts Play with me first, then the CMS categories', () => {
     const sections = homeSections(
-      home({
-        playWithMe: [card('a')],
-        recentlyAdded: [card('b')],
-        categories: [rail('one'), rail('two')],
-      }),
+      home({ playWithMe: [card('a')], categories: [rail('one'), rail('two')] }),
     );
-    expect(sections.map((s) => s.kind)).toEqual([
-      'play_with_me',
-      'recently_added',
-      'category',
-      'category',
-    ]);
+    expect(sections.map((s) => s.kind)).toEqual(['play_with_me', 'category', 'category']);
     expect(sections[0].title).toBe(PLAY_WITH_ME_TITLE);
-    expect(sections[1].title).toBe(RECENTLY_ADDED_TITLE);
+  });
+
+  it('has NO Recently Added section kind at all', () => {
+    // Removed as a product feature, not hidden behind a flag. There is no
+    // branch that could render it and no title constant to reach for.
+    const sections = homeSections(
+      home({ playWithMe: [card('a')], categories: [rail('one')] }),
+    );
+    expect(sections.map((s) => s.kind)).not.toContain('recently_added');
+    expect(JSON.stringify(sections)).not.toMatch(/recently/i);
   });
 
   it('keeps the categories in the order the server sent them', () => {
@@ -87,10 +85,8 @@ describe('rail order is fixed, and the operator controls only the tail', () => {
     expect(sections.map((s) => s.rail!.id)).toEqual(['full']);
   });
 
-  it('omits a system rail that has no characters', () => {
-    expect(homeSections(home({ recentlyAdded: [card('b')] })).map((s) => s.kind)).toEqual([
-      'recently_added',
-    ]);
+  it('omits the system rail when it has no characters', () => {
+    expect(homeSections(home({ playWithMe: [] })).map((s) => s.kind)).toEqual([]);
     expect(homeSections(home({ playWithMe: [card('a')] })).map((s) => s.kind)).toEqual([
       'play_with_me',
     ]);
@@ -123,7 +119,7 @@ describe('rail order is fixed, and the operator controls only the tail', () => {
 
   it('gives every section a stable distinct key', () => {
     const sections = homeSections(
-      home({ playWithMe: [card('a')], recentlyAdded: [card('b')], categories: [rail('one')] }),
+      home({ playWithMe: [card('a')], categories: [rail('one'), rail('two')] }),
     );
     expect(new Set(sections.map((s) => s.key)).size).toBe(sections.length);
   });

@@ -777,7 +777,6 @@ export interface PublicHome {
   banners: Record<HomeBannerSlot, PublicHomeBanner[]>;
   hero: PublicClip[];
   playWithMe: PublicCharacterCard[];
-  recentlyAdded: PublicCharacterCard[];
   categories: PublicCategoryRail[];
 }
 
@@ -803,6 +802,20 @@ export const homeApi = {
     return request<{ characters: PublicCharacterCard[] }>(
       `/api/browse/characters${qs ? `?${qs}` : ''}`,
     );
+  },
+  /**
+   * The SEARCH GRID: real CMS content assets, never characters.
+   *
+   * Each item carries its own asset id and an opaque `/api/media/assets/:id/file`
+   * url. There is no fallback shape — a character with nothing published simply
+   * contributes no results, and an empty array renders the empty state.
+   */
+  browseClips: (params: { category?: string | null; q?: string | null } = {}) => {
+    const search = new URLSearchParams();
+    if (params.category) search.set('category', params.category);
+    if (params.q) search.set('q', params.q);
+    const qs = search.toString();
+    return request<{ clips: PublicClip[] }>(`/api/browse/clips${qs ? `?${qs}` : ''}`);
   },
 };
 
@@ -859,60 +872,6 @@ export interface HeroCandidateView {
   inHero: boolean;
 }
 
-export interface RecentCharacterAdminView {
-  characterId: string;
-  displayName: string;
-  status: string;
-  position: number;
-  createdAt: string;
-  /** The same profile image the public card uses. Never a storage key or path. */
-  profileImage: string | null;
-}
-
-/**
- * A character the Recently Added picker may offer. The server's rule is
- * "active, newest first" — it does NOT mark the ones already on the rail the
- * way the Hero candidate endpoint does, so that flag is derived on the client
- * from the rail itself. See admin/homeBoard.recentPickerRows.
- */
-export interface RecentCandidateView {
-  characterId: string;
-  displayName: string;
-  createdAt: string;
-}
-
-export interface RecentlyAddedAdminView {
-  curated: boolean;
-  characters: RecentCharacterAdminView[];
-}
-
-/** One entry on the Play with me rail, as Admin sees it. */
-export interface PlayWithMeCharacterAdminView {
-  characterId: string;
-  displayName: string;
-  status: string;
-  position: number;
-  createdAt: string;
-  /** The same profile image the public card uses. Never a storage key or path. */
-  profileImage: string | null;
-}
-
-/**
- * A character the Play with me picker may offer.
- *
- * The server's rule is "active, alphabetical", and — as with Recently Added —
- * it does not mark who is already on the rail, so that is derived on the client.
- */
-export interface PlayWithMeCandidateView extends RecentCandidateView {
-  profileImage: string | null;
-}
-
-export interface PlayWithMeAdminView {
-  /** False when the rail is the automatic alphabetical list; true when overridden. */
-  curated: boolean;
-  characters: PlayWithMeCharacterAdminView[];
-}
-
 export const adminHomeApi = {
   overview: () =>
     request<{
@@ -924,7 +883,6 @@ export const adminHomeApi = {
        * topped up. Never stored, never an assignment.
        */
       heroFallback: PublicClip[];
-      recentlyAdded: RecentlyAddedAdminView;
     }>('/admin/home'),
   preview: () =>
     request<{ generatedAt: string; newVisitor: PublicHome; returning: PublicHome }>(
@@ -957,44 +915,6 @@ export const adminHomeApi = {
       method: 'PUT',
       body: JSON.stringify({ orderedIds }),
     }),
-  playWithMe: () => request<PlayWithMeAdminView>('/admin/home/play-with-me'),
-  playWithMeCandidates: () =>
-    request<{ candidates: PlayWithMeCandidateView[] }>('/admin/home/play-with-me/candidates'),
-  addPlayWithMe: (characterId: string) =>
-    request<PlayWithMeAdminView>('/admin/home/play-with-me', {
-      method: 'POST',
-      body: JSON.stringify({ characterId }),
-    }),
-  removePlayWithMe: (characterId: string) =>
-    request<PlayWithMeAdminView>(
-      `/admin/home/play-with-me/${encodeURIComponent(characterId)}`,
-      { method: 'DELETE' },
-    ),
-  orderPlayWithMe: (orderedIds: string[]) =>
-    request<PlayWithMeAdminView>('/admin/home/play-with-me/order', {
-      method: 'PUT',
-      body: JSON.stringify({ orderedIds }),
-    }),
-  resetPlayWithMe: () =>
-    request<PlayWithMeAdminView>('/admin/home/play-with-me/reset', { method: 'POST' }),
-  recentCandidates: () =>
-    request<{ candidates: RecentCandidateView[] }>('/admin/home/recent/candidates'),
-  addRecent: (characterId: string) =>
-    request<RecentlyAddedAdminView>('/admin/home/recent', {
-      method: 'POST',
-      body: JSON.stringify({ characterId }),
-    }),
-  removeRecent: (characterId: string) =>
-    request<RecentlyAddedAdminView>(`/admin/home/recent/${encodeURIComponent(characterId)}`, {
-      method: 'DELETE',
-    }),
-  orderRecent: (orderedIds: string[]) =>
-    request<RecentlyAddedAdminView>('/admin/home/recent/order', {
-      method: 'PUT',
-      body: JSON.stringify({ orderedIds }),
-    }),
-  resetRecent: () =>
-    request<RecentlyAddedAdminView>('/admin/home/recent/reset', { method: 'POST' }),
 };
 
 export interface KeywordView {

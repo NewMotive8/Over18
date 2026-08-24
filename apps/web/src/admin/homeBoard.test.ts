@@ -1,23 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addPlayWithMeConsequence,
-  addRecentConsequence,
   contentSummary,
   emptyReason,
   heroFallbackNote,
   heroMode,
   heroModeLabel,
   HOME_SLOTS,
-  playWithMeModeLabel,
-  playWithMePickerRows,
   previewSummary,
   publishedInOrder,
-  recentModeLabel,
-  recentPickerRows,
   slotLabel,
   summariseHome,
   unpublished,
 } from './homeBoard';
+import * as board from './homeBoard';
 import { activePublishingTab } from './PublishingTabs';
 import type { HomeCategoryView, PublicHome } from '../lib/api';
 
@@ -120,114 +115,25 @@ describe('the two banner slots', () => {
   });
 });
 
-describe('Recently Added mode', () => {
-  it('explains automatic versus custom', () => {
-    expect(recentModeLabel({ curated: false, characters: [] })).toContain('Automatic');
-    expect(recentModeLabel({ curated: false, characters: [] })).toContain('12 newest');
-    expect(recentModeLabel({ curated: true, characters: [] })).toContain('Custom');
-  });
-});
-
 /* ------------------------------------------------------------------ *
- * The Recently Added picker
+ * Recently Added is GONE
  *
- * The UAT gap this closes: the rail could be reordered, emptied and reset, but
- * a character could never be put BACK on it, because Admin had no Add control
- * at all. The endpoints already existed; only the picker was missing.
+ * It was removed as a product feature, not disabled. These tests replace the
+ * mode-label, picker and add-consequence suites that used to live here: the
+ * module must no longer export anything that could rebuild that rail.
  * ------------------------------------------------------------------ */
 
-const candidate = (id: string, displayName: string, createdAt = '2026-08-01T00:00:00.000Z') => ({
-  characterId: id,
-  displayName,
-  createdAt,
-});
-
-const railEntry = (id: string, displayName: string, position: number) => ({
-  characterId: id,
-  displayName,
-  status: 'active',
-  position,
-  createdAt: '2026-08-01T00:00:00.000Z',
-  profileImage: null,
-});
-
-describe('the Recently Added picker', () => {
-  const candidates = [candidate('a', 'Ada'), candidate('b', 'Bea'), candidate('c', 'Cass')];
-
-  it("offers every candidate the server returned, in the server's order", () => {
-    // Eligibility and ordering are the SERVER'S rule (active, newest first).
-    // The picker must not re-sort or re-filter and quietly disagree with it.
-    const rows = recentPickerRows(candidates, { curated: false, characters: [] });
-    expect(rows.map((r) => r.characterId)).toEqual(['a', 'b', 'c']);
-    expect(rows.map((r) => r.displayName)).toEqual(['Ada', 'Bea', 'Cass']);
+describe('Recently Added has no admin surface left', () => {
+  it('exports no Recently Added helper of any kind', () => {
+    const names = Object.keys(board);
+    for (const name of names) expect(name).not.toMatch(/recent/i);
   });
 
-  it('marks the ones already on the rail', () => {
-    // The recent-candidates endpoint, unlike the Hero's, does not send this
-    // flag — so an unmarked picker would offer buttons that do nothing.
-    const rows = recentPickerRows(candidates, {
-      curated: true,
-      characters: [railEntry('b', 'Bea', 0)],
-    });
-    expect(rows.find((r) => r.characterId === 'b')!.onRail).toBe(true);
-    expect(rows.find((r) => r.characterId === 'a')!.onRail).toBe(false);
-    expect(rows.find((r) => r.characterId === 'c')!.onRail).toBe(false);
-  });
-
-  it('treats an automatic rail as occupied too — it is what is on screen', () => {
-    // An automatic rail already SHOWS these characters. Offering "Add" for one
-    // would be a no-op on the server: ensureCurated materialises the same list
-    // and the insert then conflicts and does nothing.
-    const rows = recentPickerRows(candidates, {
-      curated: false,
-      characters: [railEntry('a', 'Ada', 0), railEntry('c', 'Cass', 1)],
-    });
-    expect(rows.map((r) => [r.characterId, r.onRail])).toEqual([
-      ['a', true],
-      ['b', false],
-      ['c', true],
-    ]);
-  });
-
-  it('survives a rail that has not loaded yet', () => {
-    expect(recentPickerRows(candidates, null).every((r) => !r.onRail)).toBe(true);
-  });
-
-  it('has nothing to offer when the server returns no candidates', () => {
-    expect(recentPickerRows([], { curated: false, characters: [] })).toEqual([]);
-  });
-
-  it('re-marks a row as soon as the rail comes back with it — derived, not stored', () => {
-    // The add flow refreshes the RAIL, not the candidate list. Deriving means
-    // the row it came from cannot go on offering "Add" afterwards.
-    const before = recentPickerRows(candidates, { curated: false, characters: [] });
-    expect(before.find((r) => r.characterId === 'a')!.onRail).toBe(false);
-    const after = recentPickerRows(candidates, {
-      curated: true,
-      characters: [railEntry('a', 'Ada', 0)],
-    });
-    expect(after.find((r) => r.characterId === 'a')!.onRail).toBe(true);
-  });
-});
-
-describe('what adding will do to the rail', () => {
-  it('warns that adding leaves automatic mode, before the operator commits', () => {
-    const said = addRecentConsequence({ curated: false, characters: [] });
-    expect(said).toContain('automatic');
-    expect(said).toContain('custom');
-    expect(said).toContain('Reset');
-  });
-
-  it('says only where it lands once the rail is already custom', () => {
-    const said = addRecentConsequence({ curated: true, characters: [] });
-    expect(said).toContain('end');
-    expect(said).not.toContain('switches');
-  });
-
-  it('assumes the cautious wording while the rail is still loading', () => {
-    expect(addRecentConsequence(null)).toBe(
-      addRecentConsequence({ curated: false, characters: [] }),
-    );
+  it('still exports the Home-composition helpers that remain', () => {
+    // The removal must not have taken the surviving surfaces with it.
+    expect(typeof board.publishedInOrder).toBe('function');
+    expect(typeof board.previewSummary).toBe('function');
+    expect(typeof board.heroMode).toBe('function');
   });
 });
 
@@ -254,7 +160,6 @@ describe('preview summary', () => {
       playWithMe: [
         { id: 'p', name: 'p', displayName: 'P', shortBio: '', profileImage: null, categories: [], clip: null },
       ],
-      recentlyAdded: [],
       categories: [
         { id: 'r', slug: 'r', name: 'R', tagline: null, clips: [{ id: 'x', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C' }] },
         { id: 'empty', slug: 'e', name: 'E', tagline: null, clips: [] },
@@ -263,7 +168,7 @@ describe('preview summary', () => {
     const summary = previewSummary(home);
     expect(summary).toContain('1 hero clip');
     expect(summary).toContain('1 in Play with me');
-    expect(summary).toContain('0 recently added');
+    expect(summary).not.toMatch(/recently/i);
     // The empty rail is not counted — the app would not render it.
     expect(summary).toContain('1 category rail');
     expect(summary).toContain('1 banner');
@@ -340,83 +245,32 @@ describe('the Hero states are never confusable', () => {
  * which one they are in, because the first edit is a one-way door until Reset.
  * ------------------------------------------------------------------ */
 
-const playCandidate = (id: string, displayName: string) => ({
-  characterId: id,
-  displayName,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  profileImage: `/api/media/assets/${id}/file`,
-});
+/* ------------------------------------------------------------------ *
+ * Play with me has NO ADMIN SURFACE
+ *
+ * These replace the mode-label, picker and add-consequence suites. The rail is
+ * one rule — active character, her newest publicly reachable video, one card —
+ * so there are no modes to label and no rows to derive.
+ * ------------------------------------------------------------------ */
 
-const playRail = (curated: boolean, ids: string[]) => ({
-  curated,
-  characters: ids.map((id, position) => ({
-    characterId: id,
-    displayName: `C ${id}`,
-    status: 'active',
-    position,
-    createdAt: '2026-01-01T00:00:00.000Z',
-    profileImage: null,
-  })),
-});
-
-describe('the Play with me states are never confusable', () => {
-  it('names the automatic rule, and warns that editing leaves it', () => {
-    const said = playWithMeModeLabel({ curated: false });
-    expect(said).toContain('Automatic');
-    expect(said).toContain('active character');
-    expect(said).toContain('alphabetically');
-    expect(said).toContain('custom list');
+describe('Play with me has no admin surface left', () => {
+  it('exports no Play with me helper of any kind', () => {
+    for (const name of Object.keys(board)) expect(name).not.toMatch(/playwithme/i);
   });
 
-  it('says a curated rail is the operator’s own arrangement', () => {
-    expect(playWithMeModeLabel({ curated: true })).toContain('Custom list');
+  it('exports no rail-curation vocabulary at all', () => {
+    // Neither rail has an automatic-versus-curated model any more.
+    for (const name of Object.keys(board)) {
+      expect(name).not.toMatch(/recent/i);
+      expect(name).not.toMatch(/pickerrows/i);
+      expect(name).not.toMatch(/consequence/i);
+    }
   });
 
-  it('states the one-way door BEFORE the first add', () => {
-    const said = addPlayWithMeConsequence({ curated: false });
-    expect(said).toContain('automatic to a custom list');
-    expect(said).toContain('Reset');
-  });
-
-  it('says only where it lands once the rail is already curated', () => {
-    expect(addPlayWithMeConsequence({ curated: true })).toContain('end of your custom list');
-  });
-
-  it('warns before the first add even when the rail has not loaded', () => {
-    expect(addPlayWithMeConsequence(null)).toContain('automatic to a custom list');
-  });
-});
-
-describe('the Play with me picker', () => {
-  it('marks the candidates already on the rail', () => {
-    const rows = playWithMePickerRows(
-      [playCandidate('a', 'Ada'), playCandidate('b', 'Bea')],
-      playRail(true, ['b']),
-    );
-    expect(rows.map((r) => r.onRail)).toEqual([false, true]);
-  });
-
-  it('carries the face through, so the picker is not a wall of names', () => {
-    const [row] = playWithMePickerRows([playCandidate('a', 'Ada')], playRail(true, []));
-    expect(row!.profileImage).toBe('/api/media/assets/a/file');
-  });
-
-  it('offers everyone while the rail is still automatic', () => {
-    const rows = playWithMePickerRows(
-      [playCandidate('a', 'Ada'), playCandidate('b', 'Bea')],
-      playRail(false, []),
-    );
-    expect(rows.every((r) => !r.onRail)).toBe(true);
-  });
-
-  it('re-decides from the CURRENT rail rather than remembering', () => {
-    const candidates = [playCandidate('a', 'Ada')];
-    expect(playWithMePickerRows(candidates, playRail(true, []))[0]!.onRail).toBe(false);
-    // The same candidate list, one add later.
-    expect(playWithMePickerRows(candidates, playRail(true, ['a']))[0]!.onRail).toBe(true);
-  });
-
-  it('survives a rail that has not loaded yet', () => {
-    expect(playWithMePickerRows([playCandidate('a', 'Ada')], null)[0]!.onRail).toBe(false);
+  it('still exports the Hero helpers, which DO remain curated', () => {
+    // The Hero is deliberately untouched by this release.
+    expect(typeof board.heroMode).toBe('function');
+    expect(typeof board.heroModeLabel).toBe('function');
+    expect(typeof board.heroFallbackNote).toBe('function');
   });
 });

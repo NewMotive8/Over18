@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/client.js';
 import {
   browsePublicCharacters,
+  browsePublicClips,
   composeHome,
   listPublicCategoryPills,
 } from '../services/home-composition-service.js';
@@ -107,11 +108,38 @@ export default async function publicHomeRoutes(
    * The lobby's character grid. Both filters are optional and independent;
    * omitting `category` is the unfiltered "All" state, which is what makes
    * search work before any category has been configured.
+   *
+   * RETAINED BUT NO LONGER THE SEARCH GRID. The lobby's results are clips now
+   * (see `/api/browse/clips`); this stays because it is a public, approval-
+   * gated character listing with its own tests and no known second caller to
+   * break. It is NOT a fallback for the clip grid — nothing falls back to it.
    */
   app.get<{ Querystring: { category?: string; q?: string } }>(
     '/api/browse/characters',
     async (request) => ({
       characters: await browsePublicCharacters(opts.db, {
+        categorySlug: request.query.category ?? null,
+        query: request.query.q ?? null,
+      }),
+    }),
+  );
+
+  /**
+   * The lobby's SEARCH GRID: content clips, never characters.
+   *
+   * Every item is a real `character_visual_assets` content row — an asset id,
+   * one owning character, and bytes served by `/api/media/assets/:id/file`.
+   * Reference/identity images are excluded by kind, and there is no fallback
+   * branch of any sort: no profile image, no canonical image, no manifest, no
+   * placeholder. Nothing matching means an empty array.
+   *
+   * `category` and `q` are INDEPENDENT filters, exactly as the character grid
+   * treats them — selecting a pill never clears the search box.
+   */
+  app.get<{ Querystring: { category?: string; q?: string } }>(
+    '/api/browse/clips',
+    async (request) => ({
+      clips: await browsePublicClips(opts.db, {
         categorySlug: request.query.category ?? null,
         query: request.query.q ?? null,
       }),

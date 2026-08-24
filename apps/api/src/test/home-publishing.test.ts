@@ -8,6 +8,7 @@ import {
   characterVisualAssets,
   characterVisualIdentities,
   homeHeroClips,
+  homePlayWithMeCharacters,
 } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
@@ -210,40 +211,11 @@ const api = {
     on.app.inject({ method: 'DELETE', url: `/admin/home/hero/${assetId}`, cookies }),
   orderHero: (orderedIds: string[], cookies = adminCookies) =>
     on.app.inject({ method: 'PUT', url: '/admin/home/hero/order', payload: { orderedIds }, cookies }),
-  recent: (cookies = adminCookies) =>
-    on.app.inject({ method: 'GET', url: '/admin/home/recent', cookies }),
-  addRecent: (characterId: string, cookies = adminCookies) =>
-    on.app.inject({ method: 'POST', url: '/admin/home/recent', payload: { characterId }, cookies }),
-  removeRecent: (characterId: string, cookies = adminCookies) =>
-    on.app.inject({ method: 'DELETE', url: `/admin/home/recent/${characterId}`, cookies }),
-  orderRecent: (orderedIds: string[], cookies = adminCookies) =>
-    on.app.inject({ method: 'PUT', url: '/admin/home/recent/order', payload: { orderedIds }, cookies }),
-  resetRecent: (cookies = adminCookies) =>
-    on.app.inject({ method: 'POST', url: '/admin/home/recent/reset', cookies }),
-  play: (cookies = adminCookies) =>
-    on.app.inject({ method: 'GET', url: '/admin/home/play-with-me', cookies }),
-  playCandidates: (cookies = adminCookies) =>
-    on.app.inject({ method: 'GET', url: '/admin/home/play-with-me/candidates', cookies }),
-  addPlay: (characterId: string, cookies = adminCookies) =>
-    on.app.inject({
-      method: 'POST',
-      url: '/admin/home/play-with-me',
-      payload: { characterId },
-      cookies,
-    }),
-  removePlay: (characterId: string, cookies = adminCookies) =>
-    on.app.inject({ method: 'DELETE', url: `/admin/home/play-with-me/${characterId}`, cookies }),
-  orderPlay: (orderedIds: string[], cookies = adminCookies) =>
-    on.app.inject({
-      method: 'PUT',
-      url: '/admin/home/play-with-me/order',
-      payload: { orderedIds },
-      cookies,
-    }),
-  resetPlay: (cookies = adminCookies) =>
-    on.app.inject({ method: 'POST', url: '/admin/home/play-with-me/reset', cookies }),
   media: (assetId: string) =>
     on.app.inject({ method: 'GET', url: `/api/media/assets/${assetId}/file` }),
+  /** The lobby SEARCH grid — content clips, never characters. */
+  browseClips: (qs = '') =>
+    on.app.inject({ method: 'GET', url: `/api/browse/clips${qs}` }),
   discoveryCategories: () => on.app.inject({ method: 'GET', url: '/api/discovery/categories' }),
   clips: (qs = '') => on.app.inject({ method: 'GET', url: `/api/discovery/clips${qs}` }),
   adminDiscovery: (cookies = adminCookies) =>
@@ -744,15 +716,16 @@ describe('Play with Me', () => {
       .set({ storageKey: path })
       .where(eq(characterVisualAssets.id, pending.id));
 
-    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
-    expect(luna.clip).toBeNull();
+    // She has no ELIGIBLE video, so she is not on the rail at all.
+    const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
+    expect(rail.map((c) => c.id)).not.toContain(LUNA.id);
   });
 
   it('does NOT select a video that is approved but not publicly reachable', async () => {
     // Approved, but in no category, no Hero and carrying no keyword.
     await makeApprovedVideoAsset();
-    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
-    expect(luna.clip).toBeNull();
+    const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
+    expect(rail.map((c) => c.id)).not.toContain(LUNA.id);
   });
 
   it('does NOT select a video belonging to an INACTIVE character', async () => {
@@ -770,7 +743,7 @@ describe('Play with Me', () => {
     expect((await api.media(video.id)).statusCode).toBe(404);
   });
 
-  it('a character with NO eligible video gets clip=null and NO image substitute', async () => {
+  it('a character with NO eligible video is DROPPED, not shown with a substitute', async () => {
     // Fixture: reference image = asset A, no eligible video anywhere.
     const [assetA] = await on.db
       .select()
@@ -783,12 +756,13 @@ describe('Play with Me', () => {
       );
     expect(assetA).toBeDefined();
 
-    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
-    expect(luna).toBeDefined();
-    // She keeps her place on the rail — presence is about the character.
-    expect(luna.clip).toBeNull();
-    // And the payload carries NOTHING that could be mistaken for her media.
-    expect(JSON.stringify(luna)).not.toContain(assetA!.id);
+    const res = await api.home();
+    const rail = res.json().playWithMe as Array<{ id: string }>;
+    // She used to keep her place with clip=null. She no longer appears at all:
+    // one card means one character AND one real video.
+    expect(rail.map((c) => c.id)).not.toContain(LUNA.id);
+    // And her canonical reference is nowhere in the payload.
+    expect(res.payload).not.toContain(assetA!.id);
   });
 
   it('an approved IMAGE clip is not a rail clip either', async () => {
@@ -796,18 +770,28 @@ describe('Play with Me', () => {
     // surfaces. It must not become the card's media.
     const image = await makeApprovedAsset();
     await publishViaKeyword(image.id, 'imageonly');
-    const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
-    expect(luna.clip).toBeNull();
+    const res = await api.home();
+    const rail = res.json().playWithMe as Array<{ id: string }>;
+    expect(rail.map((c) => c.id)).not.toContain(LUNA.id);
+    // The image is legitimate content elsewhere — just not rail media.
+    expect(res.payload).not.toContain(image.id);
   });
 
-  it('picks the OLDEST eligible video when a character has several', async () => {
+  it('picks the NEWEST eligible video when a character has several', async () => {
+    // An operator who uploads a new clip expects to see it, not to wonder why
+    // the rail still shows her first ever upload.
     const first = await makeApprovedVideoAsset();
     await publishViaKeyword(first.id, 'multi');
+    await on.db
+      .update(characterVisualAssets)
+      .set({ createdAt: new Date(Date.now() - 60_000) })
+      .where(eq(characterVisualAssets.id, first.id));
     const second = await makeApprovedVideoAsset();
     await api.setAssetKeywords(second.id, ['multi']);
 
     const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
-    expect(luna.clip.id).toBe(first.id);
+    expect(luna.clip.id).toBe(second.id);
+    expect(luna.clip.id).not.toBe(first.id);
   });
 
   it('excludes inactive characters', async () => {
@@ -833,387 +817,108 @@ describe('Play with Me', () => {
  * character the operator did not choose must not appear, however new or active
  * they are. That is the property these tests exist to hold.
  */
-describe('curating Play with me', () => {
-  /** A brand-new active character, named to sort LAST alphabetically. */
-  async function makeCharacter(displayName: string) {
-    const [row] = await on.db
-      .insert(characters)
-      .values({
-        name: `play-subject-${displayName.toLowerCase().replace(/\W+/g, '-')}-${Date.now()}`,
-        displayName,
-        status: 'active',
-        systemPrompt: 'x',
-        shortBio: 'x',
-        personality: 'x',
-        conversationStyle: 'x',
-      })
-      .returning();
-    return row!;
-  }
-
-  async function activeAlphabetically() {
-    const rows = await on.db.select().from(characters).where(eq(characters.status, 'active'));
-    return [...rows]
-      .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.id.localeCompare(b.id))
-      .map((r) => r.id);
-  }
-
-  const publicIds = async () =>
-    (await api.home()).json().playWithMe.map((c: { id: string }) => c.id);
-
-  it('starts automatic: every active character, alphabetically', async () => {
-    const view = (await api.play()).json();
-    expect(view.curated).toBe(false);
-    expect(view.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
-      await activeAlphabetically(),
-    );
-    expect(await publicIds()).toEqual(await activeAlphabetically());
-  });
-
-  it('offers active characters as candidates, alphabetically, and no inactive one', async () => {
-    const rows = (await api.playCandidates()).json().candidates as Array<{ characterId: string }>;
-    expect(rows.map((c) => c.characterId)).toEqual(await activeAlphabetically());
-
-    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, LUNA.id));
-    const after = (await api.playCandidates()).json().candidates as Array<{ characterId: string }>;
-    expect(after.map((c) => c.characterId)).not.toContain(LUNA.id);
-  });
-
-  it('the first edit materialises the automatic list rather than replacing it', async () => {
-    const before = (await api.play()).json();
-    expect(before.curated).toBe(false);
-    const target = before.characters[0].characterId;
-
-    const after = (await api.removePlay(target)).json();
-    expect(after.curated).toBe(true);
-    expect(after.characters).toHaveLength(before.characters.length - 1);
-    expect(after.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
-      before.characters
-        .map((c: { characterId: string }) => c.characterId)
-        .filter((id: string) => id !== target),
-    );
-  });
-
-  it('adds a character at the end of the list', async () => {
-    const before = (await api.play()).json();
-    const extra = await makeCharacter('Zzz Late Arrival');
-
-    const after = (await api.addPlay(extra.id)).json();
-    expect(after.curated).toBe(true);
-    const ids = after.characters.map((c: { characterId: string }) => c.characterId);
-    expect(ids.slice(0, before.characters.length)).toEqual(
-      before.characters.map((c: { characterId: string }) => c.characterId),
-    );
-    expect(ids[ids.length - 1]).toBe(extra.id);
-  });
-
-  it('adding the same character twice changes nothing the second time', async () => {
-    const target = (await api.play()).json().characters[0].characterId;
-    const once = (await api.addPlay(target)).json();
-    const twice = (await api.addPlay(target)).json();
-    expect(twice.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
-      once.characters.map((c: { characterId: string }) => c.characterId),
-    );
-    expect(
-      twice.characters.filter((c: { characterId: string }) => c.characterId === target),
-    ).toHaveLength(1);
-  });
-
-  it('the public rail returns the EXACT curated order', async () => {
-    const ids = (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId);
-    const reversed = [...ids].reverse();
-    expect((await api.orderPlay(reversed)).statusCode).toBe(200);
-    expect(
-      (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId),
-    ).toEqual(reversed);
-    expect(await publicIds()).toEqual(reversed);
-  });
-
-  it('refuses an incomplete, duplicated or unknown reordering', async () => {
-    const ids = (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId);
-    await api.addPlay(ids[0]); // materialise so there is a stored list to reorder
-    const stored = (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId);
-    expect(stored.length).toBeGreaterThan(1);
-
-    for (const bad of [
-      stored.slice(1),
-      [stored[0], stored[0], ...stored.slice(2)],
-      [...stored.slice(1), '11111111-1111-4111-8111-111111111111'],
-    ]) {
-      // Exact permutation or nothing — the same 409 contract the sibling rails
-      // use, so a stale Admin tab can never silently reorder a list it has not
-      // seen.
-      const res = await api.orderPlay(bad);
-      expect(res.statusCode).toBe(409);
-      expect(res.payload).not.toContain('invalid input syntax');
-    }
-    // Rejected wholesale: the stored order is untouched.
-    expect(
-      (await api.play()).json().characters.map((c: { characterId: string }) => c.characterId),
-    ).toEqual(stored);
-  });
-
-  it('a curated rail NEVER blends in an automatic character', async () => {
-    const target = (await api.play()).json().characters[0].characterId;
-    await api.addPlay(target); // materialise
-    const curatedIds = (await api.play())
-      .json()
-      .characters.map((c: { characterId: string }) => c.characterId);
-
-    const outsider = await makeCharacter('Aaa Not Chosen');
-    expect(await publicIds()).toEqual(curatedIds);
-    expect(await publicIds()).not.toContain(outsider.id);
-  });
-
-  it('hides a curated member who becomes inactive, while Admin can still see and remove them', async () => {
-    const target = (await api.play()).json().characters[0].characterId;
-    await api.addPlay(target); // materialise
-    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, target));
-
-    expect(await publicIds()).not.toContain(target);
-    const view = (await api.play()).json();
-    const row = view.characters.find((c: { characterId: string }) => c.characterId === target);
-    expect(row).toBeDefined();
-    expect(row.status).toBe('inactive');
-    expect((await api.removePlay(target)).statusCode).toBe(200);
-  });
-
-  it('reset restores the automatic list, including characters added since', async () => {
-    const target = (await api.play()).json().characters[0].characterId;
-    await api.removePlay(target);
-    const outsider = await makeCharacter('Mmm Added Later');
-    expect(await publicIds()).not.toContain(outsider.id);
-
-    const reset = (await api.resetPlay()).json();
-    expect(reset.curated).toBe(false);
-    expect(reset.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
-      await activeAlphabetically(),
-    );
-    expect(await publicIds()).toContain(outsider.id);
-    expect(await publicIds()).toContain(target);
-  });
-
-  it('refuses an unknown or malformed id without a database error', async () => {
-    for (const id of ['00000000-0000-4000-8000-000000000000', 'not-a-uuid']) {
-      const res = await api.addPlay(id);
-      expect(res.statusCode).toBe(400);
-      expect(res.payload).not.toContain('invalid input syntax');
-      expect(res.payload).not.toContain('constraint');
-    }
-  });
-
-  it('leaks no storage key or filesystem path to Admin', async () => {
-    await api.addPlay((await api.play()).json().characters[0].characterId);
-    for (const body of [(await api.play()).payload, (await api.playCandidates()).payload]) {
-      expect(body).not.toContain('storageKey');
-      expect(body).not.toContain('storagePath');
-      expect(body).not.toContain('/app/var/media');
-    }
-  });
-
-  it('leaves Recently Added completely alone', async () => {
-    const recentBefore = (await api.recent()).json();
-    const target = (await api.play()).json().characters[0].characterId;
-    await api.removePlay(target);
-    await api.addPlay(target);
-
-    const recentAfter = (await api.recent()).json();
-    expect(recentAfter.curated).toBe(recentBefore.curated);
-    expect(recentAfter.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
-      recentBefore.characters.map((c: { characterId: string }) => c.characterId),
-    );
-  });
-});
-
-describe('Recently Added', () => {
-  it('defaults to the newest active characters, capped at 12', async () => {
-    const home = (await api.home()).json();
-    expect(home.recentlyAdded.length).toBeLessThanOrEqual(12);
-    expect((await api.recent()).json().curated).toBe(false);
-  });
-
-  it('is newest-first', async () => {
-    const ids = (await api.recent()).json().characters.map((c: { characterId: string }) => c.characterId);
-    const rows = await on.db.select().from(characters).where(eq(characters.status, 'active'));
-    const byNewest = [...rows]
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || a.id.localeCompare(b.id))
-      .slice(0, 12)
-      .map((r) => r.id);
-    expect(ids).toEqual(byNewest);
-  });
-
-  it('the first edit materialises the default rather than replacing it', async () => {
-    const before = (await api.recent()).json().characters.length;
-    const target = (await api.recent()).json().characters[0].characterId;
-    const after = (await api.removeRecent(target)).json();
-    expect(after.curated).toBe(true);
-    expect(after.characters).toHaveLength(before - 1);
-    expect(after.characters.map((c: { characterId: string }) => c.characterId)).not.toContain(target);
-  });
-
-  it('supports add, remove and reorder, and reset restores the default', async () => {
-    const initial = (await api.recent()).json().characters;
-    const [first, second] = initial;
-    await api.removeRecent(first.characterId);
-    const readded = (await api.addRecent(first.characterId)).json();
-    expect(readded.characters.map((c: { characterId: string }) => c.characterId)).toContain(
-      first.characterId,
-    );
-
-    const ids = readded.characters.map((c: { characterId: string }) => c.characterId);
-    const reversed = [...ids].reverse();
-    expect((await api.orderRecent(reversed)).statusCode).toBe(200);
-    expect(
-      (await api.recent()).json().characters.map((c: { characterId: string }) => c.characterId),
-    ).toEqual(reversed);
-
-    const reset = (await api.resetRecent()).json();
-    expect(reset.curated).toBe(false);
-    expect(reset.characters[0].characterId).toBe(second ? initial[0].characterId : first.characterId);
-  });
-
-  it('carries a profile image so Admin can preview the rail, and still no storage key', async () => {
-    // Parity with Play with me: the operator sees faces, not a list of names.
-    // The field is the one the public card already carries — nothing new is
-    // exposed, and the admin payload still leaks no storage key or path.
-    const view = (await api.recent()).json();
-    expect(view.characters.length).toBeGreaterThan(0);
-    for (const character of view.characters) {
-      expect(character).toHaveProperty('profileImage');
-    }
-    expect((await api.recent()).payload).not.toContain('storageKey');
-    expect((await api.recent()).payload).not.toContain('/app/var/media');
-  });
-
-  it('a curated rail still drops a character who becomes inactive', async () => {
-    const target = (await api.recent()).json().characters[0].characterId;
-    await api.addRecent(target); // materialise
-    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, target));
-    const home = (await api.home()).json();
-    expect(home.recentlyAdded.map((c: { id: string }) => c.id)).not.toContain(target);
-  });
-});
-
-/**
- * The Admin ADD path.
- *
- * Remove, reorder and reset were all reachable from the Home composer; adding
- * was not, so a character taken off the rail could never be put back. The
- * endpoints below already existed — these pin the behaviour the picker relies
- * on.
- */
-describe('putting a character back on Recently Added', () => {
-  const candidates = (cookies = adminCookies) =>
-    on.app.inject({ method: 'GET', url: '/admin/home/recent/candidates', cookies });
-
-  it('offers active characters, newest first', async () => {
-    const res = await candidates();
-    expect(res.statusCode).toBe(200);
-    const rows = res.json().candidates as Array<{ characterId: string }>;
-    expect(rows.length).toBeGreaterThan(0);
-
-    const active = await on.db.select().from(characters).where(eq(characters.status, 'active'));
-    const expected = [...active]
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || a.id.localeCompare(b.id))
-      .map((r) => r.id);
-    expect(rows.map((c) => c.characterId)).toEqual(expected);
-  });
-
-  it('offers no inactive character', async () => {
-    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, LUNA.id));
-    const rows = (await candidates()).json().candidates as Array<{ characterId: string }>;
-    expect(rows.map((c) => c.characterId)).not.toContain(LUNA.id);
-  });
-
-  it('restores a character that was removed', async () => {
-    // The exact UAT journey: take one off, then put it back.
-    const target = (await api.recent()).json().characters[0].characterId;
-    const removed = (await api.removeRecent(target)).json();
-    expect(removed.characters.map((c: { characterId: string }) => c.characterId)).not.toContain(
-      target,
-    );
-
-    const restored = (await api.addRecent(target)).json();
-    expect(restored.curated).toBe(true);
-    const ids = restored.characters.map((c: { characterId: string }) => c.characterId);
-    expect(ids).toContain(target);
-    // Appended, not reinserted where it used to sit.
-    expect(ids[ids.length - 1]).toBe(target);
-  });
-
-  it('adding from AUTOMATIC mode materialises the list rather than replacing it', async () => {
-    const before = (await api.recent()).json();
-    expect(before.curated).toBe(false);
-
-    const [extra] = await on.db
-      .insert(characters)
-      .values({
-        name: `picker-subject-${Date.now()}`,
-        displayName: 'Picker Subject',
-        status: 'active',
-        systemPrompt: 'x',
-        shortBio: 'x',
-        personality: 'x',
-        conversationStyle: 'x',
-      })
-      .returning();
-    // Older than everyone, so the automatic rail would never have surfaced it
-    // first — proving the add is what put it there.
-    await on.db
-      .update(characters)
-      .set({ createdAt: new Date('2000-01-01T00:00:00.000Z') })
-      .where(eq(characters.id, extra!.id));
-
-    const after = (await api.addRecent(extra!.id)).json();
-    expect(after.curated).toBe(true);
-    const ids = after.characters.map((c: { characterId: string }) => c.characterId);
-    expect(ids.slice(0, before.characters.length)).toEqual(
-      before.characters.map((c: { characterId: string }) => c.characterId),
-    );
-    expect(ids[ids.length - 1]).toBe(extra!.id);
-  });
-
-  it('adding the same character twice changes nothing the second time', async () => {
-    const target = (await api.recent()).json().characters[0].characterId;
-    const once = (await api.addRecent(target)).json();
-    const twice = (await api.addRecent(target)).json();
-    expect(twice.characters.map((c: { characterId: string }) => c.characterId)).toEqual(
-      once.characters.map((c: { characterId: string }) => c.characterId),
-    );
-    expect(
-      twice.characters.filter((c: { characterId: string }) => c.characterId === target),
-    ).toHaveLength(1);
-  });
-
-  it('refuses an unknown or malformed id without a database error', async () => {
-    for (const id of ['00000000-0000-4000-8000-000000000000', 'not-a-uuid']) {
-      const res = await api.addRecent(id);
-      expect(res.statusCode).toBe(400);
-      expect(res.payload).not.toContain('invalid input syntax');
-      expect(res.payload).not.toContain('constraint');
-    }
-  });
-
-  it('remove, reorder and reset still work after an add', async () => {
-    const target = (await api.recent()).json().characters[0].characterId;
-    await api.removeRecent(target);
-    const added = (await api.addRecent(target)).json();
-
-    const ids = added.characters.map((c: { characterId: string }) => c.characterId);
-    const reversed = [...ids].reverse();
-    expect((await api.orderRecent(reversed)).statusCode).toBe(200);
-    expect(
-      (await api.recent()).json().characters.map((c: { characterId: string }) => c.characterId),
-    ).toEqual(reversed);
-
-    expect((await api.removeRecent(target)).json().curated).toBe(true);
-    expect((await api.resetRecent()).json().curated).toBe(false);
-  });
-});
-
 /* ------------------------------------------------------------------ *
- * 6. Banner slots
+ * Play with me is DETERMINISTIC — the curation suites are gone
+ *
+ * These replace ~250 lines that exercised an automatic-versus-curated model:
+ * materialise-on-first-edit, exact-permutation reordering, add/remove/reset,
+ * and "a curated rail never blends in an automatic character". None of it
+ * exists any more. The rail is one rule:
+ *
+ *     active character → newest approved/public VIDEO of hers → one card
+ *
+ * so what is worth asserting is the rule itself, its stability, and that no
+ * stale override row can bend it. Those live in "Play with Me: one real video
+ * per character" and "Play with Me has no admin surface at all" below.
  * ------------------------------------------------------------------ */
+
+describe('Play with me is one deterministic rule', () => {
+  it('is every active character WITH a video, alphabetically, one card each', async () => {
+    const luna = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(luna.id, 'detlu');
+    const ember = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(ember.id, 'detem');
+
+    const rail = (await api.home()).json().playWithMe as Array<{
+      id: string;
+      displayName: string;
+      clip: { id: string; mediaType: string; characterId: string } | null;
+    }>;
+    // Alphabetical, and every entry is a distinct character with her own video.
+    const names = rail.map((c) => c.displayName);
+    expect([...names].sort((a, b) => a.localeCompare(b))).toEqual(names);
+    expect(new Set(rail.map((c) => c.id)).size).toBe(rail.length);
+    for (const card of rail) {
+      expect(card.clip).not.toBeNull();
+      expect(card.clip!.mediaType).toBe('video');
+      expect(card.clip!.characterId).toBe(card.id);
+    }
+  });
+
+  it('is STABLE across reads — the same rail, not a sample', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(video.id, 'detstable');
+    const once = (await api.home()).json().playWithMe;
+    const twice = (await api.home()).json().playWithMe;
+    expect(twice).toEqual(once);
+  });
+
+  it('has no modes: nothing in the payload says automatic or curated', async () => {
+    const payload = (await api.home()).payload;
+    expect(payload).not.toMatch(/"curated"/i);
+  });
+});
+
+describe('Recently Added is gone', () => {
+  it('is absent from the public Home payload entirely', async () => {
+    const res = await api.home();
+    expect(res.statusCode).toBe(200);
+    const home = res.json();
+    expect(home).not.toHaveProperty('recentlyAdded');
+    // Not merely absent as a key \u2014 absent as a word.
+    expect(res.payload).not.toMatch(/recentlyAdded/i);
+  });
+
+  it('still composes the rails that remain', async () => {
+    // The removal must not have taken Home with it.
+    const home = (await api.home()).json();
+    expect(home).toHaveProperty('playWithMe');
+    expect(home).toHaveProperty('categories');
+    expect(home).toHaveProperty('hero');
+    expect(home).toHaveProperty('banners');
+  });
+
+  it('serves no admin Recently Added route \u2014 every verb 404s', async () => {
+    const cookies = adminCookies;
+    const calls = [
+      on.app.inject({ method: 'GET', url: '/admin/home/recent', cookies }),
+      on.app.inject({ method: 'GET', url: '/admin/home/recent/candidates', cookies }),
+      on.app.inject({ method: 'POST', url: '/admin/home/recent', payload: { characterId: EMBER }, cookies }),
+      on.app.inject({ method: 'DELETE', url: `/admin/home/recent/${EMBER}`, cookies }),
+      on.app.inject({ method: 'PUT', url: '/admin/home/recent/order', payload: { orderedIds: [] }, cookies }),
+      on.app.inject({ method: 'POST', url: '/admin/home/recent/reset', cookies }),
+    ];
+    for (const res of await Promise.all(calls)) {
+      expect(res.statusCode).toBe(404);
+    }
+  });
+
+  it('is absent from the admin Home overview', async () => {
+    const res = await api.adminHome();
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).not.toHaveProperty('recentlyAdded');
+    expect(res.payload).not.toMatch(/recentlyAdded/i);
+  });
+
+  it('populates nothing automatically \u2014 creating characters adds no rail', async () => {
+    // The old rule was "the 12 newest active characters, computed per read".
+    // Creating characters must no longer bring any such list into existence.
+    await createCharacterByName('RecentProbe');
+    const res = await api.home();
+    expect(res.payload).not.toMatch(/recentlyAdded/i);
+    expect(res.json()).not.toHaveProperty('recentlyAdded');
+  });
+});
 
 describe('the two Home banner slots', () => {
   async function makeBanner(slot: string, title: string) {
@@ -1863,7 +1568,6 @@ describe('bad admin input is never a database error', () => {
     for (const qs of ['?limit=-5', '?limit=0', '?limit=abc', '?limit=99999999']) {
       for (const url of [
         `/admin/home/hero/candidates${qs}`,
-        `/admin/home/recent/candidates${qs}`,
         `/admin/discovery/content${qs}`,
       ]) {
         const res = await on.app.inject({ method: 'GET', url, cookies: adminCookies });
@@ -1933,26 +1637,6 @@ describe('authorization', () => {
       on.app.inject({ method: 'POST', url: '/admin/home/hero', payload: { assetIds: [] } }),
       on.app.inject({ method: 'DELETE', url: `/admin/home/hero/${UNKNOWN}` }),
       on.app.inject({ method: 'PUT', url: '/admin/home/hero/order', payload: { orderedIds: [] } }),
-      on.app.inject({ method: 'GET', url: '/admin/home/recent' }),
-      on.app.inject({ method: 'GET', url: '/admin/home/recent/candidates' }),
-      on.app.inject({ method: 'POST', url: '/admin/home/recent', payload: { characterId: UNKNOWN } }),
-      on.app.inject({ method: 'DELETE', url: `/admin/home/recent/${UNKNOWN}` }),
-      on.app.inject({ method: 'PUT', url: '/admin/home/recent/order', payload: { orderedIds: [] } }),
-      on.app.inject({ method: 'POST', url: '/admin/home/recent/reset' }),
-      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me' }),
-      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me/candidates' }),
-      on.app.inject({
-        method: 'POST',
-        url: '/admin/home/play-with-me',
-        payload: { characterId: UNKNOWN },
-      }),
-      on.app.inject({ method: 'DELETE', url: `/admin/home/play-with-me/${UNKNOWN}` }),
-      on.app.inject({
-        method: 'PUT',
-        url: '/admin/home/play-with-me/order',
-        payload: { orderedIds: [] },
-      }),
-      on.app.inject({ method: 'POST', url: '/admin/home/play-with-me/reset' }),
       on.app.inject({
         method: 'PATCH',
         url: `/admin/home/categories/${UNKNOWN}`,
@@ -1978,14 +1662,6 @@ describe('authorization', () => {
       on.app.inject({ method: 'GET', url: '/admin/home', cookies: userCookies }),
       on.app.inject({ method: 'GET', url: '/admin/home/preview', cookies: userCookies }),
       on.app.inject({ method: 'GET', url: '/admin/home/hero', cookies: userCookies }),
-      on.app.inject({ method: 'GET', url: '/admin/home/recent', cookies: userCookies }),
-      on.app.inject({ method: 'POST', url: '/admin/home/recent/reset', cookies: userCookies }),
-      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me', cookies: userCookies }),
-      on.app.inject({
-        method: 'POST',
-        url: '/admin/home/play-with-me/reset',
-        cookies: userCookies,
-      }),
       on.app.inject({
         method: 'PATCH',
         url: `/admin/home/categories/${UNKNOWN}`,
@@ -2676,12 +2352,15 @@ describe('the Hero fallback is never persisted', () => {
 });
 
 describe('the public lobby has no Recently Added surface', () => {
-  it('the CMS still composes it — the feature is intact', async () => {
-    const home = (await api.home()).json();
-    expect(Array.isArray(home.recentlyAdded)).toBe(true);
-    expect(home.recentlyAdded.length).toBeGreaterThan(0);
-    // And Admin can still curate it.
-    expect((await api.recent()).statusCode).toBe(200);
+  it('and neither does the CMS — the feature was removed, not hidden', async () => {
+    const res = await api.home();
+    expect(res.json()).not.toHaveProperty('recentlyAdded');
+    expect(res.payload).not.toMatch(/recentlyAdded/i);
+    // And Admin can no longer curate it.
+    expect(
+      (await on.app.inject({ method: 'GET', url: '/admin/home/recent', cookies: adminCookies }))
+        .statusCode,
+    ).toBe(404);
   });
 });
 
@@ -2720,8 +2399,12 @@ describe('the Nova journey', () => {
     ).json();
     expect(adminList.map((c: { id: string }) => c.id)).toContain(nova.id);
 
-    /* 4. Upload 12 clips. No quantity anywhere refuses one. */
-    for (let i = 0; i < 12; i += 1) {
+    /* 4. Upload 12 clips. No quantity anywhere refuses one.
+          The FIRST is a video, because the Play with me rail is video-only:
+          one card is one character plus one real CMS video, so a character
+          who has only uploaded stills never reaches it. */
+    expect((await uploadVideoTo(nova.id)).statusCode).toBe(201);
+    for (let i = 0; i < 11; i += 1) {
       expect((await uploadTo(nova.id)).statusCode).toBe(201);
     }
 
@@ -2770,9 +2453,30 @@ describe('the Nova journey', () => {
       expect(row.status).toBe('approved');
     }
 
-    /* 8. Assign three to a category, then reorder them. */
+    /* 8. Assign three to a category, then reorder them.
+          Her VIDEO is chosen deliberately rather than by list position: the
+          Play with me rail is video-only, so the clip that makes her card is
+          the one that has to be publicly reachable. */
     const category = await makeCategory('Nova Cat');
-    const chosen = beforeApproval.slice(0, 3).map((a) => a.assetId);
+    const novaAssets = await on.db
+      .select({
+        id: characterVisualAssets.id,
+        storageKey: characterVisualAssets.storageKey,
+        provenance: characterVisualAssets.provenance,
+      })
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.characterId, nova.id));
+    // A real upload's storageKey is an opaque serve path; the stored file's
+    // extension lives in provenance, which is exactly what `mediaTypeOf` reads.
+    const video = novaAssets.find((a) =>
+      String((a.provenance as { storagePath?: string }).storagePath ?? '').endsWith('.webm'),
+    );
+    expect(video).toBeDefined();
+    const videoAssetId = video!.id;
+    const chosen = [
+      videoAssetId,
+      ...beforeApproval.map((a) => a.assetId).filter((id) => id !== videoAssetId).slice(0, 2),
+    ];
     expect((await assign(category.id, chosen)).statusCode).toBe(200);
 
     const reversed = [...chosen].reverse();
@@ -2828,40 +2532,40 @@ describe('the Nova journey', () => {
     expect(patched.statusCode).toBe(200);
     expect(patched.json().status).toBe('active');
 
-    /* 13. Now the rails will offer her, and take her. */
-    const playCandidates = (await api.playCandidates()).json().candidates as Array<{
-      characterId: string;
-    }>;
-    expect(playCandidates.map((c) => c.characterId)).toContain(nova.id);
-    const play = (await api.addPlay(nova.id)).json();
-    expect(play.characters.map((c: { characterId: string }) => c.characterId)).toContain(nova.id);
-
-    const recentCandidates = (
-      await on.app.inject({
-        method: 'GET',
-        url: '/admin/home/recent/candidates',
-        cookies: adminCookies,
-      })
-    ).json().candidates as Array<{ characterId: string }>;
-    expect(recentCandidates.map((c) => c.characterId)).toContain(nova.id);
-    const recentRail = (await api.addRecent(nova.id)).json();
-    expect(recentRail.characters.map((c: { characterId: string }) => c.characterId)).toContain(
-      nova.id,
+    /* 13. She is on Play with me BY RULE — going live plus an approved,
+          publicly reachable video is the whole of it. There is no rail to add
+          her to, and nothing an operator has to remember to do. */
+    const railIds = ((await api.home()).json().playWithMe as Array<{ id: string }>).map(
+      (c) => c.id,
     );
+    expect(railIds).toContain(nova.id);
 
-    /* 14. The two rails are independent: removing her from one leaves the
-          other untouched. */
-    await api.removePlay(nova.id);
-    expect(
-      (await api.recent()).json().characters.map((c: { characterId: string }) => c.characterId),
-    ).toContain(nova.id);
-    await api.addPlay(nova.id);
+    /* 14. The Hero is independent and untouched by any of it. */
+    const heroBefore = (await api.adminHome()).json().hero;
+    expect((await api.adminHome()).json().hero).toEqual(heroBefore);
 
     /* 15. She is publicly visible, and so is the clip she was placed with. */
     const live = (await api.home()).json();
-    expect(live.playWithMe.map((c: { id: string }) => c.id)).toContain(nova.id);
+    const novaCard = (live.playWithMe as Array<{ id: string; clip: { id: string; mediaType: string; characterId: string } | null }>)
+      .find((c) => c.id === nova.id);
+    expect(novaCard).toBeDefined();
+    // Her card carries HER video, by asset id — not a portrait, not a placeholder.
+    expect(novaCard!.clip).not.toBeNull();
+    expect(novaCard!.clip!.mediaType).toBe('video');
+    expect(novaCard!.clip!.characterId).toBe(nova.id);
+    expect(novaCard!.clip!.id).toBe(videoAssetId);
     expect(live.hero.map((c: { id: string }) => c.id)).toContain(chosen[0]);
     expect((await api.media(chosen[0]!)).statusCode).toBe(200);
+
+    // And the SEARCH grid returns her real content assets, never her identity.
+    const searched = (
+      await on.app.inject({
+        method: 'GET',
+        url: `/api/browse/clips?q=${encodeURIComponent('Nova')}`,
+      })
+    ).json().clips as Array<{ id: string; characterId: string }>;
+    expect(searched.length).toBeGreaterThan(0);
+    for (const c of searched) expect(c.characterId).toBe(nova.id);
 
     // And she is reachable by the category pill she was merchandised into.
     const pills = (
@@ -2876,9 +2580,9 @@ describe('the Nova journey', () => {
     ).json().characters as Array<{ id: string }>;
     expect(browsed.map((c) => c.id)).toContain(nova.id);
 
-    /* 16. The approved public lobby has no Recently Added rail, so curating it
-          must not have created one. The CMS still holds the curation. */
-    expect(recentRail.curated).toBe(true);
+    /* 16. Recently Added no longer exists anywhere in the journey — not in the
+          payload the operator previews, and not as an admin route. */
+    expect((await api.home()).payload).not.toMatch(/recentlyAdded/i);
   });
 });
 
@@ -2958,20 +2662,19 @@ describe('an uploaded video becomes the public card’s clip', () => {
     expect((await api.media(assetId)).statusCode).toBe(200);
   });
 
-  it('gives her NO clip while the video is only uploaded, not approved', async () => {
+  it('keeps her OFF the rail while the video is only uploaded, not approved', async () => {
+    // She used to appear with clip=null. The rail is now one character plus one
+    // real video, so an unapproved upload leaves her off it entirely.
     const { nova } = await novaWithVideo();
     expect((await publish(nova.id)).statusCode).toBe(200);
-    const card = await cardFor(nova.id);
-    expect(card).toBeDefined();
-    expect(card!.clip).toBeNull();
+    expect(await cardFor(nova.id)).toBeUndefined();
   });
 
-  it('gives her NO clip while she is approved but placed nowhere', async () => {
+  it('keeps her OFF the rail while she is approved but placed nowhere', async () => {
     const { nova, assetId } = await novaWithVideo();
     await approve(assetId);
     await publish(nova.id);
-    const card = await cardFor(nova.id);
-    expect(card!.clip).toBeNull();
+    expect(await cardFor(nova.id)).toBeUndefined();
     expect((await api.media(assetId)).statusCode).toBe(404);
   });
 
@@ -3190,3 +2893,331 @@ describe('a character’s public content collection', () => {
     }
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * THE PLAY WITH ME INVARIANT
+ *
+ * One card = one character + one CMS VIDEO asset belonging to that exact
+ * character. Not a portrait, not a placeholder, not an image, not a manifest
+ * entry, and never another character's asset.
+ * ------------------------------------------------------------------ */
+
+describe('Play with Me: one real video per character, or no card', () => {
+  it('gives a character with an eligible video exactly one card', async () => {
+    const a = await makeApprovedVideoAsset(LUNA.id);
+    const b = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(a.id, 'pwmone');
+    await publishViaKeyword(b.id, 'pwmtwo');
+
+    const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
+    expect(rail.filter((c) => c.id === LUNA.id)).toHaveLength(1);
+  });
+
+  it('the selected asset is a VIDEO and belongs to the displayed character', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(video.id, 'pwmowner');
+
+    const rail = (await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string; mediaType: string; characterId: string } | null;
+    }>;
+    for (const card of rail) {
+      expect(card.clip).not.toBeNull();
+      expect(card.clip!.mediaType).toBe('video');
+      // Ownership: the asset's character is the card's character.
+      expect(card.clip!.characterId).toBe(card.id);
+    }
+  });
+
+  it('picks the NEWEST eligible video when a character has several', async () => {
+    const older = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(older.id, 'pwmold');
+    // Force a strictly later createdAt so the ordering is unambiguous.
+    await on.db
+      .update(characterVisualAssets)
+      .set({ createdAt: new Date(Date.now() - 60_000) })
+      .where(eq(characterVisualAssets.id, older.id));
+    const newer = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(newer.id, 'pwmnew');
+
+    const card = ((await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string } | null;
+    }>).find((c) => c.id === EMBER.id);
+    expect(card?.clip?.id).toBe(newer.id);
+  });
+
+  it('EXCLUDES a character whose only content is an IMAGE', async () => {
+    const image = await makeApprovedAsset(EMBER.id);
+    await publishViaKeyword(image.id, 'pwmimage');
+
+    const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
+    expect(rail.map((c) => c.id)).not.toContain(EMBER.id);
+  });
+
+  it('EXCLUDES a character with no content at all — no portrait, no placeholder', async () => {
+    const res = await api.home();
+    const rail = res.json().playWithMe as Array<{ id: string; clip: unknown }>;
+    // Whoever is on the rail has a clip. There is no clip-less card.
+    for (const card of rail) expect(card.clip).not.toBeNull();
+    // And no card ever carries a profile image as its media.
+    expect(res.payload).not.toContain('profileImage":"http');
+  });
+
+  it('EXCLUDES a reference/identity asset even when it is the only one', async () => {
+    // A canonical reference is approved and reachable, but it is not content.
+    const rail = (await api.home()).json().playWithMe as Array<{
+      clip: { id: string } | null;
+    }>;
+    const referenceIds = (
+      await on.db
+        .select({ id: characterVisualAssets.id })
+        .from(characterVisualAssets)
+        .where(eq(characterVisualAssets.kind, 'reference'))
+    ).map((r) => r.id);
+    for (const card of rail) {
+      if (card.clip) expect(referenceIds).not.toContain(card.clip.id);
+    }
+  });
+
+  it('EXCLUDES an unapproved video', async () => {
+    const pending = await makeUnapprovedAsset(EMBER.id);
+    await publishViaKeyword(pending.id, 'pwmpending');
+    const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
+    expect(rail.map((c) => c.id)).not.toContain(EMBER.id);
+  });
+
+  it('EXCLUDES a video that is approved but reachable from nowhere', async () => {
+    const orphan = await makeApprovedVideoAsset(EMBER.id);
+    // Deliberately NOT published to any keyword, category or the Hero.
+    const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
+    expect(rail.map((c) => c.id)).not.toContain(EMBER.id);
+    // And its bytes are refused, which is the same rule stated twice.
+    expect((await api.media(orphan.id)).statusCode).toBe(404);
+  });
+
+  it('EXCLUDES an inactive character even with a published video', async () => {
+    const video = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(video.id, 'pwminactive');
+    await on.db
+      .update(characters)
+      .set({ status: 'inactive' })
+      .where(eq(characters.id, EMBER.id));
+
+    const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
+    expect(rail.map((c) => c.id)).not.toContain(EMBER.id);
+  });
+
+  it('leaks no storage key or filesystem path with the rail', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(video.id, 'pwmleak');
+    const payload = (await api.home()).payload;
+    expect(payload).not.toContain('storageKey');
+    expect(payload).not.toContain('/app/var/media');
+    expect(payload).not.toContain(testEnv.media.storageDir);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * SEARCH IS CLIPS ONLY
+ *
+ * Every result is a real character_visual_assets CONTENT row, resolvable
+ * through the one public media route. Never an identity image, never a
+ * fabricated result.
+ * ------------------------------------------------------------------ */
+
+describe('Search returns CMS content clips and nothing else', () => {
+  it('returns real assets whose bytes the media route actually serves', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(video.id, 'searchreal');
+
+    const clips = (await api.browseClips()).json().clips as Array<{
+      id: string;
+      url: string;
+      characterId: string;
+    }>;
+    expect(clips.length).toBeGreaterThan(0);
+    for (const c of clips) {
+      expect(c.url).toBe(`/api/media/assets/${c.id}/file`);
+      expect((await api.media(c.id)).statusCode).toBe(200);
+    }
+  });
+
+  it('EXCLUDES reference/identity assets', async () => {
+    const referenceIds = new Set(
+      (
+        await on.db
+          .select({ id: characterVisualAssets.id })
+          .from(characterVisualAssets)
+          .where(eq(characterVisualAssets.kind, 'reference'))
+      ).map((r) => r.id),
+    );
+    const clips = (await api.browseClips()).json().clips as Array<{ id: string }>;
+    for (const c of clips) expect(referenceIds.has(c.id)).toBe(false);
+  });
+
+  it('every result belongs to the character it names', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(video.id, 'searchowner');
+
+    const clips = (await api.browseClips()).json().clips as Array<{
+      id: string;
+      characterId: string;
+    }>;
+    const owners = new Map(
+      (
+        await on.db
+          .select({ id: characterVisualAssets.id, characterId: characterVisualAssets.characterId })
+          .from(characterVisualAssets)
+      ).map((r) => [r.id, r.characterId]),
+    );
+    for (const c of clips) expect(owners.get(c.id)).toBe(c.characterId);
+  });
+
+  it('EXCLUDES an approved IMAGE content asset — Search is video-only', async () => {
+    // The regression this pins: an uploaded image is legitimate, approved,
+    // publicly reachable content, and it still must not be a search result.
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(video.id, 'searchvid');
+    const image = await makeApprovedAsset(LUNA.id);
+    await publishViaKeyword(image.id, 'searchimg');
+
+    const res = await api.browseClips();
+    const clips = res.json().clips as Array<{ id: string; mediaType: string }>;
+    // Her video is there...
+    expect(clips.find((c) => c.id === video.id)?.mediaType).toBe('video');
+    // ...and the image is not, by id and by absence from the payload.
+    expect(clips.find((c) => c.id === image.id)).toBeUndefined();
+    expect(res.payload).not.toContain(image.id);
+    // Nothing returned is anything but a video.
+    expect(clips.length).toBeGreaterThan(0);
+    for (const c of clips) expect(c.mediaType).toBe('video');
+    // Its bytes remain public — this is a search rule, not a visibility change.
+    expect((await api.media(image.id)).statusCode).toBe(200);
+  });
+
+  it('returns ONLY videos, whatever the mix of approved content', async () => {
+    await publishViaKeyword((await makeApprovedAsset(LUNA.id)).id, 'mixa');
+    await publishViaKeyword((await makeApprovedAsset(EMBER.id)).id, 'mixb');
+    await publishViaKeyword((await makeApprovedVideoAsset(EMBER.id)).id, 'mixc');
+    const clips = (await api.browseClips()).json().clips as Array<{ mediaType: string }>;
+    expect(clips.length).toBeGreaterThan(0);
+    expect(clips.every((c) => c.mediaType === 'video')).toBe(true);
+  });
+
+  it('EXCLUDES unapproved and unreachable content', async () => {
+    const pending = await makeUnapprovedAsset(LUNA.id);
+    await publishViaKeyword(pending.id, 'searchpending');
+    const orphan = await makeApprovedVideoAsset(LUNA.id); // published nowhere
+
+    const ids = ((await api.browseClips()).json().clips as Array<{ id: string }>).map((c) => c.id);
+    expect(ids).not.toContain(pending.id);
+    expect(ids).not.toContain(orphan.id);
+  });
+
+  it('EXCLUDES content belonging to an inactive character', async () => {
+    const video = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(video.id, 'searchretired');
+    expect(
+      ((await api.browseClips()).json().clips as Array<{ id: string }>).map((c) => c.id),
+    ).toContain(video.id);
+
+    await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, EMBER.id));
+    expect(
+      ((await api.browseClips()).json().clips as Array<{ id: string }>).map((c) => c.id),
+    ).not.toContain(video.id);
+  });
+
+  it('MANUFACTURES NOTHING — an unmatched query returns an empty array', async () => {
+    const res = await api.browseClips('?q=zzzznobodyhasthisname');
+    expect(res.statusCode).toBe(200);
+    expect(res.json().clips).toEqual([]);
+    // No invented result, no placeholder object, no profile image.
+    expect(res.payload).not.toContain('profileImage');
+    expect(res.payload).not.toContain('placehold');
+  });
+
+  it('matches on the owning character name', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(video.id, 'searchname');
+    const ids = (
+      (await api.browseClips(`?q=${encodeURIComponent(LUNA.displayName)}`)).json()
+        .clips as Array<{ id: string; characterId: string }>
+    );
+    expect(ids.length).toBeGreaterThan(0);
+    for (const c of ids) expect(c.characterId).toBe(LUNA.id);
+  });
+
+  it('an unknown category matches nothing rather than everything', async () => {
+    const res = await api.browseClips('?category=no-such-category-slug');
+    expect(res.json().clips).toEqual([]);
+  });
+
+  it('narrows to a published category when a pill is selected', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    const category = await makeCategory('Search Cat');
+    await assign(category.id, [video.id]);
+    await api.publish(category.id, true);
+
+    const ids = (
+      (await api.browseClips(`?category=${category.slug}`)).json().clips as Array<{ id: string }>
+    ).map((c) => c.id);
+    expect(ids).toContain(video.id);
+  });
+
+  it('leaks no storage key or filesystem path', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(video.id, 'searchleak');
+    const payload = (await api.browseClips()).payload;
+    expect(payload).not.toContain('storageKey');
+    expect(payload).not.toContain('storagePath');
+    expect(payload).not.toContain('/app/var/media');
+    expect(payload).not.toContain(testEnv.media.storageDir);
+    // And no character identity fields at all — a result is an asset.
+    expect(payload).not.toContain('profileImage');
+  });
+});
+
+describe('Play with Me has no admin surface at all', () => {
+  it('serves no admin Play with me route — every verb 404s', async () => {
+    const cookies = adminCookies;
+    const calls = [
+      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me', cookies }),
+      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me/candidates', cookies }),
+      on.app.inject({ method: 'POST', url: '/admin/home/play-with-me', payload: { characterId: EMBER.id }, cookies }),
+      on.app.inject({ method: 'DELETE', url: `/admin/home/play-with-me/${EMBER.id}`, cookies }),
+      on.app.inject({ method: 'PUT', url: '/admin/home/play-with-me/order', payload: { orderedIds: [] }, cookies }),
+      on.app.inject({ method: 'POST', url: '/admin/home/play-with-me/reset', cookies }),
+    ];
+    for (const res of await Promise.all(calls)) expect(res.statusCode).toBe(404);
+  });
+
+  it('the rail is the RULE, not an arrangement: publishing a video is the only lever', async () => {
+    // active character → newest approved/public video → one card.
+    const absent = ((await api.home()).json().playWithMe as Array<{ id: string }>).map((c) => c.id);
+    expect(absent).not.toContain(EMBER.id);
+
+    const video = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(video.id, 'onlylever');
+
+    const card = ((await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string; mediaType: string } | null;
+    }>).find((c) => c.id === EMBER.id);
+    expect(card?.clip?.id).toBe(video.id);
+    expect(card?.clip?.mediaType).toBe('video');
+  });
+
+  it('rows left in the retired override table change nothing', async () => {
+    // The table survives so the removal needed no migration. Nothing reads it.
+    await on.db
+      .insert(homePlayWithMeCharacters)
+      .values({ characterId: EMBER.id, position: 0 })
+      .onConflictDoNothing();
+    const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
+    // Ember has no eligible video in this test, so the stale row cannot put her
+    // on the rail — the rule decides, not the table.
+    expect(rail.map((c) => c.id)).not.toContain(EMBER.id);
+  });
+});
+

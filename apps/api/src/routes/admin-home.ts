@@ -2,26 +2,14 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Db } from '../db/client.js';
 import {
   addHeroClips,
-  addRecentCharacter,
   HomeAdminOrderError,
   HomeAdminValidationError,
-  addPlayWithMeCharacter,
   listHeroCandidates,
   listHeroClipsForAdmin,
   listHomeCategories,
-  listPlayWithMeCandidates,
-  listPlayWithMeForAdmin,
-  listRecentCandidates,
-  listRecentlyAddedForAdmin,
   removeHeroClip,
-  removePlayWithMeCharacter,
-  removeRecentCharacter,
   reorderHeroClips,
   reorderHomeCategories,
-  reorderPlayWithMeCharacters,
-  reorderRecentCharacters,
-  resetPlayWithMe,
-  resetRecentlyAdded,
   setCategoryHomePublication,
 } from '../services/home-admin-service.js';
 import { composeHome, heroFallback, listPlayWithMe } from '../services/home-composition-service.js';
@@ -95,7 +83,6 @@ export default async function adminHomeRoutes(
        * because a configured Hero is never topped up.
        */
       heroFallback: hero.length > 0 ? [] : heroFallback(await listPlayWithMe(opts.db)),
-      recentlyAdded: await listRecentlyAddedForAdmin(opts.db),
     };
   });
 
@@ -224,129 +211,4 @@ export default async function adminHomeRoutes(
     },
   );
 
-  /* ---------------- play with me ---------------- */
-
-  app.get('/admin/home/play-with-me', adminOnly, async () => listPlayWithMeForAdmin(opts.db));
-
-  app.get<{ Querystring: { limit?: string } }>(
-    '/admin/home/play-with-me/candidates',
-    adminOnly,
-    async (request) => ({
-      candidates: await listPlayWithMeCandidates(opts.db, boundedLimit(request.query.limit)),
-    }),
-  );
-
-  app.post<{ Body: { characterId: string } }>(
-    '/admin/home/play-with-me',
-    {
-      ...adminOnly,
-      schema: {
-        body: {
-          type: 'object',
-          required: ['characterId'],
-          additionalProperties: false,
-          properties: { characterId: { type: 'string' } },
-        },
-      },
-    },
-    async (request, reply) => {
-      try {
-        return await addPlayWithMeCharacter(opts.db, request.body.characterId);
-      } catch (error) {
-        return failed(reply, error);
-      }
-    },
-  );
-
-  app.delete<{ Params: { characterId: string } }>(
-    '/admin/home/play-with-me/:characterId',
-    adminOnly,
-    async (request, reply) => {
-      try {
-        return await removePlayWithMeCharacter(opts.db, request.params.characterId);
-      } catch (error) {
-        return failed(reply, error);
-      }
-    },
-  );
-
-  app.put<{ Body: { orderedIds: string[] } }>(
-    '/admin/home/play-with-me/order',
-    { ...adminOnly, schema: { body: orderBody } },
-    async (request, reply) => {
-      try {
-        await reorderPlayWithMeCharacters(opts.db, request.body.orderedIds);
-      } catch (error) {
-        return failed(reply, error);
-      }
-      return listPlayWithMeForAdmin(opts.db);
-    },
-  );
-
-  /** Clears the override, restoring the automatic alphabetical list. */
-  app.post('/admin/home/play-with-me/reset', adminOnly, async () =>
-    resetPlayWithMe(opts.db),
-  );
-
-  /* ---------------- recently added ---------------- */
-
-  app.get('/admin/home/recent', adminOnly, async () => listRecentlyAddedForAdmin(opts.db));
-
-  app.get<{ Querystring: { limit?: string } }>(
-    '/admin/home/recent/candidates',
-    adminOnly,
-    async (request) => ({
-      candidates: await listRecentCandidates(opts.db, boundedLimit(request.query.limit)),
-    }),
-  );
-
-  app.post<{ Body: { characterId: string } }>(
-    '/admin/home/recent',
-    {
-      ...adminOnly,
-      schema: {
-        body: {
-          type: 'object',
-          required: ['characterId'],
-          additionalProperties: false,
-          properties: { characterId: { type: 'string' } },
-        },
-      },
-    },
-    async (request, reply) => {
-      try {
-        return await addRecentCharacter(opts.db, request.body.characterId);
-      } catch (error) {
-        return failed(reply, error);
-      }
-    },
-  );
-
-  app.delete<{ Params: { characterId: string } }>(
-    '/admin/home/recent/:characterId',
-    adminOnly,
-    async (request, reply) => {
-      try {
-        return await removeRecentCharacter(opts.db, request.params.characterId);
-      } catch (error) {
-        return failed(reply, error);
-      }
-    },
-  );
-
-  app.put<{ Body: { orderedIds: string[] } }>(
-    '/admin/home/recent/order',
-    { ...adminOnly, schema: { body: orderBody } },
-    async (request, reply) => {
-      try {
-        await reorderRecentCharacters(opts.db, request.body.orderedIds);
-      } catch (error) {
-        return failed(reply, error);
-      }
-      return listRecentlyAddedForAdmin(opts.db);
-    },
-  );
-
-  /** Clears the override, restoring the automatic 12 newest. */
-  app.post('/admin/home/recent/reset', adminOnly, async () => resetRecentlyAdded(opts.db));
 }

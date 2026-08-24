@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import LobbyTopBar from './LobbyTopBar';
 import HeroCarousel from './HeroCarousel';
-import CharacterRail from './CharacterRail';
+import ClipGridCard from './ClipGridCard';
 import ClipRail from './ClipRail';
 import HomeBannerSlot from './HomeBannerSlot';
 import DiscoveryStrip from './DiscoveryStrip';
@@ -55,6 +55,14 @@ function card(id = 'a'): PublicCharacterCard {
     profileImage: null,
     categories: [],
     clip: clip(id),
+  };
+}
+
+/** A card whose representative clip is a real VIDEO — what the rail requires. */
+function videoCard(id = 'a'): PublicCharacterCard {
+  return {
+    ...card(id),
+    clip: { ...clip(id), mediaType: 'video', url: `/api/media/assets/vid-${id}/file` },
   };
 }
 
@@ -140,22 +148,6 @@ describe('the filter control stays fixed while the pills scroll', () => {
 });
 
 describe('rails render CMS data and invent nothing', () => {
-  it('a character rail shows one card per character with no invented badge or age', () => {
-    const markup = router(<CharacterRail title="Play with me" characters={[card('a'), card('b')]} />);
-    expect(markup).toContain('Play with me');
-    expect(markup).toContain('Name a');
-    expect(markup).toContain('Name b');
-    for (const invented of ['Online', '🔥 Hot', '>New<']) {
-      expect(markup).not.toContain(invented);
-    }
-  });
-
-  it('a character rail states no presence, because there is no presence system', () => {
-    const markup = router(<CharacterRail title="Play with me" characters={[card()]} />);
-    expect(markup.toLowerCase()).not.toContain('online');
-    expect(markup.toLowerCase()).not.toContain('offline');
-  });
-
   it('a clip rail shows its name and tagline', () => {
     const markup = router(<ClipRail rail={rail()} />);
     expect(markup).toContain('Trending Now');
@@ -163,7 +155,7 @@ describe('rails render CMS data and invent nothing', () => {
   });
 
   it('an empty rail renders nothing at all', () => {
-    expect(router(<CharacterRail title="Play with me" characters={[]} />)).toBe('');
+    expect(router(<PlayWithMeCarousel characters={[]} />)).toBe('');
     expect(router(<ClipRail rail={{ ...rail(), clips: [] }} />)).toBe('');
   });
 
@@ -253,7 +245,8 @@ describe('no storage path can reach the markup', () => {
   it('renders only opaque, id-keyed media locators', () => {
     const markup =
       router(<HeroCarousel clips={[clip()]} />) +
-      router(<CharacterRail title="Play with me" characters={[card()]} />) +
+      router(<PlayWithMeCarousel characters={[videoCard()]} />) +
+      router(<ClipGridCard clip={clip()} />) +
       router(<ClipRail rail={rail()} />) +
       router(<FeedView clips={[clip()]} onClose={() => {}} />);
     expect(markup).not.toContain('storageKey');
@@ -265,7 +258,8 @@ describe('no storage path can reach the markup', () => {
 describe('the adults-only guardrail still holds', () => {
   it('no rendered surface carries a minor-coded term', () => {
     const markup = (
-      router(<CharacterRail title="Play with me" characters={[card()]} />) +
+      router(<PlayWithMeCarousel characters={[videoCard()]} />) +
+      router(<ClipGridCard clip={clip()} />) +
       router(<ClipRail rail={rail()} />) +
       renderToStaticMarkup(
         <DiscoveryStrip categories={categories} active="sexy" onSelect={() => {}} />,
@@ -333,7 +327,7 @@ describe('the original character-card presentation', () => {
 });
 
 describe('the original Play with me rail', () => {
-  const markup = router(<PlayWithMeCarousel characters={[card('a'), card('b')]} />);
+  const markup = router(<PlayWithMeCarousel characters={[videoCard('a'), videoCard('b')]} />);
 
   it('keeps its heading and Swipe mode link', () => {
     expect(markup).toContain('Play with me');
@@ -355,10 +349,72 @@ describe('the original Play with me rail', () => {
   });
 
   it('is the ONLY character rail the lobby renders', () => {
-    // The approved design has one rail. Recently Added is a CMS feature with
-    // no public surface, so no second rail may appear here.
+    // The approved design has one rail, and Recently Added has been removed as
+    // a product feature, so no second rail may appear here.
     expect(markup.match(/aria-label="Play with me"/g)).toHaveLength(1);
     expect(markup).not.toContain('Recently Added');
+  });
+
+  /* ---------------------------------------------------------------- *
+   * The invariant: one card = one character + one real CMS VIDEO
+   * ---------------------------------------------------------------- */
+
+  it('renders a VIDEO element per card, from that character\u2019s own asset route', () => {
+    expect(markup.match(/<video/g)).toHaveLength(2);
+    expect(markup).toContain('/api/media/assets/vid-a/file');
+    expect(markup).toContain('/api/media/assets/vid-b/file');
+    expect(markup).not.toContain('<img');
+  });
+
+  it('keeps autoplay, muted, loop and playsInline on every card', () => {
+    for (const attr of ['autoplay', 'muted', 'loop', 'playsinline']) {
+      expect(markup.match(new RegExp(attr, 'g'))?.length).toBe(2);
+    }
+  });
+
+  it('DROPS a character with no eligible video rather than showing an image', () => {
+    // `card()` carries an IMAGE clip. It is not rail media.
+    const mixed = router(<PlayWithMeCarousel characters={[videoCard('a'), card('b')]} />);
+    expect(mixed).toContain('Name a');
+    expect(mixed).not.toContain('Name b');
+    expect(mixed.match(/aspect-\[3\/4\]/g)).toHaveLength(1);
+  });
+
+  it('renders NO card at all when nobody has a video', () => {
+    const none = router(<PlayWithMeCarousel characters={[card('a'), card('b')]} />);
+    expect(none).not.toContain('aspect-[3/4]');
+    expect(none).not.toContain('Name a');
+  });
+
+  it('never renders a placeholder, a profile image or a manifest image', () => {
+    const withProfile = router(
+      <PlayWithMeCarousel
+        characters={[
+          { ...card('p'), profileImage: 'https://img.example/p.png', name: 'luna' },
+          videoCard('a'),
+        ]}
+      />,
+    );
+    expect(withProfile).not.toContain('img.example');
+    expect(withProfile).not.toContain('/media/luna');
+    expect(withProfile).not.toContain('placehold');
+    // Only the video card survived.
+    expect(withProfile.match(/aspect-\[3\/4\]/g)).toHaveLength(1);
+  });
+
+  it('keeps the approved scroll-snap container \u2014 the swipe behaviour', () => {
+    // Native horizontal scroll-snap is the demo's interaction. Byte-matched so
+    // no edit can quietly turn the rail into something that does not swipe.
+    expect(markup).toContain(
+      'flex snap-x gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none]',
+    );
+    expect(markup.match(/snap-start/g)).toHaveLength(2);
+  });
+
+  it('keeps the approved card frame and dimensions', () => {
+    expect(markup).toContain(
+      'group relative block aspect-[3/4] w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-white/5 bg-zinc-900',
+    );
   });
 });
 

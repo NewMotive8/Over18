@@ -1,11 +1,7 @@
 import type {
   HomeCategoryView,
-  PlayWithMeAdminView,
-  PlayWithMeCandidateView,
   PublicClip,
   PublicHome,
-  RecentCandidateView,
-  RecentlyAddedAdminView,
 } from '../lib/api';
 
 /**
@@ -90,61 +86,6 @@ export function unpublished(categories: readonly HomeCategoryView[]): HomeCatego
   return categories.filter((c) => !c.homePublished);
 }
 
-/** How Recently Added is currently behaving, in one sentence. */
-export function recentModeLabel(view: RecentlyAddedAdminView): string {
-  return view.curated
-    ? 'Custom list — you have arranged this rail by hand.'
-    : 'Automatic — the 12 newest characters. Any edit switches this to a custom list.';
-}
-
-/** One row of the Recently Added picker. */
-export interface RecentPickerRow {
-  characterId: string;
-  displayName: string;
-  createdAt: string;
-  /** Already on the rail, so adding again would do nothing. */
-  onRail: boolean;
-}
-
-/**
- * The Recently Added picker's rows.
- *
- * The eligibility rule is the SERVER'S — `/admin/home/recent/candidates`
- * returns active characters, newest first — and is not re-decided here. The one
- * thing this adds is `onRail`, because that endpoint (unlike the Hero's) does
- * not mark which candidates are already on the rail, and offering an operator a
- * button whose only effect is nothing is worse than showing them why.
- *
- * Derived from the CURRENT rail on every render rather than stored, so it
- * cannot go stale: the moment an add succeeds and the rail comes back, the row
- * it came from reads as already present.
- */
-export function recentPickerRows(
-  candidates: readonly RecentCandidateView[],
-  rail: RecentlyAddedAdminView | null,
-): RecentPickerRow[] {
-  const present = new Set((rail?.characters ?? []).map((c) => c.characterId));
-  return candidates.map((candidate) => ({
-    characterId: candidate.characterId,
-    displayName: candidate.displayName,
-    createdAt: candidate.createdAt,
-    onRail: present.has(candidate.characterId),
-  }));
-}
-
-/**
- * What adding will do to the rail's mode, said before the operator commits.
- *
- * Adding to an automatic rail materialises the current 12 and appends — the
- * server's `ensureCurated`. That is a one-way door until Reset, so it is stated
- * rather than discovered.
- */
-export function addRecentConsequence(rail: RecentlyAddedAdminView | null): string {
-  return rail?.curated === true
-    ? 'Added to the end of your custom list.'
-    : 'Adding switches this rail from automatic to a custom list. Reset puts it back.';
-}
-
 /** A one-line description of what a preview payload contains. */
 export function previewSummary(home: PublicHome): string {
   const rails = home.categories.filter((c) => c.clips.length > 0).length;
@@ -152,7 +93,6 @@ export function previewSummary(home: PublicHome): string {
   return [
     `${home.hero.length} hero clip${home.hero.length === 1 ? '' : 's'}`,
     `${home.playWithMe.length} in Play with me`,
-    `${home.recentlyAdded.length} recently added`,
     `${rails} category rail${rails === 1 ? '' : 's'}`,
     `${banners} banner${banners === 1 ? '' : 's'}`,
   ].join(' · ');
@@ -198,60 +138,11 @@ export function heroFallbackNote(clips: readonly PublicClip[]): string {
 }
 
 /* ------------------------------------------------------------------ *
- * Play with me — the same automatic-versus-curated wording
+ * Play with me has NO ADMIN SURFACE
  *
- * Shares Recently Added's model exactly, so it shares its phrasing: an
- * operator should not have to learn two vocabularies for one idea.
+ * The rail is one deterministic rule — active character, her newest publicly
+ * reachable video, one card. There are no modes to label, no picker rows to
+ * derive and no consequence to warn about, so none of that lives here any more.
+ * An operator who wants a character on the rail approves and publishes a video
+ * of hers.
  * ------------------------------------------------------------------ */
-
-/** How the Play with me rail is currently behaving, in one sentence. */
-export function playWithMeModeLabel(view: { curated: boolean }): string {
-  return view.curated
-    ? 'Custom list — you have arranged this rail by hand.'
-    : 'Automatic — every active character, alphabetically. Any edit switches this to a custom list.';
-}
-
-/**
- * What adding will do to the rail's mode, said before the operator commits.
- *
- * The first edit materialises the automatic list and then applies to it, which
- * is a one-way door until Reset — so it is stated rather than discovered.
- */
-export function addPlayWithMeConsequence(view: { curated: boolean } | null): string {
-  return view?.curated === true
-    ? 'Added to the end of your custom list.'
-    : 'Adding switches this rail from automatic to a custom list. Reset puts it back.';
-}
-
-/** One row of the Play with me picker. */
-export interface PlayWithMePickerRow {
-  characterId: string;
-  displayName: string;
-  createdAt: string;
-  profileImage: string | null;
-  /** Already on the rail, so adding again would do nothing. */
-  onRail: boolean;
-}
-
-/**
- * The Play with me picker's rows.
- *
- * Same derivation and same reason as `recentPickerRows` — the candidates
- * endpoint decides eligibility and does not mark who is already on the rail, so
- * `onRail` is computed from the CURRENT rail on every render and cannot go
- * stale. It carries the profile image through so the picker can show a face
- * rather than a name alone.
- */
-export function playWithMePickerRows(
-  candidates: readonly PlayWithMeCandidateView[],
-  rail: PlayWithMeAdminView | null,
-): PlayWithMePickerRow[] {
-  const present = new Set((rail?.characters ?? []).map((c) => c.characterId));
-  return candidates.map((candidate) => ({
-    characterId: candidate.characterId,
-    displayName: candidate.displayName,
-    createdAt: candidate.createdAt,
-    profileImage: candidate.profileImage,
-    onRail: present.has(candidate.characterId),
-  }));
-}
