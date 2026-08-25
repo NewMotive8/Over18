@@ -49,10 +49,13 @@ export default async function publicHomeRoutes(
   opts: {
     db: Db;
     mediaStorageDir?: string | null;
+    /** MEDIA_OPTIMISED_ENABLED. Default false — originals. */
+    optimisedMedia?: boolean;
     cookie?: { secure: boolean; sameSite: 'lax' | 'strict' | 'none' };
   },
 ) {
   const storageDir = opts.mediaStorageDir ?? null;
+  const preferOptimised = opts.optimisedMedia === true;
   // The SAME policy the session cookie uses. Hard-coding lax/insecure here
   // would silently break the audience model in the cross-origin deployments
   // this app actually runs in: the browser would never send the cookie back,
@@ -230,7 +233,7 @@ export default async function publicHomeRoutes(
       const asset = await getPublicAsset(opts.db, assetId);
       if (!asset) return notFound();
 
-      const resolved = resolvePublicMedia(asset, { storageDir: storageDir ?? '' });
+      const resolved = resolvePublicMedia(asset, { storageDir: storageDir ?? '', preferOptimised });
       if ('failure' in resolved) return notFound();
       if (!existsSync(resolved.path)) return notFound();
 

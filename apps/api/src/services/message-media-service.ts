@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { and, asc, eq, isNotNull, notInArray } from 'drizzle-orm';
@@ -11,7 +12,7 @@ import {
 } from '../db/schema.js';
 import { mediaTypeOf } from './content-review-service.js';
 import { CHAT_ASSET_KIND } from './asset-kinds.js';
-import { uploadedMimeTypeOf, uploadedPathOf } from './library-upload-service.js';
+import { optimisedPathOf, uploadedMimeTypeOf, uploadedPathOf } from './library-upload-service.js';
 
 /**
  * Character Media Messages — selection (commit 2) and serving (commit 1).
@@ -83,15 +84,47 @@ export function isInsideStorageRoot(root: string, candidate: string): boolean {
 }
 
 /**
+ * Options for one resolution. Absent means "the original", always.
+ */
+export interface MediaResolutionOptions {
+  /**
+   * Serve a verified optimised derivative when one exists.
+   *
+   * OPT-IN AT EVERY CALL SITE, never a default. Three callers serve bytes to a
+   * browser and pass MEDIA_OPTIMISED_ENABLED through; the fourth
+   * (`selectMediaForTurn`) uses this function only to ask "does this asset have
+   * a real, contained file?" and deliberately keeps asking about the ORIGINAL,
+   * because that is the file guaranteed to exist.
+   */
+  preferOptimised?: boolean;
+}
+
+/**
  * Turns an asset row into a streamable file, or explains why it cannot.
  *
- * Does NOT touch the filesystem: existence is the route's concern (a missing
- * file is a 404, not a resolution failure), and keeping this pure makes the
- * containment rule directly testable.
+ * ORIGINAL BY DEFAULT. With no options — and with MEDIA_OPTIMISED_ENABLED off,
+ * which is every deployment until an operator says otherwise — this returns
+ * exactly what it has always returned, byte for byte and header for header.
+ *
+ * THE OPTIMISED BRANCH IS THE ONE PLACE THAT TOUCHES THE FILESYSTEM, and it is
+ * a deliberate exception to this function's purity. Everything else here is a
+ * pure decision the route re-checks; the derivative is different because
+ * choosing a file that is not on disk would 404 an asset whose original is
+ * sitting right there. Falling back on `existsSync` keeps the promise that the
+ * original is the authoritative file: the derivative is an optimisation, and an
+ * optimisation that cannot be found is simply not taken.
+ *
+ * THE CONTENT TYPE COMES FROM THE FILE BEING SERVED, not from the row. An
+ * upload's `provenance.mimeType` describes the ORIGINAL — a `.mov` upload
+ * records `video/quicktime` — while the derivative is always `.mp4`. Sending
+ * the row's type with the derivative's bytes would mislabel every clip
+ * transcoded from a QuickTime source, which is the kind of mistake that plays
+ * fine on the machine that made it and fails on a phone.
  */
 export function resolveMediaFile(
   asset: CharacterVisualAssetRow,
   storageDir: string,
+  options: MediaResolutionOptions = {},
 ): ResolvedMediaFile | { failure: MediaResolutionFailure } {
   const mediaType = mediaTypeOf(asset.storageKey, asset.provenance);
   // 'audio' is not a media type this commit can produce or serve; mediaTypeOf
@@ -103,6 +136,25 @@ export function resolveMediaFile(
     if (!isInsideStorageRoot(storageDir, uploadPath)) {
       return { failure: 'outside_storage_root' };
     }
+
+    // The optimised derivative, when one is verified, enabled, contained AND
+    // present. Any of those four failing falls through to the original below —
+    // there is no path here that returns a failure the original could satisfy.
+    if (options.preferOptimised) {
+      const optimised = optimisedPathOf(asset);
+      if (
+        optimised &&
+        isInsideStorageRoot(storageDir, optimised) &&
+        existsSync(resolve(optimised))
+      ) {
+        return {
+          path: resolve(optimised),
+          contentType: contentTypeForPath(optimised),
+          mediaType: chatMediaType,
+        };
+      }
+    }
+
     return {
       path: resolve(uploadPath),
       contentType: uploadedMimeTypeOf(asset),

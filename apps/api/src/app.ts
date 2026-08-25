@@ -97,6 +97,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // US-106 admin content review — reads existing assets, so it does not
   // depend on media providers being configured.
   await app.register(adminContentRoutes, {
+    optimisedMedia: env.media.optimisedEnabled,
     db,
     // Manual Library upload writes under the same MEDIA_STORAGE_DIR the media
     // pipeline uses; it needs no provider, so it is always available.
@@ -142,6 +143,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // by design, which is why every projection it serves is narrow and every read
   // is approval-gated.
   await app.register(publicHomeRoutes, {
+    optimisedMedia: env.media.optimisedEnabled,
     db,
     mediaStorageDir: env.media.storageDir,
     cookie: { secure: env.cookieSecure, sameSite: env.cookieSameSite },
@@ -170,6 +172,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // like the admin content routes it needs no media provider. Inert until a
   // later commit writes messages.media_asset_id.
   await app.register(conversationMediaRoutes, {
+    optimisedMedia: env.media.optimisedEnabled,
     db,
     storageDir: env.media.storageDir,
   });

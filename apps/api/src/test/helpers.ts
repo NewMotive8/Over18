@@ -42,6 +42,10 @@ export const testEnv: Env = {
     publicBaseUrl: null,
     internalToken: 'test-internal-token',
     ledgerPath: `${tmpdir()}/over18-test-media/cost-ledger.json`,
+    // Matches production's default: OFF. Suites that exercise optimised
+    // derivatives opt in explicitly, so every other suite proves the switch is
+    // genuinely inert and originals are what get served.
+    optimisedEnabled: false,
     atlas: {
       baseUrl: 'https://example.invalid/api/v1',
       imageModel: 'test-image-model',
@@ -72,13 +76,15 @@ export interface TestContext {
 }
 
 export async function createTestContext(
-  options: BuildAppOptions & { chatMediaEnabled?: boolean } = {},
+  options: BuildAppOptions & { chatMediaEnabled?: boolean; optimisedMediaEnabled?: boolean } = {},
 ): Promise<TestContext> {
-  const { chatMediaEnabled, ...appOptions } = options;
+  const { chatMediaEnabled, optimisedMediaEnabled, ...appOptions } = options;
   const { db, pool } = createDb(TEST_DATABASE_URL);
-  const env: Env = chatMediaEnabled
-    ? { ...testEnv, chatMedia: { enabled: true } }
-    : testEnv;
+  let env: Env = testEnv;
+  if (chatMediaEnabled) env = { ...env, chatMedia: { enabled: true } };
+  if (optimisedMediaEnabled) {
+    env = { ...env, media: { ...env.media, optimisedEnabled: true } };
+  }
   const app = await buildApp(env, db, appOptions);
   return { app, db, pool };
 }

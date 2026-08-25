@@ -154,6 +154,30 @@ export function uploadedPathOf(asset: CharacterVisualAssetRow): string | null {
   return typeof path === 'string' && path.length > 0 ? path : null;
 }
 
+/**
+ * The VERIFIED optimised derivative of an uploaded asset, or null.
+ *
+ * A SECOND FILE, NEVER A REPLACEMENT. `provenance.storagePath` keeps pointing
+ * at the operator's original for the whole life of the asset; this key names an
+ * ADDITIONAL file sitting beside it. Nothing in the upload path or the media
+ * routes rewrites the original, so "serve the derivative" and "serve the
+ * original" both remain available at every moment.
+ *
+ * ITS PRESENCE IS THE READY FLAG. It is written only after every check in the
+ * verifier has passed against the bytes actually on disk. There is deliberately
+ * no separate status column to fall out of step with the file: if the key is
+ * here a verified file was written, and if it is absent the original serves.
+ *
+ * Reading it does NOT mean it will be served. `resolveMediaFile` consults
+ * MEDIA_OPTIMISED_ENABLED first and re-checks that the file is still there.
+ */
+export function optimisedPathOf(asset: CharacterVisualAssetRow): string | null {
+  const provenance = asset.provenance as Record<string, unknown>;
+  if (provenance.source !== 'manual-upload') return null;
+  const path = provenance.optimisedPath;
+  return typeof path === 'string' && path.length > 0 ? path : null;
+}
+
 /** Stored MIME type of an uploaded asset, for the serving route's header. */
 export function uploadedMimeTypeOf(asset: CharacterVisualAssetRow): string {
   const mime = (asset.provenance as Record<string, unknown>).mimeType;

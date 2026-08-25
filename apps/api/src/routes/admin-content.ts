@@ -51,6 +51,10 @@ import {
 } from '../services/requirement-status-service.js';
 import { getCharacterForAdmin } from '../services/character-service.js';
 import { resolveMediaFile } from '../services/message-media-service.js';
+import {
+  adoptOptimisedDerivative,
+  revokeOptimisedDerivative,
+} from '../services/media-optimise-service.js';
 
 /**
  * US-106 — admin content review API.
@@ -123,7 +127,7 @@ const UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 
 export default async function adminContentRoutes(
   app: FastifyInstance,
-  opts: { db: Db; uploadStorage?: LibraryUploadStorage },
+  opts: { db: Db; uploadStorage?: LibraryUploadStorage; optimisedMedia?: boolean },
 ) {
   const adminOnly = { preHandler: [app.requireAuth, app.requireAdmin] };
   /**
@@ -382,6 +386,114 @@ export default async function adminContentRoutes(
    * distinct 404 so an orphaned row (an ephemeral-disk redeploy) is diagnosable
    * rather than looking like a permissions problem.
    */
+  /**
+   * Adopt an optimised derivative for one asset.
+   *
+   * WHY THIS IS AN UPLOAD AND NOT A SERVER-SIDE ENCODE. The API image ships no
+   * ffmpeg, and adding one is a build-configuration decision this work is
+   * deliberately not taking. So the encode happens wherever an encoder already
+   * exists and the finished file is presented here — which has a property a
+   * server-side encoder would not: the operator can look at the result before
+   * anything adopts it.
+   *
+   * NOTHING IS TRUSTED ABOUT THE FILE. It is written to a temp name, verified
+   * on disk against the original it would replace, and only renamed into place
+   * if every check passes. A refusal returns the checks that failed so the
+   * answer is actionable rather than "no".
+   *
+   * ONE ASSET AT A TIME, ON PURPOSE. There is no bulk endpoint. Twenty-two
+   * independent decisions, each individually revertible, is the migration.
+   */
+  app.post<{ Params: { assetId: string } }>(
+    '/admin/content/assets/:assetId/optimised',
+    adminOnly,
+    async (request, reply) => {
+      const { assetId } = request.params;
+      if (!UUID_RE.test(assetId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      if (!mediaStorageDir) {
+        return reply
+          .code(503)
+          .send({ error: 'media_unavailable', message: 'Media storage is not configured.' });
+      }
+      const asset = await getVisualAssetById(opts.db, assetId);
+      if (!asset) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+
+      const file = await request.file();
+      if (!file) {
+        return reply
+          .code(400)
+          .send({ error: 'no_file', message: 'Attach the optimised .mp4 to adopt.' });
+      }
+      if (file.mimetype !== 'video/mp4') {
+        return reply.code(400).send({
+          error: 'unsupported_type',
+          message: 'An optimised derivative must be video/mp4.',
+        });
+      }
+      const bytes = await file.toBuffer();
+      if (file.file.truncated) {
+        return reply.code(413).send({
+          error: 'file_too_large',
+          message: `That file exceeds the ${Math.round(UPLOAD_MAX_BYTES / (1024 * 1024))}MB upload limit.`,
+        });
+      }
+
+      const result = await adoptOptimisedDerivative(opts.db, asset, bytes, mediaStorageDir);
+      if (!result.ok) {
+        // The KIND of failure and the failing check names only. No path, no
+        // storage key, no provenance — the same discipline every other media
+        // route follows.
+        request.log.warn(
+          { assetId, adoption: result.failure, failed: result.verdict?.failed ?? [] },
+          'refused to adopt an optimised derivative',
+        );
+        const status = result.failure === 'verification_failed' ? 422 : 400;
+        return reply.code(status).send({
+          error: result.failure,
+          message:
+            result.failure === 'verification_failed'
+              ? 'The derivative did not match the original. Nothing was changed.'
+              : 'The derivative could not be adopted. Nothing was changed.',
+          checks: result.verdict?.checks ?? [],
+          failed: result.verdict?.failed ?? [],
+        });
+      }
+
+      return reply.send({
+        assetId,
+        adopted: true,
+        checks: result.verdict?.checks ?? [],
+        originalBytes: result.verdict?.originalFacts?.bytes ?? null,
+        optimisedBytes: result.verdict?.derivativeFacts?.bytes ?? null,
+      });
+    },
+  );
+
+  /**
+   * Stop serving one asset's derivative. The file stays on disk; only the key
+   * that points at it is cleared, so this is reversible in both directions.
+   */
+  app.delete<{ Params: { assetId: string } }>(
+    '/admin/content/assets/:assetId/optimised',
+    adminOnly,
+    async (request, reply) => {
+      const { assetId } = request.params;
+      if (!UUID_RE.test(assetId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      const asset = await getVisualAssetById(opts.db, assetId);
+      if (!asset) {
+        return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+      }
+      await revokeOptimisedDerivative(opts.db, asset);
+      return reply.send({ assetId, adopted: false });
+    },
+  );
+
   app.get<{ Params: { assetId: string } }>(
     '/admin/content/assets/:assetId/file',
     adminOnly,
@@ -399,7 +511,9 @@ export default async function adminContentRoutes(
       if (!asset) {
         return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
       }
-      const resolved = resolveMediaFile(asset, mediaStorageDir);
+      const resolved = resolveMediaFile(asset, mediaStorageDir, {
+        preferOptimised: opts.optimisedMedia === true,
+      });
       if ('failure' in resolved) {
         return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
       }

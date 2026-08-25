@@ -28,6 +28,23 @@ export interface MediaEnv {
   publicBaseUrl: string | null;
   internalToken: string | null;
   ledgerPath: string;
+  /**
+   * Whether a verified optimised derivative may be served in place of the
+   * original upload. OFF unless MEDIA_OPTIMISED_ENABLED is exactly "true".
+   *
+   * THIS IS THE ROLLBACK. Setting it back to anything else returns every
+   * surface — Home, the Character page, Discover, chat, admin preview — to the
+   * original files on the very next request. No file is moved, no row is
+   * rewritten and no deploy is needed, because the derivative is an ADDITIONAL
+   * file recorded in an ADDITIONAL provenance key: turning this off simply
+   * stops anything reading that key.
+   *
+   * Default OFF, deliberately. A derivative that exists on disk and is
+   * recorded on the row is still inert until an operator turns this on, so
+   * shipping the machinery and shipping the behaviour are two separate
+   * decisions.
+   */
+  optimisedEnabled: boolean;
   atlas: {
     baseUrl: string;
     imageModel: string;
@@ -144,6 +161,8 @@ export function loadEnv(): Env {
       publicBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL || null,
       internalToken: process.env.INTERNAL_MEDIA_TOKEN || null,
       ledgerPath: process.env.MEDIA_LEDGER_PATH ?? 'var/media/cost-ledger.json',
+      // Default OFF: anything other than exactly "true" serves originals.
+      optimisedEnabled: envFlagTrue('MEDIA_OPTIMISED_ENABLED'),
       atlas: {
         baseUrl: process.env.ATLAS_BASE_URL ?? 'https://api.atlascloud.ai/api/v1',
         imageModel: process.env.ATLAS_IMAGE_MODEL ?? 'black-forest-labs/flux-kontext-dev',

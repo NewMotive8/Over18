@@ -45,6 +45,8 @@ export default async function conversationMediaRoutes(
     db: Db;
     /** MEDIA_STORAGE_DIR. Every resolved path must live inside it. */
     storageDir: string;
+    /** MEDIA_OPTIMISED_ENABLED. Default false — originals. */
+    optimisedMedia?: boolean;
   },
 ) {
   app.get<{ Params: { conversationId: string; messageId: string } }>(
@@ -67,7 +69,9 @@ export default async function conversationMediaRoutes(
       );
       if (!asset) return notFound();
 
-      const resolved = resolveMediaFile(asset, opts.storageDir);
+      const resolved = resolveMediaFile(asset, opts.storageDir, {
+        preferOptimised: opts.optimisedMedia === true,
+      });
       if ('failure' in resolved) {
         // A path outside MEDIA_STORAGE_DIR is a data-integrity problem, not a
         // client error: log the KIND only (never the path, key or provenance)

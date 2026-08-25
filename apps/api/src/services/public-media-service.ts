@@ -71,6 +71,15 @@ export type PublicMediaRefusal = 'not_found' | 'file_missing' | 'not_public';
 
 export interface PublicMediaStorage {
   storageDir: string | null;
+  /**
+   * MEDIA_OPTIMISED_ENABLED, threaded from env by the route.
+   *
+   * Absent or false means originals, which is the default everywhere. Nothing
+   * about WHICH assets are public depends on this — `publiclyReachableCondition`
+   * has already decided that — it chooses only which of two files on disk holds
+   * the bytes for an asset the caller is already cleared to fetch.
+   */
+  preferOptimised?: boolean;
 }
 
 /** The opaque locator handed to clients. Never a storage key or path. */
@@ -179,7 +188,9 @@ export function resolvePublicMedia(
   storage: PublicMediaStorage,
 ): ResolvedMediaFile | { failure: PublicMediaRefusal } {
   if (!storage.storageDir) return { failure: 'not_found' };
-  const resolved = resolveMediaFile(asset, storage.storageDir);
+  const resolved = resolveMediaFile(asset, storage.storageDir, {
+    preferOptimised: storage.preferOptimised === true,
+  });
   if ('failure' in resolved) return { failure: 'not_found' };
   return resolved;
 }
