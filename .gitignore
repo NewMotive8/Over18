@@ -35,3 +35,7 @@ SHIP-EVIDENCE.md
 
 # US-16E offline media pipeline output (candidates/approved/ledger) — never committed
 media-out/
+
+# Local production media snapshots and optimisation candidates
+media-snapshot/
+media-optimized/
