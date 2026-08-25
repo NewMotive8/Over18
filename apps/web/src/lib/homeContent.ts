@@ -1,4 +1,4 @@
-import type { PublicCategoryRail, PublicCharacterCard, PublicClip, PublicHome } from './api';
+import type { PublicCategoryRail, PublicClip, PublicHome, PublicPlayWithMeCard } from './api';
 
 /**
  * Home presentation logic (US-102.4) — React-free, like its admin siblings,
@@ -104,7 +104,7 @@ export function bannerHref(banner: {
 }
 
 /** A character's card media, or null when they have no approved content. */
-export function cardClip(card: PublicCharacterCard): PublicClip | null {
+export function cardClip(card: PublicPlayWithMeCard): PublicClip | null {
   return card.clip;
 }
 

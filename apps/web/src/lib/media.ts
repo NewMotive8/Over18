@@ -119,7 +119,7 @@ export function firstCanonicalImage(
  * discovery keyword. An unapproved clip, one placed nowhere, or one belonging
  * to an unpublished character never arrives here to be chosen.
  */
-function cmsVideoUrl(character: MediaCharacter): string | undefined {
+function cmsVideoUrl(character: Partial<MediaCharacter>): string | undefined {
   if (character.clip?.mediaType !== 'video') return undefined;
   // API-relative opaque route — the web app and the API are separate origins.
   return absoluteMediaUrl(character.clip.url);
@@ -152,8 +152,14 @@ function cmsVideoUrl(character: MediaCharacter): string | undefined {
  * `resolveHeroMedia` is untouched and still serves the swipe card and the
  * Character page, where showing a character's own image is correct and
  * intended.
+ *
+ * THE PARAMETER IS FULLY OPTIONAL because `clip` is the only field this reads.
+ * Every existing caller passes a whole character and is unaffected; the Home
+ * Play with Me card, which deliberately no longer carries `name`, `shortBio` or
+ * `profileImage` at all, satisfies it too. Nothing about which media is chosen
+ * changes — the body is unchanged.
  */
-export function resolveRailMedia(character: MediaCharacter): HeroMedia | null {
+export function resolveRailMedia(character: Partial<MediaCharacter>): HeroMedia | null {
   const src = cmsVideoUrl(character);
   return src ? { kind: 'video', src } : null;
 }

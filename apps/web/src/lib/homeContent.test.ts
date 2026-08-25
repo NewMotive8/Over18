@@ -8,7 +8,7 @@ import {
   PLAY_WITH_ME_TITLE,
   resultsLabel,
 } from './homeContent';
-import type { PublicCategoryRail, PublicCharacterCard, PublicClip, PublicHome } from './api';
+import type { PublicCategoryRail, PublicClip, PublicHome, PublicPlayWithMeCard } from './api';
 
 /**
  * US-102.4 Home arrangement logic.
@@ -28,13 +28,11 @@ function clip(id: string): PublicClip {
   };
 }
 
-function card(id: string): PublicCharacterCard {
+function card(id: string): PublicPlayWithMeCard {
   return {
     id,
-    name: id,
     displayName: `Name ${id}`,
-    shortBio: 'bio',
-    profileImage: null,
+    apparentAgeBand: null,
     categories: [],
     clip: clip(`clip-${id}`),
   };
@@ -50,6 +48,8 @@ function home(overrides: Partial<PublicHome> = {}): PublicHome {
     hero: [],
     playWithMe: [],
     categories: [],
+    categoryPills: [],
+    browseClips: [],
     ...overrides,
   };
 }

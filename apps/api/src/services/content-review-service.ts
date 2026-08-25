@@ -53,6 +53,52 @@ export function mediaTypeOf(
   return /\.(mp4|webm|mov|m4v)$/i.test(storageKey ?? '') ? 'video' : 'image';
 }
 
+/**
+ * `mediaTypeOf(...) === 'video'`, expressed in SQL.
+ *
+ * WHY A SECOND EXPRESSION EXISTS AT ALL. Some reads have to choose ONE row per
+ * character — Home's representative clip is the case that forced this — and
+ * "one row per character, but only among the videos" cannot be answered
+ * set-based unless the database itself can say which rows are videos. The
+ * alternative was to fetch every eligible asset of every character and discard
+ * almost all of them in JavaScript, which is exactly what this replaces.
+ *
+ * IT IS A TRANSLATION, NOT A SECOND OPINION. It mirrors `mediaTypeOf` above,
+ * arm for arm, and lives directly beneath it so the two are read and edited
+ * together:
+ *
+ *   - provenance FIRST. `->> 'mediaType'` yields NULL when the key is absent or
+ *     the value is JSON null, and a recorded value counts only when it is
+ *     exactly 'video' or 'image' — the same test the TypeScript makes.
+ *   - extension SECOND, and only when provenance said nothing usable.
+ *
+ * `like '%.mp4'` over a lower-cased key is precisely `/\.(mp4|webm|mov|m4v)$/i`,
+ * written without a regex so no escaping hazard can creep in through a tagged
+ * template. A NULL storage_key yields NULL, never true, matching the TypeScript
+ * fallback of 'image' for a keyless row.
+ *
+ * `mediaTypeOf` remains the ONE definition every projection uses; this decides
+ * only which rows are worth fetching. Every row that reaches JavaScript is
+ * still classified by `mediaTypeOf`, so a disagreement could only ever cost a
+ * row, never mislabel one. The agreement is pinned by tests.
+ */
+export function videoAssetCondition() {
+  const recorded = sql`${characterVisualAssets.provenance} ->> 'mediaType'`;
+  const key = sql`lower(${characterVisualAssets.storageKey})`;
+  return sql`(
+    ${recorded} = 'video'
+    or (
+      (${recorded} is null or ${recorded} not in ('video', 'image'))
+      and (
+        ${key} like '%.mp4'
+        or ${key} like '%.webm'
+        or ${key} like '%.mov'
+        or ${key} like '%.m4v'
+      )
+    )
+  )`;
+}
+
 export interface ReviewQueueFilter {
   characterId?: string;
   status?: VisualAssetStatus;

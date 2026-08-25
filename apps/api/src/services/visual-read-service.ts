@@ -38,8 +38,18 @@ function humanizeKey(key: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
-/** Renders a single DNA value to a display string, or null if nothing showable. */
-function renderValue(value: unknown): string | null {
+/**
+ * Renders a single DNA value to a display string, or null if nothing showable.
+ *
+ * EXPORTED so Home can borrow it rather than restate it. Home shows one derived
+ * fact from Visual Identity — the apparent-age label on a Play with Me card —
+ * and it used to obtain that by fetching this whole projection over HTTP, once
+ * per card. It now reads the one DNA key it needs during Home composition and
+ * renders it through THIS function, so the string on a Home card is produced by
+ * the same code as the string in the Character page's About tab. A second
+ * renderer would have been free to drift; borrowing this one cannot.
+ */
+export function renderValue(value: unknown): string | null {
   if (value == null) return null;
   if (typeof value === 'string') {
     const trimmed = value.trim();

@@ -1,27 +1,36 @@
 import { Link } from 'react-router-dom';
-import type { PublicCharacterCard } from '../../lib/api';
-import { apparentAge, resolveRailMedia } from '../../lib/media';
+import type { PublicPlayWithMeCard } from '../../lib/api';
+import { resolveRailMedia } from '../../lib/media';
 import { adultAgeFromBand } from '../../lib/lobbyContent';
-import { useCharacterVisual } from '../../hooks/useCharacterVisual';
 import HeroMedia from '../HeroMedia';
 
-/** A single portrait, video-first persona card for the horizontal rail. */
-function PlayWithMeCard({ character }: { character: PublicCharacterCard }) {
-  const { visual } = useCharacterVisual(character.id);
+/**
+ * A single portrait, video-first persona card for the horizontal rail.
+ *
+ * NO REQUEST OF ITS OWN. This card used to call `useCharacterVisual`, which
+ * fetched the character's ENTIRE public visual identity — Visual DNA, canonical
+ * gallery and all — for the sole purpose of reading one apparent-age band. On a
+ * six-card rail that was six HTTP requests and eighteen SQL queries, issued
+ * after Home had already loaded, to render six short numbers.
+ *
+ * The band now arrives on the card itself, from Home composition. The age
+ * arithmetic below is untouched and its input is identical, so the label is the
+ * same one this rail has always shown. `useCharacterVisual` is unchanged and
+ * still serves Discover and the swipe card, where the whole identity is used.
+ */
+function PlayWithMeCard({ character }: { character: PublicPlayWithMeCard }) {
   // CLIP-ONLY. The rail shows this character's own approved video and nothing
   // else — never her canonical/profile image, never the local manifest, never a
-  // placeholder. The visual identity is still read, but only for her apparent
-  // age.
+  // placeholder.
   const media = resolveRailMedia(character);
-  const age = adultAgeFromBand(apparentAge(visual));
+  const age = adultAgeFromBand(character.apparentAgeBand);
   // Real App Category membership, where the old version invented tags from the
   // card's index. Same chips, same place — sourced from the CMS instead.
   const tags = character.categories.slice(0, 2);
 
   // NO REAL VIDEO ⇒ NO CARD. The server already drops these characters from the
   // rail; this is the second lock, so no payload change can put back a tile
-  // that has nothing of hers to play. Placed after the hooks, never before, so
-  // the hook order stays identical on every render.
+  // that has nothing of hers to play.
   if (!media) return null;
 
   return (
@@ -72,7 +81,7 @@ function PlayWithMeCard({ character }: { character: PublicCharacterCard }) {
 export default function PlayWithMeCarousel({
   characters,
 }: {
-  characters: PublicCharacterCard[];
+  characters: PublicPlayWithMeCard[];
 }) {
   if (characters.length === 0) return null;
   return (

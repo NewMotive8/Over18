@@ -22,6 +22,7 @@ import type {
   PublicClip,
   PublicDiscoveryCategory,
   PublicHomeBanner,
+  PublicPlayWithMeCard,
 } from '../../lib/api';
 
 /**
@@ -58,12 +59,29 @@ function card(id = 'a'): PublicCharacterCard {
   };
 }
 
-/** A card whose representative clip is a real VIDEO — what the rail requires. */
-function videoCard(id = 'a'): PublicCharacterCard {
+/**
+ * A Play with Me card — Home's own, narrower shape.
+ *
+ * It carries NO `name`, `shortBio` or `profileImage`, because the Home payload
+ * no longer sends them, and it carries the apparent-age band the rail used to
+ * fetch per card over HTTP.
+ */
+function railCard(id = 'a', over: Partial<PublicPlayWithMeCard> = {}): PublicPlayWithMeCard {
   return {
-    ...card(id),
-    clip: { ...clip(id), mediaType: 'video', url: `/api/media/assets/vid-${id}/file` },
+    id,
+    displayName: `Name ${id}`,
+    apparentAgeBand: null,
+    categories: [],
+    clip: clip(id),
+    ...over,
   };
+}
+
+/** A card whose representative clip is a real VIDEO — what the rail requires. */
+function videoCard(id = 'a'): PublicPlayWithMeCard {
+  return railCard(id, {
+    clip: { ...clip(id), mediaType: 'video', url: `/api/media/assets/vid-${id}/file` },
+  });
 }
 
 function rail(): PublicCategoryRail {
@@ -373,24 +391,32 @@ describe('the original Play with me rail', () => {
   });
 
   it('DROPS a character with no eligible video rather than showing an image', () => {
-    // `card()` carries an IMAGE clip. It is not rail media.
-    const mixed = router(<PlayWithMeCarousel characters={[videoCard('a'), card('b')]} />);
+    // `railCard()` carries an IMAGE clip. It is not rail media.
+    const mixed = router(<PlayWithMeCarousel characters={[videoCard('a'), railCard('b')]} />);
     expect(mixed).toContain('Name a');
     expect(mixed).not.toContain('Name b');
     expect(mixed.match(/aspect-\[3\/4\]/g)).toHaveLength(1);
   });
 
   it('renders NO card at all when nobody has a video', () => {
-    const none = router(<PlayWithMeCarousel characters={[card('a'), card('b')]} />);
+    const none = router(<PlayWithMeCarousel characters={[railCard('a'), railCard('b')]} />);
     expect(none).not.toContain('aspect-[3/4]');
     expect(none).not.toContain('Name a');
   });
 
   it('never renders a placeholder, a profile image or a manifest image', () => {
+    // The Home payload no longer carries `profileImage` or `name` AT ALL — the
+    // rail's card type has neither — which is the strongest form of this
+    // guarantee. They are attached here off-contract anyway, so the rail is
+    // proven to ignore them even if some future payload grew them back.
     const withProfile = router(
       <PlayWithMeCarousel
         characters={[
-          { ...card('p'), profileImage: 'https://img.example/p.png', name: 'luna' },
+          {
+            ...railCard('p'),
+            profileImage: 'https://img.example/p.png',
+            name: 'luna',
+          } as PublicPlayWithMeCard,
           videoCard('a'),
         ]}
       />,
@@ -486,5 +512,122 @@ describe('the original Advanced-filters control', () => {
 
   it('uses the original small pill size in the Discovery section', () => {
     expect(source).toContain('size="sm"');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Home performance: the work the page stopped doing
+ * ------------------------------------------------------------------ */
+
+/** Source with comments stripped, so prose about an identifier is not read as a use of it. */
+function codeOf(relative: string): string {
+  return readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+describe('the Play with me rail issues no request of its own', () => {
+  const code = codeOf('./PlayWithMeCarousel.tsx');
+
+  it('does not reach for the visual-identity hook at all', () => {
+    // This rail used to call the hook PER CARD, fetching a whole public visual
+    // identity — Visual DNA and canonical gallery included — to read one
+    // apparent-age band. Six cards meant six HTTP requests and eighteen SQL
+    // queries, issued after Home had already loaded.
+    expect(code).not.toMatch(/useCharacterVisual/);
+    expect(code).not.toMatch(/charactersApi/);
+    expect(code).not.toMatch(/fetch\(/);
+  });
+
+  it('renders the age from the band the Home payload sent', () => {
+    const markup = router(
+      <PlayWithMeCarousel
+        characters={[
+          {
+            ...videoCard('a'),
+            apparentAgeBand: 'adult (late-20s)',
+          },
+        ]}
+      />,
+    );
+    // adultAgeFromBand('adult (late-20s)') — the same function, the same input,
+    // and therefore the same label the per-card fetch used to produce.
+    expect(markup).toContain('28');
+  });
+
+  it('falls back to the safe default age when no band was sent', () => {
+    // Exactly the state a failed or empty visual-identity fetch produced.
+    const markup = router(
+      <PlayWithMeCarousel characters={[{ ...videoCard('a'), apparentAgeBand: null }]} />,
+    );
+    expect(markup).toContain('26');
+  });
+
+  it('still shows no minor-coded term for any band', () => {
+    const markup = router(
+      <PlayWithMeCarousel
+        characters={[{ ...videoCard('a'), apparentAgeBand: 'adult (mid-20s)' }]}
+      />,
+    ).toLowerCase();
+    for (const term of FORBIDDEN_AGE_TERMS) {
+      expect(markup.includes(term)).toBe(false);
+    }
+  });
+});
+
+describe('Home fetches what Home needs, and nothing else', () => {
+  const code = codeOf('../../pages/LobbyPage.tsx');
+
+  it('asks for the category pills as part of Home, not as a second request', () => {
+    expect(code).not.toMatch(/homeApi\s*\.\s*categories\s*\(/);
+    expect(code).toContain('home?.categoryPills');
+  });
+
+  it('does not load the browse corpus until someone is actually browsing', () => {
+    // On arrival, category is null and the search box is empty. That used to
+    // issue /api/browse/clips with no filters — a query with no LIMIT and no
+    // pagination — so opening Home downloaded every public clip in the product.
+    expect(code).toContain('if (!browsing)');
+    expect(code).toContain(
+      'const browsing = query.trim().length > 0 || activeCategory !== null',
+    );
+  });
+
+  it('still fetches results the moment a query or a pill is set', () => {
+    expect(code).toMatch(
+      /browseClips\(\{ category: activeCategory, q: query \}\)/,
+    );
+  });
+
+  it('keeps the search box and the pills exactly where they were', () => {
+    expect(code).toContain('Search companions by name…');
+    expect(code).toContain('<CategoryPills');
+    expect(code).toContain('onSelect={setActiveCategory}');
+  });
+
+  it('seeds the results grid from the Home payload instead of a request', () => {
+    // The grid still fills on arrival. Its first page rides in with Home, so
+    // the page looks exactly as it always did without fetching the corpus.
+    expect(code).toContain('const gridClips = browsing ? results : (home?.browseClips ?? [])');
+  });
+
+  it('introduces NO new placeholder in place of the grid', () => {
+    // The grid's own content is what the visitor sees on arrival — not a
+    // message standing in for it.
+    expect(code).not.toContain('Find a companion');
+    expect(code).not.toContain('Search by name, or pick a category above');
+  });
+
+  it('keeps the original results markup, byte for byte', () => {
+    // Same two-column grid, same cards, same promo tile in third place, and the
+    // same no-matches state with its Clear filters button. Only the array the
+    // grid reads from changed name.
+    expect(code).toContain('<div className="grid grid-cols-2 gap-3">');
+    expect(code).toContain('gridClips.slice(0, 2).map');
+    expect(code).toContain('<CommunityPromoCard />');
+    expect(code).toContain('gridClips.slice(2).map');
+    expect(code).toContain('No clips match');
+    expect(code).toContain('Try a different category or clear your search.');
+    expect(code).toContain('Clear filters');
   });
 });

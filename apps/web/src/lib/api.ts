@@ -763,6 +763,31 @@ export interface PublicCharacterCard {
   clip: PublicClip | null;
 }
 
+/**
+ * A Play with Me card — Home's own shape, narrower than `PublicCharacterCard`.
+ *
+ * `name`, `shortBio` and `profileImage` are absent: the rail renders a video
+ * tile, a display name, an age and up to two category chips, and never read
+ * them. `/api/browse/characters` still serves the wider shape unchanged.
+ *
+ * `apparentAgeBand` is the ONE Visual Identity value a card needs. It used to
+ * arrive from a per-card `/api/characters/:id/visual-identity` request — six
+ * requests for a six-card rail, of which everything but this one string was
+ * discarded. The band now travels with the card and `adultAgeFromBand` turns it
+ * into exactly the label it always did. `null` means no active identity or no
+ * band recorded, which is precisely the state a failed or empty fetch produced,
+ * and it lands on the same default age.
+ */
+export interface PublicPlayWithMeCard {
+  id: string;
+  displayName: string;
+  /** Raw apparent-age band, or null. The card derives its age label from it. */
+  apparentAgeBand: string | null;
+  /** Real App Category membership; the card chips render these. */
+  categories: Array<{ slug: string; name: string }>;
+  clip: PublicClip | null;
+}
+
 /** One lobby category pill — an enabled App Category, in the operator's order. */
 export interface PublicCategoryPill {
   id: string;
@@ -797,8 +822,22 @@ export interface PublicCategoryRail {
 export interface PublicHome {
   banners: Record<HomeBannerSlot, PublicHomeBanner[]>;
   hero: PublicClip[];
-  playWithMe: PublicCharacterCard[];
+  playWithMe: PublicPlayWithMeCard[];
   categories: PublicCategoryRail[];
+  /**
+   * The category pills, in the operator's CMS order — the same list
+   * `/api/categories` serves, built from the rows Home composition already
+   * reads. Home used to fetch it in a second request; that round trip is gone.
+   */
+  categoryPills: PublicCategoryPill[];
+  /**
+   * The first page of the results grid under the search box — the same clips,
+   * in the same order, that an unfiltered `/api/browse/clips` returned, bounded
+   * instead of unbounded. The grid renders its familiar content on arrival
+   * without the browser downloading the whole public corpus to do it; searching
+   * or picking a pill goes back to `/api/browse/clips` for the real answer.
+   */
+  browseClips: PublicClip[];
 }
 
 export interface PublicDiscoveryCategory {

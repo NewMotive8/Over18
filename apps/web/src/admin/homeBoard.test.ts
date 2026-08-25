@@ -158,12 +158,14 @@ describe('preview summary', () => {
         { id: 'h', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C' },
       ],
       playWithMe: [
-        { id: 'p', name: 'p', displayName: 'P', shortBio: '', profileImage: null, categories: [], clip: null },
+        { id: 'p', displayName: 'P', apparentAgeBand: null, categories: [], clip: null },
       ],
       categories: [
         { id: 'r', slug: 'r', name: 'R', tagline: null, clips: [{ id: 'x', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C' }] },
         { id: 'empty', slug: 'e', name: 'E', tagline: null, clips: [] },
       ],
+      categoryPills: [],
+      browseClips: [],
     };
     const summary = previewSummary(home);
     expect(summary).toContain('1 hero clip');

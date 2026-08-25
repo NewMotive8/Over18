@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  homeApi,
-  type PublicCategoryPill,
-  type PublicClip,
-  type PublicHome,
-} from '../lib/api';
+import { homeApi, type PublicClip, type PublicHome } from '../lib/api';
 import { homeSections } from '../lib/homeContent';
 import LobbyTopBar from '../components/lobby/LobbyTopBar';
 import HeroCarousel from '../components/lobby/HeroCarousel';
@@ -72,7 +67,6 @@ type Status = 'loading' | 'ready' | 'error';
 export default function LobbyPage() {
   const [status, setStatus] = useState<Status>('loading');
   const [home, setHome] = useState<PublicHome | null>(null);
-  const [categories, setCategories] = useState<PublicCategoryPill[]>([]);
   const [attempt, setAttempt] = useState(0);
 
   /** null is "All" — no category filter. Nothing is auto-selected. */
@@ -90,14 +84,23 @@ export default function LobbyPage() {
 
   /* ---------------- Home + the category pills ---------------- */
 
+  /**
+   * ONE REQUEST, and it carries the pills.
+   *
+   * This used to be `Promise.all([homeApi.get(), homeApi.categories()])`. Both
+   * asked the same table the same question — which App Categories are enabled
+   * and published to Home — so the pill strip now rides along inside the Home
+   * payload and the second request is gone. `/api/categories` is untouched and
+   * still serves any other caller.
+   */
   useEffect(() => {
     let cancelled = false;
     setStatus('loading');
-    Promise.all([homeApi.get(), homeApi.categories()])
-      .then(([homePayload, pills]) => {
+    homeApi
+      .get()
+      .then((homePayload) => {
         if (cancelled) return;
         setHome(homePayload);
-        setCategories(pills.categories);
         setStatus('ready');
       })
       .catch(() => !cancelled && setStatus('error'));
@@ -108,7 +111,36 @@ export default function LobbyPage() {
 
   /* ---------------- The results grid: content clips ---------------- */
 
+  /**
+   * Whether the visitor is actually browsing — a typed query, a chosen pill, or
+   * both. Nothing is browsing on arrival: "All" with an empty box is the idle
+   * state, not a search for everything.
+   */
+  const browsing = query.trim().length > 0 || activeCategory !== null;
+
+  /**
+   * SEARCH RESULTS ARE FETCHED WHEN SOMEONE SEARCHES.
+   *
+   * This effect had no condition on it, so simply opening Home issued
+   * `/api/browse/clips` with no category and no query — a request whose query
+   * has no LIMIT and no pagination, and which therefore returned the ENTIRE
+   * public clip corpus before the visitor had touched the search box.
+   *
+   * THE GRID STILL FILLS ON ARRIVAL. Its first page arrives inside the Home
+   * payload as `home.browseClips` — the same clips, in the same order, that the
+   * unfiltered request returned, bounded rather than unbounded. So the page
+   * looks exactly as it did; it simply does not fetch the corpus to look that
+   * way.
+   *
+   * Typing or picking a pill fetches, exactly as before, with the same query
+   * and the same unbounded results — search and category filtering are
+   * untouched, and clearing both falls back to the seeded page with no request.
+   */
   useEffect(() => {
+    if (!browsing) {
+      setResults([]);
+      return;
+    }
     let cancelled = false;
     homeApi
       .browseClips({ category: activeCategory, q: query })
@@ -117,11 +149,22 @@ export default function LobbyPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeCategory, query, attempt]);
+  }, [browsing, activeCategory, query, attempt]);
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
 
   const sections = useMemo(() => (home ? homeSections(home) : []), [home]);
+  const categories = home?.categoryPills ?? [];
+
+  /**
+   * What the results grid renders.
+   *
+   * Browsing shows the search's own answer, exactly as it always did. Idle
+   * shows the page Home already sent — the same clips, in the same order, that
+   * the unfiltered request used to return. The grid below is unchanged: it
+   * cannot tell which of the two it is holding, and neither can the visitor.
+   */
+  const gridClips = browsing ? results : (home?.browseClips ?? []);
 
   if (status === 'loading') {
     return (
@@ -230,7 +273,7 @@ export default function LobbyPage() {
 
         {/* Results grid, with the separate Get 20 For Free card mixed in. */}
         <div className="px-4">
-          {results.length === 0 ? (
+          {gridClips.length === 0 ? (
             <EmptyState
               icon={<DiscoverIcon />}
               title="No clips match"
@@ -250,12 +293,12 @@ export default function LobbyPage() {
             />
           ) : (
             <div className="grid grid-cols-2 gap-3">
-              {results.slice(0, 2).map((clip) => (
+              {gridClips.slice(0, 2).map((clip) => (
                 <ClipGridCard key={clip.id} clip={clip} />
               ))}
               {/* Unchanged and separate from the CMS banner slots. */}
               <CommunityPromoCard />
-              {results.slice(2).map((clip) => (
+              {gridClips.slice(2).map((clip) => (
                 <ClipGridCard key={clip.id} clip={clip} />
               ))}
             </div>
