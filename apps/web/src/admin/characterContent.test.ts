@@ -3,9 +3,12 @@ import {
   addKeywords,
   approveConsequence,
   assetActions,
+  assetDeletable,
   categoryChoices,
   characterReadiness,
   CONTENT_SECTIONS,
+  deleteCharacterAsset,
+  deletionConsequence,
   groupBySection,
   groupCharacterContent,
   isUnplaced,
@@ -608,5 +611,193 @@ describe('the shelf count says what the shelf actually holds', () => {
     expect(sectionSummary([asset({ assetId: 'a' }), asset({ assetId: 'b' })], 'chat')).toBe(
       '2 items',
     );
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Deleting a content item from the Character page
+ *
+ * The rule this suite exists to hold: the Character page must not GROW a
+ * deletion of its own. It offers the Content Library's delete in a second
+ * place. So most of what follows is about which call is made, when it is
+ * made, and what is claimed afterwards — not about what deletion means.
+ * ------------------------------------------------------------------ */
+
+/** Records what the page asked the outside world to do, in order. */
+function recorder(behaviour: { remove?: () => Promise<unknown>; reload?: () => Promise<void> } = {}) {
+  const calls: string[] = [];
+  return {
+    calls,
+    removed: [] as string[],
+    deps: {
+      remove: async function (this: void, assetId: string) {
+        calls.push(`remove:${assetId}`);
+        return behaviour.remove ? behaviour.remove() : undefined;
+      },
+      reload: async function (this: void) {
+        calls.push('reload');
+        if (behaviour.reload) await behaviour.reload();
+      },
+    },
+  };
+}
+
+describe('the Character page uses the canonical Content Library delete', () => {
+  it('calls the injected remove exactly once, with this asset id, then re-reads', async () => {
+    // `remove` IS contentLibraryApi.remove at the call site — the same client
+    // method the Content Library screen uses, hitting the same route.
+    const r = recorder();
+    const outcome = await deleteCharacterAsset(asset({ assetId: 'chat-7' }), r.deps);
+
+    expect(outcome).toEqual({ ok: true });
+    expect(r.calls).toEqual(['remove:chat-7', 'reload']);
+  });
+
+  it('re-reads rather than splicing the item out locally', async () => {
+    // Position matters: the reload happens AFTER the delete resolves, so the
+    // shelf can only lose the item because the server stopped returning it.
+    const r = recorder();
+    await deleteCharacterAsset(asset({ assetId: 'x' }), r.deps);
+    expect(r.calls.indexOf('reload')).toBeGreaterThan(r.calls.indexOf('remove:x'));
+  });
+
+  it('deletes chat, regular and explicit items through the one path', async () => {
+    for (const item of [
+      asset({ assetId: 'c', kind: 'chat', mediaType: 'image' }),
+      asset({ assetId: 'r', kind: 'generated', contentRating: 'sfw' }),
+      asset({ assetId: 'e', kind: 'generated', contentRating: 'explicit' }),
+    ]) {
+      const r = recorder();
+      expect(await deleteCharacterAsset(item, r.deps)).toEqual({ ok: true });
+      expect(r.calls).toEqual([`remove:${item.assetId}`, 'reload']);
+    }
+  });
+});
+
+describe('a failed delete leaves the item alone and says so', () => {
+  it('reports the server message and does NOT refresh the shelf', async () => {
+    // Not refreshing is the point: the tile stays visible because the item is
+    // still there. A refresh here would redraw the same tile and read as a
+    // flicker rather than a failure.
+    const r = recorder({
+      remove: () => Promise.reject(new Error('Media storage is not configured.')),
+    });
+    const outcome = await deleteCharacterAsset(asset({ assetId: 'x' }), r.deps);
+
+    expect(outcome).toEqual({
+      ok: false,
+      deleted: false,
+      message: 'Media storage is not configured.',
+    });
+    expect(r.calls).toEqual(['remove:x']);
+    expect(r.calls).not.toContain('reload');
+  });
+
+  it('never reports success when the delete threw', async () => {
+    const r = recorder({ remove: () => Promise.reject(new Error('boom')) });
+    const outcome = await deleteCharacterAsset(asset(), r.deps);
+    expect(outcome.ok).toBe(false);
+  });
+
+  it('survives a non-Error rejection with a usable message', async () => {
+    const r = recorder({ remove: () => Promise.reject('nope') });
+    const outcome = await deleteCharacterAsset(asset(), r.deps);
+    expect(outcome).toEqual({
+      ok: false,
+      deleted: false,
+      message: 'Could not delete this item.',
+    });
+  });
+
+  it('distinguishes "did not delete" from "deleted but could not refresh"', async () => {
+    // These must not share a message. Telling an operator to retry something
+    // that already happened is how an asset gets deleted twice and the second
+    // attempt reports a confusing 404.
+    const r = recorder({ reload: () => Promise.reject(new Error('network')) });
+    const outcome = await deleteCharacterAsset(asset(), r.deps);
+
+    expect(outcome).toMatchObject({ ok: false, deleted: true });
+    expect((outcome as { message: string }).message).toContain('Reload');
+  });
+});
+
+describe('protected assets keep their existing protection', () => {
+  it('offers no Delete for a Primary (canonical) reference', () => {
+    const primary = assetDeletable(asset({ isPrimary: true }));
+    expect(primary.deletable).toBe(false);
+    expect((primary as { reason: string }).reason).toContain('Primary');
+  });
+
+  it('refuses BEFORE sending a request the server would answer 409 to', async () => {
+    const r = recorder();
+    const outcome = await deleteCharacterAsset(asset({ isPrimary: true }), r.deps);
+
+    expect(outcome).toMatchObject({ ok: false, deleted: false });
+    expect(r.calls).toEqual([]); // nothing was sent, nothing was re-read
+  });
+
+  it('does not invent any OTHER refusal', () => {
+    // Placement, approval state and media type are the server's business and
+    // none of them blocks a delete. A "cannot delete a published clip" rule
+    // here would be a new safety semantic nobody asked for.
+    expect(assetDeletable(asset({ status: 'under_review' })).deletable).toBe(true);
+    expect(assetDeletable(asset({ status: 'rejected' })).deletable).toBe(true);
+    expect(assetDeletable(asset({ mediaType: 'image' })).deletable).toBe(true);
+    expect(assetDeletable(asset({ kind: 'chat' })).deletable).toBe(true);
+    expect(
+      assetDeletable(asset({ placement: { categories: [], heroPosition: 0 } })).deletable,
+    ).toBe(true);
+    expect(
+      assetDeletable(
+        asset({
+          placement: {
+            categories: [{ id: 'k1', slug: 'sexy', name: 'Sexy', position: 2 }],
+            heroPosition: null,
+          },
+        }),
+      ).deletable,
+    ).toBe(true);
+  });
+});
+
+describe('the confirmation names what the tile cannot show', () => {
+  it('always says the file goes and that it cannot be undone', () => {
+    const message = deletionConsequence(asset());
+    expect(message).toContain('stored file');
+    expect(message).toContain('cannot be undone');
+  });
+
+  it('names each place the item is published, rather than counting them', () => {
+    const message = deletionConsequence(
+      asset({
+        placement: {
+          categories: [
+            { id: 'k1', slug: 'sexy', name: 'Sexy', position: 0 },
+            { id: 'k2', slug: 'new', name: 'New', position: 1 },
+          ],
+          heroPosition: 0,
+        },
+      }),
+    );
+    expect(message).toContain('Home Hero');
+    expect(message).toContain('Sexy');
+    expect(message).toContain('New');
+    expect(message).toContain('will be removed from there');
+  });
+
+  it('says nothing about placement when there is none', () => {
+    expect(deletionConsequence(asset())).not.toContain('currently in');
+  });
+
+  it('warns that an already-sent chat message keeps its text and loses the media', () => {
+    // messages.media_asset_id is ON DELETE SET NULL. Nothing on the tile shows
+    // this, and no operator would guess it.
+    const message = deletionConsequence(asset({ kind: 'chat' }));
+    expect(message).toContain('no longer be able to send it');
+    expect(message).toContain('loses the attachment');
+  });
+
+  it('does not give the chat warning to a Regular or Explicit clip', () => {
+    expect(deletionConsequence(asset({ kind: 'generated' }))).not.toContain('attachment');
   });
 });

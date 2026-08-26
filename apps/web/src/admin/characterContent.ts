@@ -395,3 +395,136 @@ export function sectionSummary(
   if (items.length === 0) return `No ${noun}s yet.`;
   return `${items.length} ${noun}${items.length === 1 ? '' : 's'}`;
 }
+
+/* ------------------------------------------------------------------ *
+ * Deleting a content item from the Character page
+ *
+ * THERE IS ONE DELETION PATH AND THIS IS NOT A SECOND ONE. The Character
+ * page calls the SAME endpoint the Content Library's Delete calls —
+ * `DELETE /admin/content/assets/:assetId`, served by `deleteLibraryAsset`,
+ * which removes the row and the file it owns. Nothing here decides what
+ * deletion means; it decides what to OFFER, what to WARN, and what to do
+ * with the answer. The rules the server enforces are mirrored, never
+ * re-implemented.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Whether the page may offer Delete for this item, and why not when it may not.
+ *
+ * The one refusal is CANONICAL. `deleteLibraryAsset` answers 409 for a Primary
+ * (canonical) asset because canonical membership IS the public gallery, and
+ * the reason is mirrored here so the operator reads it before clicking rather
+ * than after. This is a mirror of a server rule, not a rule of its own: if the
+ * check were somehow wrong, the server still refuses.
+ *
+ * Everything on the three shelves is otherwise deletable — approved or not,
+ * placed or not, image or video. Placement is a warning, never a veto: the
+ * schema already resolves it, and inventing a "cannot delete a published clip"
+ * rule here would be a new safety semantic nobody asked for.
+ */
+export function assetDeletable(
+  asset: CharacterContentAsset,
+): { deletable: true } | { deletable: false; reason: string } {
+  if (asset.isPrimary) {
+    return {
+      deletable: false,
+      reason:
+        'This is a Primary reference and belongs to the public gallery. Remove it from Primary before deleting.',
+    };
+  }
+  return { deletable: true };
+}
+
+/**
+ * What the operator is told BEFORE confirming — every consequence that is not
+ * visible from the tile.
+ *
+ * Placement is named rather than summarised because "it is in 2 categories" is
+ * not something anyone can act on. The chat clause is separate because the
+ * consequence there is different in kind: an already-sent message keeps its
+ * text and loses its attachment (`messages.media_asset_id` is ON DELETE SET
+ * NULL), which is not something the tile shows and not something a reasonable
+ * operator would guess.
+ */
+export function deletionConsequence(asset: CharacterContentAsset): string {
+  const parts = ['This permanently deletes the item and its stored file. It cannot be undone.'];
+
+  const placements: string[] = [];
+  if (asset.placement.heroPosition !== null) placements.push('the Home Hero');
+  for (const category of asset.placement.categories) placements.push(category.name);
+  if (placements.length > 0) {
+    parts.push(`It is currently in ${placements.join(', ')} and will be removed from there.`);
+  }
+
+  if (asset.kind === 'chat') {
+    parts.push(
+      'She will no longer be able to send it, and any message that already carried it keeps its text but loses the attachment.',
+    );
+  }
+
+  return parts.join(' ');
+}
+
+/** What the page needs from the outside world to delete one item. */
+export interface DeleteAssetDeps {
+  /** The canonical Content Library delete — `contentLibraryApi.remove`. */
+  remove: (assetId: string) => Promise<unknown>;
+  /** Re-reads this character's content from the server. */
+  reload: () => Promise<void>;
+}
+
+/**
+ * The outcome, stated precisely enough to render honestly.
+ *
+ * `deleted` exists because "the delete failed" and "the delete worked but the
+ * page could not refresh" are different facts and must not share a message.
+ * Reporting the second as a failure would tell an operator to retry something
+ * that already happened.
+ */
+export type DeleteAssetOutcome =
+  | { ok: true }
+  | { ok: false; deleted: boolean; message: string };
+
+/**
+ * Delete one item, then make the page tell the truth about it.
+ *
+ * The refresh is a RE-READ, not a local splice. Removing the tile optimistically
+ * would show exactly the same thing whether the server had deleted the asset or
+ * refused it, which is the "silently pretend it succeeded" failure. Re-reading
+ * means the shelf can only lose the item if the server actually lost it.
+ *
+ * On failure nothing is re-read, so the item stays visible and the operator can
+ * see what they still have.
+ */
+export async function deleteCharacterAsset(
+  asset: CharacterContentAsset,
+  deps: DeleteAssetDeps,
+): Promise<DeleteAssetOutcome> {
+  const allowed = assetDeletable(asset);
+  if (!allowed.deletable) {
+    // Refused before the request: never send one the server will answer 409 to.
+    return { ok: false, deleted: false, message: allowed.reason };
+  }
+
+  try {
+    await deps.remove(asset.assetId);
+  } catch (err) {
+    return {
+      ok: false,
+      deleted: false,
+      message: err instanceof Error ? err.message : 'Could not delete this item.',
+    };
+  }
+
+  try {
+    await deps.reload();
+  } catch {
+    return {
+      ok: false,
+      deleted: true,
+      message: 'Deleted, but the page could not refresh. Reload to see the current content.',
+    };
+  }
+
+  return { ok: true };
+}

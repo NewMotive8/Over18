@@ -10,6 +10,9 @@ import {
   statusLabel,
   groupBySection,
   sectionSummary,
+  assetDeletable,
+  deletionConsequence,
+  deleteCharacterAsset,
   SECTION_RATING,
   SECTION_FILE_ACCEPT,
   type ContentSection,
@@ -122,6 +125,19 @@ export default function AdminCharacterDetailPage() {
   const contentFileInput = useRef<HTMLInputElement>(null);
 
   /**
+   * Deleting one content item, per tile.
+   *
+   * Three ids rather than three booleans, because the shelves render many
+   * tiles and a shared flag would arm the confirmation, the spinner or the
+   * error on all of them at once. Each piece of state names the ONE asset it
+   * belongs to, so a second tile's Delete cannot inherit the first tile's
+   * half-finished state.
+   */
+  const [deleteConfirmFor, setDeleteConfirmFor] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<{ assetId: string; message: string } | null>(null);
+
+  /**
    * Keyword editing, per clip.
    *
    * `keywordsFor` is the asset whose editor is open — one at a time, because
@@ -169,6 +185,48 @@ export default function AdminCharacterDetailPage() {
     const res = await adminCharactersApi.content(characterId);
     setContent(res.assets);
   }, [characterId]);
+
+  /**
+   * Delete one content item, through the Content Library's own delete.
+   *
+   * `contentLibraryApi.remove` is the SAME call the Content Library screen
+   * makes, hitting the same route and the same `deleteLibraryAsset` service.
+   * This page adds a place to click it and nothing else — there is no second
+   * deletion implementation, and no rule about what may be deleted lives here.
+   *
+   * The decision, the wording and the outcome all come from
+   * `deleteCharacterAsset`, which is pure enough to test; this function owns
+   * only the state the tiles render.
+   */
+  const handleDeleteAsset = useCallback(
+    async (asset: CharacterContentAsset) => {
+      setDeleteError(null);
+      setContentNotice(null);
+      setDeletingId(asset.assetId);
+      try {
+        const outcome = await deleteCharacterAsset(asset, {
+          remove: contentLibraryApi.remove,
+          reload: reloadContent,
+        });
+        if (outcome.ok) {
+          // The shelf has already been re-read, so the tile is gone because the
+          // server no longer returns it — not because we hid it.
+          setDeleteConfirmFor(null);
+          setContentNotice('Deleted. The item and its stored file are gone.');
+          // A deleted item cannot keep an open keyword editor.
+          if (keywordsFor === asset.assetId) setKeywordsFor(null);
+          return;
+        }
+        setDeleteError({ assetId: asset.assetId, message: outcome.message });
+        // It really was deleted; only the refresh failed. Closing the
+        // confirmation stops the operator re-confirming something that is done.
+        if (outcome.deleted) setDeleteConfirmFor(null);
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [reloadContent, keywordsFor],
+  );
 
   /**
    * Upload straight to this character.
@@ -821,7 +879,62 @@ export default function AdminCharacterDetailPage() {
                         >
                           {keywordsFor === asset.assetId ? 'Close keywords' : 'Keywords'}
                         </button>
+                        {assetDeletable(asset).deletable && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeleteError(null);
+                              setDeleteConfirmFor(asset.assetId);
+                            }}
+                            disabled={busy || deletingId !== null}
+                            aria-expanded={deleteConfirmFor === asset.assetId}
+                            className="rounded border border-red-500/40 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
+
+                      {/* Confirmation, in the tile. It names the consequences
+                          that are NOT visible from the tile — the stored file,
+                          where the item is placed, what a chat message that
+                          already carried it will look like afterwards. */}
+                      {deleteConfirmFor === asset.assetId && (
+                        <div className="mt-1.5 rounded border border-red-500/30 bg-red-500/5 p-2">
+                          <p className="text-[11px] leading-relaxed text-zinc-300">
+                            {deletionConsequence(asset)}
+                          </p>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setDeleteConfirmFor(null)}
+                              disabled={deletingId === asset.assetId}
+                              className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600 disabled:opacity-50"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteAsset(asset)}
+                              disabled={deletingId === asset.assetId}
+                              className="rounded border border-red-500/40 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+                            >
+                              {deletingId === asset.assetId ? 'Deleting…' : 'Confirm delete'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* The failure stays on the tile it belongs to, and the
+                          tile stays on the shelf — nothing was removed. */}
+                      {deleteError?.assetId === asset.assetId && (
+                        <p
+                          role="alert"
+                          className="mt-1.5 rounded border border-red-500/30 bg-red-500/5 p-2 text-[11px] leading-relaxed text-red-300"
+                        >
+                          {deleteError.message}
+                        </p>
+                      )}
                   {/* One clip's keywords. Chips with an obvious remove,
                       a free-text add, and a single Save that PUTs the
                       whole set for THIS asset only. */}

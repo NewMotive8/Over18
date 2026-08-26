@@ -1,7 +1,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, rmSync } from 'node:fs';
 import { eq } from 'drizzle-orm';
-import { characterVisualAssets, users } from '../db/schema.js';
+import {
+  appCategories,
+  appCategoryAssets,
+  assetKeywords,
+  characterVisualAssets,
+  contentKeywords,
+  conversations,
+  homeHeroClips,
+  messages,
+  users,
+} from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
 import { getActiveVisualIdentity } from '../services/visual-identity-service.js';
@@ -35,10 +45,24 @@ const PNG = Buffer.from(
   'base64',
 );
 
-function multipart(characterId: string, filename: string, contentType: string, bytes: Buffer) {
+function multipart(
+  characterId: string,
+  filename: string,
+  contentType: string,
+  bytes: Buffer,
+  /** Extra text parts — `section` is what the Character page's shelves send. */
+  fields: Record<string, string> = {},
+) {
   const boundary = '----smokeboundary1234';
+  const extra = Object.entries(fields)
+    .map(
+      ([name, value]) =>
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    )
+    .join('');
   const head = Buffer.from(
     `--${boundary}\r\nContent-Disposition: form-data; name="characterId"\r\n\r\n${characterId}\r\n` +
+      extra +
       `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
       `Content-Type: ${contentType}\r\n\r\n`,
   );
@@ -266,6 +290,158 @@ describe('library asset delete', () => {
   it('requires admin', async () => {
     const res = await ctx.app.inject({ method: 'DELETE', url: `/admin/content/assets/${LUNA.id}` });
     expect([401, 403]).toContain(res.statusCode);
+  });
+
+  /**
+   * THE CHARACTER PAGE'S DELETE IS THIS ROUTE. It sends no new field and takes
+   * no new path — it is the Content Library's delete, offered from a second
+   * screen. These cases exercise it through an asset created the way the
+   * Character page creates one (section=chat), so a regression in either
+   * screen's asset shape shows up here.
+   */
+  it('deletes a Chat Content asset uploaded from the Character page', async () => {
+    const cookie = await adminCookie();
+    const { payload, headers } = multipart(LUNA.id, 'chat.png', 'image/png', PNG, {
+      section: 'chat',
+    });
+    const up = await ctx.app.inject({
+      method: 'POST',
+      url: '/admin/content/uploads',
+      headers: { ...headers, cookie },
+      payload,
+    });
+    expect(up.statusCode).toBe(201);
+    const assetId = up.json().assetId;
+
+    // It is on her Character page before the delete...
+    const before = await ctx.app.inject({
+      method: 'GET',
+      url: `/admin/characters/${LUNA.id}/content`,
+      headers: { cookie },
+    });
+    expect(before.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(assetId);
+
+    const [row] = await ctx.db
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, assetId));
+    expect(row!.kind).toBe('chat');
+    const filePath = (row!.provenance as Record<string, unknown>).storagePath as string;
+    expect(existsSync(filePath)).toBe(true);
+
+    const del = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/admin/content/assets/${assetId}`,
+      headers: { cookie },
+    });
+    expect(del.statusCode).toBe(200);
+    expect(del.json()).toMatchObject({ assetId, fileRemoved: true, fileWasMissing: false });
+
+    // ...and afterwards it is gone from the page, the Library, the table and the disk.
+    const after = await ctx.app.inject({
+      method: 'GET',
+      url: `/admin/characters/${LUNA.id}/content`,
+      headers: { cookie },
+    });
+    expect(after.json().assets.map((a: { assetId: string }) => a.assetId)).not.toContain(assetId);
+
+    const lib = await ctx.app.inject({
+      method: 'GET',
+      url: '/admin/content/library',
+      headers: { cookie },
+    });
+    expect(lib.json().assets.map((a: { assetId: string }) => a.assetId)).not.toContain(assetId);
+
+    expect(existsSync(filePath)).toBe(false);
+    expect(
+      await ctx.db
+        .select()
+        .from(characterVisualAssets)
+        .where(eq(characterVisualAssets.id, assetId)),
+    ).toHaveLength(0);
+  });
+
+  /**
+   * REFERENCES ARE RESOLVED BY THE SCHEMA, NOT BY A NEW RULE.
+   *
+   * Every foreign key onto character_visual_assets is already ON DELETE
+   * CASCADE (placement and keyword LINKS, which are only meaningful while the
+   * asset exists) or ON DELETE SET NULL (history, which must survive it).
+   * Nothing is RESTRICT, so a referenced asset cannot make this route fail and
+   * cannot leave an orphan behind. This test pins that, because it is the
+   * reason the Character page needs no cascading rules of its own.
+   */
+  it('leaves no orphan when the asset is referenced elsewhere', async () => {
+    const cookie = await adminCookie();
+    const { payload, headers } = multipart(LUNA.id, 'placed.mp4', 'video/mp4', MP4);
+    const up = await ctx.app.inject({
+      method: 'POST',
+      url: '/admin/content/uploads',
+      headers: { ...headers, cookie },
+      payload,
+    });
+    const assetId = up.json().assetId;
+
+    // A placement link, a Hero link, a keyword link, and a chat message that
+    // already carried it — one row of each kind of reference.
+    const [category] = await ctx.db
+      .insert(appCategories)
+      .values({ slug: 'sexy', name: 'Sexy', position: 0 })
+      .returning();
+    await ctx.db
+      .insert(appCategoryAssets)
+      .values({ categoryId: category!.id, assetId, position: 0 });
+    await ctx.db.insert(homeHeroClips).values({ assetId, position: 0 });
+    const [keyword] = await ctx.db
+      .insert(contentKeywords)
+      .values({ key: 'beach', label: 'Beach' })
+      .returning();
+    await ctx.db.insert(assetKeywords).values({ assetId, keywordId: keyword!.id });
+
+    const [user] = await ctx.db
+      .insert(users)
+      .values({ email: 'viewer@example.com', passwordHash: 'x' })
+      .returning();
+    const [conversation] = await ctx.db
+      .insert(conversations)
+      .values({ userId: user!.id, characterId: LUNA.id })
+      .returning();
+    const [message] = await ctx.db
+      .insert(messages)
+      .values({
+        conversationId: conversation!.id,
+        sender: 'character',
+        content: 'here you go',
+        mediaAssetId: assetId,
+      })
+      .returning();
+
+    const del = await ctx.app.inject({
+      method: 'DELETE',
+      url: `/admin/content/assets/${assetId}`,
+      headers: { cookie },
+    });
+    expect(del.statusCode).toBe(200); // a referenced asset is NOT refused
+
+    // Links that only mean something while the asset exists are gone.
+    expect(
+      await ctx.db.select().from(appCategoryAssets).where(eq(appCategoryAssets.assetId, assetId)),
+    ).toHaveLength(0);
+    expect(
+      await ctx.db.select().from(homeHeroClips).where(eq(homeHeroClips.assetId, assetId)),
+    ).toHaveLength(0);
+    expect(
+      await ctx.db.select().from(assetKeywords).where(eq(assetKeywords.assetId, assetId)),
+    ).toHaveLength(0);
+
+    // History survives, minus the attachment: the bubble keeps its words.
+    const [afterMessage] = await ctx.db
+      .select()
+      .from(messages)
+      .where(eq(messages.id, message!.id));
+    expect(afterMessage).toBeDefined();
+    expect(afterMessage!.content).toBe('here you go');
+    expect(afterMessage!.mediaAssetId).toBeNull();
   });
 });
 
