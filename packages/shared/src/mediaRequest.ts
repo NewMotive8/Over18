@@ -12,10 +12,13 @@
  *
  * TWO WAYS TO ASK
  *
- *  1. DIRECT — a request CUE and a media NOUN, both present, no context needed:
- *       "send me a picture", "show me a different photo"
+ *  1. DIRECT — a media NOUN plus something that makes the message an ASK, and
+ *     no context needed:
+ *       "send me a picture", "show me a different photo"   (a request CUE)
+ *       "can I see a pic?", "got any videos?"              (an asking FRAME)
+ *       "pics?"                                            (the noun IS the ask)
  *     Conjunctive on purpose, because either half alone is the common false
- *     positive: "I like your profile picture" (noun, no cue) and "did you watch
+ *     positive: "I like your profile picture" (noun, no ask) and "did you watch
  *     the show?" (cue, no noun) must both stay silent.
  *
  *  2. FOLLOW-UP — only meaningful just after a media exchange, and only inside
@@ -74,11 +77,21 @@ export const FOLLOW_UP_WINDOW_MESSAGES = 6;
  * `want` and `need` do not have that problem: wanting is inherently
  * forward-looking, so there is no past-tense reading to collide with.
  *
+ * `wanna` and `gimme` are here for the same reason, and only for that reason:
+ * they are spoken contractions of `want to` and `give me`, verbs this list has
+ * already accepted. They are not new meanings — leaving them out only meant
+ * recognising "give me a pic" and missing "gimme a pic", which is a spelling
+ * rule, not an intent rule. Neither has a past-tense reading either.
+ *
+ * `see` and `got` are still NOT here, for the reasons above. What they get
+ * instead is a FRAME (see ASKS_TO_SEE / ASKS_IF_SHE_HAS): the same verbs,
+ * admitted only in the grammatical shapes that can only be an ask.
+ *
  * THE NOUN REQUIREMENT IS WHAT KEEPS THIS SAFE. A cue alone is never enough —
  * `detectMediaRequest` needs a cue AND a media noun — so "I need coffee",
  * "I want to talk" and "I've got to go" cannot reach the media path.
  */
-const REQUEST_CUE = /\b(send|show|share|give|post|want|need)\b/i;
+const REQUEST_CUE = /\b(send|show|share|give|post|want|wanna|need|gimme)\b/i;
 
 /**
  * A negated request. Scoped tightly to negation IMMEDIATELY before the cue, so
@@ -90,10 +103,89 @@ const REQUEST_CUE = /\b(send|show|share|give|post|want|need)\b/i;
  * into one. The two lists are the same set and must stay that way.
  */
 const NEGATED_REQUEST =
-  /\b(?:don'?t|do not|never|stop|quit|no)\s+(?:send|show|share|give|post|want|need|more)\b/i;
+  /\b(?:don'?t|do not|never|stop|quit|no)\s+(?:send|show|share|give|post|want|wanna|need|gimme|more)\b/i;
 
-const IMAGE_NOUN = /\b(pic|pics|picture|pictures|photo|photos|selfie|selfies|image|images)\b/i;
-const VIDEO_NOUN = /\b(video|videos|vid|vids|clip|clips)\b/i;
+/**
+ * The nouns, as alternation SOURCE rather than finished regexes, because three
+ * patterns below need the same list and a second copy of it would drift.
+ */
+const IMAGE_NOUNS = 'pic|pics|picture|pictures|photo|photos|selfie|selfies|image|images';
+const VIDEO_NOUNS = 'video|videos|vid|vids|clip|clips';
+
+const IMAGE_NOUN = new RegExp(`\\b(?:${IMAGE_NOUNS})\\b`, 'i');
+const VIDEO_NOUN = new RegExp(`\\b(?:${VIDEO_NOUNS})\\b`, 'i');
+
+/**
+ * ASKING FRAMES — the same rejected verbs, admitted by GRAMMAR.
+ *
+ * The cue list is a vocabulary test, and `see` and `got` fail it because each
+ * has an innocent reading that carries a media noun along with it. But the
+ * innocent readings are not shaped like an ask, and that is the thing worth
+ * matching. A frame is a cue verb plus the surrounding words that fix WHO is
+ * doing it, to WHOM, and WHEN — which is exactly what the vocabulary test
+ * throws away.
+ *
+ * ASKS_TO_SEE — the speaker asking to be shown, right now.
+ *   yes: "can I see a pic?", "could we see a photo", "let me see a picture",
+ *        "lemme see a vid"
+ *   no:  "did you see that picture?"  — subject is `you`, and `did` is past
+ *        "I saw your photo"           — `saw`, which this cannot match at all
+ *        "can you see the picture?"   — asking about HER eyes, not her media
+ *        "you should see the video"   — no modal+`I`, no let-me
+ *
+ * `wanna see` / `want to see` / `need to see` are deliberately NOT here: they
+ * are already requests because of `wanna`/`want`/`need`, exactly as the cue
+ * list's docblock says. Duplicating them here would put the same phrase behind
+ * two rules and make the next edit ambiguous.
+ */
+const ASKS_TO_SEE =
+  /\b(?:can|could|may|will|would)\s+(?:i|we)\s+(?:please\s+)?see\b|\b(?:let\s+me|lemme)\s+see\b/i;
+
+/**
+ * ASKS_IF_SHE_HAS, part one — "any" does the work, but only about HER.
+ *
+ * `got any` / `have any` is a question about AVAILABILITY, so it needs no
+ * question mark to be safe. It does need a subject, though: the same words
+ * with a first-person subject are a denial rather than a request, and
+ * "I don't have any pictures" must not send one. So the phrase has to either
+ * OPEN the message — the elided "[have you] got any pics?" — or name her.
+ *   yes: "got any pics?", "do you have any videos", "have you got any photos",
+ *        "u got any vids?"
+ *   no:  "I don't have any pictures", "she doesn't have any photos",
+ *        "I got a picture from my friend", "she got some photos developed"
+ */
+const ASKS_IF_SHE_HAS_ANY = /^\s*(?:got|have)\s+any\b|\b(?:u|you)\s+(?:got|have)\s+any\b/i;
+
+/**
+ * ASKS_IF_SHE_HAS, part two — second person, and only as a QUESTION.
+ *
+ * "you got a pic" and "you got a nice picture there" are the same words with
+ * opposite intent, so this half is admitted only when the message is actually
+ * asking something. The question mark is the disambiguator, and it is the
+ * user's own punctuation rather than an inference about them.
+ *   yes: "you got a selfie?", "u got any vids?", "have you got a photo?",
+ *        "do you have a video?"
+ *   no:  "you got a nice picture there"  — a compliment, and not a question
+ *        "I got your video message"      — first person
+ *        "did you get my picture?"       — `get`, not `got`
+ *        "did you have fun with that video?" — `did`, past, and not about her
+ *                                              having one now
+ */
+const ASKS_IF_SHE_HAS_ONE = /\bdo\s+you\s+have\b|\bhave\s+you\s+got\b|\b(?:u|you)\s+got\b/i;
+
+/**
+ * THE NOUN IS THE WHOLE MESSAGE — "pics?", "any video?".
+ *
+ * Anchored end to end on purpose. A bare noun is only unambiguous when there
+ * is nothing else in the message to give it another job: "pics?" can only be
+ * an ask, while "that's a nice picture" and "did you see that picture?" both
+ * contain a noun and a great deal else. The question mark is required, so a
+ * one-word remark ("pics") stays silent.
+ */
+const BARE_NOUN_ASK = new RegExp(
+  `^(?:any|some|a|an|the)?\\s*(?:${IMAGE_NOUNS}|${VIDEO_NOUNS})\\s*\\?+$`,
+  'i',
+);
 
 /**
  * "More of that" phrasing. Used ONLY when a media noun is also present, so
@@ -117,6 +209,21 @@ function nounType(normalized: string): MediaRequestType | null {
   if (image === -1) return 'video';
   if (video === -1) return 'image';
   return image < video ? 'image' : 'video';
+}
+
+/**
+ * True when the message is shaped like an ask without using a cue verb.
+ *
+ * Kept separate from REQUEST_CUE because the two answer different questions —
+ * "is there an asking WORD here?" versus "is this sentence an asking SHAPE?" —
+ * and only the second one can safely involve `see` or `got`.
+ */
+function asksWithoutACue(normalized: string): boolean {
+  if (ASKS_TO_SEE.test(normalized)) return true;
+  if (ASKS_IF_SHE_HAS_ANY.test(normalized)) return true;
+  // Second-person `got` is a request only when it is a question. See above.
+  if (ASKS_IF_SHE_HAS_ONE.test(normalized) && normalized.trimEnd().endsWith('?')) return true;
+  return false;
 }
 
 /** True while a recent media exchange is close enough to refer back to. */
@@ -144,7 +251,12 @@ export function detectMediaRequest(
   const noun = nounType(normalized);
 
   // 1. Direct request — stands on its own, no conversational context needed.
-  if (REQUEST_CUE.test(normalized) && noun) return noun;
+  //    A cue verb OR an asking frame; the media noun is required either way.
+  if (noun && (REQUEST_CUE.test(normalized) || asksWithoutACue(normalized))) return noun;
+
+  // 1b. The message is nothing but the noun and a question mark: "pics?".
+  //     Also direct, because there is no other reading of it.
+  if (noun && BARE_NOUN_ASK.test(normalized.trim())) return noun;
 
   // Everything below is follow-up territory and needs a recent media exchange.
   if (!withinFollowUpWindow(context)) return null;

@@ -332,13 +332,17 @@ describe('a stated want is a request', () => {
 
 describe('"got" is deliberately NOT a cue', () => {
   /**
-   * `got` would have caught "have you got a picture?", which is a genuine ask.
-   * But English uses `got` mostly in the PAST tense, so a plain statement of
-   * fact would have become a request — and a character sending a photo because
-   * the user mentioned receiving one from someone else is worse than missing
-   * the occasional "have you got".
+   * `got` is still not in the cue list, and these are the sentences that keep
+   * it out: English uses it mostly in the PAST tense, so as a bare cue a plain
+   * statement of fact would have become a request — and a character sending a
+   * photo because the user mentioned receiving one from someone else is worse
+   * than missing the occasional "have you got".
    *
    * `want` and `need` carry no such reading: wanting is forward-looking.
+   *
+   * What `got` gets instead is a FRAME (section 9), which admits it only in
+   * the shapes that can only be an ask. Every assertion here predates that
+   * frame and must keep passing, which is the point of leaving them here.
    */
   it('"I got a picture from my friend" is a statement, not a request', () => {
     expect(detectMediaRequest('I got a picture from my friend')).toBeNull();
@@ -384,9 +388,10 @@ describe('the new cues cannot fire without a media noun', () => {
 
 describe('"see" is deliberately NOT a cue', () => {
   /**
-   * Looking at something is not asking for it. `see` was left out of the cue
+   * Looking at something is not asking for it. `see` is still out of the cue
    * list precisely so a message that mentions a picture in passing cannot
-   * become a request for one.
+   * become a request for one — see section 9 for the frame that admits it only
+   * where the speaker is asking to be shown.
    */
   it('does not treat looking as asking', () => {
     expect(detectMediaRequest('did you see that picture?')).toBeNull();
@@ -397,5 +402,201 @@ describe('"see" is deliberately NOT a cue', () => {
   it('but a want ABOUT seeing still counts', () => {
     // "need ... see" is a request because of `need`, not because of `see`.
     expect(detectMediaRequest('I need to see a picture from you')).toBe('image');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 8. Spoken contractions of cues that already exist
+ *
+ * `wanna` and `gimme` are `want to` and `give me` as people actually type
+ * them. Missing them was a spelling gap, not an intent gap: "give me a pic"
+ * worked and "gimme a pic" did not.
+ * ------------------------------------------------------------------ */
+
+describe('contractions of existing cues', () => {
+  it.each([
+    ['wanna see a pic', 'image'],
+    ['wanna see a video', 'video'],
+    ['i wanna picture of you', 'image'],
+    ['gimme a pic', 'image'],
+    ['gimme a video', 'video'],
+    ['gimme a selfie', 'image'],
+  ] as const)('%s -> %s', (text, expected) => {
+    expect(detectMediaRequest(text)).toBe(expected);
+  });
+
+  it('they still need a media noun', () => {
+    expect(detectMediaRequest('wanna talk?')).toBeNull();
+    expect(detectMediaRequest('gimme a minute')).toBeNull();
+    expect(detectMediaRequest('wanna hang out later?')).toBeNull();
+  });
+
+  it('they are negatable, in step with the cue list', () => {
+    // Every verb that can open a request has to be suppressible, or widening
+    // the list quietly turns a refusal into a request.
+    expect(detectMediaRequest("I don't wanna see a pic")).toBeNull();
+    expect(detectMediaRequest('never gimme a video', AFTER_IMAGE)).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 9. Asking frames — `see` and `got`, admitted by grammar
+ *
+ * The cue list is a vocabulary test and these two verbs fail it, because each
+ * has an innocent reading that carries a media noun along with it. The
+ * innocent readings are not SHAPED like an ask, though, and that is what a
+ * frame matches: the verb plus enough surrounding words to fix who is doing
+ * it, to whom, and when.
+ *
+ * Every positive below is paired with the near-miss it must not swallow.
+ * ------------------------------------------------------------------ */
+
+describe('asking to be shown', () => {
+  it.each([
+    ['can I see a pic?', 'image'],
+    ['can I see a picture?', 'image'],
+    ['can I see a video?', 'video'],
+    ['could I see a photo', 'image'],
+    ['may I see a selfie?', 'image'],
+    ['can we see a clip?', 'video'],
+    ['let me see a photo', 'image'],
+    ['lemme see a pic', 'image'],
+  ] as const)('%s -> %s', (text, expected) => {
+    expect(detectMediaRequest(text)).toBe(expected);
+    // A frame is a DIRECT path: it must not depend on a prior exchange.
+    expect(detectMediaRequest(text, NO_CONTEXT)).toBe(expected);
+  });
+
+  it('leaves looking, remembering and her own eyesight alone', () => {
+    expect(detectMediaRequest('did you see that picture?')).toBeNull();
+    expect(detectMediaRequest('I saw a video yesterday')).toBeNull();
+    expect(detectMediaRequest('you should see the video I watched')).toBeNull();
+    // Subject is `you`: this asks whether SHE can see something, not for media.
+    expect(detectMediaRequest('can you see the picture I sent?')).toBeNull();
+    expect(detectMediaRequest('have you seen that photo?')).toBeNull();
+  });
+
+  it('stays silent even where the follow-up path is live', () => {
+    expect(detectMediaRequest('did you see that picture?', AFTER_IMAGE)).toBeNull();
+    expect(detectMediaRequest('I saw a video yesterday', AFTER_VIDEO)).toBeNull();
+  });
+});
+
+describe('asking whether she has any', () => {
+  it.each([
+    ['got any pics?', 'image'],
+    ['got any videos?', 'video'],
+    ['got any photos', 'image'],
+    ['do you have any pictures?', 'image'],
+    ['have you got any clips?', 'video'],
+    ['u got any vids?', 'video'],
+    ['you got a selfie?', 'image'],
+    ['do you have a video?', 'video'],
+  ] as const)('%s -> %s', (text, expected) => {
+    expect(detectMediaRequest(text)).toBe(expected);
+    expect(detectMediaRequest(text, NO_CONTEXT)).toBe(expected);
+  });
+
+  it('a first-person subject is a statement or a denial, never a request', () => {
+    // The regression this frame most easily creates: the user saying HE has
+    // none, and the character answering by sending one.
+    expect(detectMediaRequest("I don't have any pictures")).toBeNull();
+    expect(detectMediaRequest("she doesn't have any photos")).toBeNull();
+    expect(detectMediaRequest('I got a picture from my friend')).toBeNull();
+    expect(detectMediaRequest('I got your video message yesterday')).toBeNull();
+  });
+
+  it('second-person "got" needs to be a QUESTION', () => {
+    // Same words, opposite intent. The user's own punctuation separates them.
+    expect(detectMediaRequest('you got a nice picture there')).toBeNull();
+    expect(detectMediaRequest('you got a selfie?')).toBe('image');
+  });
+
+  it('does not fire on past tense or on receiving', () => {
+    expect(detectMediaRequest('did you get my picture?')).toBeNull();
+    expect(detectMediaRequest('did you have fun making that video?')).toBeNull();
+  });
+
+  it('still needs a media noun', () => {
+    expect(detectMediaRequest('got any plans tonight?')).toBeNull();
+    expect(detectMediaRequest('do you have any siblings?')).toBeNull();
+  });
+});
+
+describe('the noun on its own', () => {
+  it.each([
+    ['pics?', 'image'],
+    ['pic?', 'image'],
+    ['picture?', 'image'],
+    ['selfie?', 'image'],
+    ['video?', 'video'],
+    ['vids?', 'video'],
+    ['any pics?', 'image'],
+    ['a video?', 'video'],
+  ] as const)('%s -> %s', (text, expected) => {
+    expect(detectMediaRequest(text)).toBe(expected);
+    expect(detectMediaRequest(text, NO_CONTEXT)).toBe(expected);
+  });
+
+  it('needs the question mark, and needs to be the WHOLE message', () => {
+    // Without the anchors this would be a bare-noun detector, which is the
+    // "I like your profile picture" failure the file exists to avoid.
+    expect(detectMediaRequest('pics')).toBeNull();
+    expect(detectMediaRequest('nice pics')).toBeNull();
+    expect(detectMediaRequest("that's a nice picture")).toBeNull();
+    expect(detectMediaRequest('I watched a video last night')).toBeNull();
+    expect(detectMediaRequest('my friend sent me a pic')).toBeNull();
+    expect(detectMediaRequest('what was that picture?')).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 10. The reported vocabulary, end to end.
+ *
+ * The exact phrase list the widening was specified against, asserted in one
+ * place so a future edit that recovers one case by losing another fails here.
+ * ------------------------------------------------------------------ */
+
+describe('the specified phrasings all resolve', () => {
+  it.each([
+    'send me a pic',
+    'send me a picture',
+    'can you send a pic?',
+    'can you send me a picture?',
+    'show me a photo',
+    'can I see a pic?',
+    'can I see a picture?',
+    'got any pics?',
+    'wanna see a pic',
+    'gimme a pic',
+    'pics?',
+  ])('image: %s', (text) => {
+    expect(detectMediaRequest(text)).toBe('image');
+  });
+
+  it.each([
+    'send me a vid',
+    'send me a video',
+    'can you send me a video?',
+    'show me a video',
+    'can I see a video?',
+    'got any videos?',
+    'wanna see a video',
+    'gimme a video',
+  ])('video: %s', (text) => {
+    expect(detectMediaRequest(text)).toBe('video');
+  });
+
+  it.each([
+    'did you see that picture?',
+    'I saw a video yesterday',
+    'my friend sent me a pic',
+    "that's a nice picture",
+    'I watched a video last night',
+  ])('ordinary statement stays silent: %s', (text) => {
+    expect(detectMediaRequest(text)).toBeNull();
+    // ...and still does, with the follow-up path live in both directions.
+    expect(detectMediaRequest(text, AFTER_IMAGE)).toBeNull();
+    expect(detectMediaRequest(text, AFTER_VIDEO)).toBeNull();
   });
 });
