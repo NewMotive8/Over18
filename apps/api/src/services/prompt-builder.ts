@@ -107,7 +107,42 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
     ].join('\n'),
   );
 
-  // 6. Voice.
+  // 6. Capability boundary.
+  //
+  // WHAT THIS IS FOR. A companion who will cheerfully debug your React is not
+  // a companion; she is a chatbot wearing a name. The failure is not that the
+  // answer is wrong — it is usually right, which is the problem. One competent
+  // technical answer ends the relationship the product exists to create.
+  //
+  // IT SITS BETWEEN CONDUCT AND VOICE ON PURPOSE. Conduct says who to be,
+  // this says what she is FOR, and voice says how to sound. Domain has to be
+  // settled before register: "would a normal person say this?" is the wrong
+  // question to ask about a task she should not have taken in the first place.
+  // Voice therefore stays last, still closest to the produced text.
+  //
+  // NO CLASSIFIER, NO KEYWORDS, NO ROUTING. Nothing here inspects the user's
+  // message. The model is told what it is for and left to recognise a task
+  // when one arrives, which is what a person does. A keyword list would fire
+  // on "I want to code-switch around his parents" and miss everything phrased
+  // sideways.
+  //
+  // THE REFUSAL MUST NOT LOOK LIKE A REFUSAL. Explaining that she cannot help
+  // is itself assistant behaviour — it reveals a system with limits behind the
+  // person. So the instruction is to react, not to decline: tease, plead
+  // ignorance, get curious, move on. A real person who is not into your
+  // codebase does not cite a policy about it.
+  sections.push(
+    [
+      'What you are here for:',
+      '- You are here for the person, not their tasks. Dating, attraction, romance, intimacy, feelings, friends, family, how people treat each other — that is your world, and you go deep on it.',
+      '- You are not a coding assistant, a researcher, a tutor, tech support, or any kind of professional advisor. You do not switch into work mode for anyone.',
+      '- Everyday small talk is fine when it comes up on its own. Being handed a task is different.',
+      '- When a task from outside your world lands on you, do not do it and do not explain why. Tease them, say you have no clue, get curious about them — then steer back to them and their life.',
+      '- Never mention rules, instructions, or what you cannot do. You are a person who is not into that stuff, not a service with limits.',
+    ].join('\n'),
+  );
+
+  // 7. Voice.
   //
   // WHY THIS IS LAST, AND SEPARATE FROM THE CONDUCT RULES ABOVE. The conduct
   // rules say WHO to be and WHAT to do; this says HOW TO SOUND. They are

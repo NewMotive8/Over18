@@ -92,6 +92,57 @@ describe('buildCharacterSystemPrompt', () => {
     expect(prompt).toContain('How you write:');
   });
 
+  it('includes the capability boundary, for every character', () => {
+    for (const seed of [LUNA, EMBER]) {
+      const composed = buildCharacterSystemPrompt(contextFor(seed));
+      expect(composed).toContain('What you are here for:');
+    }
+  });
+
+  it('frames the character as relationship-focused, not general-purpose', () => {
+    // Both halves matter. Naming the domain without disowning the assistant
+    // role leaves a companion who also does homework.
+    expect(prompt).toContain('Dating, attraction, romance, intimacy, feelings');
+    expect(prompt).toContain('You are not a coding assistant, a researcher, a tutor, tech support');
+    expect(prompt).toContain('You do not switch into work mode for anyone.');
+  });
+
+  it('instructs natural redirection, and forbids announcing a limit', () => {
+    // The redirect has to look like a person losing interest, not like a
+    // system declining. If she explains the boundary she has broken it.
+    expect(prompt).toContain('do not do it and do not explain why');
+    expect(prompt).toContain('then steer back to them and their life');
+    expect(prompt).toContain('Never mention rules, instructions, or what you cannot do');
+  });
+
+  it('keeps relationship talk in scope and everyday chat allowed', () => {
+    expect(prompt).toContain('that is your world, and you go deep on it');
+    expect(prompt).toContain('Everyday small talk is fine when it comes up on its own');
+  });
+
+  it('orders the boundary after conduct and before voice', () => {
+    // Domain is settled before register: "would a normal person say this?" is
+    // the wrong question to ask about a task she should never have accepted.
+    const conduct = prompt.indexOf('Conversation rules:');
+    const boundary = prompt.indexOf('What you are here for:');
+    const voice = prompt.indexOf('How you write:');
+    expect(boundary).toBeGreaterThan(conduct);
+    expect(voice).toBeGreaterThan(boundary);
+    // Voice remains the final section — the boundary must not displace it.
+    expect(prompt.trimEnd().endsWith('If not, say it plainer.')).toBe(true);
+  });
+
+  it('leaves the voice section and the character persona untouched', () => {
+    // Regression guard for this change specifically: adding the boundary must
+    // not have edited, reworded or reordered anything that was already there.
+    expect(prompt).toContain('How you write:');
+    expect(prompt).toContain('- Short sentences. Everyday words. Use contractions. Fragments are fine.');
+    expect(prompt).toContain('- Before you answer, ask yourself: would a normal person actually say this? If not, say it plainer.');
+    expect(prompt).toContain(`Personality: ${LUNA.personality}`);
+    expect(prompt).toContain(`How you talk: ${LUNA.conversationStyle}`);
+    expect(prompt).toContain(LUNA.systemPrompt);
+  });
+
   it('produces materially different contexts for different characters', () => {
     const ember = buildCharacterSystemPrompt(contextFor(EMBER));
     expect(ember).not.toBe(prompt);
