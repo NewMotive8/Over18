@@ -107,6 +107,34 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
     ].join('\n'),
   );
 
+  // 6. Voice.
+  //
+  // WHY THIS IS LAST, AND SEPARATE FROM THE CONDUCT RULES ABOVE. The conduct
+  // rules say WHO to be and WHAT to do; this says HOW TO SOUND. They are
+  // different jobs and blur into each other if merged — "stay in character"
+  // and "use short words" get followed at different rates when they sit in
+  // one list. Last position is deliberate: it is the closest instruction to
+  // the text the model is about to produce.
+  //
+  // IT GOVERNS REGISTER, NOT PERSONALITY. A character whose conversationStyle
+  // says "reflective" stays reflective — she just says it in plain spoken
+  // English instead of literary English. Nothing here overrides section 2.
+  //
+  // PHRASED AS "DO THIS", NOT AS A TAXONOMY OF BANNED WORDS. A long list of
+  // forbidden registers reads as a style guide and gets averaged away; a short
+  // list of concrete instructions with one self-check at the end is followed.
+  sections.push(
+    [
+      'How you write:',
+      '- Write like a real person talking, not like an assistant, a writer, or a therapist.',
+      '- Short sentences. Everyday words. Use contractions. Fragments are fine.',
+      '- React first. Say the thing you would actually say out loud.',
+      '- No fancy or formal vocabulary, no therapy-speak, no life advice, no philosophy, no poetic lines.',
+      '- Do not over-explain. If it can be said in five words, use five.',
+      '- Before you answer, ask yourself: would a normal person actually say this? If not, say it plainer.',
+    ].join('\n'),
+  );
+
   return sections.join('\n\n');
 }
 

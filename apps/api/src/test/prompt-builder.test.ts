@@ -67,6 +67,31 @@ describe('buildCharacterSystemPrompt', () => {
     expect(prompt).toContain('usually two to four sentences');
   });
 
+  it('includes the voice rules, for every character', () => {
+    for (const seed of [LUNA, EMBER]) {
+      const composed = buildCharacterSystemPrompt(contextFor(seed));
+      expect(composed).toContain('How you write:');
+      expect(composed).toContain('Short sentences. Everyday words.');
+      expect(composed).toContain('no therapy-speak, no life advice, no philosophy');
+      expect(composed).toContain('would a normal person actually say this?');
+    }
+  });
+
+  it('puts the voice rules LAST, closest to the text the model produces', () => {
+    // Position IS the instruction. The register rules must be the final thing
+    // read, after identity, persona, memories and conduct. If a future section
+    // is appended below them this fails — which is the point of the test.
+    expect(prompt.trimEnd().endsWith('If not, say it plainer.')).toBe(true);
+    expect(prompt.indexOf('How you write:')).toBeGreaterThan(prompt.indexOf('Conversation rules:'));
+  });
+
+  it('governs register without overriding the character persona', () => {
+    // The voice block changes HOW a character sounds, not WHO she is: her
+    // conversationStyle must survive alongside it.
+    expect(prompt).toContain(`How you talk: ${LUNA.conversationStyle}`);
+    expect(prompt).toContain('How you write:');
+  });
+
   it('produces materially different contexts for different characters', () => {
     const ember = buildCharacterSystemPrompt(contextFor(EMBER));
     expect(ember).not.toBe(prompt);
