@@ -584,6 +584,40 @@ export const merchandisingApi = {
 };
 
 /* ------------------------------------------------------------------ *
+ * Play with me — a derived rail, presented as a category
+ *
+ * The board sends the CLIPS it rendered, exactly as it does for a real
+ * category. The server maps them to the characters behind them, because that
+ * is what the order is keyed on — the clip a character shows is derived and
+ * changes when her content does.
+ *
+ * There is deliberately no add, no remove and no feature: membership is the
+ * video rule, not a list an operator edits.
+ * ------------------------------------------------------------------ */
+
+/** The reserved slug the categories list pins and the board routes on. */
+export const PLAY_WITH_ME_SLUG = 'play-with-me';
+export const PLAY_WITH_ME_NAME = 'Play with me';
+
+export interface PlayWithMeContentsState {
+  /** True when an operator order is saved; false while the rail is alphabetical. */
+  ordered: boolean;
+  assets: CategoryAssetView[];
+}
+
+export const playWithMeApi = {
+  contents: () => request<PlayWithMeContentsState>('/admin/home/play-with-me/contents'),
+  reorder: (orderedAssetIds: string[]) =>
+    request<PlayWithMeContentsState>('/admin/home/play-with-me/order', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedAssetIds }),
+    }),
+  /** Back to alphabetical. Deletes the saved order; touches nothing else. */
+  clearOrder: () =>
+    request<PlayWithMeContentsState>('/admin/home/play-with-me/order', { method: 'DELETE' }),
+};
+
+/* ------------------------------------------------------------------ *
  * Home banners (US-102.3)
  * ------------------------------------------------------------------ */
 

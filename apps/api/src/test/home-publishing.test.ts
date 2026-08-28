@@ -211,6 +211,20 @@ const api = {
     on.app.inject({ method: 'DELETE', url: `/admin/home/hero/${assetId}`, cookies }),
   orderHero: (orderedIds: string[], cookies = adminCookies) =>
     on.app.inject({ method: 'PUT', url: '/admin/home/hero/order', payload: { orderedIds }, cookies }),
+  /** Publishing -> Categories. Writes `position`, the CMS list order. */
+  orderCmsCategories: (orderedIds: string[], cookies = adminCookies) =>
+    on.app.inject({ method: 'PUT', url: '/admin/app-categories/order', payload: { orderedIds }, cookies }),
+  playWithMeContents: (cookies = adminCookies) =>
+    on.app.inject({ method: 'GET', url: '/admin/home/play-with-me/contents', cookies }),
+  orderPlayWithMe: (orderedAssetIds: string[], cookies = adminCookies) =>
+    on.app.inject({
+      method: 'PUT',
+      url: '/admin/home/play-with-me/order',
+      payload: { orderedAssetIds },
+      cookies,
+    }),
+  clearPlayWithMe: (cookies = adminCookies) =>
+    on.app.inject({ method: 'DELETE', url: '/admin/home/play-with-me/order', cookies }),
   media: (assetId: string) =>
     on.app.inject({ method: 'GET', url: `/api/media/assets/${assetId}/file` }),
   /** The lobby SEARCH grid — content clips, never characters. */
@@ -3178,15 +3192,23 @@ describe('Search returns CMS content clips and nothing else', () => {
   });
 });
 
-describe('Play with Me has no admin surface at all', () => {
-  it('serves no admin Play with me route — every verb 404s', async () => {
+describe('Play with Me has no MEMBERSHIP admin surface', () => {
+  /**
+   * REVISED, NOT WEAKENED. Play with me gained an ORDER control, so the two
+   * order routes are no longer 404 and this no longer asserts that they are.
+   * What it still asserts is the part that matters and that must never come
+   * back: there is no way to ADD a character to the rail or REMOVE one from it.
+   * Membership is the video rule. Re-curating it is what made the old screen
+   * unusable — in the automatic state the rail already held every candidate, so
+   * the Add picker had nothing to offer and a removed character could not be
+   * put back.
+   */
+  it('serves no add, remove, candidates or reset route — every one 404s', async () => {
     const cookies = adminCookies;
     const calls = [
-      on.app.inject({ method: 'GET', url: '/admin/home/play-with-me', cookies }),
       on.app.inject({ method: 'GET', url: '/admin/home/play-with-me/candidates', cookies }),
       on.app.inject({ method: 'POST', url: '/admin/home/play-with-me', payload: { characterId: EMBER.id }, cookies }),
       on.app.inject({ method: 'DELETE', url: `/admin/home/play-with-me/${EMBER.id}`, cookies }),
-      on.app.inject({ method: 'PUT', url: '/admin/home/play-with-me/order', payload: { orderedIds: [] }, cookies }),
       on.app.inject({ method: 'POST', url: '/admin/home/play-with-me/reset', cookies }),
     ];
     for (const res of await Promise.all(calls)) expect(res.statusCode).toBe(404);
@@ -3393,5 +3415,347 @@ describe('media delivery supports ranges and conditional requests', () => {
       expect(blob).not.toContain('/app/var/media');
       expect(blob).not.toContain(testEnv.media.storageDir);
     }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Category order: the order an operator saves is the order Home renders
+ *
+ * THE BUG THESE PIN. `app_categories` carries two order columns —
+ * `position` (Publishing → Categories, and the Home pill strip) and
+ * `home_position` (the Home composer). The rails read only
+ * (home_position, id), and `home_position` DEFAULTS TO 0, so until the
+ * composer's own Save order had been used every published category tied on
+ * the first key and the tiebreak was a random UUID. Dragging categories on
+ * Publishing → Categories saved `position` correctly and Home ignored it:
+ * persisted, then discarded, which reads exactly like a save that did nothing.
+ * ------------------------------------------------------------------ */
+
+describe('the saved category order is what Home renders', () => {
+  /** Two published categories, each holding one publicly reachable clip. */
+  async function twoPublishedCategories() {
+    const first = await makeCategory('Alpha');
+    const second = await makeCategory('Beta');
+    const asset = await makeApprovedAsset();
+    await assign(first.id, [asset.id]);
+    await assign(second.id, [asset.id]);
+    await api.publish(first.id, true);
+    await api.publish(second.id, true);
+    return { first, second };
+  }
+
+  const railIds = async () =>
+    (await api.home()).json().categories.map((c: { id: string }) => c.id);
+
+  it('follows the CMS order when no explicit Home order has been set', async () => {
+    const { first, second } = await twoPublishedCategories();
+
+    expect((await api.orderCmsCategories([second.id, first.id])).statusCode).toBe(200);
+    expect(await railIds()).toEqual([second.id, first.id]);
+  });
+
+  it('survives repeated reordering, both directions', async () => {
+    const { first, second } = await twoPublishedCategories();
+
+    await api.orderCmsCategories([second.id, first.id]);
+    expect(await railIds()).toEqual([second.id, first.id]);
+
+    await api.orderCmsCategories([first.id, second.id]);
+    expect(await railIds()).toEqual([first.id, second.id]);
+
+    await api.orderCmsCategories([second.id, first.id]);
+    expect(await railIds()).toEqual([second.id, first.id]);
+  });
+
+  it('does not revert on reload — every read gives the same order', async () => {
+    const { first, second } = await twoPublishedCategories();
+    await api.orderCmsCategories([second.id, first.id]);
+
+    const once = await railIds();
+    const twice = await railIds();
+    const thrice = await railIds();
+    expect(once).toEqual([second.id, first.id]);
+    expect(twice).toEqual(once);
+    expect(thrice).toEqual(once);
+  });
+
+  it('the Home composer still sets a Home-only order', async () => {
+    // The composer is not replaced. Reordering there still changes the rails
+    // and still leaves the CMS list alone.
+    const { first, second } = await twoPublishedCategories();
+
+    await api.orderCmsCategories([first.id, second.id]);
+    expect(await railIds()).toEqual([first.id, second.id]);
+
+    await api.orderCategories([second.id, first.id]); // the composer
+    expect(await railIds()).toEqual([second.id, first.id]);
+  });
+
+  it('a LATER CMS reorder overrides a composer arrangement — deliberately', async () => {
+    // The trade this fix makes, pinned so it cannot happen by accident. An
+    // operator who has just dragged this list has said what she wants;
+    // silently keeping a different Home order was the reported bug.
+    const { first, second } = await twoPublishedCategories();
+
+    await api.orderCategories([second.id, first.id]); // composer first
+    await api.orderCmsCategories([first.id, second.id]); // then the CMS list
+    expect(await railIds()).toEqual([first.id, second.id]);
+  });
+
+  it('does not give an UNPUBLISHED category a Home slot', async () => {
+    const { first, second } = await twoPublishedCategories();
+    const hidden = await makeCategory('Hidden');
+
+    await api.orderCmsCategories([hidden.id, second.id, first.id]);
+    // The rails hold only the two published ones, in the order given.
+    expect(await railIds()).toEqual([second.id, first.id]);
+  });
+
+  it('the pill strip keeps following the CMS order, as it always did', async () => {
+    const { first, second } = await twoPublishedCategories();
+    await api.orderCmsCategories([second.id, first.id]);
+
+    const home = (await api.home()).json();
+    expect(home.categoryPills.map((p: { id: string }) => p.id)).toEqual([second.id, first.id]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Play with me: an explicit order, membership still derived
+ * ------------------------------------------------------------------ */
+describe('Play with me is a category in the Admin, with derived membership', () => {
+  /** Luna and Ember, both on the rail. Alphabetically Ember precedes Luna. */
+  async function twoOnTheRail() {
+    const luna = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(luna.id, `pwmluna${++seq}`);
+    const ember = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(ember.id, `pwmember${++seq}`);
+    return { lunaId: LUNA.id, emberId: EMBER.id, lunaAsset: luna.id, emberAsset: ember.id };
+  }
+
+  const railIds = async () => (await api.home()).json().playWithMe.map((c: { id: string }) => c.id);
+  const boardAssets = async () =>
+    (await api.playWithMeContents()).json().assets as Array<{
+      assetId: string;
+      characterId: string;
+      characterName: string;
+      mediaType: string;
+      previewUrl: string | null;
+      position: number;
+    }>;
+
+  /* ---------------- the board shows the real clips ---------------- */
+
+  it('lists the ACTUAL clip behind each card, in board shape', async () => {
+    const { lunaAsset, emberAsset, lunaId, emberId } = await twoOnTheRail();
+    const assets = await boardAssets();
+
+    expect(assets.map((a) => a.assetId).sort()).toEqual([lunaAsset, emberAsset].sort());
+    expect(assets.map((a) => a.characterId).sort()).toEqual([lunaId, emberId].sort());
+    for (const asset of assets) {
+      expect(asset.mediaType).toBe('video');
+      expect(asset.previewUrl).toBeTruthy();
+      expect(asset.characterName).toBeTruthy();
+    }
+    // Rendered slots, so the board can index them like any other category.
+    expect(assets.map((a) => a.position)).toEqual([0, 1]);
+  });
+
+  it('agrees with the app exactly — the board cannot show a card Home drops', async () => {
+    await twoOnTheRail();
+    expect((await boardAssets()).map((a) => a.characterId)).toEqual(await railIds());
+  });
+
+  it('is alphabetical until an order is saved', async () => {
+    const { lunaId, emberId } = await twoOnTheRail();
+    expect(await railIds()).toEqual([emberId, lunaId]);
+    expect((await api.playWithMeContents()).json().ordered).toBe(false);
+  });
+
+  /* ---------------- ordering, by clip, keyed on character ---------------- */
+
+  it('takes the CLIPS the board sends and renders that order in the app', async () => {
+    const { lunaId, emberId, lunaAsset, emberAsset } = await twoOnTheRail();
+
+    const res = await api.orderPlayWithMe([lunaAsset, emberAsset]);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ordered).toBe(true);
+    expect(await railIds()).toEqual([lunaId, emberId]);
+  });
+
+  it('persists against the CHARACTER, never the clip', async () => {
+    const { lunaId, emberId, lunaAsset, emberAsset } = await twoOnTheRail();
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+
+    const rows = await on.db.select().from(homePlayWithMeCharacters);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.characterId === lunaId)!.position).toBe(0);
+    expect(rows.find((r) => r.characterId === emberId)!.position).toBe(1);
+    // No asset id is stored anywhere in the ordering table.
+    expect(JSON.stringify(rows)).not.toContain(lunaAsset);
+    expect(JSON.stringify(rows)).not.toContain(emberAsset);
+  });
+
+  it('survives repeated reordering, both directions', async () => {
+    const { lunaId, emberId, lunaAsset, emberAsset } = await twoOnTheRail();
+
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+    expect(await railIds()).toEqual([lunaId, emberId]);
+
+    await api.orderPlayWithMe([emberAsset, lunaAsset]);
+    expect(await railIds()).toEqual([emberId, lunaId]);
+
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+    expect(await railIds()).toEqual([lunaId, emberId]);
+  });
+
+  it('does not revert on reload, and the board agrees with the app', async () => {
+    const { lunaId, emberId, lunaAsset, emberAsset } = await twoOnTheRail();
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+
+    expect(await railIds()).toEqual([lunaId, emberId]);
+    expect(await railIds()).toEqual([lunaId, emberId]);
+    const board = (await api.playWithMeContents()).json();
+    expect(board.ordered).toBe(true);
+    expect(board.assets.map((a: { characterId: string }) => a.characterId)).toEqual([
+      lunaId,
+      emberId,
+    ]);
+  });
+
+  it('replaces rather than merges, so a re-save leaves no stale row', async () => {
+    const { emberId, lunaAsset, emberAsset } = await twoOnTheRail();
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+    await api.orderPlayWithMe([emberAsset, lunaAsset]);
+
+    const rows = await on.db.select().from(homePlayWithMeCharacters);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.characterId === emberId)!.position).toBe(0);
+  });
+
+  /* ---------------- the clip changing must not disturb the order ---------------- */
+
+  it('KEEPS THE ORDER WHEN THE UNDERLYING CLIP CHANGES — no stale or duplicate entry', async () => {
+    // The reason the order is keyed on the character. Approving a newer video
+    // moves the `distinct on (character_id)` winner; an asset-keyed order would
+    // either lose Luna's slot or list her twice.
+    const { lunaId, emberId, lunaAsset, emberAsset } = await twoOnTheRail();
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+    expect(await railIds()).toEqual([lunaId, emberId]);
+
+    const replacement = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(replacement.id, `pwmswap${++seq}`);
+
+    // Same order, same number of cards, and exactly one card per character.
+    expect(await railIds()).toEqual([lunaId, emberId]);
+    const assets = await boardAssets();
+    expect(assets).toHaveLength(2);
+    expect(new Set(assets.map((a) => a.characterId)).size).toBe(2);
+    // Still two rows — nothing was added, nothing went stale.
+    expect(await on.db.select().from(homePlayWithMeCharacters)).toHaveLength(2);
+  });
+
+  /* ---------------- membership stays derived ---------------- */
+
+  it('ORDER NEVER CHANGES MEMBERSHIP — a saved character with no clip is dropped', async () => {
+    const { lunaId, lunaAsset, emberAsset } = await twoOnTheRail();
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+
+    await on.db
+      .update(characterVisualAssets)
+      .set({ status: 'under_review' })
+      .where(eq(characterVisualAssets.characterId, EMBER.id));
+
+    expect(await railIds()).toEqual([lunaId]);
+    // Her row survives, inert, and is not reaped.
+    expect(await on.db.select().from(homePlayWithMeCharacters)).toHaveLength(2);
+  });
+
+  it('a newly eligible character APPENDS rather than disappearing', async () => {
+    const { lunaId, emberId, lunaAsset, emberAsset } = await twoOnTheRail();
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+
+    // Sage is seeded inactive, so she is genuinely NEWLY eligible here:
+    // activating her and publishing a video is exactly the lever that puts a
+    // character on the rail.
+    const sage = SEED_CHARACTERS.find((c) => c.name === 'sage')!;
+    await on.db.update(characters).set({ status: 'active' }).where(eq(characters.id, sage.id));
+    const sageClip = await makeApprovedVideoAsset(sage.id);
+    await publishViaKeyword(sageClip.id, `pwmsage${++seq}`);
+
+    // The saved pair keeps its arrangement; the newcomer lands after it.
+    expect(await railIds()).toEqual([lunaId, emberId, sage.id]);
+  });
+
+  it('returns to alphabetical when the order is cleared, changing no content', async () => {
+    const { lunaId, emberId, lunaAsset, emberAsset } = await twoOnTheRail();
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+    expect(await railIds()).toEqual([lunaId, emberId]);
+
+    const res = await api.clearPlayWithMe();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ordered).toBe(false);
+    expect(await railIds()).toEqual([emberId, lunaId]);
+    expect(await on.db.select().from(homePlayWithMeCharacters)).toHaveLength(0);
+    expect((await api.home()).json().playWithMe).toHaveLength(2);
+  });
+
+  /* ---------------- the same refusals a real category gives ---------------- */
+
+  it('refuses a clip that is not on the rail', async () => {
+    const { lunaAsset } = await twoOnTheRail();
+    const stray = await makeApprovedAsset();
+    const res = await api.orderPlayWithMe([lunaAsset, stray.id]);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().reason).toBe('unknown_id');
+  });
+
+  it('refuses a stale order that omits a card', async () => {
+    const { lunaAsset } = await twoOnTheRail();
+    const res = await api.orderPlayWithMe([lunaAsset]);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().reason).toBe('incomplete');
+  });
+
+  it('refuses a duplicate', async () => {
+    const { lunaAsset } = await twoOnTheRail();
+    const res = await api.orderPlayWithMe([lunaAsset, lunaAsset]);
+    expect(res.statusCode).toBe(409);
+    // The same clip twice IS the same character twice, and that is the refusal
+    // it is reported as — the mapping is transparent, not a second rule.
+    expect(res.json().reason).toBe('duplicate');
+  });
+
+  it('is admin-only, on every verb', async () => {
+    for (const res of [
+      await on.app.inject({ method: 'GET', url: '/admin/home/play-with-me/contents' }),
+      await on.app.inject({
+        method: 'PUT',
+        url: '/admin/home/play-with-me/order',
+        payload: { orderedAssetIds: [] },
+      }),
+      await on.app.inject({ method: 'DELETE', url: '/admin/home/play-with-me/order' }),
+    ]) {
+      expect([401, 403]).toContain(res.statusCode);
+    }
+  });
+
+  it('adds no mode word to the PUBLIC payload', async () => {
+    const { lunaAsset, emberAsset } = await twoOnTheRail();
+    await api.orderPlayWithMe([lunaAsset, emberAsset]);
+    const payload = (await api.home()).payload;
+    expect(payload).not.toMatch(/"ordered"/i);
+    expect(payload).not.toMatch(/"curated"/i);
+  });
+
+  it('reserves the play-with-me slug so a real category cannot shadow it', async () => {
+    const res = await on.app.inject({
+      method: 'POST',
+      url: '/admin/app-categories',
+      payload: { name: 'Play with me' },
+      cookies: adminCookies,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().message).toMatch(/reserved/i);
   });
 });

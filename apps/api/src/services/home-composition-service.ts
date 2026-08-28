@@ -13,6 +13,7 @@ import {
   characterVisualAssets,
   characterVisualIdentities,
   homeHeroClips,
+  homePlayWithMeCharacters,
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
 import { PUBLISHABLE_STATUS } from './app-merchandising-service.js';
@@ -615,7 +616,59 @@ export async function listPlayWithMe(db: Db): Promise<PublicPlayWithMeCardView[]
     categories: categories.get(row.id) ?? [],
     clip: clips.get(row.id) ?? null,
   }));
-  return cards.filter((card) => card.clip !== null && card.clip.mediaType === 'video');
+  const eligible = cards.filter((card) => card.clip !== null && card.clip.mediaType === 'video');
+
+  /**
+   * THE OPERATOR'S ORDER, WHERE THERE IS ONE.
+   *
+   * `home_play_with_me_characters` was defined for exactly this. EMPTY MEANS
+   * AUTOMATIC: with no rows the rail is every active character alphabetically,
+   * byte for byte what the lines above already computed, so an installation
+   * that never touches the new control cannot observe a change.
+   *
+   * ORDER IS KEYED ON THE CHARACTER, NOT THE CLIP, and that is the whole
+   * reason this is its own table rather than rows in `app_category_assets`.
+   * The clip is DERIVED — `representativeClips` runs a `distinct on
+   * (character_id)` whose winner changes the moment a newer video is approved
+   * or the current one loses approval. An order keyed on the asset would go
+   * stale, or duplicate, every time the content behind a card changed. Keyed on
+   * the character it simply cannot.
+   *
+   * MEMBERSHIP STAYS AUTOMATIC. These rows say WHERE a card goes, never
+   * WHETHER it appears. A saved character who is not currently eligible is
+   * skipped, and an eligible character who was never saved is appended — so
+   * the table needs no reaping, no backfill and no add/remove surface.
+   *
+   * ELIGIBILITY IS NOT NEGOTIABLE, and curating does not become a way around
+   * it. A curated character with no publicly reachable video is DROPPED, not
+   * rendered as a portrait or an empty frame — the same honesty rule the
+   * automatic rail follows, and the reason `eligible` is filtered before this
+   * runs rather than after. Ordering decides sequence, never visibility.
+   *
+   * A curated id that no longer resolves — deleted character, or one that has
+   * gone inactive or lost her last video — is simply absent. Nothing repairs
+   * the table on read: a row that stops matching is inert, and counts again the
+   * moment the character is eligible once more.
+   */
+  const ordered = await db
+    .select({ characterId: homePlayWithMeCharacters.characterId })
+    .from(homePlayWithMeCharacters)
+    .orderBy(asc(homePlayWithMeCharacters.position), asc(homePlayWithMeCharacters.characterId));
+  if (ordered.length === 0) return eligible;
+
+  const byId = new Map(eligible.map((card) => [card.id, card]));
+  const placed: PublicPlayWithMeCardView[] = [];
+  for (const row of ordered) {
+    const card = byId.get(row.characterId);
+    if (!card) continue; // saved, but not eligible right now — see above
+    placed.push(card);
+    byId.delete(row.characterId);
+  }
+  // Whatever is left is eligible but unplaced: a character who became eligible
+  // after the order was saved. She goes AFTER the arranged ones, keeping the
+  // alphabetical order she already had. `eligible` is the source, so this
+  // preserves it without a second sort.
+  return [...placed, ...eligible.filter((card) => byId.has(card.id))];
 }
 
 /* ------------------------------------------------------------------ *

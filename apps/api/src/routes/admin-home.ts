@@ -2,12 +2,16 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Db } from '../db/client.js';
 import {
   addHeroClips,
+  clearPlayWithMeOrder,
   HomeAdminOrderError,
   HomeAdminValidationError,
   listHeroCandidates,
   listHeroClipsForAdmin,
   listHomeCategories,
+  charactersForRailAssets,
+  listPlayWithMeContents,
   removeHeroClip,
+  reorderPlayWithMe,
   reorderHeroClips,
   reorderHomeCategories,
   setCategoryHomePublication,
@@ -210,5 +214,51 @@ export default async function adminHomeRoutes(
       return { clips: await listHeroClipsForAdmin(opts.db) };
     },
   );
+
+  /* ---------------- play with me ----------------
+   *
+   * PRESENTED AS A CATEGORY, ORDERED LIKE ONE. The board sends the clips it
+   * rendered, exactly as it does for a real category; the mapping to characters
+   * happens HERE, so the browser never has to know that the order is keyed on
+   * something other than what it dragged.
+   *
+   * There is no add and no remove: membership is the video rule, not a list.
+   */
+
+  app.get('/admin/home/play-with-me/contents', adminOnly, async () =>
+    listPlayWithMeContents(opts.db),
+  );
+
+  app.put<{ Body: { orderedAssetIds: string[] } }>(
+    '/admin/home/play-with-me/order',
+    {
+      ...adminOnly,
+      schema: {
+        body: {
+          type: 'object',
+          required: ['orderedAssetIds'],
+          additionalProperties: false,
+          properties: {
+            orderedAssetIds: { type: 'array', items: { type: 'string' }, maxItems: 500 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const characterIds = await charactersForRailAssets(opts.db, request.body.orderedAssetIds);
+        await reorderPlayWithMe(opts.db, characterIds);
+      } catch (error) {
+        return failed(reply, error);
+      }
+      return listPlayWithMeContents(opts.db);
+    },
+  );
+
+  /** Back to alphabetical. Deletes the saved order and nothing else. */
+  app.delete('/admin/home/play-with-me/order', adminOnly, async () => {
+    await clearPlayWithMeOrder(opts.db);
+    return listPlayWithMeContents(opts.db);
+  });
 
 }

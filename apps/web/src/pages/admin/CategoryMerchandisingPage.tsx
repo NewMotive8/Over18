@@ -13,6 +13,9 @@ import {
   API_URL,
   adminCharactersApi,
   merchandisingApi,
+  playWithMeApi,
+  PLAY_WITH_ME_NAME,
+  PLAY_WITH_ME_SLUG,
   type AdminCharacterListItem,
   type CandidateAssetView,
   type CategoryAssetView,
@@ -88,6 +91,19 @@ const EMPTY_FILTERS: Filters = {
 export default function CategoryMerchandisingPage() {
   const { categorySlug } = useParams<{ categorySlug: string }>();
 
+  /**
+   * PLAY WITH ME IS A DERIVED RAIL WEARING THIS SCREEN.
+   *
+   * Same board, same drag, same Save order. What it does NOT get is the picker,
+   * Remove or Feature — its membership is the video rule (active character with
+   * a publicly reachable video), not a list an operator edits. `derivedRail`
+   * is the single switch every one of those differences reads, so the two modes
+   * cannot drift apart in half a dozen conditionals.
+   */
+  const derivedRail = categorySlug === PLAY_WITH_ME_SLUG;
+  /** Whether an operator order is saved. Meaningless outside the derived rail. */
+  const [railOrdered, setRailOrdered] = useState(false);
+
   const [category, setCategory] = useState<{
     id: string;
     slug: string;
@@ -124,13 +140,33 @@ export default function CategoryMerchandisingPage() {
 
   const loadCategory = useCallback(async () => {
     if (!categorySlug) return null;
+    if (categorySlug === PLAY_WITH_ME_SLUG) {
+      // Not an app_categories row, so there is nothing to resolve. The id is
+      // the reserved slug itself: every call this screen makes in derived mode
+      // ignores it, and the guard below keeps a real category endpoint from
+      // ever receiving it.
+      const synthetic = {
+        id: PLAY_WITH_ME_SLUG,
+        slug: PLAY_WITH_ME_SLUG,
+        name: PLAY_WITH_ME_NAME,
+        tagline: 'Automatic — one clip per character. You set the order.',
+        enabled: true,
+      };
+      setCategory(synthetic);
+      return synthetic;
+    }
     const resolved = await merchandisingApi.categoryBySlug(categorySlug);
     setCategory(resolved);
     return resolved;
   }, [categorySlug]);
 
   const loadContents = useCallback(async (categoryId: string, preserveOrder = false) => {
-    const { assets } = await merchandisingApi.contents(categoryId);
+    const { assets } = await (categoryId === PLAY_WITH_ME_SLUG
+      ? playWithMeApi.contents().then((res) => {
+          setRailOrdered(res.ordered);
+          return res;
+        })
+      : merchandisingApi.contents(categoryId));
     setContents((current) => {
       if (!preserveOrder || !current) return assets;
       // Keep the operator's staged arrangement; take server truth for content.
@@ -175,7 +211,8 @@ export default function CategoryMerchandisingPage() {
         if (cancelled || !resolved) return;
         await Promise.all([
           loadContents(resolved.id),
-          loadCandidates(resolved.id, EMPTY_FILTERS),
+          // No picker in derived mode, so no candidate query.
+          derivedRail ? Promise.resolve() : loadCandidates(resolved.id, EMPTY_FILTERS),
           // The ADMIN list, for the same reason the Content Library uses it: an
           // unpublished character's approved clips are perfectly assignable,
           // so filtering the picker by her must be possible before she is live.
@@ -195,18 +232,18 @@ export default function CategoryMerchandisingPage() {
     return () => {
       cancelled = true;
     };
-  }, [loadCategory, loadContents, loadCandidates]);
+  }, [loadCategory, loadContents, loadCandidates, derivedRail]);
 
   // Re-query the picker whenever a filter changes.
   useEffect(() => {
-    if (!category) return;
+    if (!category || derivedRail) return;
     const handle = setTimeout(() => {
       void loadCandidates(category.id, filters).catch(() => {
         setBanner({ kind: 'error', text: "Couldn't refresh the library list." });
       });
     }, 200);
     return () => clearTimeout(handle);
-  }, [category, filters, loadCandidates]);
+  }, [category, filters, loadCandidates, derivedRail]);
 
   /* ---------------- derived ---------------- */
 
@@ -294,10 +331,15 @@ export default function CategoryMerchandisingPage() {
     setBusy(true);
     setBanner(null);
     try {
-      const { assets } = await merchandisingApi.reorder(
-        category.id,
-        contents.map((a) => a.assetId),
-      );
+      const orderedAssetIds = contents.map((a) => a.assetId);
+      // Derived mode posts the same clip ids; the SERVER maps them to the
+      // characters the order is keyed on, so the board stays identical.
+      const { assets } = derivedRail
+        ? await playWithMeApi.reorder(orderedAssetIds).then((res) => {
+            setRailOrdered(res.ordered);
+            return res;
+          })
+        : await merchandisingApi.reorder(category.id, orderedAssetIds);
       setContents(assets);
       setSavedOrder(assets.map((a) => a.assetId));
       setBanner({ kind: 'success', text: 'Order saved.' });
@@ -309,6 +351,30 @@ export default function CategoryMerchandisingPage() {
       if (err instanceof ApiRequestError && err.status === 409) {
         await loadContents(category.id);
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Derived rail only: drop the saved order and go back to alphabetical.
+   * Deletes ordering rows and nothing else — no character, clip or file moves.
+   */
+  async function resetRailOrder() {
+    if (busy) return;
+    setBusy(true);
+    setBanner(null);
+    try {
+      const res = await playWithMeApi.clearOrder();
+      setRailOrdered(res.ordered);
+      setContents(res.assets);
+      setSavedOrder(res.assets.map((a) => a.assetId));
+      setBanner({ kind: 'success', text: 'Back to alphabetical. No content was changed.' });
+    } catch (err) {
+      setBanner({
+        kind: 'error',
+        text: err instanceof ApiRequestError ? err.message : "Couldn't reset the order.",
+      });
     } finally {
       setBusy(false);
     }
@@ -468,8 +534,13 @@ export default function CategoryMerchandisingPage() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-2">
-        {/* ---------------- picker ---------------- */}
+      <div className={`grid gap-6 ${derivedRail ? '' : 'xl:grid-cols-2'}`}>
+        {/* ---------------- picker ----------------
+            ABSENT for a derived rail. There is nothing to pick: membership is
+            the video rule, not a list. Rendering a disabled picker would imply
+            an operator could add someone, which is exactly the affordance the
+            old curation screen got wrong. */}
+        {!derivedRail && (
         <section aria-labelledby="picker-heading" className="min-w-0">
           <h2 id="picker-heading" className="text-sm font-semibold text-neutral-200">
             Approved library
@@ -624,19 +695,39 @@ export default function CategoryMerchandisingPage() {
             </div>
           )}
         </section>
+        )}
 
         {/* ---------------- category contents ---------------- */}
         <section aria-labelledby="contents-heading" className="min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 id="contents-heading" className="text-sm font-semibold text-neutral-200">
-                In this category
+                {derivedRail ? 'On this rail' : 'In this category'}
               </h2>
               <p className="mt-0.5 text-xs text-neutral-500">
-                Drag to reorder, or focus a tile and press Alt + ← / →. Featuring adds a badge; it never changes the order.
+                {derivedRail
+                  ? 'Drag to reorder, or focus a tile and press Alt + ← / →. One clip per character, chosen automatically — ordering never adds or removes a card.'
+                  : 'Drag to reorder, or focus a tile and press Alt + ← / →. Featuring adds a badge; it never changes the order.'}
               </p>
+              {derivedRail && (
+                <p className="mt-1 text-xs text-neutral-500">
+                  {railOrdered
+                    ? 'Saved order — the app shows these cards in exactly this order.'
+                    : 'Alphabetical. Save an order and the app follows it from then on.'}
+                </p>
+              )}
             </div>
-            {contentSelected.size > 0 && (
+            {derivedRail && railOrdered && (
+              <button
+                type="button"
+                onClick={() => void resetRailOrder()}
+                disabled={busy}
+                className="rounded-md border border-neutral-800 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              >
+                Use alphabetical order
+              </button>
+            )}
+            {!derivedRail && contentSelected.size > 0 && (
               <button
                 type="button"
                 onClick={() => setConfirmRemove([...contentSelected])}
@@ -755,6 +846,11 @@ export default function CategoryMerchandisingPage() {
                           →
                         </button>
                       </div>
+                      {/* FEATURE AND REMOVE ARE CATEGORY-ONLY. A derived rail
+                          has no link row to feature and no membership to
+                          remove from — offering either would promise something
+                          the server has no way to honour. */}
+                      {!derivedRail && (
                       <div className="flex gap-0.5">
                         <button
                           type="button"
@@ -780,6 +876,7 @@ export default function CategoryMerchandisingPage() {
                           ✕
                         </button>
                       </div>
+                      )}
                     </div>
                   </li>
                 );

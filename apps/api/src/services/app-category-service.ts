@@ -183,6 +183,12 @@ export async function getAppCategory(db: Db, id: string): Promise<AppCategory | 
  * Appending rather than inserting means creating a category never silently
  * renumbers the ones an operator has already arranged.
  */
+/**
+ * Slugs the Admin already routes to something that is not an app_categories
+ * row. Kept here, next to the only function that can create one.
+ */
+const RESERVED_SLUGS = new Set(['play-with-me']);
+
 export async function createAppCategory(db: Db, input: AppCategoryInput): Promise<AppCategory> {
   const values = validate(input, true);
   const name = values.name as string;
@@ -198,6 +204,20 @@ export async function createAppCategory(db: Db, input: AppCategoryInput): Promis
     throw new AppCategoryValidationError(
       'slug',
       'An identifier may contain only lowercase letters, numbers and hyphens.',
+    );
+  }
+
+  /**
+   * RESERVED SLUGS. The Admin routes a category board at
+   * /admin/publishing/:slug, and Play with me — which is a derived rail, not a
+   * row here — is served at the reserved `play-with-me` slug. A real category
+   * created with that slug would shadow the route and be unreachable, so it is
+   * refused at creation with the same error a collision produces.
+   */
+  if (RESERVED_SLUGS.has(slug)) {
+    throw new AppCategorySlugTakenError(
+      slug,
+      `The identifier "${slug}" is reserved for a built-in rail.`,
     );
   }
 
@@ -315,6 +335,26 @@ export async function deleteAppCategory(
  * ordering entirely. Refusing turns a silent data problem into a reload.
  *
  * One transaction, positions rewritten to 0..n-1.
+ *
+ * IT ALSO RENUMBERS THE HOME ORDER, and that is the fix for a reported bug
+ * rather than an extra feature. `app_categories` carries TWO order columns:
+ * `position`, which this writes and which drives this list and Home's pill
+ * strip, and `home_position`, which is the only key Home's category RAILS read.
+ * Nothing kept them related. `home_position` is assigned on publication as
+ * `max + 1` — append order, never an arrangement anyone chose — so an operator
+ * who dragged categories here and pressed Save saw the list reorder, saw the
+ * pills reorder, and saw the rails keep their old sequence. The order was
+ * persisted and then ignored, which is indistinguishable from a save that did
+ * nothing.
+ *
+ * ONLY THE PUBLISHED SUBSET IS RENUMBERED, in the relative order given here, so
+ * an unpublished category cannot occupy a Home slot and publishing one still
+ * appends. The Home composer is untouched and still writes `home_position`
+ * directly: it remains the way to give Home an order that DIFFERS from this
+ * list. The consequence, stated plainly because it is a real trade: reordering
+ * here now overwrites a Home-specific arrangement set there. That is the
+ * intended direction — an operator who has just arranged this list has said
+ * what she wants, and silently keeping a different order was the bug.
  */
 export async function reorderAppCategories(db: Db, orderedIds: string[]): Promise<AppCategory[]> {
   const unique = new Set(orderedIds);
@@ -323,8 +363,11 @@ export async function reorderAppCategories(db: Db, orderedIds: string[]): Promis
   }
 
   return db.transaction(async (tx) => {
-    const existing = await tx.select({ id: appCategories.id }).from(appCategories);
+    const existing = await tx
+      .select({ id: appCategories.id, homePublished: appCategories.homePublished })
+      .from(appCategories);
     const existingIds = new Set(existing.map((row) => row.id));
+    const publishedIds = new Set(existing.filter((row) => row.homePublished).map((row) => row.id));
 
     for (const id of orderedIds) {
       if (!existingIds.has(id)) {
@@ -343,6 +386,18 @@ export async function reorderAppCategories(db: Db, orderedIds: string[]): Promis
       await tx
         .update(appCategories)
         .set({ position: index, updatedAt: now })
+        .where(eq(appCategories.id, id));
+    }
+
+    // Home's rails follow `home_position`. Renumber the PUBLISHED categories
+    // 0..n-1 in the order just given, so the arrangement the operator made is
+    // the arrangement the app renders. Unpublished categories keep whatever
+    // they had; publishing one still appends to the end.
+    const publishedInNewOrder = orderedIds.filter((id) => publishedIds.has(id));
+    for (const [index, id] of publishedInNewOrder.entries()) {
+      await tx
+        .update(appCategories)
+        .set({ homePosition: index, updatedAt: now })
         .where(eq(appCategories.id, id));
     }
 

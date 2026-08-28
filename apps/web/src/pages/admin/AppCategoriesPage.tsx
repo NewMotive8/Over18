@@ -10,6 +10,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   ApiRequestError,
   appCategoriesApi,
+  PLAY_WITH_ME_NAME,
+  PLAY_WITH_ME_SLUG,
   type AppCategoryView,
 } from '../../lib/api';
 import {
@@ -469,6 +471,40 @@ export default function AppCategoriesPage() {
                 submitLabel="Create category"
               />
             )}
+
+            {/* ---------------- Play with me ----------------
+                PINNED, AND DELIBERATELY OUTSIDE THE LIST BELOW.
+
+                It is not a row in `app_categories`: the rail is derived from
+                content — one publicly reachable video per active character —
+                and it is shown here because that is where an operator looks
+                for a category, not because it is one.
+
+                Being outside the <ul> is load-bearing, not cosmetic. The
+                reorder endpoint demands an EXACT PERMUTATION of every real
+                category, so an id in the draggable list that has no row would
+                come back 409 unknown_id and make the CMS order unsaveable. It
+                therefore has no drag handle, no arrows, no Hide and no
+                Delete — only the way in. */}
+            <Link
+              to={`/admin/publishing/${PLAY_WITH_ME_SLUG}`}
+              className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-neutral-800 bg-neutral-900/40 px-3 py-2 hover:bg-neutral-900"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-neutral-200">{PLAY_WITH_ME_NAME}</span>
+                  <span className="rounded-full border border-neutral-700 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-400">
+                    Automatic
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xs text-neutral-500">
+                  One clip per character, chosen automatically. Open it to set the order.
+                </p>
+              </div>
+              <span className="rounded-md border border-neutral-800 px-2.5 py-1 text-xs text-neutral-200">
+                Order clips
+              </span>
+            </Link>
 
             {totals.total === 0 && !creating ? (
               <EmptyCategories onCreate={() => setCreating(true)} />

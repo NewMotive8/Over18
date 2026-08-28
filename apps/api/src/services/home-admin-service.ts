@@ -6,10 +6,16 @@ import {
   characters,
   characterVisualAssets,
   homeHeroClips,
+  homePlayWithMeCharacters,
 } from '../db/schema.js';
 import { PUBLISHABLE_STATUS, assetPreviewUrl } from './app-merchandising-service.js';
 import { mediaTypeOf } from './content-review-service.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
+/**
+ * The public rail, reused rather than re-derived. One direction only:
+ * home-composition-service imports nothing from here, so this cannot cycle.
+ */
+import { listPlayWithMe } from './home-composition-service.js';
 
 /**
  * Home composition — the ADMIN side (US-102.4).
@@ -20,9 +26,11 @@ import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
  * same reason US-102.2 split its two reads — so a public caller cannot reach an
  * admin shape by forgetting an argument.
  *
- * PLAY WITH ME IS NOT HERE, and neither is Recently Added. Both were rails an
- * operator arranged by hand; both are now either deterministic from the content
- * (Play with Me) or removed outright (Recently Added).
+ * PLAY WITH ME IS HERE AGAIN, and Recently Added is not. The rail's automatic
+ * rule is unchanged and is still what runs by default; what returns is the
+ * OVERRIDE that `home_play_with_me_characters` was always shaped to hold —
+ * empty means automatic, rows mean those characters in that order. Recently
+ * Added stays removed outright.
  *
  * ADMIN VIEWS CARRY ADMIN FACTS. These rows include `publishable`, `status` and
  * an admin-gated preview URL, because an operator has to see that a Hero clip
@@ -447,21 +455,169 @@ export async function listHeroCandidates(db: Db, limit = 100) {
 }
 
 /* ------------------------------------------------------------------ *
- * Play with me has NO ADMIN SURFACE
+ * Play with me — A CATEGORY IN THE ADMIN, WITH DERIVED MEMBERSHIP
  *
- * The rail is one deterministic rule — active character, her newest publicly
- * reachable video, one card — computed in home-composition-service. There is
- * nothing here to configure, so there is nothing here.
+ * The rail is presented in Admin like any other category: its real clips, the
+ * same board, the same drag gesture, the same exact-permutation-or-409 save.
+ * Two things about it are NOT like any other category, and both are the point.
  *
- * WHY THE CURATION WAS DELETED RATHER THAN FIXED. It was "automatic unless
- * overridden", and in the automatic state the rail already contained every
- * candidate — so the Add picker had nothing left to offer and an operator could
- * not put a character back. Keeping it meant maintaining two modes, a
- * materialise-on-first-edit step and a reset, to arrange a list the video rule
- * already determines. An operator who wants a character on the rail approves
- * and publishes a video of hers; that is the only lever, and it is the same one
- * that makes her content public at all.
+ * MEMBERSHIP IS DERIVED, NOT STORED. There is no add and no remove. A character
+ * is on the rail when she is active and has a publicly reachable video, and
+ * that rule is untouched. The previous curation was deleted for a reason worth
+ * not repeating: it was "automatic unless overridden", so in the automatic
+ * state the rail already held every candidate, the Add picker had nothing left
+ * to offer, and a removed character could not be put back.
  *
- * `home_play_with_me_characters` is retained in the schema and read by nothing,
- * so this removal needed no migration.
+ * ORDER IS KEYED ON THE CHARACTER, NOT THE CLIP, which is why this cannot live
+ * in `app_category_assets`. That table's key is `asset_id`, and this rail's
+ * asset is DERIVED: `representativeClips` runs a `distinct on (character_id)`
+ * whose winner changes the moment a newer video is approved or the current one
+ * loses approval. An order keyed on the asset would go stale — or duplicate —
+ * every time the content behind a card changed. `home_play_with_me_characters`
+ * has been shaped for exactly this since US-102.4: character id, position, and
+ * nothing else. NO MIGRATION.
+ *
+ * The rows say WHERE a card goes, never WHETHER it appears, so nothing here
+ * reaps them: a saved character who is not eligible is skipped on read, and an
+ * eligible character who was never saved is appended.
  * ------------------------------------------------------------------ */
+
+/** The reserved slug the Admin routes this rail under. Not an app_categories row. */
+export const PLAY_WITH_ME_SLUG = 'play-with-me';
+export const PLAY_WITH_ME_NAME = 'Play with me';
+
+/**
+ * One rail card, in the SAME SHAPE the merchandising board already renders.
+ *
+ * Deliberately `CategoryAssetView`-compatible so the existing board component
+ * needs no changes: it reads assetId, characterName, mediaType, status,
+ * position and previewUrl exactly as it does for a real category.
+ *
+ * `characterId` is the field that matters on the way back out — it is what the
+ * save is keyed on. `assetId` is the clip showing RIGHT NOW and is display
+ * only; it is never persisted as an ordering key.
+ */
+export interface PlayWithMeContentView {
+  assetId: string;
+  characterId: string;
+  characterName: string;
+  mediaType: 'image' | 'video';
+  status: string;
+  publishable: boolean;
+  featured: false;
+  position: number;
+  previewUrl: string | null;
+  contentRating: string;
+  isPrimary: false;
+}
+
+export interface PlayWithMeContentsState {
+  /** True when an operator order is saved; false while the rail is alphabetical. */
+  ordered: boolean;
+  assets: PlayWithMeContentView[];
+}
+
+/**
+ * The rail exactly as Home composes it, in board shape.
+ *
+ * It calls `listPlayWithMe` rather than re-deriving membership, so the Admin
+ * board can never show a card the app would drop, or drop one the app shows.
+ * That drift is what made the old curation screen untrustworthy.
+ */
+export async function listPlayWithMeContents(db: Db): Promise<PlayWithMeContentsState> {
+  const [cards, saved] = await Promise.all([
+    listPlayWithMe(db),
+    db.select({ characterId: homePlayWithMeCharacters.characterId }).from(homePlayWithMeCharacters),
+  ]);
+
+  return {
+    ordered: saved.length > 0,
+    assets: cards.map((card, index) => ({
+      // Non-null by construction: listPlayWithMe drops every card without a
+      // video clip before returning.
+      assetId: card.clip!.id,
+      characterId: card.id,
+      characterName: card.displayName,
+      mediaType: 'video' as const,
+      status: 'approved',
+      publishable: true,
+      featured: false as const,
+      // The rendered slot, not a stored column — the rail's order is the
+      // sequence itself, and an unsaved rail still has one.
+      position: index,
+      previewUrl: card.clip!.url,
+      contentRating: 'sfw',
+      isPrimary: false as const,
+    })),
+  };
+}
+
+/**
+ * Saves the rail's order, keyed on the CHARACTER behind each clip.
+ *
+ * The board hands back the clips it rendered; the route maps them to their
+ * characters before this runs. Same contract as `reorderCategoryAssets`: an
+ * exact permutation of what is currently on the rail, or 409 — a stale browser
+ * must reload rather than silently reshuffle a rail that has changed.
+ *
+ * REPLACE, NOT MERGE. Rows are deleted and rewritten in one transaction, so no
+ * stale character can survive alongside a new arrangement and there is no
+ * partial state to reconcile on the next read.
+ */
+export async function reorderPlayWithMe(db: Db, orderedCharacterIds: string[]): Promise<void> {
+  if (new Set(orderedCharacterIds).size !== orderedCharacterIds.length) {
+    throw new HomeAdminOrderError('duplicate', 'The same character was listed more than once.');
+  }
+  const rail = await listPlayWithMe(db);
+  const ids = new Set(rail.map((card) => card.id));
+  for (const id of orderedCharacterIds) {
+    if (!ids.has(id)) {
+      throw new HomeAdminOrderError('unknown_id', 'That character is not on the Play with me rail.');
+    }
+  }
+  if (orderedCharacterIds.length !== ids.size) {
+    throw new HomeAdminOrderError(
+      'incomplete',
+      'The order is out of date — it does not list every card on the rail. Reload and try again.',
+    );
+  }
+  await db.transaction(async (tx) => {
+    await tx.delete(homePlayWithMeCharacters);
+    for (const [index, characterId] of orderedCharacterIds.entries()) {
+      await tx.insert(homePlayWithMeCharacters).values({ characterId, position: index });
+    }
+  });
+}
+
+/**
+ * Maps the clips the board sends back to the characters they belong to.
+ *
+ * Refuses an asset that is not currently ON the rail, using the same 409 the
+ * order itself uses: an id the board could not have rendered means the browser
+ * is stale, and guessing a character for it would save an order nobody chose.
+ */
+export async function charactersForRailAssets(db: Db, assetIds: string[]): Promise<string[]> {
+  const rail = await listPlayWithMe(db);
+  const byAsset = new Map(rail.map((card) => [card.clip!.id, card.id]));
+  return assetIds.map((assetId) => {
+    const characterId = byAsset.get(assetId);
+    if (!characterId) {
+      throw new HomeAdminOrderError(
+        'unknown_id',
+        'That clip is no longer on the Play with me rail. Reload and try again.',
+      );
+    }
+    return characterId;
+  });
+}
+
+/**
+ * Drops the saved order and returns the rail to alphabetical.
+ *
+ * Deleting the rows IS the reset — the read side treats empty as automatic — so
+ * this needs no flag and leaves nothing to go stale. No character, asset or
+ * file is touched.
+ */
+export async function clearPlayWithMeOrder(db: Db): Promise<void> {
+  await db.delete(homePlayWithMeCharacters);
+}
