@@ -195,9 +195,10 @@ export async function reorderHomeCategories(db: Db, orderedIds: string[]): Promi
   }
   await db.transaction(async (tx) => {
     const published = await tx
-      .select({ id: appCategories.id })
+      .select({ id: appCategories.id, position: appCategories.position })
       .from(appCategories)
-      .where(eq(appCategories.homePublished, true));
+      .where(eq(appCategories.homePublished, true))
+      .orderBy(asc(appCategories.position), asc(appCategories.createdAt));
     const ids = new Set(published.map((row) => row.id));
     for (const id of orderedIds) {
       if (!ids.has(id)) {
@@ -210,10 +211,26 @@ export async function reorderHomeCategories(db: Db, orderedIds: string[]): Promi
         'The order is out of date — it does not list every published category. Reload and try again.',
       );
     }
+    /**
+     * WRITES `position`, THE ONE ORDER, not a Home-only one.
+     *
+     * This screen arranges a SUBSET — only the categories published to Home —
+     * so it cannot renumber 0..n-1 without inventing slots for the unpublished
+     * ones. Instead it redistributes the `position` values the published
+     * categories ALREADY occupy, in the new sequence. An unpublished category
+     * keeps its own slot untouched, and the relative order of everything else
+     * survives.
+     *
+     * It used to write `home_position`. That column is no longer read: the
+     * rails follow `position`, so continuing to write it would have made this
+     * button do nothing at all — the exact failure this change exists to fix.
+     */
+    const slots = published.map((row) => row.position);
+    const now = new Date();
     for (const [index, id] of orderedIds.entries()) {
       await tx
         .update(appCategories)
-        .set({ homePosition: index, updatedAt: new Date() })
+        .set({ position: slots[index]!, updatedAt: now })
         .where(eq(appCategories.id, id));
     }
   });

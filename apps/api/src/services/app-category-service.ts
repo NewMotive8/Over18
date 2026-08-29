@@ -336,25 +336,19 @@ export async function deleteAppCategory(
  *
  * One transaction, positions rewritten to 0..n-1.
  *
- * IT ALSO RENUMBERS THE HOME ORDER, and that is the fix for a reported bug
- * rather than an extra feature. `app_categories` carries TWO order columns:
- * `position`, which this writes and which drives this list and Home's pill
- * strip, and `home_position`, which is the only key Home's category RAILS read.
- * Nothing kept them related. `home_position` is assigned on publication as
- * `max + 1` — append order, never an arrangement anyone chose — so an operator
- * who dragged categories here and pressed Save saw the list reorder, saw the
- * pills reorder, and saw the rails keep their old sequence. The order was
- * persisted and then ignored, which is indistinguishable from a save that did
- * nothing.
+ * `position` IS THE ONE ORDER. Home's category rails read this same column, so
+ * an arrangement saved here is what the app renders — there is no second
+ * ordering to keep in step and nothing to sync.
  *
- * ONLY THE PUBLISHED SUBSET IS RENUMBERED, in the relative order given here, so
- * an unpublished category cannot occupy a Home slot and publishing one still
- * appends. The Home composer is untouched and still writes `home_position`
- * directly: it remains the way to give Home an order that DIFFERS from this
- * list. The consequence, stated plainly because it is a real trade: reordering
- * here now overwrites a Home-specific arrangement set there. That is the
- * intended direction — an operator who has just arranged this list has said
- * what she wants, and silently keeping a different order was the bug.
+ * It did not used to be. `app_categories` also carries `home_position`, which
+ * the rails read and which nobody chooses: it is assigned `max + 1` on
+ * publication, so it was publish order. Saving here moved `position`, the rails
+ * ignored it, and the operator saw a save that did nothing. Syncing the two on
+ * save was tried and was NOT ENOUGH — toggling a category off Home and back on
+ * reassigns `home_position` to the end and desynchronises them again. The rails
+ * now read `position` directly, and `home_position` is retained, still written
+ * and no longer read, the way `home_recent_characters` is retained: so that
+ * removing its meaning needs no migration.
  */
 export async function reorderAppCategories(db: Db, orderedIds: string[]): Promise<AppCategory[]> {
   const unique = new Set(orderedIds);
@@ -363,11 +357,8 @@ export async function reorderAppCategories(db: Db, orderedIds: string[]): Promis
   }
 
   return db.transaction(async (tx) => {
-    const existing = await tx
-      .select({ id: appCategories.id, homePublished: appCategories.homePublished })
-      .from(appCategories);
+    const existing = await tx.select({ id: appCategories.id }).from(appCategories);
     const existingIds = new Set(existing.map((row) => row.id));
-    const publishedIds = new Set(existing.filter((row) => row.homePublished).map((row) => row.id));
 
     for (const id of orderedIds) {
       if (!existingIds.has(id)) {
@@ -386,18 +377,6 @@ export async function reorderAppCategories(db: Db, orderedIds: string[]): Promis
       await tx
         .update(appCategories)
         .set({ position: index, updatedAt: now })
-        .where(eq(appCategories.id, id));
-    }
-
-    // Home's rails follow `home_position`. Renumber the PUBLISHED categories
-    // 0..n-1 in the order just given, so the arrangement the operator made is
-    // the arrangement the app renders. Unpublished categories keep whatever
-    // they had; publishing one still appends to the end.
-    const publishedInNewOrder = orderedIds.filter((id) => publishedIds.has(id));
-    for (const [index, id] of publishedInNewOrder.entries()) {
-      await tx
-        .update(appCategories)
-        .set({ homePosition: index, updatedAt: now })
         .where(eq(appCategories.id, id));
     }
 

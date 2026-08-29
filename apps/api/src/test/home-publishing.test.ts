@@ -338,8 +338,20 @@ describe('a category is on Home only when published there', () => {
  * 2. Home order is its own order
  * ------------------------------------------------------------------ */
 
-describe('Home order is independent of the CMS order', () => {
-  it('reordering Home does not touch the CMS list order', async () => {
+describe('the Home composer reorders the one shared order', () => {
+  /**
+   * REVISED, AND THE REVISION IS THE FIX. This block used to assert that
+   * reordering on the Home composer left the CMS list untouched — the literal
+   * statement that Home had a SECOND, independent ordering. That independence
+   * is what shipped the reported bug: the rails read a column
+   * (`home_position`) that no operator sets and that publication reassigns, so
+   * the Admin showed one order and the app showed another.
+   *
+   * There is one order now. Both screens write `position`, so reordering in
+   * either place moves both. What still holds — and is still asserted — is
+   * that the composer reorders the RAILS and that a stale order is refused.
+   */
+  it('reordering Home moves the rails, and the Admin list with them', async () => {
     const a = await makeCategory('A');
     const b = await makeCategory('B');
     const asset = await makeApprovedAsset();
@@ -347,10 +359,6 @@ describe('Home order is independent of the CMS order', () => {
     await assign(b.id, [asset.id]);
     await api.publish(a.id, true);
     await api.publish(b.id, true);
-
-    const cmsBefore = (
-      await on.app.inject({ method: 'GET', url: '/admin/app-categories', cookies: adminCookies })
-    ).json().categories.map((c: { id: string }) => c.id);
 
     expect((await api.orderCategories([b.id, a.id])).statusCode).toBe(200);
     expect((await api.home()).json().categories.map((c: { id: string }) => c.id)).toEqual([
@@ -361,7 +369,7 @@ describe('Home order is independent of the CMS order', () => {
     const cmsAfter = (
       await on.app.inject({ method: 'GET', url: '/admin/app-categories', cookies: adminCookies })
     ).json().categories.map((c: { id: string }) => c.id);
-    expect(cmsAfter).toEqual(cmsBefore);
+    expect(cmsAfter).toEqual([b.id, a.id]);
   });
 
   it('refuses a stale order that omits a published category', async () => {
@@ -3447,7 +3455,13 @@ describe('the saved category order is what Home renders', () => {
   const railIds = async () =>
     (await api.home()).json().categories.map((c: { id: string }) => c.id);
 
-  it('follows the CMS order when no explicit Home order has been set', async () => {
+  /** The Admin list's own order — the thing an operator is looking at. */
+  const cmsIds = async () =>
+    (
+      await on.app.inject({ method: 'GET', url: '/admin/app-categories', cookies: adminCookies })
+    ).json().categories.map((c: { id: string }) => c.id);
+
+  it('follows the order saved in Publishing -> Categories', async () => {
     const { first, second } = await twoPublishedCategories();
 
     expect((await api.orderCmsCategories([second.id, first.id])).statusCode).toBe(200);
@@ -3479,9 +3493,9 @@ describe('the saved category order is what Home renders', () => {
     expect(thrice).toEqual(once);
   });
 
-  it('the Home composer still sets a Home-only order', async () => {
-    // The composer is not replaced. Reordering there still changes the rails
-    // and still leaves the CMS list alone.
+  it('the Home composer writes the SAME order, so both screens agree', async () => {
+    // Both editors now write `position`. Reordering in either place moves the
+    // rails AND the Admin list — there is no second ordering to diverge.
     const { first, second } = await twoPublishedCategories();
 
     await api.orderCmsCategories([first.id, second.id]);
@@ -3489,17 +3503,21 @@ describe('the saved category order is what Home renders', () => {
 
     await api.orderCategories([second.id, first.id]); // the composer
     expect(await railIds()).toEqual([second.id, first.id]);
+    expect(await cmsIds()).toEqual([second.id, first.id]);
   });
 
-  it('a LATER CMS reorder overrides a composer arrangement — deliberately', async () => {
-    // The trade this fix makes, pinned so it cannot happen by accident. An
-    // operator who has just dragged this list has said what she wants;
-    // silently keeping a different Home order was the reported bug.
+  it('the composer redistributes only the PUBLISHED slots', async () => {
+    // It arranges a subset, so it reuses the positions those categories
+    // already occupy rather than renumbering 0..n-1 over everything.
     const { first, second } = await twoPublishedCategories();
+    const hidden = await makeCategory('Unpublished');
 
-    await api.orderCategories([second.id, first.id]); // composer first
-    await api.orderCmsCategories([first.id, second.id]); // then the CMS list
-    expect(await railIds()).toEqual([first.id, second.id]);
+    await api.orderCmsCategories([first.id, hidden.id, second.id]);
+    await api.orderCategories([second.id, first.id]);
+
+    // The unpublished category keeps its own slot, between the two.
+    expect(await cmsIds()).toEqual([second.id, hidden.id, first.id]);
+    expect(await railIds()).toEqual([second.id, first.id]);
   });
 
   it('does not give an UNPUBLISHED category a Home slot', async () => {
@@ -3509,6 +3527,122 @@ describe('the saved category order is what Home renders', () => {
     await api.orderCmsCategories([hidden.id, second.id, first.id]);
     // The rails hold only the two published ones, in the order given.
     expect(await railIds()).toEqual([second.id, first.id]);
+  });
+
+  /* ---------------- the reported regression ---------------- *
+   *
+   * A first fix made a CMS reorder sync `home_position`, which the rails read.
+   * It was not enough: `home_position` is reassigned to the end whenever a
+   * category is published, so ANY later publish/unpublish silently
+   * desynchronised the two again and the app drifted back out of order with
+   * nothing in the Admin to show it. Reproduced against a real stack with
+   * position 0,1,2 against home_position 3,1,2.
+   *
+   * The rails read `position` now, so these hold by construction rather than by
+   * a write having happened at the right moment.
+   * ------------------------------------------------------------------ */
+
+  it('A -> B -> C in Admin gives A -> B -> C on Home', async () => {
+    const a = await makeCategory('A');
+    const b = await makeCategory('B');
+    const c = await makeCategory('C');
+    const asset = await makeApprovedAsset();
+    for (const cat of [a, b, c]) {
+      await assign(cat.id, [asset.id]);
+      await api.publish(cat.id, true);
+    }
+
+    await api.orderCmsCategories([a.id, b.id, c.id]);
+    expect(await cmsIds()).toEqual([a.id, b.id, c.id]);
+    expect(await railIds()).toEqual([a.id, b.id, c.id]);
+
+    // ...and then C -> A -> B.
+    await api.orderCmsCategories([c.id, a.id, b.id]);
+    expect(await cmsIds()).toEqual([c.id, a.id, b.id]);
+    expect(await railIds()).toEqual([c.id, a.id, b.id]);
+
+    // A fresh read gives the same thing — nothing is per-request.
+    expect(await railIds()).toEqual([c.id, a.id, b.id]);
+  });
+
+  it('PUBLISHING A CATEGORY DOES NOT MOVE THE OTHERS', async () => {
+    // The exact trigger of the reported bug: `home_position` was reassigned on
+    // publication, so toggling one category rearranged the whole rail.
+    const { first, second } = await twoPublishedCategories();
+    await api.orderCmsCategories([first.id, second.id]);
+    expect(await railIds()).toEqual([first.id, second.id]);
+
+    await api.publish(first.id, false);
+    expect(await railIds()).toEqual([second.id]);
+
+    await api.publish(first.id, true);
+    // Back in its own slot, not appended to the end.
+    expect(await railIds()).toEqual([first.id, second.id]);
+    expect(await cmsIds()).toEqual([first.id, second.id]);
+  });
+
+  it('hiding and showing a category never re-sorts the rest', async () => {
+    const a = await makeCategory('Zulu');
+    const b = await makeCategory('Alpha');
+    const asset = await makeApprovedAsset();
+    for (const cat of [a, b]) {
+      await assign(cat.id, [asset.id]);
+      await api.publish(cat.id, true);
+    }
+    // Deliberately NOT alphabetical, so an accidental name sort would show.
+    await api.orderCmsCategories([a.id, b.id]);
+    expect(await railIds()).toEqual([a.id, b.id]);
+
+    await on.app.inject({
+      method: 'PATCH',
+      url: `/admin/app-categories/${a.id}`,
+      payload: { enabled: false },
+      cookies: adminCookies,
+    });
+    expect(await railIds()).toEqual([b.id]);
+
+    await on.app.inject({
+      method: 'PATCH',
+      url: `/admin/app-categories/${a.id}`,
+      payload: { enabled: true },
+      cookies: adminCookies,
+    });
+    expect(await railIds()).toEqual([a.id, b.id]);
+  });
+
+  it('is not sorted by name or slug', async () => {
+    // Named so that alphabetical and saved order cannot coincide.
+    const zulu = await makeCategory('Zulu');
+    const alpha = await makeCategory('Alpha');
+    const asset = await makeApprovedAsset();
+    for (const cat of [zulu, alpha]) {
+      await assign(cat.id, [asset.id]);
+      await api.publish(cat.id, true);
+    }
+    await api.orderCmsCategories([zulu.id, alpha.id]);
+
+    const names = (await api.home()).json().categories.map((c: { name: string }) => c.name);
+    expect(names[0]).toMatch(/^Zulu/);
+    expect(names[1]).toMatch(/^Alpha/);
+  });
+
+  it('ignores home_position entirely, even when it disagrees', async () => {
+    // The retroactive half: an installation whose home_position is already
+    // wrong must render correctly WITHOUT anyone re-saving anything.
+    const { first, second } = await twoPublishedCategories();
+    await api.orderCmsCategories([first.id, second.id]);
+
+    // Force the exact broken shape observed in production.
+    await on.db
+      .update(appCategories)
+      .set({ homePosition: 99 })
+      .where(eq(appCategories.id, first.id));
+    await on.db
+      .update(appCategories)
+      .set({ homePosition: 0 })
+      .where(eq(appCategories.id, second.id));
+
+    expect(await railIds()).toEqual([first.id, second.id]);
   });
 
   it('the pill strip keeps following the CMS order, as it always did', async () => {

@@ -52,10 +52,11 @@ import {
  * and an admin-gated previewUrl. None of that may reach an anonymous browser,
  * so this module builds its own minimal view rather than forwarding one.
  *
- * ONE SYSTEM RAIL, THEN THE OPERATOR'S. Play with Me is fixed and unordered by
- * the admin; published CMS categories follow, in `home_position` order. That
- * ordering is a product decision recorded in the ticket, not an emergent
- * property of the queries.
+ * ONE SYSTEM RAIL, THEN THE OPERATOR'S. Play with Me comes first; published CMS
+ * categories follow, in the operator's `position` order — the SAME column the
+ * Admin list and the pill strip read, so all four surfaces agree by
+ * construction. That ordering is a product decision recorded in the ticket, not
+ * an emergent property of the queries.
  *
  * PLAY WITH ME HAS NO MERCHANDISING. It is one deterministic rule — active
  * character, her newest publicly reachable video, one card — with no
@@ -722,12 +723,34 @@ async function listHomeCategories(
   const cats = await db
     .select()
     .from(appCategories)
+    /**
+     * THE OPERATOR'S ORDER, AND ONLY IT. Same two keys the Admin list uses
+     * (`listAppCategories` orders by position, created_at), so what an operator
+     * arranges in Publishing -> Categories is what Home renders. Four surfaces
+     * — the Admin list, the pill strip, these rails and the app — now read one
+     * column, and cannot disagree.
+     *
+     * IT USED TO READ `home_position`, AND THAT WAS THE BUG. That column is not
+     * an arrangement anyone chooses: `setCategoryHomePublication` assigns it as
+     * `max + 1` on publication, so it is publish order. Reordering the list
+     * wrote `position` and the rails ignored it — and even once a reorder
+     * started syncing the two, merely toggling a category off Home and back on
+     * reassigned `home_position` to the end and silently desynchronised them
+     * again. Reproduced: position 0,1,2 with home_position 3,1,2, the Admin
+     * showing "Top rated, Popular, Newest" and the app showing "Popular,
+     * Newest, Top rated".
+     *
+     * Reading `position` fixes that retroactively, with no write, no backfill
+     * and no migration: every installation's existing arrangement becomes
+     * correct on the next request.
+     */
     .where(and(eq(appCategories.enabled, true), eq(appCategories.homePublished, true)))
-    .orderBy(asc(appCategories.homePosition), asc(appCategories.id));
+    .orderBy(asc(appCategories.position), asc(appCategories.createdAt));
 
-  // The pill strip is the same set in the operator's OTHER ordering. Sorted in
-  // memory over a handful of already-fetched rows rather than re-queried — the
-  // comparison is the one `listPublicCategoryPills` expresses in SQL.
+  // The pill strip is the same set in the same order. It stays an explicit
+  // in-memory sort rather than relying on the query's, so it remains the
+  // comparison `listPublicCategoryPills` expresses in SQL and cannot drift if
+  // the rail query is ever re-keyed again.
   const pills: PublicCategoryPillView[] = cats
     .slice()
     .sort((a, b) => a.position - b.position || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
