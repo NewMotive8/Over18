@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   appCategories,
   characters,
@@ -4047,5 +4047,173 @@ describe('the Hero picker offers every eligible clip', () => {
       expect(res.statusCode).toBe(200);
       expect(res.payload).not.toContain('LIMIT');
     }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The composer's "would render empty" warning has to be TRUE
+ *
+ * Reported as "I published a new category and it never appeared on Home".
+ * The category was there — in /api/home, with an empty clip list — and the
+ * app drops a rail with no clips by design. What failed was the ONE signal
+ * that tells an operator that will happen.
+ *
+ * `publishableAssetCount` came from a correlated subquery whose outer
+ * reference was an unqualified `id`. Joining character_visual_assets brought
+ * its own `id` into scope, captured the correlation, and turned the
+ * predicate into `app_category_assets.category_id = character_visual_assets.id`
+ * — a category id against an asset id. It never matched, so the count was
+ * ALWAYS ZERO and every published category was flagged as empty, including
+ * ones rendering perfectly.
+ * ------------------------------------------------------------------ */
+
+describe('a published category reports what Home would actually render', () => {
+  const overview = async () =>
+    (await api.adminHome()).json().categories as Array<{
+      id: string;
+      assetCount: number;
+      publishableAssetCount: number;
+      wouldRenderEmpty: boolean;
+    }>;
+  const forId = async (id: string) => (await overview()).find((c) => c.id === id)!;
+
+  it('counts an approved assignment, and does NOT cry empty', async () => {
+    const category = await makeCategory('Populated');
+    const asset = await makeApprovedAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+
+    const row = await forId(category.id);
+    expect(row.assetCount).toBe(1);
+    expect(row.publishableAssetCount).toBe(1);
+    expect(row.wouldRenderEmpty).toBe(false);
+  });
+
+  it('the counts agree with the same question asked directly in SQL', async () => {
+    // The assertion that would have caught this: the endpoint's own numbers
+    // against an unambiguous query over the same rows.
+    const category = await makeCategory('Mixed');
+    const approved = await makeApprovedAsset();
+    const loses = await makeApprovedAsset();
+    // Both assigned while approved — the write path refuses an unapproved
+    // asset, so losing approval AFTER assignment is the only way a category
+    // ends up holding one, and it is the real-world case.
+    await assign(category.id, [approved.id, loses.id]);
+    await on.db
+      .update(characterVisualAssets)
+      .set({ status: 'under_review' })
+      .where(eq(characterVisualAssets.id, loses.id));
+    await api.publish(category.id, true);
+
+    const result = await on.db.execute<{ assets: number; publishable: number }>(sql`
+      select
+        (select count(*)::int from app_category_assets link
+           where link.category_id = ${category.id}) as assets,
+        (select count(*)::int from app_category_assets link
+           join character_visual_assets asset on asset.id = link.asset_id
+           where link.category_id = ${category.id} and asset.status = 'approved') as publishable
+    `);
+    const { assets, publishable } = result.rows[0]!;
+
+    const row = await forId(category.id);
+    expect(row.assetCount).toBe(Number(assets));
+    expect(row.publishableAssetCount).toBe(Number(publishable));
+    expect(row.assetCount).toBe(2);
+    expect(row.publishableAssetCount).toBe(1);
+    expect(row.wouldRenderEmpty).toBe(false);
+  });
+
+  it('flags a category whose content is all unapproved', async () => {
+    const category = await makeCategory('All Pending');
+    const asset = await makeApprovedAsset();
+    await assign(category.id, [asset.id]);
+    // It loses approval after assignment — the assign route refuses anything
+    // unapproved, so this is how a category comes to hold only dead content.
+    await on.db
+      .update(characterVisualAssets)
+      .set({ status: 'under_review' })
+      .where(eq(characterVisualAssets.id, asset.id));
+    await api.publish(category.id, true);
+
+    const row = await forId(category.id);
+    expect(row.assetCount).toBe(1);
+    expect(row.publishableAssetCount).toBe(0);
+    expect(row.wouldRenderEmpty).toBe(true);
+  });
+
+  it('flags a published category with nothing assigned', async () => {
+    // The reported case: created, published, never given content.
+    const category = await makeCategory('Empty');
+    await api.publish(category.id, true);
+
+    const row = await forId(category.id);
+    expect(row.assetCount).toBe(0);
+    expect(row.publishableAssetCount).toBe(0);
+    expect(row.wouldRenderEmpty).toBe(true);
+  });
+
+  it('flags a disabled category even when its content is approved', async () => {
+    const category = await makeCategory('Disabled');
+    const asset = await makeApprovedAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+    await on.app.inject({
+      method: 'PATCH',
+      url: `/admin/app-categories/${category.id}`,
+      payload: { enabled: false },
+      cookies: adminCookies,
+    });
+
+    const row = await forId(category.id);
+    expect(row.publishableAssetCount).toBe(1); // the content is fine…
+    expect(row.wouldRenderEmpty).toBe(true); // …the category is not
+  });
+
+  it('an unpublished category is never flagged, whatever it holds', async () => {
+    const category = await makeCategory('Unpublished');
+    const row = await forId(category.id);
+    expect(row.wouldRenderEmpty).toBe(false);
+  });
+
+  it('counts are per category — one does not borrow another\'s content', async () => {
+    // The broken correlation compared ids across tables, so this is the shape
+    // that proves the subquery is bound to the right row.
+    const withContent = await makeCategory('Full');
+    const without = await makeCategory('Bare');
+    const asset = await makeApprovedAsset();
+    await assign(withContent.id, [asset.id]);
+    await api.publish(withContent.id, true);
+    await api.publish(without.id, true);
+
+    expect((await forId(withContent.id)).publishableAssetCount).toBe(1);
+    expect((await forId(without.id)).publishableAssetCount).toBe(0);
+  });
+
+  /* ---------------- the public side is unchanged ---------------- */
+
+  it('an empty published category is still IN /api/home, with no clips', async () => {
+    // The rail is dropped by the client, deliberately. The API still reports
+    // the category, and its pill still renders — that behaviour is not the bug
+    // and must not change.
+    const category = await makeCategory('Still Listed');
+    await api.publish(category.id, true);
+
+    const home = (await api.home()).json();
+    const rail = home.categories.find((c: { id: string }) => c.id === category.id);
+    expect(rail).toBeDefined();
+    expect(rail.clips).toEqual([]);
+    expect(home.categoryPills.map((p: { id: string }) => p.id)).toContain(category.id);
+  });
+
+  it('a populated published category renders its clips on Home', async () => {
+    const category = await makeCategory('Renders');
+    const asset = await makeApprovedAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+
+    const home = (await api.home()).json();
+    const rail = home.categories.find((c: { id: string }) => c.id === category.id);
+    expect(rail.clips).toHaveLength(1);
+    expect(rail.clips[0].id).toBe(asset.id);
   });
 });

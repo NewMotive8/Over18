@@ -103,16 +103,42 @@ export async function listHomeCategories(db: Db): Promise<HomeCategoryView[]> {
   const rows = await db
     .select({
       category: appCategories,
+      /**
+       * BOTH SUBQUERIES ALIAS THEIR TABLES, and that is not stylistic.
+       *
+       * Drizzle interpolates a column reference as a BARE name, so
+       * `${appCategories.id}` inside a subquery emits `"id"` and correlates by
+       * whatever `id` happens to be in scope. `publishableAssetCount` joins
+       * `character_visual_assets`, which HAS an `id` — so the intended outer
+       * correlation was captured by the asset's own id and the predicate became
+       * `app_category_assets.category_id = character_visual_assets.id`,
+       * comparing a category id against an asset id. It never matched, so the
+       * count was structurally ALWAYS ZERO and `wouldRenderEmpty` was therefore
+       * always true: the composer warned "no content yet" on every published
+       * category, including ones rendering perfectly, so the one signal that
+       * tells an operator a category will render nothing said nothing at all.
+       *
+       * `assetCount` escaped it only by luck — `app_category_assets` has no
+       * `id` column (its key is category_id + asset_id), so there was nothing
+       * inner to capture. It is written the same way here, because that is an
+       * accident of the schema rather than a property anyone should rely on.
+       *
+       * THE OUTER CORRELATION IS QUALIFIED, not merely the inner tables.
+       * Aliasing the subquery's tables does not help on its own: `asset.id` is
+       * still visible as an unqualified `id`, so a bare reference would be
+       * captured exactly as before. `${appCategories}.id` names the outer table
+       * explicitly, which is the part that makes this unambiguous.
+       */
       assetCount: sql<number>`(
-        select count(*)::int from ${appCategoryAssets}
-        where ${appCategoryAssets.categoryId} = ${appCategories.id}
+        select count(*)::int from ${appCategoryAssets} link
+        where link.category_id = ${appCategories}.id
       )`,
       publishableAssetCount: sql<number>`(
         select count(*)::int
-        from ${appCategoryAssets}
-        join ${characterVisualAssets} on ${characterVisualAssets.id} = ${appCategoryAssets.assetId}
-        where ${appCategoryAssets.categoryId} = ${appCategories.id}
-          and ${characterVisualAssets.status} = ${PUBLISHABLE_STATUS}
+        from ${appCategoryAssets} link
+        join ${characterVisualAssets} asset on asset.id = link.asset_id
+        where link.category_id = ${appCategories}.id
+          and asset.status = ${PUBLISHABLE_STATUS}
       )`,
     })
     .from(appCategories)
