@@ -2,13 +2,16 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
   appCategories,
-  appCategoryAssets,
   characters,
   characterVisualAssets,
   homeHeroClips,
   homePlayWithMeCharacters,
 } from '../db/schema.js';
-import { PUBLISHABLE_STATUS, assetPreviewUrl } from './app-merchandising-service.js';
+import {
+  PUBLISHABLE_STATUS,
+  assetPreviewUrl,
+  categoryAssignmentCounts,
+} from './app-merchandising-service.js';
 import { mediaTypeOf } from './content-review-service.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 /**
@@ -99,64 +102,50 @@ export interface HomeCategoryView {
   wouldRenderEmpty: boolean;
 }
 
+/**
+ * THE COUNTS ARE NO LONGER COMPUTED HERE.
+ *
+ * They used to be two correlated subqueries written inline, and both halves of
+ * that were wrong in turn. The first bug was the CORRELATION: Drizzle emits a
+ * column reference as a bare name, so `${appCategories.id}` inside a subquery
+ * that joins `character_visual_assets` bound to the ASSET's id and the
+ * predicate never matched, making `publishableAssetCount` structurally zero.
+ * That was fixed by qualifying the outer reference.
+ *
+ * The second bug was the QUESTION. Even correlated, the subquery asked only
+ * `status = 'approved'` — one of the four rules a rail actually applies — so it
+ * reported five publishable clips for a category Home could only ever render
+ * one of. Fixing that inline would have created a third place stating the rule.
+ *
+ * So both subqueries are gone and this reads `categoryAssignmentCounts`, the
+ * function the App Categories list already used. One implementation, two
+ * screens, and `wouldRenderEmpty` becomes true exactly when the rail is empty.
+ * A category with no assignments is absent from that map and defaults to zero.
+ */
 export async function listHomeCategories(db: Db): Promise<HomeCategoryView[]> {
+  const counts = await categoryAssignmentCounts(db);
   const rows = await db
     .select({
       category: appCategories,
-      /**
-       * BOTH SUBQUERIES ALIAS THEIR TABLES, and that is not stylistic.
-       *
-       * Drizzle interpolates a column reference as a BARE name, so
-       * `${appCategories.id}` inside a subquery emits `"id"` and correlates by
-       * whatever `id` happens to be in scope. `publishableAssetCount` joins
-       * `character_visual_assets`, which HAS an `id` — so the intended outer
-       * correlation was captured by the asset's own id and the predicate became
-       * `app_category_assets.category_id = character_visual_assets.id`,
-       * comparing a category id against an asset id. It never matched, so the
-       * count was structurally ALWAYS ZERO and `wouldRenderEmpty` was therefore
-       * always true: the composer warned "no content yet" on every published
-       * category, including ones rendering perfectly, so the one signal that
-       * tells an operator a category will render nothing said nothing at all.
-       *
-       * `assetCount` escaped it only by luck — `app_category_assets` has no
-       * `id` column (its key is category_id + asset_id), so there was nothing
-       * inner to capture. It is written the same way here, because that is an
-       * accident of the schema rather than a property anyone should rely on.
-       *
-       * THE OUTER CORRELATION IS QUALIFIED, not merely the inner tables.
-       * Aliasing the subquery's tables does not help on its own: `asset.id` is
-       * still visible as an unqualified `id`, so a bare reference would be
-       * captured exactly as before. `${appCategories}.id` names the outer table
-       * explicitly, which is the part that makes this unambiguous.
-       */
-      assetCount: sql<number>`(
-        select count(*)::int from ${appCategoryAssets} link
-        where link.category_id = ${appCategories}.id
-      )`,
-      publishableAssetCount: sql<number>`(
-        select count(*)::int
-        from ${appCategoryAssets} link
-        join ${characterVisualAssets} asset on asset.id = link.asset_id
-        where link.category_id = ${appCategories}.id
-          and asset.status = ${PUBLISHABLE_STATUS}
-      )`,
     })
     .from(appCategories)
     .orderBy(asc(appCategories.homePosition), asc(appCategories.position), asc(appCategories.id));
 
-  return rows.map(({ category, assetCount, publishableAssetCount }) => ({
-    id: category.id,
-    slug: category.slug,
-    name: category.name,
-    tagline: category.tagline,
-    enabled: category.enabled,
-    homePublished: category.homePublished,
-    homePosition: category.homePosition,
-    assetCount: Number(assetCount),
-    publishableAssetCount: Number(publishableAssetCount),
-    wouldRenderEmpty:
-      category.homePublished && (!category.enabled || Number(publishableAssetCount) === 0),
-  }));
+  return rows.map(({ category }) => {
+    const count = counts.get(category.id) ?? { total: 0, publishable: 0 };
+    return {
+      id: category.id,
+      slug: category.slug,
+      name: category.name,
+      tagline: category.tagline,
+      enabled: category.enabled,
+      homePublished: category.homePublished,
+      homePosition: category.homePosition,
+      assetCount: count.total,
+      publishableAssetCount: count.publishable,
+      wouldRenderEmpty: category.homePublished && (!category.enabled || count.publishable === 0),
+    };
+  });
 }
 
 /**

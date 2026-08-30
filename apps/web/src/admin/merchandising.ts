@@ -94,6 +94,11 @@ export interface AddSummary {
   alreadyPresent: number;
   notApproved: number;
   missing: number;
+  /**
+   * Refused because the app could not render them even though they are
+   * approved — a retired character, a non-content kind, or no file.
+   */
+  notRenderable: number;
   /** One sentence for the banner. Never claims more than happened. */
   message: string;
 }
@@ -112,6 +117,18 @@ export function summariseAdd(outcomes: readonly AddOutcome[]): AddSummary {
   const alreadyPresent = outcomes.filter((o) => o.reason === 'already_present').length;
   const notApproved = outcomes.filter((o) => o.reason === 'not_approved').length;
   const missing = outcomes.filter((o) => o.reason === 'not_found').length;
+  /**
+   * The three refusals that are NOT about approval, counted together.
+   *
+   * Named as one line because the operator's next action is the same for all
+   * three — the item cannot go in this category as things stand — while the
+   * per-item cause is already on the tile. Splitting the banner three ways
+   * would bury the number that matters.
+   */
+  const notRenderable = outcomes.filter(
+    (o) =>
+      o.reason === 'character_inactive' || o.reason === 'no_media' || o.reason === 'not_content',
+  ).length;
 
   const parts: string[] = [];
   parts.push(added === 0 ? 'Nothing added' : `Added ${plural(added, 'item', 'items')}`);
@@ -119,9 +136,21 @@ export function summariseAdd(outcomes: readonly AddOutcome[]): AddSummary {
   if (notApproved > 0) {
     parts.push(`${plural(notApproved, 'item is', 'items are')} not approved and cannot be published`);
   }
+  if (notRenderable > 0) {
+    parts.push(
+      `${plural(notRenderable, 'item', 'items')} the app cannot show, so ${notRenderable === 1 ? 'it was' : 'they were'} not added`,
+    );
+  }
   if (missing > 0) parts.push(`${plural(missing, 'item', 'items')} no longer exists`);
 
-  return { added, alreadyPresent, notApproved, missing, message: `${parts.join(' · ')}.` };
+  return {
+    added,
+    alreadyPresent,
+    notApproved,
+    missing,
+    notRenderable,
+    message: `${parts.join(' · ')}.`,
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -148,9 +177,35 @@ export function blockedItems(assets: readonly CategoryAssetView[]): CategoryAsse
  * Why an assigned item is not currently publishable, in the operator's words.
  *
  * Deliberately explains that the assignment is intact and will come back — the
- * item is not lost, and re-approving in Review restores it with no action here.
+ * item is not lost, and the fix named in each sentence restores it with no
+ * action here.
+ *
+ * IT READS THE SERVER'S REASON FIRST. This used to switch on `status` alone,
+ * which silently assumed approval was the only way to be unpublishable. Once
+ * the API started applying the rail's full rule, an approved clip whose
+ * character had been retired arrived here as "not publishable" with a status of
+ * `approved`, and the old default answered "Not approved (approved)" — a
+ * sentence that is both wrong and impossible to act on.
+ *
+ * The `status` switch is kept as the fallback for `not_approved`, because
+ * WHICH non-approved state an item is in changes what the operator does about
+ * it, and only this side knows those state names.
  */
 export function blockedReason(asset: CategoryAssetView): string {
+  switch (asset.ineligibleReason) {
+    case 'character_inactive':
+      // Covers BOTH directions of the same flag: a character who has not been
+      // published yet, and one who has been retired. The sentence names the
+      // action rather than guessing which of the two happened.
+      return 'Her character is not published, so the app hides all of her content. Still assigned — publishing the character brings it back.';
+    case 'no_media':
+      return 'This item has no media file, so there is nothing for the app to show. Still assigned — re-uploading the file brings it back.';
+    case 'not_content':
+      return 'This is not a content clip, so it cannot appear in a category. Still assigned — remove it here, and manage identity images under Visual identity.';
+    case 'not_approved':
+    default:
+      break;
+  }
   switch (asset.status) {
     case 'rejected':
       return 'Rejected in Review, so it is hidden from the app. Still assigned — approving it again brings it back.';
@@ -160,6 +215,19 @@ export function blockedReason(asset: CategoryAssetView): string {
     default:
       return `Not approved (${asset.status}), so it is hidden from the app. Still assigned.`;
   }
+}
+
+/**
+ * The warning a PICKER tile carries, or null when it has none.
+ *
+ * A candidate can be perfectly assignable and still not renderable — an
+ * unpublished character's clips are offered on purpose, because merchandising
+ * her before publishing her is the intended journey. Saying so on the tile is
+ * what stops the operator adding five and finding one on Home.
+ */
+export function candidateWarning(candidate: CandidateAssetView): string | null {
+  if (candidate.ineligibleReason !== 'character_inactive') return null;
+  return 'Her character is not published yet — this will not appear on Home until she is.';
 }
 
 export interface MerchandisingSummary {

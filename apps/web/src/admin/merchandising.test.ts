@@ -3,6 +3,7 @@ import type { AddOutcome, CandidateAssetView, CategoryAssetView } from '../lib/a
 import {
   blockedItems,
   blockedReason,
+  candidateWarning,
   membershipLabel,
   publishableOnly,
   pruneSelection,
@@ -40,6 +41,7 @@ function asset(overrides: Partial<CategoryAssetView> & { assetId: string }): Cat
     position: 0,
     featured: false,
     publishable: true,
+    ineligibleReason: null,
     previewUrl: `/admin/content/assets/${overrides.assetId}/file`,
     addedAt: 'x',
     ...overrides,
@@ -59,6 +61,7 @@ function candidate(
     approvedAt: null,
     categoryCount: 0,
     inThisCategory: false,
+    ineligibleReason: null,
     ...overrides,
   };
 }
@@ -170,6 +173,17 @@ describe('summariseAdd', () => {
   it('is singular for one item', () => {
     expect(summariseAdd([out({ assetId: 'a', added: true })]).message).toBe('Added 1 item.');
   });
+
+  it('counts the refusals that are not about approval, without blaming Review', () => {
+    const summary = summariseAdd([
+      out({ assetId: 'a', added: true }),
+      out({ assetId: 'b', reason: 'no_media' }),
+      out({ assetId: 'c', reason: 'not_content' }),
+    ]);
+    expect(summary).toMatchObject({ added: 1, notRenderable: 2, notApproved: 0 });
+    expect(summary.message).toMatch(/the app cannot show/i);
+    expect(summary.message).not.toMatch(/not approved/i);
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -207,6 +221,69 @@ describe('publishability', () => {
     expect(blockedReason(asset({ assetId: 'x', status: 'archived', publishable: false }))).toContain(
       'archived',
     );
+  });
+
+  /* ---------------- blocked for reasons that are NOT approval ---------------- */
+
+  /**
+   * The reported bug's UI half. An approved clip belonging to an unpublished
+   * character arrives here as publishable:false with status 'approved', and the
+   * old copy — which switched on status alone — answered "Not approved
+   * (approved)". Wrong, and impossible to act on.
+   */
+  it('names the character when she is the reason, not the approval state', () => {
+    const message = blockedReason(
+      asset({
+        assetId: 'y',
+        status: 'approved',
+        publishable: false,
+        ineligibleReason: 'character_inactive',
+      }),
+    );
+    expect(message).toMatch(/character is not published/i);
+    expect(message).toContain('Still assigned');
+    expect(message).not.toMatch(/not approved/i);
+  });
+
+  it('names a missing file, and does not blame Review for it', () => {
+    const message = blockedReason(
+      asset({ assetId: 'z', status: 'approved', publishable: false, ineligibleReason: 'no_media' }),
+    );
+    expect(message).toMatch(/no media file/i);
+    expect(message).not.toMatch(/Review/i);
+  });
+
+  it('still falls back to the status when approval IS the reason', () => {
+    // The server's reason is coarse — `not_approved` covers rejected and
+    // pending alike — so which state it is still comes from `status`.
+    expect(
+      blockedReason(
+        asset({
+          assetId: 'w',
+          status: 'rejected',
+          publishable: false,
+          ineligibleReason: 'not_approved',
+        }),
+      ),
+    ).toContain('Rejected in Review');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The picker warns before the add, not after
+ * ------------------------------------------------------------------ */
+
+describe('candidateWarning', () => {
+  it('warns that an unpublished character will not appear yet', () => {
+    const warning = candidateWarning(
+      candidate({ assetId: 'a', ineligibleReason: 'character_inactive' }),
+    );
+    expect(warning).toMatch(/not published/i);
+    expect(warning).toMatch(/will not appear on Home/i);
+  });
+
+  it('says nothing about a candidate that will render', () => {
+    expect(candidateWarning(candidate({ assetId: 'b' }))).toBeNull();
   });
 });
 

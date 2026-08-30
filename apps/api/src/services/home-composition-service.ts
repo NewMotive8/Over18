@@ -16,7 +16,7 @@ import {
   homePlayWithMeCharacters,
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
-import { PUBLISHABLE_STATUS } from './app-merchandising-service.js';
+import { PUBLISHABLE_STATUS, homeRenderableConditions } from './app-merchandising-service.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 import { mediaTypeOf, videoAssetCondition } from './content-review-service.js';
 import { renderValue } from './visual-read-service.js';
@@ -781,17 +781,24 @@ async function listHomeCategories(
           appCategoryAssets.categoryId,
           cats.map((c) => c.id),
         ),
-        eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
-        // Same rule as the Hero: a retired character's clips leave the app with
-        // them, rather than becoming tiles that link to a 404.
-        eq(characters.status, 'active'),
-        // CONTENT ONLY. This rail reads `app_category_assets` directly, so it
-        // shows whatever was ever linked — it does not re-ask
-        // `publiclyReachableCondition`. Without this, a link row pointing at
-        // private chat media would render it on Home.
-        inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
-        // Unrenderable rows are removed BEFORE numbering — see the note above.
-        sql`${characterVisualAssets.storageKey} is not null and ${characterVisualAssets.storageKey} <> ''`,
+        /**
+         * THE FOUR RULES, NOW NAMED IN ONE PLACE.
+         *
+         * They used to be written out here and nowhere else, which is exactly
+         * how the Admin came to disagree with this query: approval, content
+         * kind, an ACTIVE character (same rule as the Hero — a retired
+         * character's clips leave the app with her rather than becoming tiles
+         * that link to a 404), and a present storage key, since unrenderable
+         * rows must be removed BEFORE numbering or they consume a slot.
+         *
+         * This rail reads `app_category_assets` directly, so it shows whatever
+         * was ever linked — it does not re-ask `publiclyReachableCondition`.
+         * The kind gate inside the shared list is what stops a link row
+         * pointing at private chat media from rendering it on Home.
+         *
+         * Behaviour is byte-identical to the four conditions this replaces.
+         */
+        ...homeRenderableConditions(),
       ),
     )
     .as('ranked');

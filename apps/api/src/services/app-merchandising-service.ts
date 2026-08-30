@@ -5,6 +5,7 @@ import {
   appCategoryAssets,
   characters,
   characterVisualAssets,
+  type CharacterVisualAssetRow,
 } from '../db/schema.js';
 import { mediaTypeOf } from './content-review-service.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
@@ -43,6 +44,108 @@ import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 /** The one rule that decides whether an asset may be publicly associated. */
 export const PUBLISHABLE_STATUS = 'approved' as const;
 
+/**
+ * WHAT A HOME RAIL ACTUALLY RENDERS, WRITTEN DOWN ONCE.
+ *
+ * Approval is NOT the whole rule and never was. `listHomeCategories` has always
+ * asked four questions of a clip before it reaches a rail, and every Admin
+ * surface asked only the first — so the Admin counted, offered and accepted
+ * content the app could never show, and reported it as publishable.
+ *
+ * The four, in the order an operator can act on them:
+ *
+ *  1. APPROVED. The merchandising rule above.
+ *  2. CONTENT. `PUBLIC_CONTENT_KINDS` — an identity reference is public but is
+ *     not content, and chat media is neither.
+ *  3. THE CHARACTER IS ACTIVE. Retiring a character removes her from every
+ *     public route; her clips go with her. This is the one the Admin missed
+ *     most expensively, because the picker offered those clips and the write
+ *     accepted them.
+ *  4. THERE ARE BYTES. A row with no `storage_key` has no file to render, and
+ *     `publicAssetUrl` would answer null for it anyway.
+ *
+ * Returned as an array of conditions rather than a single `and(...)` so callers
+ * can spread it alongside their own. EVERY caller must join `characters` —
+ * condition 3 names that table, and a query without the join will not compile
+ * into valid SQL. That is deliberate: the join is the reminder.
+ *
+ * This does not RESTATE `publiclyReachableCondition`. That predicate answers a
+ * different question — "may this asset's bytes be fetched by id" — and includes
+ * reachability arms (Hero, keywords, canonical identity) that have nothing to
+ * do with whether a category rail renders a tile. The two overlap; neither is
+ * derivable from the other.
+ */
+export function homeRenderableConditions() {
+  return [...assignableConditions(), eq(characters.status, 'active')];
+}
+
+/**
+ * THE THREE RULES THAT ARE PROPERTIES OF THE ASSET ITSELF.
+ *
+ * `homeRenderableConditions` minus the character's publication state, and the
+ * distinction is a product rule rather than a convenience.
+ *
+ * A CHARACTER IS BUILT BEFORE SHE IS PUBLISHED. The CMS creates her inactive on
+ * purpose — "created unpublished, the safety rule is intact" — and the operator
+ * journey is name → upload → approve → MERCHANDISE → Hero → publish her. So
+ * refusing to assign an inactive character's clips would forbid the ordinary
+ * way of preparing a character, and publishing her would then require going
+ * back round every category to add what should already have been there.
+ *
+ * Her inactivity is therefore reported, never enforced: the picker offers those
+ * clips with a warning, the write accepts them, and the counts and the rail
+ * both exclude them until she is published — at which point they appear with no
+ * further action. The other three cannot be resolved by publishing anyone, so
+ * they stay refusals.
+ */
+export function assignableConditions() {
+  return [
+    eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+    inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
+    sql`${characterVisualAssets.storageKey} is not null and ${characterVisualAssets.storageKey} <> ''`,
+  ];
+}
+
+/** Why one asset cannot appear on Home. `null` means it can. */
+export type HomeIneligibility = 'not_approved' | 'not_content' | 'character_inactive' | 'no_media';
+
+/**
+ * The TS half of `homeRenderableConditions`, evaluated per row.
+ *
+ * Kept beside the SQL rather than in the web app so the two cannot disagree,
+ * and so an operator is told WHICH rule an assignment fails instead of being
+ * shown a tile that silently never renders. The conditions are checked in the
+ * same order they are listed above; the first failure is the one reported,
+ * because an asset that is both unapproved and orphaned is an approval problem
+ * first.
+ *
+ * `storageKey` is tested exactly as the SQL tests it — null or empty, with no
+ * trimming — so a whitespace-only key is judged identically on both sides.
+ */
+export function homeIneligibilityOf(row: {
+  status: string;
+  kind: string;
+  storageKey: string | null;
+  characterStatus: string;
+}): HomeIneligibility | null {
+  if (row.status !== PUBLISHABLE_STATUS) return 'not_approved';
+  if (!(PUBLIC_CONTENT_KINDS as readonly string[]).includes(row.kind)) return 'not_content';
+  if (row.storageKey === null || row.storageKey === '') return 'no_media';
+  if (row.characterStatus !== 'active') return 'character_inactive';
+  return null;
+}
+
+/**
+ * True when a refusal is the right answer, false when a warning is.
+ *
+ * The single place that decides which of the four rules blocks a WRITE — see
+ * `assignableConditions` for why the character's publication state is the one
+ * that does not.
+ */
+export function refusesAssignment(reason: HomeIneligibility): boolean {
+  return reason !== 'character_inactive';
+}
+
 export class MerchandisingValidationError extends Error {
   constructor(
     public readonly field: string,
@@ -63,8 +166,22 @@ export class MerchandisingOrderError extends Error {
   }
 }
 
-/** Why an asset could not be added. Reported per asset, never as a batch failure. */
-export type AddRejection = 'not_found' | 'not_approved' | 'already_present' | 'not_content';
+/**
+ * Why an asset could not be added. Reported per asset, never as a batch failure.
+ *
+ * `character_inactive` and `no_media` were added when the write path was
+ * aligned with `homeRenderableConditions`. They are REFUSALS rather than
+ * warnings for the same reason `not_approved` is one: a category is a public
+ * surface, and accepting an assignment the app can never render is how an
+ * operator ends up publishing a category that shows nothing.
+ */
+export type AddRejection =
+  | 'not_found'
+  | 'not_approved'
+  | 'already_present'
+  | 'not_content'
+  | 'character_inactive'
+  | 'no_media';
 
 export interface AddOutcome {
   assetId: string;
@@ -90,8 +207,18 @@ export interface CategoryAssetView {
    * True when this asset is currently publishable. False means the assignment
    * still exists but the item is absent from every public read — the operator
    * sees it flagged rather than silently vanishing.
+   *
+   * THIS NOW ANSWERS THE SAME QUESTION HOME ASKS. It used to mean "approved",
+   * which is only the first of four rules, so an approved clip belonging to a
+   * retired character was reported publishable and rendered nowhere.
    */
   publishable: boolean;
+  /**
+   * Which rule the item fails, or null when it fails none. Present so the
+   * operator is told WHY a tile will not appear rather than being left to
+   * compare an Admin count against a rail by eye.
+   */
+  ineligibleReason: HomeIneligibility | null;
   /**
    * Opaque, message-free media locator. NEVER a storage key or filesystem
    * path: the browser gets a route keyed by asset id and nothing else.
@@ -113,6 +240,12 @@ export interface CandidateAssetView {
   categoryCount: number;
   /** True when it is already in the category being merchandised. */
   inThisCategory: boolean;
+  /**
+   * Non-null when this candidate may be assigned but would not appear on Home
+   * yet — in practice, a character who has not been published. Shown on the
+   * tile so the choice is informed rather than discovered later as a short rail.
+   */
+  ineligibleReason: HomeIneligibility | null;
 }
 
 /** The opaque locator the browser is given for an asset's bytes. */
@@ -155,6 +288,10 @@ export async function listCategoryAssetsForAdmin(
       link: appCategoryAssets,
       asset: characterVisualAssets,
       characterName: characters.name,
+      // Selected for `homeIneligibilityOf`, not for display. Without it this
+      // view cannot tell an approved clip of a retired character apart from
+      // one the app will actually render.
+      characterStatus: characters.status,
     })
     .from(appCategoryAssets)
     .innerJoin(characterVisualAssets, eq(characterVisualAssets.id, appCategoryAssets.assetId))
@@ -163,7 +300,7 @@ export async function listCategoryAssetsForAdmin(
     // position ONLY. See the note above: featured must never reorder anything.
     .orderBy(asc(appCategoryAssets.position), asc(appCategoryAssets.assetId));
 
-  return rows.map(({ link, asset, characterName }) => ({
+  return rows.map(({ link, asset, characterName, characterStatus }) => ({
     assetId: asset.id,
     characterId: asset.characterId,
     characterName,
@@ -173,10 +310,24 @@ export async function listCategoryAssetsForAdmin(
     status: asset.status,
     position: link.position,
     featured: link.featured,
-    publishable: asset.status === PUBLISHABLE_STATUS,
+    publishable: ineligibilityFor(asset, characterStatus) === null,
+    ineligibleReason: ineligibilityFor(asset, characterStatus),
     previewUrl: assetPreviewUrl(asset.id, asset.storageKey),
     addedAt: link.createdAt.toISOString(),
   }));
+}
+
+/** Narrows an asset row to the four fields the eligibility rules read. */
+function ineligibilityFor(
+  asset: Pick<CharacterVisualAssetRow, 'status' | 'kind' | 'storageKey'>,
+  characterStatus: string,
+): HomeIneligibility | null {
+  return homeIneligibilityOf({
+    status: asset.status,
+    kind: asset.kind,
+    storageKey: asset.storageKey,
+    characterStatus,
+  });
 }
 
 /**
@@ -194,21 +345,16 @@ export async function listPublishableCategoryAssets(
   categoryId: string,
 ): Promise<CategoryAssetView[]> {
   const all = await listCategoryAssetsForAdmin(db, categoryId);
-  // Approved AND content. The admin view above deliberately shows everything
-  // that was ever linked, including rows that have since lost approval; the
-  // PUBLIC view must additionally refuse any kind that has no business on a
-  // public surface, whatever a link row says.
+  // The admin view above deliberately shows everything that was ever linked,
+  // including rows that have since lost approval. The PUBLIC view applies the
+  // full rail rule — `homeRenderableConditions` — so this function and the rail
+  // cannot answer differently about the same category.
   const rows = await db
     .select({ assetId: characterVisualAssets.id })
     .from(appCategoryAssets)
     .innerJoin(characterVisualAssets, eq(characterVisualAssets.id, appCategoryAssets.assetId))
-    .where(
-      and(
-        eq(appCategoryAssets.categoryId, categoryId),
-        eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
-        inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
-      ),
-    );
+    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+    .where(and(eq(appCategoryAssets.categoryId, categoryId), ...homeRenderableConditions()));
   const publishable = new Set(rows.map((row) => row.assetId));
   return all.filter((item) => publishable.has(item.assetId));
 }
@@ -250,21 +396,34 @@ export async function listAssignmentCandidates(
   filter: CandidateFilter = {},
 ): Promise<CandidateAssetView[]> {
   const conditions = [
-    eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
     /**
-     * A REFERENCE IS NOT MERCHANDISE.
+     * THE PICKER OFFERS WHAT HOME CAN RENDER, AND NOTHING ELSE.
      *
-     * The picker offered identity images alongside content: a character's
-     * canonical portrait is approved, so it satisfied the only condition here
-     * and could be assigned to an App Category — which is a public surface.
-     * That is the same leak the Home rails and Search each had to close
-     * separately, still open at its source.
+     * It used to ask only for approval and content kind, so it offered clips
+     * belonging to RETIRED characters and rows with no file. Assigning one
+     * succeeded, the Admin counted it as publishable, and the rail rendered
+     * nothing — the operator's only evidence being a category that came out
+     * shorter than the number the Admin had just shown them.
      *
-     * Excluded by kind rather than by de-prioritising or filtering in the UI,
-     * so no ordering change and no client default can bring it back. Visual
-     * identity remains the place identity images are managed.
+     * Spread from `assignableConditions` rather than restated, so a rule added
+     * to the write path is applied here or the build breaks.
+     *
+     * IT OFFERS EXACTLY WHAT THE WRITE WILL ACCEPT — which is deliberately NOT
+     * the same as what Home will render. An unpublished character's clips are
+     * still offered, because merchandising her before publishing her is the
+     * intended journey; they arrive carrying `ineligibleReason` so the operator
+     * is told they will not appear yet. Offering only Home-renderable content
+     * would make preparing a character impossible.
+     *
+     * IT STILL CARRIES THE KIND GATE — that condition now lives in the shared
+     * list rather than here. A REFERENCE IS NOT MERCHANDISE: the picker once
+     * offered identity images alongside content, because a canonical portrait
+     * is approved and approval was the only question being asked. Excluded by
+     * kind rather than by de-prioritising or filtering in the UI, so no
+     * ordering change and no client default can bring it back. Visual identity
+     * remains the place identity images are managed.
      */
-    inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
+    ...assignableConditions(),
   ];
   if (filter.characterId) {
     conditions.push(eq(characterVisualAssets.characterId, filter.characterId));
@@ -278,7 +437,11 @@ export async function listAssignmentCandidates(
   }
 
   const rows = await db
-    .select({ asset: characterVisualAssets, characterName: characters.name })
+    .select({
+      asset: characterVisualAssets,
+      characterName: characters.name,
+      characterStatus: characters.status,
+    })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
     .where(and(...conditions))
@@ -286,9 +449,10 @@ export async function listAssignmentCandidates(
 
   // Media type is resolved in TS, not SQL: a manual upload's storage_key is an
   // extensionless route, so extension sniffing misclassifies every upload.
-  const withMedia = rows.map(({ asset, characterName }) => ({
+  const withMedia = rows.map(({ asset, characterName, characterStatus }) => ({
     asset,
     characterName,
+    characterStatus,
     mediaType: mediaTypeFor(asset.storageKey, asset.provenance as Record<string, unknown> | null),
   }));
   /**
@@ -331,18 +495,21 @@ export async function listAssignmentCandidates(
     assigned = new Set(links.map((row) => row.assetId));
   }
 
-  const mapped: CandidateAssetView[] = typed.map(({ asset, characterName, mediaType }) => ({
-    assetId: asset.id,
-    characterId: asset.characterId,
-    characterName,
-    mediaType,
-    contentRating: asset.contentRating,
-    isPrimary: asset.isCanonical,
-    previewUrl: assetPreviewUrl(asset.id, asset.storageKey),
-    approvedAt: asset.approvedAt ? asset.approvedAt.toISOString() : null,
-    categoryCount: countByAsset.get(asset.id) ?? 0,
-    inThisCategory: assigned.has(asset.id),
-  }));
+  const mapped: CandidateAssetView[] = typed.map(
+    ({ asset, characterName, characterStatus, mediaType }) => ({
+      assetId: asset.id,
+      characterId: asset.characterId,
+      characterName,
+      mediaType,
+      contentRating: asset.contentRating,
+      isPrimary: asset.isCanonical,
+      previewUrl: assetPreviewUrl(asset.id, asset.storageKey),
+      approvedAt: asset.approvedAt ? asset.approvedAt.toISOString() : null,
+      categoryCount: countByAsset.get(asset.id) ?? 0,
+      inThisCategory: assigned.has(asset.id),
+      ineligibleReason: ineligibilityFor(asset, characterStatus),
+    }),
+  );
 
   const visible = filter.excludeAssigned ? mapped.filter((row) => !row.inThisCategory) : mapped;
   return typeof filter.limit === 'number' ? visible.slice(0, filter.limit) : visible;
@@ -377,8 +544,11 @@ export async function addAssetsToCategory(
         id: characterVisualAssets.id,
         status: characterVisualAssets.status,
         kind: characterVisualAssets.kind,
+        storageKey: characterVisualAssets.storageKey,
+        characterStatus: characters.status,
       })
       .from(characterVisualAssets)
+      .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
       .where(inArray(characterVisualAssets.id, unique));
     const rowById = new Map(found.map((row) => [row.id, row]));
 
@@ -408,22 +578,28 @@ export async function addAssetsToCategory(
         continue;
       }
       /**
-       * THE WRITE-SIDE HALF OF THE KIND RULE.
+       * THE WRITE-SIDE HALF OF THE WHOLE ELIGIBILITY RULE.
        *
-       * `listAssignmentCandidates` already refuses to OFFER an identity
-       * reference or a chat asset, but the picker is not the only way into this
-       * function — an id can be posted directly. A category is a public
+       * `listAssignmentCandidates` already refuses to OFFER anything Home
+       * cannot render, but the picker is not the only way into this function —
+       * an id can be posted directly, and an id selected while the picker was
+       * open can go stale before Add is pressed. A category is a public
        * surface, so the boundary has to hold on the write too, not only on the
        * list the operator happened to be shown.
+       *
+       * All four rules are asked through `homeIneligibilityOf`, the same helper
+       * the read path uses, so a refusal here and a "will not render" flag
+       * there can never disagree. Rating and Primary status are still NOT
+       * consulted — neither has ever decided publishability.
        */
-      if (!(PUBLIC_CONTENT_KINDS as readonly string[]).includes(row.kind)) {
-        outcomes.push({ assetId, added: false, reason: 'not_content', status });
-        continue;
-      }
-      if (status !== PUBLISHABLE_STATUS) {
-        // The write-side half of the rule. Rating and Primary status are NOT
-        // consulted — only approval decides publishability.
-        outcomes.push({ assetId, added: false, reason: 'not_approved', status });
+      const ineligible = homeIneligibilityOf({
+        status,
+        kind: row.kind,
+        storageKey: row.storageKey,
+        characterStatus: row.characterStatus,
+      });
+      if (ineligible !== null && refusesAssignment(ineligible)) {
+        outcomes.push({ assetId, added: false, reason: ineligible, status });
         continue;
       }
       await tx
@@ -554,17 +730,37 @@ export async function categoryAssignmentCounts(
     .select({
       categoryId: appCategoryAssets.categoryId,
       status: characterVisualAssets.status,
+      kind: characterVisualAssets.kind,
+      storageKey: characterVisualAssets.storageKey,
+      characterStatus: characters.status,
       total: sql<number>`count(*)::int`,
     })
     .from(appCategoryAssets)
     .innerJoin(characterVisualAssets, eq(characterVisualAssets.id, appCategoryAssets.assetId))
-    .groupBy(appCategoryAssets.categoryId, characterVisualAssets.status);
+    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+    .groupBy(
+      appCategoryAssets.categoryId,
+      characterVisualAssets.status,
+      characterVisualAssets.kind,
+      characterVisualAssets.storageKey,
+      characters.status,
+    );
 
   const byCategory = new Map<string, { total: number; publishable: number }>();
   for (const row of rows) {
     const entry = byCategory.get(row.categoryId) ?? { total: 0, publishable: 0 };
     entry.total += Number(row.total);
-    if (row.status === PUBLISHABLE_STATUS) entry.publishable += Number(row.total);
+    // `publishable` means "Home would render this", not "it is approved".
+    // Grouping now carries every field the rule reads so the tally is decided
+    // by the same helper the per-asset view uses.
+    const renderable =
+      homeIneligibilityOf({
+        status: row.status,
+        kind: row.kind,
+        storageKey: row.storageKey,
+        characterStatus: row.characterStatus,
+      }) === null;
+    if (renderable) entry.publishable += Number(row.total);
     byCategory.set(row.categoryId, entry);
   }
   return byCategory;

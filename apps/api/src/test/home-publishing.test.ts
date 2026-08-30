@@ -4105,13 +4105,22 @@ describe('a published category reports what Home would actually render', () => {
       .where(eq(characterVisualAssets.id, loses.id));
     await api.publish(category.id, true);
 
+    // The comparison query asks the FULL rail rule, not just approval. It used
+    // to ask `status = 'approved'` alone, which made it agree with a
+    // `publishableAssetCount` that was measuring the wrong thing.
     const result = await on.db.execute<{ assets: number; publishable: number }>(sql`
       select
         (select count(*)::int from app_category_assets link
            where link.category_id = ${category.id}) as assets,
         (select count(*)::int from app_category_assets link
            join character_visual_assets asset on asset.id = link.asset_id
-           where link.category_id = ${category.id} and asset.status = 'approved') as publishable
+           join characters ch on ch.id = asset.character_id
+           where link.category_id = ${category.id}
+             and asset.status = 'approved'
+             and asset.kind = 'generated'
+             and ch.status = 'active'
+             and asset.storage_key is not null
+             and asset.storage_key <> '') as publishable
     `);
     const { assets, publishable } = result.rows[0]!;
 
@@ -4215,5 +4224,235 @@ describe('a published category reports what Home would actually render', () => {
     const rail = home.categories.find((c: { id: string }) => c.id === category.id);
     expect(rail.clips).toHaveLength(1);
     expect(rail.clips[0].id).toBe(asset.id);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * THE ADMIN COUNT AND THE RAIL ASK THE SAME QUESTION
+ *
+ * Reported as "the New category has 5 assigned clips, the Admin says 5 are
+ * publishable, and Home shows 1".
+ *
+ * Both numbers were honest about different questions. The rail has always
+ * applied four rules — approved, content kind, an ACTIVE character, and a
+ * present storage key — while every Admin surface applied only the first. So
+ * an approved clip belonging to a character who had not been published counted
+ * as publishable, was offered by the picker, was accepted by the write, and
+ * rendered nowhere. The operator's only evidence was a short rail.
+ *
+ * These tests pin the ALIGNMENT rather than any one count: whatever a category
+ * holds, `publishableAssetCount` must equal the number of clips `/api/home`
+ * returns for it. A rule added to one side and not the other fails here.
+ * ------------------------------------------------------------------ */
+
+describe('Admin publishable counts match what the rail renders', () => {
+  const forId = async (id: string) =>
+    ((await api.adminHome()).json().categories as Array<{
+      id: string;
+      assetCount: number;
+      publishableAssetCount: number;
+      wouldRenderEmpty: boolean;
+    }>).find((c) => c.id === id)!;
+
+  const railFor = async (id: string) =>
+    (await api.home()).json().categories.find((c: { id: string }) => c.id === id);
+
+  /** Retires a character without touching a single asset row. */
+  const retire = (characterId: string) =>
+    on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, characterId));
+
+  const activate = (characterId: string) =>
+    on.db.update(characters).set({ status: 'active' }).where(eq(characters.id, characterId));
+
+  it('does not count an approved clip whose character is not published', async () => {
+    const category = await makeCategory('Unpublished Character');
+    const asset = await makeApprovedVideoAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+    await retire(LUNA.id);
+
+    const row = await forId(category.id);
+    expect(row.assetCount).toBe(1); // the assignment is INTACT…
+    expect(row.publishableAssetCount).toBe(0); // …and honestly reported as dead
+    expect(row.wouldRenderEmpty).toBe(true);
+    expect((await railFor(category.id)).clips).toEqual([]);
+  });
+
+  it('publishing the character brings it back with no re-assignment', async () => {
+    // The assignment is never rewritten, so this must recover by itself —
+    // the same "rows say where, never whether" rule the rest of the CMS uses.
+    const category = await makeCategory('Recovers');
+    const asset = await makeApprovedVideoAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+    await retire(LUNA.id);
+    expect((await forId(category.id)).publishableAssetCount).toBe(0);
+
+    await activate(LUNA.id);
+    expect((await forId(category.id)).publishableAssetCount).toBe(1);
+    expect((await railFor(category.id)).clips).toHaveLength(1);
+  });
+
+  it('does not count an assignment whose storage key was lost', async () => {
+    const category = await makeCategory('No Bytes');
+    const asset = await makeApprovedVideoAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+    await on.db
+      .update(characterVisualAssets)
+      .set({ storageKey: '' })
+      .where(eq(characterVisualAssets.id, asset.id));
+
+    expect((await forId(category.id)).publishableAssetCount).toBe(0);
+    expect((await railFor(category.id)).clips).toEqual([]);
+  });
+
+  it('does not count an assignment whose kind stopped being content', async () => {
+    const category = await makeCategory('Not Content');
+    const asset = await makeApprovedVideoAsset();
+    await assign(category.id, [asset.id]);
+    await api.publish(category.id, true);
+    // The write path refuses a non-content kind, so this is the only way a
+    // category comes to hold one: the asset changed after it was assigned.
+    await on.db
+      .update(characterVisualAssets)
+      .set({ kind: 'reference' })
+      .where(eq(characterVisualAssets.id, asset.id));
+
+    expect((await forId(category.id)).publishableAssetCount).toBe(0);
+    expect((await railFor(category.id)).clips).toEqual([]);
+  });
+
+  it('THE REPORTED SHAPE: five assigned, one renderable, and the Admin says one', async () => {
+    // Production's exact case rebuilt: a category holding five approved clips
+    // where only one belongs to a published character.
+    const category = await makeCategory('New');
+    const live = await makeApprovedVideoAsset(EMBER.id);
+    const pending = [
+      await makeApprovedVideoAsset(LUNA.id),
+      await makeApprovedVideoAsset(LUNA.id),
+      await makeApprovedVideoAsset(LUNA.id),
+      await makeApprovedVideoAsset(LUNA.id),
+    ];
+    const added = await assign(category.id, [live.id, ...pending.map((a) => a.id)]);
+    expect(added.statusCode).toBe(200);
+    await api.publish(category.id, true);
+    await retire(LUNA.id);
+
+    const row = await forId(category.id);
+    expect(row.assetCount).toBe(5);
+    expect(row.publishableAssetCount).toBe(1);
+
+    const rail = await railFor(category.id);
+    expect(rail.clips).toHaveLength(1);
+    expect(rail.clips[0].id).toBe(live.id);
+    // The number the operator is shown IS the number that renders. This
+    // equality is the whole point; the literals above are just its witness.
+    expect(row.publishableAssetCount).toBe(rail.clips.length);
+
+    // And publishing the four brings the rail up to five, untouched rows and all.
+    await activate(LUNA.id);
+    expect((await forId(category.id)).publishableAssetCount).toBe(5);
+    expect((await railFor(category.id)).clips).toHaveLength(5);
+  });
+
+  it('the App Categories list agrees with the Home composer', async () => {
+    // Two screens, two endpoints, one function behind them now.
+    const category = await makeCategory('Two Screens');
+    const live = await makeApprovedVideoAsset(EMBER.id);
+    const dark = await makeApprovedVideoAsset(LUNA.id);
+    await assign(category.id, [live.id, dark.id]);
+    await api.publish(category.id, true);
+    await retire(LUNA.id);
+
+    const listed = (
+      await on.app.inject({ method: 'GET', url: '/admin/app-categories', cookies: adminCookies })
+    ).json().categories as Array<{ id: string; publishableAssetCount: number }>;
+    const fromList = listed.find((c) => c.id === category.id)!;
+    expect(fromList.publishableAssetCount).toBe(1);
+    expect(fromList.publishableAssetCount).toBe((await forId(category.id)).publishableAssetCount);
+  });
+
+  /* ---------------- the per-asset view names the rule ---------------- */
+
+  it('tells the operator WHICH rule an assignment fails', async () => {
+    const category = await makeCategory('Reasons');
+    const live = await makeApprovedVideoAsset(EMBER.id);
+    const dark = await makeApprovedVideoAsset(LUNA.id);
+    await assign(category.id, [live.id, dark.id]);
+    await retire(LUNA.id);
+
+    const assets = (
+      await on.app.inject({
+        method: 'GET',
+        url: `/admin/app-categories/${category.id}/assets`,
+        cookies: adminCookies,
+      })
+    ).json().assets as Array<{
+      assetId: string;
+      status: string;
+      publishable: boolean;
+      ineligibleReason: string | null;
+    }>;
+    const ok = assets.find((a) => a.assetId === live.id)!;
+    const blocked = assets.find((a) => a.assetId === dark.id)!;
+
+    expect(ok.publishable).toBe(true);
+    expect(ok.ineligibleReason).toBeNull();
+    // Approved AND unpublishable at once — the combination the old view could
+    // not express, and the one that made the reported bug invisible.
+    expect(blocked.status).toBe('approved');
+    expect(blocked.publishable).toBe(false);
+    expect(blocked.ineligibleReason).toBe('character_inactive');
+  });
+
+  /* ---------------- the picker offers, and warns ---------------- */
+
+  it('still OFFERS an unpublished character\'s clips, flagged', async () => {
+    // Merchandising a character before publishing her is the intended journey
+    // — the CMS creates her unpublished on purpose. Hiding her content here
+    // would make preparing a category impossible, so the picker warns instead.
+    const asset = await makeApprovedVideoAsset();
+    await retire(LUNA.id);
+
+    const candidates = (
+      await on.app.inject({
+        method: 'GET',
+        url: '/admin/app-categories/candidates',
+        cookies: adminCookies,
+      })
+    ).json().assets as Array<{ assetId: string; ineligibleReason: string | null }>;
+    const offered = candidates.find((c) => c.assetId === asset.id);
+    expect(offered).toBeDefined();
+    expect(offered!.ineligibleReason).toBe('character_inactive');
+  });
+
+  it('accepts the assignment of an unpublished character\'s clip', async () => {
+    const category = await makeCategory('Prepared');
+    const asset = await makeApprovedVideoAsset();
+    await retire(LUNA.id);
+
+    const res = await assign(category.id, [asset.id]);
+    expect(res.statusCode).toBe(200);
+    const outcomes = res.json().outcomes as Array<{ assetId: string; added: boolean }>;
+    expect(outcomes.find((o) => o.assetId === asset.id)!.added).toBe(true);
+  });
+
+  it('refuses a clip with no media file', async () => {
+    const category = await makeCategory('Refuses');
+    const asset = await makeApprovedVideoAsset();
+    await on.db
+      .update(characterVisualAssets)
+      .set({ storageKey: '' })
+      .where(eq(characterVisualAssets.id, asset.id));
+
+    const res = await assign(category.id, [asset.id]);
+    const outcomes = res.json().outcomes as Array<{
+      assetId: string;
+      added: boolean;
+      reason?: string;
+    }>;
+    expect(outcomes[0]!.added).toBe(false);
+    expect(outcomes[0]!.reason).toBe('no_media');
   });
 });

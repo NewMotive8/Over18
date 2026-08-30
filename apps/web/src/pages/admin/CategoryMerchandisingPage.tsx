@@ -25,6 +25,7 @@ import { canMove, interceptedPath, moveBy, moveItem, sameOrder } from '../../adm
 import {
   blockedItems,
   blockedReason,
+  candidateWarning,
   membershipLabel,
   publishableOnly,
   pruneSelection,
@@ -667,6 +668,17 @@ export default function CategoryMerchandisingPage() {
                       <p className="truncate text-[10px] text-neutral-500">
                         {membershipLabel(candidate)}
                       </p>
+                      {/*
+                        Assignable but not renderable yet — say so BEFORE the
+                        add, not afterwards as a category that came out short.
+                        Full text, never truncated: a warning the operator
+                        cannot read is not a warning.
+                      */}
+                      {candidateWarning(candidate) && (
+                        <p className="mt-1 text-[10px] leading-snug text-amber-300/90">
+                          {candidateWarning(candidate)}
+                        </p>
+                      )}
                       <div className="mt-1 flex flex-wrap gap-1">
                         <Tag>{candidate.mediaType}</Tag>
                         <Tag>{candidate.contentRating}</Tag>

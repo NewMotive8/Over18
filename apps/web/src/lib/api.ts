@@ -481,11 +481,29 @@ export interface CategoryAssetView {
   status: string;
   position: number;
   featured: boolean;
-  /** False when the asset lost approval after being assigned. */
+  /**
+   * False when the app would not render this item — it lost approval, its
+   * character was retired, it is not content, or it has no file.
+   */
   publishable: boolean;
+  /** Which rule it fails, or null when it fails none. */
+  ineligibleReason: HomeIneligibility | null;
   previewUrl: string | null;
   addedAt: string;
 }
+
+/**
+ * Why an assigned item cannot appear on Home.
+ *
+ * Mirrors the API's `HomeIneligibility`. The server decides — this list exists
+ * so the operator can be told which rule was hit, not so the client can decide
+ * for itself.
+ */
+export type HomeIneligibility =
+  | 'not_approved'
+  | 'not_content'
+  | 'character_inactive'
+  | 'no_media';
 
 /** An approved Library asset offered by the picker. */
 export interface CandidateAssetView {
@@ -499,12 +517,14 @@ export interface CandidateAssetView {
   approvedAt: string | null;
   categoryCount: number;
   inThisCategory: boolean;
+  /** Assignable, but not renderable yet — usually an unpublished character. */
+  ineligibleReason: HomeIneligibility | null;
 }
 
 export interface AddOutcome {
   assetId: string;
   added: boolean;
-  reason?: 'not_found' | 'not_approved' | 'already_present';
+  reason?: 'not_found' | 'already_present' | HomeIneligibility;
   status?: string;
 }
 
