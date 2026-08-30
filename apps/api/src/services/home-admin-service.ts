@@ -419,9 +419,24 @@ export async function reorderHeroClips(db: Db, orderedAssetIds: string[]): Promi
  *
  * Approved-only by query construction, so the picker cannot offer something the
  * write path would then refuse.
+ *
+ * THE WHOLE ELIGIBLE LIBRARY, NOT A PAGE OF IT. `limit` is optional and
+ * unbounded when omitted, because a picker that silently stops at a boundary is
+ * a picker an operator cannot trust: reported from production as clips missing
+ * from "Add clips", with no paging control, no "load more" and nothing on
+ * screen to say a cap existed. Anything past the cut simply could not be put on
+ * the Hero at all.
+ *
+ * IT WAS NEVER A PRODUCT DECISION. `listAssignmentCandidates` — the category
+ * picker, doing the same job over the same table in the same admin — has never
+ * had a cap, and the route's `boundedLimit` exists to stop `?limit=-5` reaching
+ * Postgres rather than to bound the library. This was the odd one out.
+ *
+ * The parameter is KEPT so a caller can still ask for a bounded list, and the
+ * route still clamps whatever it is given.
  */
-export async function listHeroCandidates(db: Db, limit = 100) {
-  const rows = await db
+export async function listHeroCandidates(db: Db, limit?: number) {
+  const query = db
     .select({
       assetId: characterVisualAssets.id,
       characterId: characterVisualAssets.characterId,
@@ -451,8 +466,11 @@ export async function listHeroCandidates(db: Db, limit = 100) {
         inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
       ),
     )
-    .orderBy(desc(characterVisualAssets.approvedAt), asc(characterVisualAssets.id))
-    .limit(limit);
+    .orderBy(desc(characterVisualAssets.approvedAt), asc(characterVisualAssets.id));
+
+  // The bound, when one is asked for, is applied by the DATABASE rather than by
+  // slicing rows it already sent.
+  const rows = await (limit === undefined ? query : query.limit(limit));
 
   const inHero = new Set(
     (await db.select({ assetId: homeHeroClips.assetId }).from(homeHeroClips)).map((r) => r.assetId),

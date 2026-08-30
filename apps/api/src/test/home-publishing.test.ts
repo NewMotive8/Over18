@@ -3893,3 +3893,159 @@ describe('Play with me is a category in the Admin, with derived membership', () 
     expect(res.json().message).toMatch(/reserved/i);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * The Hero "Add clips" picker offers the WHOLE eligible library
+ *
+ * Reported: some clips simply were not in the picker, so they could not be
+ * put on the Hero at all. The list was capped at 100 with no paging, no
+ * "load more" and nothing in the UI to say a cap existed — an operator with
+ * more than 100 approved clips had no way to reach the rest.
+ *
+ * The cap was not a product decision. `listAssignmentCandidates`, the
+ * category picker doing the same job over the same table in the same admin,
+ * has never had one; the route's `boundedLimit` exists to stop `?limit=-5`
+ * reaching Postgres, not to bound the library.
+ * ------------------------------------------------------------------ */
+
+describe('the Hero picker offers every eligible clip', () => {
+  /** More assets than the old default page, so a cap cannot hide behind data. */
+  const OVER_THE_OLD_CAP = 105;
+
+  async function manyApprovedAssets(n: number) {
+    const identity = (await getActiveVisualIdentity(on.db, LUNA.id))!;
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const asset = await createVisualAsset(on.db, {
+        characterId: LUNA.id,
+        visualIdentityId: identity.id,
+        kind: 'generated',
+        status: 'approved',
+        contentRating: 'sfw',
+        storageKey: `https://example.invalid/bulk-${i}.mp4`,
+      });
+      ids.push(asset.id);
+    }
+    return ids;
+  }
+
+  const candidateIds = async (qs = '') =>
+    (
+      await on.app.inject({
+        method: 'GET',
+        url: `/admin/home/hero/candidates${qs}`,
+        cookies: adminCookies,
+      })
+    ).json().candidates.map((c: { assetId: string }) => c.assetId) as string[];
+
+  it('returns ALL eligible clips, not just the first page', async () => {
+    const ids = await manyApprovedAssets(OVER_THE_OLD_CAP);
+    const offered = await candidateIds();
+
+    expect(offered).toHaveLength(OVER_THE_OLD_CAP);
+    // Every single one, by id — not merely the right count.
+    expect([...offered].sort()).toEqual([...ids].sort());
+  });
+
+  it('has no cap at any library size', async () => {
+    // Deliberately NOT "the assets after the 100th": the query's tiebreak is
+    // the uuid, so which rows a cap would have dropped is not knowable from
+    // creation order. Asserting the FULL SET at two sizes either side of the
+    // old boundary is the claim that actually holds.
+    const first = await manyApprovedAssets(101);
+    expect(new Set(await candidateIds())).toEqual(new Set(first));
+
+    const more = await manyApprovedAssets(49);
+    expect(new Set(await candidateIds())).toEqual(new Set([...first, ...more]));
+  });
+
+  it('an eligible clip cannot vanish just because the library grew', async () => {
+    const first = await makeApprovedAsset();
+    expect(await candidateIds()).toContain(first.id);
+
+    await manyApprovedAssets(OVER_THE_OLD_CAP);
+    // Still there, with a hundred newer assets alongside it.
+    expect(await candidateIds()).toContain(first.id);
+  });
+
+  it('a clip past the boundary can actually be ADDED to the Hero', async () => {
+    // Offering it is only half the bug; it has to be assignable too.
+    const ids = await manyApprovedAssets(OVER_THE_OLD_CAP);
+    const late = ids[OVER_THE_OLD_CAP - 1]!;
+
+    const res = await api.addHero([late]);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().outcomes[0]).toMatchObject({ assetId: late, added: true });
+    expect(res.json().clips.map((c: { assetId: string }) => c.assetId)).toContain(late);
+  });
+
+  /* ---------------- eligibility is UNCHANGED ---------------- */
+
+  it('still refuses every kind of ineligible clip', async () => {
+    const approved = await makeApprovedAsset();
+    const pending = await makeUnapprovedAsset();
+
+    const identity = (await getActiveVisualIdentity(on.db, LUNA.id))!;
+    const reference = await createVisualAsset(on.db, {
+      characterId: LUNA.id,
+      visualIdentityId: identity.id,
+      kind: 'reference',
+      status: 'approved',
+      storageKey: 'https://example.invalid/portrait.png',
+    });
+    const chat = await createVisualAsset(on.db, {
+      characterId: LUNA.id,
+      visualIdentityId: identity.id,
+      kind: 'chat',
+      status: 'approved',
+      storageKey: 'https://example.invalid/private.mp4',
+    });
+    // A clip belonging to a character who is not active.
+    const sage = SEED_CHARACTERS.find((c) => c.name === 'sage')!;
+    const sageIdentity = (await getActiveVisualIdentity(on.db, sage.id))!;
+    const inactiveOwner = await createVisualAsset(on.db, {
+      characterId: sage.id,
+      visualIdentityId: sageIdentity.id,
+      kind: 'generated',
+      status: 'approved',
+      storageKey: 'https://example.invalid/inactive.mp4',
+    });
+
+    const offered = new Set(await candidateIds());
+    expect(offered.has(approved.id)).toBe(true);
+    expect(offered.has(pending.id)).toBe(false);
+    expect(offered.has(reference.id)).toBe(false);
+    expect(offered.has(chat.id)).toBe(false);
+    expect(offered.has(inactiveOwner.id)).toBe(false);
+  });
+
+  it('still flags what is already in the Hero rather than hiding it', async () => {
+    const asset = await makeApprovedAsset();
+    await api.addHero([asset.id]);
+
+    const res = await on.app.inject({
+      method: 'GET',
+      url: '/admin/home/hero/candidates',
+      cookies: adminCookies,
+    });
+    const row = res.json().candidates.find((c: { assetId: string }) => c.assetId === asset.id);
+    expect(row).toBeDefined();
+    expect(row.inHero).toBe(true);
+  });
+
+  it('an explicit limit is still honoured, and still clamped', async () => {
+    // The query parameter is not removed — a caller may still bound the list,
+    // and nonsense still cannot reach Postgres.
+    await manyApprovedAssets(12);
+    expect(await candidateIds('?limit=5')).toHaveLength(5);
+    for (const qs of ['?limit=-5', '?limit=0', '?limit=abc']) {
+      const res = await on.app.inject({
+        method: 'GET',
+        url: `/admin/home/hero/candidates${qs}`,
+        cookies: adminCookies,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.payload).not.toContain('LIMIT');
+    }
+  });
+});

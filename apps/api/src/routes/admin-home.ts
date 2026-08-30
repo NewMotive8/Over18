@@ -52,14 +52,22 @@ export default async function adminHomeRoutes(
   };
 
   /**
-   * A caller-supplied limit, clamped. Passing one straight through lets
-   * `?limit=-5` reach Postgres, which raises "LIMIT must not be negative" — and
-   * with no custom error handler installed, Fastify returns that as a 500 with
-   * the database's own message in the body.
+   * A caller-supplied limit, clamped — and ABSENT when none was asked for.
+   *
+   * Passing a raw value straight through lets `?limit=-5` reach Postgres, which
+   * raises "LIMIT must not be negative"; with no custom error handler
+   * installed, Fastify returns that as a 500 with the database's own message in
+   * the body. So anything unparseable or non-positive is treated as no limit at
+   * all rather than as a number.
+   *
+   * IT NO LONGER DEFAULTS TO A PAGE. It used to fall back to 100, which is what
+   * made the Hero picker silently stop at 100 clips with nothing in the UI to
+   * page past it. A bound is now something a caller opts into.
    */
-  const boundedLimit = (raw: string | undefined, fallback = 100, max = 200): number => {
-    const parsed = Number.parseInt(raw ?? '', 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  const optionalLimit = (raw: string | undefined, max = 200): number | undefined => {
+    if (raw === undefined) return undefined;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
     return Math.min(parsed, max);
   };
 
@@ -158,7 +166,7 @@ export default async function adminHomeRoutes(
     '/admin/home/hero/candidates',
     adminOnly,
     async (request) => ({
-      candidates: await listHeroCandidates(opts.db, boundedLimit(request.query.limit)),
+      candidates: await listHeroCandidates(opts.db, optionalLimit(request.query.limit)),
     }),
   );
 
