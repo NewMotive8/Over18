@@ -1387,3 +1387,166 @@ export const adminCharactersApi = {
       method: 'POST',
     }),
 };
+
+/* ------------------------------------------------------------------ *
+ * Admin -> Generation: prompt files -> xAI -> Google Drive
+ *
+ * NOTHING IN THESE TYPES IS A SECRET. The browser learns whether the
+ * providers are live and what a batch cost, never a key, a client secret, a
+ * refresh token or a server filesystem path. `driveFolderId` is the operator's
+ * own folder, which they configured.
+ * ------------------------------------------------------------------ */
+
+export type PromptOutputStatus =
+  | 'pending'
+  | 'generated'
+  | 'uploading'
+  | 'completed'
+  | 'failed'
+  | 'drive_upload_failed';
+
+export type PromptJobStatus =
+  | 'queued'
+  | 'generating'
+  | 'uploading'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+  | 'cancelled';
+
+export type PromptBatchStatus = 'draft' | 'running' | 'paused' | 'completed';
+
+export interface PromptGenerationParams {
+  aspectRatio: string;
+  resolution: '1k' | '2k';
+  quality: 'low' | 'medium';
+}
+
+export interface PromptOutputView {
+  id: string;
+  ordinal: number;
+  status: PromptOutputStatus;
+  outputFilename: string;
+  driveFileId: string | null;
+  driveWebViewLink: string | null;
+  attempts: number;
+  error: { kind: string; message: string } | null;
+  generatedAt: string | null;
+  uploadedAt: string | null;
+}
+
+export interface PromptJobView {
+  id: string;
+  ordinal: number;
+  originalFilename: string;
+  status: PromptJobStatus;
+  requestedOutputs: number;
+  succeededCount: number;
+  failedCount: number;
+  attempts: number;
+  error: { kind: string; message: string } | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  outputs: PromptOutputView[];
+}
+
+export interface PromptCostEstimate {
+  prompts: number;
+  outputsPerPrompt: number;
+  images: number;
+  pricePerImageUsd: number;
+  totalUsd: number;
+}
+
+export interface PromptBatchView {
+  id: string;
+  name: string;
+  status: PromptBatchStatus;
+  model: string;
+  params: PromptGenerationParams;
+  outputsPerPrompt: number;
+  driveFolderId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  totals: { prompts: number; outputs: number; completed: number; failed: number };
+  estimate: PromptCostEstimate;
+  jobs?: PromptJobView[];
+}
+
+export interface PromptGenerationSettings {
+  model: string;
+  outputsPerPrompt: number;
+  params: PromptGenerationParams;
+  aspectRatios: string[];
+  pricePerImageUsd: number;
+  xaiLive: boolean;
+  driveLive: boolean;
+  driveFolderId: string | null;
+  qualityNote: string;
+}
+
+export interface PromptIngestOutcome {
+  filename: string;
+  accepted: boolean;
+  reason?: string;
+  message?: string;
+  jobId?: string;
+}
+
+export const promptGenerationApi = {
+  settings: () =>
+    request<PromptGenerationSettings>('/admin/prompt-generation/settings'),
+  listBatches: () =>
+    request<{ batches: PromptBatchView[] }>('/admin/prompt-generation/batches'),
+  createBatch: (name: string) =>
+    request<{ batch: PromptBatchView }>('/admin/prompt-generation/batches', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  batch: (batchId: string) =>
+    request<{ batch: PromptBatchView }>(
+      `/admin/prompt-generation/batches/${encodeURIComponent(batchId)}`,
+    ),
+  /** Multipart, so the browser must set the boundary — see postMultipart. */
+  uploadFiles: (batchId: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append('files', file, file.name);
+    return postMultipart<{
+      outcomes: PromptIngestOutcome[];
+      added: number;
+      refused: number;
+      batch: PromptBatchView;
+    }>(
+      `/admin/prompt-generation/batches/${encodeURIComponent(batchId)}/files`,
+      form,
+      'Upload failed',
+    );
+  },
+  start: (batchId: string) =>
+    request<{ started: boolean; reason: string | null; batch: PromptBatchView }>(
+      `/admin/prompt-generation/batches/${encodeURIComponent(batchId)}/start`,
+      { method: 'POST' },
+    ),
+  pause: (batchId: string) =>
+    request<{ paused: boolean; batch: PromptBatchView }>(
+      `/admin/prompt-generation/batches/${encodeURIComponent(batchId)}/pause`,
+      { method: 'POST' },
+    ),
+  retryFailed: (batchId: string) =>
+    request<{ retried: number; batch: PromptBatchView }>(
+      `/admin/prompt-generation/batches/${encodeURIComponent(batchId)}/retry-failed`,
+      { method: 'POST' },
+    ),
+  retryJob: (jobId: string) =>
+    request<{ retried: boolean }>(
+      `/admin/prompt-generation/jobs/${encodeURIComponent(jobId)}/retry`,
+      { method: 'POST' },
+    ),
+  retryOutput: (outputId: string) =>
+    request<{ retried: boolean }>(
+      `/admin/prompt-generation/outputs/${encodeURIComponent(outputId)}/retry`,
+      { method: 'POST' },
+    ),
+};

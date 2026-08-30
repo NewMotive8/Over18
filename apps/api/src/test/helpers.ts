@@ -59,6 +59,35 @@ export const testEnv: Env = {
       preferForImages: true,
     },
   },
+  // Matches production's default: NOT live. The prompt-workspace suite injects
+  // stub providers, so every other suite proves no test can reach xAI or
+  // Google even by accident.
+  promptGeneration: {
+    xai: {
+      baseUrl: 'https://example.invalid/v1',
+      model: 'test-image-model',
+      apiKey: null,
+      timeoutMs: 5_000,
+      maxAttempts: 1,
+      // Effectively unthrottled: pacing is asserted directly against the
+      // limiter, and making every other test wait on a token bucket would only
+      // make the suite slow.
+      requestsPerSecond: 1000,
+      maxConcurrent: 2,
+      live: false,
+    },
+    drive: {
+      clientId: null,
+      clientSecret: null,
+      refreshToken: null,
+      folderId: 'test-drive-folder',
+      timeoutMs: 5_000,
+      live: false,
+      tokenUrl: null,
+      uploadUrl: null,
+    },
+    spoolDir: `${tmpdir()}/over18-test-media/prompt-generation`,
+  },
 };
 
 export function migrateTestDb(): void {
@@ -91,7 +120,7 @@ export async function createTestContext(
 
 export async function truncateAll(ctx: TestContext): Promise<void> {
   await ctx.pool.query(
-    'TRUNCATE TABLE discovery_category_keywords, discovery_categories, asset_keywords, content_keywords, home_hero_clips, home_recent_characters, home_banners, banner_creatives, app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, messages, conversations, sessions, users, characters CASCADE',
+    'TRUNCATE TABLE prompt_job_outputs, prompt_jobs, prompt_batches, discovery_category_keywords, discovery_categories, asset_keywords, content_keywords, home_hero_clips, home_recent_characters, home_banners, banner_creatives, app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, messages, conversations, sessions, users, characters CASCADE',
   );
 }
 

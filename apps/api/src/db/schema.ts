@@ -1093,6 +1093,167 @@ export const discoveryCategoryKeywords = pgTable(
   ],
 );
 
+/* ------------------------------------------------------------------ *
+ * Prompt generation workspace (Admin -> Generation)
+ *
+ * A PRODUCTION TOOL, NOT A CONTENT PIPELINE. An operator uploads .txt
+ * prompt files, each becomes one job, each job produces N images through
+ * xAI, and every image is uploaded to one configured Google Drive folder.
+ * That is the whole product.
+ *
+ * WHY THESE ARE NOT `generation_jobs`. That table models CHARACTER content:
+ * `character_id` is NOT NULL with a foreign key to `characters`, its config is
+ * validated against a model registry that has no xAI entry, and every job it
+ * runs ends by writing a `character_visual_asset`. This feature must create no
+ * asset, touch no character, and reach no public surface — so it gets its own
+ * tables rather than three modifications to the pipeline that owns published
+ * content. Nothing here references a character, an asset, or a category, and
+ * that absence is the isolation guarantee.
+ * ------------------------------------------------------------------ */
+
+/**
+ * A job's rollup state.
+ *
+ * `partial` exists for the same reason `generation_job_status` has it: when one
+ * output of two succeeds and the other does not, the success is never
+ * discarded and the row must not read as a failure.
+ */
+export const promptJobStatus = pgEnum('prompt_job_status', [
+  'queued',
+  'generating',
+  'uploading',
+  'completed',
+  'partial',
+  'failed',
+  'cancelled',
+]);
+
+/**
+ * One image's state, and the reason outputs are rows rather than columns.
+ *
+ * `drive_upload_failed` is DELIBERATELY DISTINCT from `failed`. The image
+ * exists in the spool and has already been paid for; the only thing missing is
+ * a Drive upload. Collapsing the two would make the retry path regenerate an
+ * image we already own.
+ */
+export const promptOutputStatus = pgEnum('prompt_output_status', [
+  'pending',
+  'generated',
+  'uploading',
+  'completed',
+  'failed',
+  'drive_upload_failed',
+]);
+
+/** A batch's own lifecycle. `paused` stops STARTING work, never in-flight work. */
+export const promptBatchStatus = pgEnum('prompt_batch_status', [
+  'draft',
+  'running',
+  'paused',
+  'completed',
+]);
+
+export const promptBatches = pgTable(
+  'prompt_batches',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    status: promptBatchStatus('status').notNull().default('draft'),
+    /** The model id sent to xAI, recorded per batch so history stays readable. */
+    model: text('model').notNull(),
+    /**
+     * The exact generation parameters used, frozen at batch creation.
+     * Recorded so a batch run last month can still be explained after the
+     * defaults change. Never contains a key of any kind.
+     */
+    params: jsonb('params').notNull(),
+    /** How many images each prompt produces. 2 in V1; the extensibility hook. */
+    outputsPerPrompt: integer('outputs_per_prompt').notNull().default(2),
+    /** The Drive folder every output of this batch is uploaded into. */
+    driveFolderId: text('drive_folder_id'),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => [index('prompt_batches_status_idx').on(table.status)],
+);
+
+export const promptJobs = pgTable(
+  'prompt_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    batchId: uuid('batch_id')
+      .notNull()
+      .references(() => promptBatches.id, { onDelete: 'cascade' }),
+    /** Upload order. Stable for the life of the batch. */
+    ordinal: integer('ordinal').notNull(),
+    /** The uploaded file's name, verbatim. The basis of every output filename. */
+    originalFilename: text('original_filename').notNull(),
+    /**
+     * The prompt, EXACTLY as uploaded. Never trimmed, normalised, re-encoded or
+     * truncated anywhere in this feature — the operator's wording is the input.
+     */
+    promptText: text('prompt_text').notNull(),
+    status: promptJobStatus('status').notNull().default('queued'),
+    requestedOutputs: integer('requested_outputs').notNull().default(2),
+    succeededCount: integer('succeeded_count').notNull().default(0),
+    failedCount: integer('failed_count').notNull().default(0),
+    /** Bounded so a recovery sweep can never loop forever on a poisoned row. */
+    attempts: integer('attempts').notNull().default(0),
+    /** Structured provider/validation error. NEVER a raw provider payload. */
+    error: jsonb('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('prompt_jobs_batch_idx').on(table.batchId, table.ordinal),
+    index('prompt_jobs_status_idx').on(table.status),
+    /**
+     * Uniqueness is PER BATCH, not global: the same prompt file may legitimately
+     * be run again in a later batch. Within one batch it makes re-uploading the
+     * same file a no-op instead of a second paid generation.
+     */
+    uniqueIndex('prompt_jobs_batch_filename_idx').on(table.batchId, table.originalFilename),
+  ],
+);
+
+export const promptJobOutputs = pgTable(
+  'prompt_job_outputs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => promptJobs.id, { onDelete: 'cascade' }),
+    /** 1-based, and it is what the filename suffix is built from. */
+    ordinal: integer('ordinal').notNull(),
+    status: promptOutputStatus('status').notNull().default('pending'),
+    /** `<original stem>_<ordinal>.jpg`, derived once and stored. */
+    outputFilename: text('output_filename').notNull(),
+    /**
+     * Where the generated bytes wait between xAI and Drive.
+     *
+     * A SERVER PATH THAT NEVER REACHES A CLIENT — no route serves it and no
+     * view includes it. It is what makes a Drive failure retryable without
+     * paying xAI a second time, and it is cleared once the upload succeeds.
+     */
+    spoolPath: text('spool_path'),
+    driveFileId: text('drive_file_id'),
+    driveWebViewLink: text('drive_web_view_link'),
+    attempts: integer('attempts').notNull().default(0),
+    error: jsonb('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    generatedAt: timestamp('generated_at', { withTimezone: true }),
+    uploadedAt: timestamp('uploaded_at', { withTimezone: true }),
+  },
+  (table) => [
+    /** One row per (job, ordinal): a restart or a double click cannot make a third image. */
+    uniqueIndex('prompt_job_outputs_job_ordinal_idx').on(table.jobId, table.ordinal),
+    index('prompt_job_outputs_status_idx').on(table.status),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -1118,3 +1279,6 @@ export type HomeRecentCharacterRow = typeof homeRecentCharacters.$inferSelect;
 export type ContentKeywordRow = typeof contentKeywords.$inferSelect;
 export type AssetKeywordRow = typeof assetKeywords.$inferSelect;
 export type DiscoveryCategoryRow = typeof discoveryCategories.$inferSelect;
+export type PromptBatchRow = typeof promptBatches.$inferSelect;
+export type PromptJobRow = typeof promptJobs.$inferSelect;
+export type PromptJobOutputRow = typeof promptJobOutputs.$inferSelect;

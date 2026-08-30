@@ -5,6 +5,8 @@ import { selectReplyProvider } from './services/llm-reply-provider.js';
 import { selectMemoryExtractor } from './services/memory-extractor.js';
 import { selectMediaProviders } from './services/media-providers.js';
 import { selectProfileAuthor } from './services/character-profile-service.js';
+import { selectPromptGenerationDeps } from './prompt-generation/select-providers.js';
+import { recoverInterruptedPromptJobs } from './prompt-generation/runner.js';
 
 const env = loadEnv();
 const { db } = createDb(env.databaseUrl);
@@ -42,6 +44,39 @@ app.log.info(
     ? 'Media endpoints: /internal/media/* enabled (INTERNAL_MEDIA_TOKEN set)'
     : 'Media endpoints: /internal/media/* DISABLED until INTERNAL_MEDIA_TOKEN is set',
 );
+
+// Booleans only — never keys, secrets, refresh tokens or folder ids.
+app.log.info(
+  `Prompt generation: xai.live=${env.promptGeneration.xai.live} drive.live=${env.promptGeneration.drive.live} drive.folderSet=${Boolean(env.promptGeneration.drive.folderId)}`,
+);
+
+/**
+ * RESTART RECOVERY, RUN BEFORE THE PORT OPENS.
+ *
+ * A deploy or a crash mid-batch leaves rows in `generating` or `uploading`.
+ * This is the sweep that puts them back to work: an already-generated image is
+ * re-uploaded from the spool rather than regenerated, a completed output is
+ * never touched, and a job recovered too many times is abandoned instead of
+ * looping forever.
+ *
+ * The equivalent in the older generation module exists and is called by
+ * nothing, which is why a crash strands its jobs. This one is wired in — and
+ * its failure is logged rather than fatal, because a recovery problem must not
+ * stop the API from serving.
+ */
+try {
+  const recovery = await recoverInterruptedPromptJobs(
+    db,
+    selectPromptGenerationDeps(env.promptGeneration),
+  );
+  if (recovery.requeuedJobs + recovery.requeuedUploads + recovery.abandonedJobs > 0) {
+    app.log.info(
+      `Prompt generation recovery: requeued ${recovery.requeuedJobs} job(s) and ${recovery.requeuedUploads} pending upload(s), abandoned ${recovery.abandonedJobs}`,
+    );
+  }
+} catch (err) {
+  app.log.error({ err }, 'Prompt generation recovery failed');
+}
 
 try {
   await app.listen({ port: env.port, host: env.host });

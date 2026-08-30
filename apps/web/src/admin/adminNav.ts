@@ -89,9 +89,9 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
     label: 'Generation',
     path: '/admin/generation',
     matchPrefixes: ['/admin/generation'],
-    description: 'Create new content (deferred)',
-    status: 'not-implemented',
-    owner: 'US-103 / US-104 — deferred pending the production generation flow',
+    description: 'Prompt files to images, saved to Google Drive',
+    status: 'available',
+    owner: 'US-103 — prompt generation workspace (prompt files to Google Drive)',
   },
 ];
 

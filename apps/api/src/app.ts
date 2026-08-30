@@ -12,6 +12,9 @@ import messageRoutes from './routes/messages.js';
 import conversationMediaRoutes from './routes/conversation-media.js';
 import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
+import adminPromptGenerationRoutes from './routes/admin-prompt-generation.js';
+import { selectPromptGenerationDeps } from './prompt-generation/select-providers.js';
+import type { PromptRunnerDeps } from './prompt-generation/runner.js';
 import adminContentRoutes from './routes/admin-content.js';
 import adminCharacterRoutes from './routes/admin-characters.js';
 import adminSettingsRoutes from './routes/admin-settings.js';
@@ -57,6 +60,14 @@ export interface BuildAppOptions {
    * "fail clearly, never fake" rule the reply provider follows.
    */
   profileAuthor?: ProfileAuthor;
+  /**
+   * Admin -> Generation dependencies (xAI + Google Drive + the spool).
+   *
+   * Defaults to the env-selected pair, which is a MOCK unless both a confirm
+   * flag and a key are present. Tests inject stubs to exercise 429s, Drive
+   * failures and restart recovery without a network or a bill.
+   */
+  promptGeneration?: PromptRunnerDeps;
 }
 
 /**
@@ -197,6 +208,23 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
       ledgerPath: env.media.ledgerPath,
     });
   }
+
+  /**
+   * Admin -> Generation (prompt files -> xAI -> Google Drive).
+   *
+   * Registered unconditionally, because the workspace has to be usable — and
+   * testable — before any credential exists: without them the selected
+   * providers are mocks. Nothing it registers can reach character content.
+   */
+  await app.register(adminPromptGenerationRoutes, {
+    db,
+    runner: options.promptGeneration ?? selectPromptGenerationDeps(env.promptGeneration),
+    readiness: {
+      xaiLive: env.promptGeneration.xai.live,
+      driveLive: env.promptGeneration.drive.live,
+      driveFolderId: env.promptGeneration.drive.folderId,
+    },
+  });
 
   return app;
 }

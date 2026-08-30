@@ -13,7 +13,6 @@ import ChatPage from './pages/ChatPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminShell from './admin/AdminShell';
 import RequireAdmin from './admin/RequireAdmin';
-import AdminPlaceholder from './admin/AdminPlaceholder';
 import AdminHomePage from './pages/admin/AdminHomePage';
 import ContentReviewPage from './pages/admin/ContentReviewPage';
 import ContentLibraryPage from './pages/admin/ContentLibraryPage';
@@ -23,6 +22,7 @@ import CategoryMerchandisingPage from './pages/admin/CategoryMerchandisingPage';
 import BannersPage from './pages/admin/BannersPage';
 import BannerEditorPage from './pages/admin/BannerEditorPage';
 import HomeComposerPage from './pages/admin/HomeComposerPage';
+import GenerationPage from './pages/admin/GenerationPage';
 import DiscoveryCategoriesPage from './pages/admin/DiscoveryCategoriesPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
@@ -73,7 +73,8 @@ export default function App() {
         <Route path="publishing/home" element={<HomeComposerPage />} />
         <Route path="publishing/discovery" element={<DiscoveryCategoriesPage />} />
         <Route path="publishing/:categorySlug" element={<CategoryMerchandisingPage />} />
-        <Route path="generation" element={<AdminPlaceholder destination="generation" />} />
+        {/* Admin -> Generation: prompt files -> xAI -> Google Drive. */}
+        <Route path="generation" element={<GenerationPage />} />
       </Route>
 
       <Route element={<AppShell />}>
