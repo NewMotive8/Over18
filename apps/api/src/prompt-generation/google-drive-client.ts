@@ -36,7 +36,18 @@ export type DriveErrorKind =
   | 'network'
   | 'timeout'
   | 'malformed_response'
-  | 'not_configured';
+  | 'not_configured'
+  /**
+   * The named folder is not addressable by this application.
+   *
+   * SPLIT OUT FROM `http` BECAUSE IT IS THE ONE FAILURE `drive.file` MAKES
+   * LIKELY, and it demands a specific answer rather than a retry. Under that
+   * scope a folder the operator created by hand is invisible to us, and Drive
+   * reports invisible resources as 404 `notFound` — indistinguishable, without
+   * this, from a folder that never existed. Production spent two rounds on a
+   * bare "Drive returned HTTP 404" because this distinction was not drawn.
+   */
+  | 'folder_not_found';
 
 export class DriveError extends Error {
   constructor(
@@ -61,10 +72,17 @@ export interface DriveConfig {
   clientId: string;
   clientSecret: string;
   refreshToken: string;
-  folderId: string;
+  /**
+   * A pre-configured destination, or null to let the caller supply one per
+   * upload. NO LONGER REQUIRED: the destination is normally a folder this
+   * application created for itself, whose id cannot be known in advance.
+   */
+  folderId: string | null;
   timeoutMs: number;
   tokenUrl?: string;
   uploadUrl?: string;
+  /** The Drive metadata endpoint. Distinct from the upload endpoint. */
+  filesUrl?: string;
 }
 
 export interface DriveUpload {
@@ -80,12 +98,58 @@ export interface DriveUploadResult {
   webViewLink: string | null;
 }
 
+/** What Drive knows about a folder we previously created. */
+export interface DriveFolder {
+  id: string;
+  trashed: boolean;
+}
+
 export interface GoogleDriveClient {
   upload(file: DriveUpload): Promise<DriveUploadResult>;
+  /**
+   * Creates a folder in the account's My Drive root and returns its id.
+   *
+   * NO `parents` IS SENT, AND THAT IS THE WHOLE TRICK. `drive.file` permits
+   * CREATING new items freely; what it forbids is ADDRESSING existing ones the
+   * app did not create. Naming a parent would address one, so the folder is
+   * created at the root, where it needs no parent — and because we created it,
+   * every later call about it is inside the scope.
+   */
+  createFolder(name: string): Promise<DriveFolder>;
+  /** The folder if we can still address it, or null if Drive says notFound. */
+  getFolder(folderId: string): Promise<DriveFolder | null>;
 }
 
 const DEFAULT_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const DEFAULT_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
+const DEFAULT_FILES_URL = 'https://www.googleapis.com/drive/v3/files';
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+/**
+ * Google's machine-readable failure reason, pulled out of an error body.
+ *
+ * SAFE TO READ HERE, AND ONLY HERE. A Drive error body describes a FILE — an
+ * id, a name, a reason like `notFound` or `storageQuotaExceeded`. A *token*
+ * error body is different: it echoes the client id and sometimes the refresh
+ * token, which is why the token path stays deliberately body-free. The two are
+ * not interchangeable and this function is never pointed at the token endpoint.
+ */
+function driveErrorReason(body: string): { reason: string | null; message: string | null } {
+  try {
+    const parsed = JSON.parse(body) as {
+      error?: { message?: string; errors?: { reason?: string }[] };
+    };
+    const reason = parsed.error?.errors?.[0]?.reason ?? null;
+    const message = parsed.error?.message ?? null;
+    return {
+      reason: typeof reason === 'string' ? reason.slice(0, 64) : null,
+      // Bounded: enough to name the resource, never enough to carry a payload.
+      message: typeof message === 'string' ? message.slice(0, 200) : null,
+    };
+  } catch {
+    return { reason: null, message: null };
+  }
+}
 
 export function createGoogleDriveClient(
   config: DriveConfig,
@@ -94,6 +158,7 @@ export function createGoogleDriveClient(
 ): GoogleDriveClient {
   const tokenUrl = config.tokenUrl ?? DEFAULT_TOKEN_URL;
   const uploadUrl = config.uploadUrl ?? DEFAULT_UPLOAD_URL;
+  const filesUrl = config.filesUrl ?? DEFAULT_FILES_URL;
 
   /**
    * The cached access token.
@@ -171,10 +236,117 @@ export function createGoogleDriveClient(
     return cachedToken.value;
   }
 
+  /** One authenticated JSON request against the Drive metadata endpoint. */
+  async function filesRequest(
+    url: string,
+    init: { method: 'GET' | 'POST'; body?: string },
+    what: string,
+  ): Promise<Response> {
+    const token = await accessToken();
+    try {
+      return await fetchImpl(url, {
+        method: init.method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(init.body ? { 'content-type': 'application/json; charset=UTF-8' } : {}),
+        },
+        ...(init.body ? { body: init.body } : {}),
+        signal: AbortSignal.timeout(config.timeoutMs),
+      });
+    } catch (error) {
+      const name = (error as { name?: string }).name;
+      if (name === 'TimeoutError' || name === 'AbortError') {
+        throw new DriveError('timeout', `The Drive ${what} request timed out.`);
+      }
+      throw new DriveError('network', `The Drive ${what} request could not be sent.`);
+    }
+  }
+
   return {
+    async createFolder(name) {
+      const response = await filesRequest(
+        `${filesUrl}?fields=id%2Ctrashed&supportsAllDrives=true`,
+        { method: 'POST', body: JSON.stringify({ name, mimeType: FOLDER_MIME }) },
+        'folder creation',
+      );
+      if (response.status === 401) {
+        cachedToken = null;
+        throw new DriveError('auth', 'Drive rejected our access token.', 401);
+      }
+      if (!response.ok) {
+        const detail = driveErrorReason(await response.text().catch(() => ''));
+        if (detail.reason === 'storageQuotaExceeded') {
+          throw new DriveError(
+            'quota',
+            'The Google account is out of Drive storage, so the destination folder could not be created.',
+            403,
+          );
+        }
+        throw new DriveError(
+          'http',
+          `Drive refused to create the destination folder (HTTP ${response.status}${
+            detail.reason ? `, ${detail.reason}` : ''
+          }).`,
+          response.status,
+        );
+      }
+      let body: { id?: string; trashed?: boolean };
+      try {
+        body = (await response.json()) as { id?: string; trashed?: boolean };
+      } catch {
+        throw new DriveError('malformed_response', 'Drive returned an unreadable folder response.');
+      }
+      if (typeof body.id !== 'string' || body.id.length === 0) {
+        // Without an id the folder is unusable and, worse, unrecorded — a
+        // second attempt would create another one. Fail instead.
+        throw new DriveError('malformed_response', 'Drive did not return a folder id.');
+      }
+      return { id: body.id, trashed: body.trashed === true };
+    },
+
+    async getFolder(folderId) {
+      const response = await filesRequest(
+        `${filesUrl}/${encodeURIComponent(folderId)}?fields=id%2Ctrashed&supportsAllDrives=true`,
+        { method: 'GET' },
+        'folder lookup',
+      );
+      if (response.status === 401) {
+        cachedToken = null;
+        throw new DriveError('auth', 'Drive rejected our access token.', 401);
+      }
+      // 404 here is the EXPECTED answer for a folder we no longer own or that
+      // was never ours, so it is a value rather than an error: the caller makes
+      // a new folder instead of failing every upload for ever.
+      if (response.status === 404) return null;
+      if (!response.ok) {
+        const detail = driveErrorReason(await response.text().catch(() => ''));
+        throw new DriveError(
+          'http',
+          `Drive could not confirm the destination folder (HTTP ${response.status}${
+            detail.reason ? `, ${detail.reason}` : ''
+          }).`,
+          response.status,
+        );
+      }
+      let body: { id?: string; trashed?: boolean };
+      try {
+        body = (await response.json()) as { id?: string; trashed?: boolean };
+      } catch {
+        throw new DriveError('malformed_response', 'Drive returned an unreadable folder response.');
+      }
+      if (typeof body.id !== 'string' || body.id.length === 0) return null;
+      return { id: body.id, trashed: body.trashed === true };
+    },
+
     async upload(file) {
       const token = await accessToken();
       const folderId = file.folderId ?? config.folderId;
+      if (!folderId) {
+        throw new DriveError(
+          'not_configured',
+          'No Google Drive destination folder has been resolved.',
+        );
+      }
 
       /**
        * `uploadType=multipart` — one request carrying metadata and bytes.
@@ -258,8 +430,30 @@ export function createGoogleDriveClient(
           403,
         );
       }
+      if (response.status === 404) {
+        /**
+         * THE PARENT FOLDER IS THE ONLY RESOURCE THIS REQUEST NAMES, so a 404
+         * is always about it. Under `drive.file` that most often means the
+         * folder is real and owned by the operator but was created by hand, so
+         * this application cannot address it — a distinction Google expresses
+         * only as `notFound`, and which no amount of retrying will change.
+         */
+        const detail = driveErrorReason(await response.text().catch(() => ''));
+        throw new DriveError(
+          'folder_not_found',
+          `Drive cannot see the destination folder${
+            detail.reason ? ` (${detail.reason})` : ''
+          }. Under the drive.file scope this app can only use a folder it created itself.`,
+          404,
+        );
+      }
       if (!response.ok) {
-        throw new DriveError('http', `Drive returned HTTP ${response.status}.`, response.status);
+        const detail = driveErrorReason(await response.text().catch(() => ''));
+        throw new DriveError(
+          'http',
+          `Drive returned HTTP ${response.status}${detail.reason ? ` (${detail.reason})` : ''}.`,
+          response.status,
+        );
       }
 
       let body2: { id?: string; webViewLink?: string };
@@ -279,12 +473,30 @@ export function createGoogleDriveClient(
   };
 }
 
-/** Records uploads instead of performing them. The default when not configured. */
+/**
+ * Records uploads instead of performing them. The default when not configured.
+ *
+ * It MODELS FOLDER OWNERSHIP rather than ignoring it: `createFolder` mints an
+ * id and remembers it, and `getFolder` answers null for anything it did not
+ * mint. That is the `drive.file` rule in miniature, so the resolver's
+ * create-once, reuse-and-verify logic is exercised identically offline and in
+ * production instead of only being reached when a credential exists.
+ */
 export function createMockGoogleDriveClient(
   sink: DriveUpload[] = [],
-): GoogleDriveClient & { uploads: DriveUpload[] } {
+): GoogleDriveClient & { uploads: DriveUpload[]; folders: Map<string, DriveFolder> } {
+  const folders = new Map<string, DriveFolder>();
   return {
     uploads: sink,
+    folders,
+    async createFolder(name) {
+      const folder: DriveFolder = { id: `mock-folder-${folders.size + 1}-${name}`, trashed: false };
+      folders.set(folder.id, folder);
+      return folder;
+    },
+    async getFolder(folderId) {
+      return folders.get(folderId) ?? null;
+    },
     async upload(file) {
       sink.push(file);
       const id = `mock-drive-${sink.length}-${file.filename}`;
@@ -294,12 +506,18 @@ export function createMockGoogleDriveClient(
 }
 
 export function createUnconfiguredDriveClient(): GoogleDriveClient {
+  const refuse = (): never => {
+    throw new DriveError('not_configured', 'Google Drive is not configured on this server.');
+  };
   return {
     async upload() {
-      throw new DriveError(
-        'not_configured',
-        'Google Drive is not configured on this server.',
-      );
+      return refuse();
+    },
+    async createFolder() {
+      return refuse();
+    },
+    async getFolder() {
+      return refuse();
     },
   };
 }

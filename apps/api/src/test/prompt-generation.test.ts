@@ -31,6 +31,7 @@ import {
   type DriveUpload,
   type GoogleDriveClient,
 } from '../prompt-generation/google-drive-client.js';
+import { createNullDriveFolderResolver } from '../prompt-generation/drive-folder.js';
 import {
   executeJob,
   recoverInterruptedPromptJobs,
@@ -92,18 +93,28 @@ function stubXai(): StubProvider {
 
 interface StubDrive extends GoogleDriveClient {
   uploads: DriveUpload[];
+  createdFolders: string[];
   failNext: (times: number, error?: Error) => void;
 }
 
 function stubDrive(): StubDrive {
   const uploads: DriveUpload[] = [];
+  const createdFolders: string[] = [];
   let failures = 0;
   let failure: Error = new DriveError('http', 'Drive is unhappy.', 500);
   const client: StubDrive = {
     uploads,
+    createdFolders,
     failNext(times, error) {
       failures = times;
       if (error) failure = error;
+    },
+    async createFolder(name) {
+      createdFolders.push(name);
+      return { id: `stub-folder-${createdFolders.length}`, trashed: false };
+    },
+    async getFolder(folderId) {
+      return { id: folderId, trashed: false };
     },
     async upload(file) {
       if (failures > 0) {
@@ -140,7 +151,9 @@ beforeEach(async () => {
     xai,
     drive,
     spoolDir,
-    defaultFolderId: 'folder-1',
+    // A fixed destination, so this suite keeps testing the runner rather than
+    // the resolver. Resolution has its own suite.
+    driveFolder: createNullDriveFolderResolver('folder-1'),
     concurrency: 2,
   };
 });

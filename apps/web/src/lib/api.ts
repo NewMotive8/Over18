@@ -1484,6 +1484,14 @@ export interface PromptGenerationSettings {
   xaiLive: boolean;
   driveLive: boolean;
   driveFolderId: string | null;
+  /**
+   * Where the destination came from. `app_created` is the folder this server
+   * made for itself, and the only kind the `drive.file` scope can write to;
+   * `configured` is a GOOGLE_DRIVE_FOLDER_ID override, which works only if it
+   * happens to name a folder this app created earlier.
+   */
+  driveFolderSource: 'app_created' | 'configured' | 'none';
+  driveFolderName: string | null;
   qualityNote: string;
 }
 

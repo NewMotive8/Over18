@@ -47,7 +47,7 @@ app.log.info(
 
 // Booleans only — never keys, secrets, refresh tokens or folder ids.
 app.log.info(
-  `Prompt generation: xai.live=${env.promptGeneration.xai.live} drive.live=${env.promptGeneration.drive.live} drive.folderSet=${Boolean(env.promptGeneration.drive.folderId)}`,
+  `Prompt generation: xai.live=${env.promptGeneration.xai.live} drive.live=${env.promptGeneration.drive.live} drive.folderOverride=${Boolean(env.promptGeneration.drive.folderId)}`,
 );
 
 /**
@@ -67,7 +67,7 @@ app.log.info(
 try {
   const recovery = await recoverInterruptedPromptJobs(
     db,
-    selectPromptGenerationDeps(env.promptGeneration),
+    selectPromptGenerationDeps(env.promptGeneration, db),
   );
   if (recovery.requeuedJobs + recovery.requeuedUploads + recovery.abandonedJobs > 0) {
     app.log.info(

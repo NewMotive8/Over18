@@ -1254,6 +1254,50 @@ export const promptJobOutputs = pgTable(
   ],
 );
 
+/**
+ * The Drive folder this application created for itself, remembered forever.
+ *
+ * WHY THIS TABLE EXISTS, AND WHY IT IS NOT AN ENVIRONMENT VARIABLE. The OAuth
+ * scope is `drive.file`, which Google defines as access to files "that you open
+ * with an app or that the user shares with an app while using the Google Picker
+ * API or the app's file picker". A folder the operator made by hand in the
+ * Drive web UI is therefore INVISIBLE to this application — Drive answers 404
+ * `notFound` for it, which is exactly the production failure this table fixes.
+ * The only folder we can address under that scope is one we created ourselves,
+ * so the id has to be discovered at runtime and then remembered. An operator
+ * cannot type it in in advance, because it does not exist until we make it.
+ *
+ * `slot` IS THE CREATE-ONCE GUARANTEE. It is unique, so two API processes that
+ * both find an empty table and both create a folder cannot both record one:
+ * the loser's insert is refused and it adopts the winner's id. Without that
+ * uniqueness the safety property would rest on there only ever being one
+ * process, which is not a property of a deployment platform.
+ *
+ * NOTHING SECRET LIVES HERE. A Drive folder id is already returned to the admin
+ * UI so the operator can open the folder; it is not a credential, and it grants
+ * nothing on its own.
+ */
+export const promptDriveFolders = pgTable(
+  'prompt_drive_folders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Which destination this row is. One value today: 'default'. */
+    slot: text('slot').notNull(),
+    /** The id Google assigned when WE created the folder. */
+    driveFolderId: text('drive_folder_id').notNull(),
+    /** What we named it, kept so the operator can find it in their Drive. */
+    folderName: text('folder_name').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * When Drive last confirmed the folder still exists and is not trashed.
+     * Null means never checked by this deployment; it is a diagnostic, never a
+     * gate — an unverified row is still used.
+     */
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  },
+  (table) => [uniqueIndex('prompt_drive_folders_slot_idx').on(table.slot)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -1282,3 +1326,4 @@ export type DiscoveryCategoryRow = typeof discoveryCategories.$inferSelect;
 export type PromptBatchRow = typeof promptBatches.$inferSelect;
 export type PromptJobRow = typeof promptJobs.$inferSelect;
 export type PromptJobOutputRow = typeof promptJobOutputs.$inferSelect;
+export type PromptDriveFolderRow = typeof promptDriveFolders.$inferSelect;

@@ -12,6 +12,7 @@ import {
   batchSummary,
   canRetryOutput,
   costSentence,
+  driveDestination,
   formatUsd,
   isLargeBatch,
   jobStatusLabel,
@@ -260,11 +261,21 @@ export default function GenerationPage() {
             <Setting label="Aspect ratio" value={`${settings.params.aspectRatio} portrait`} />
             <Setting label="Resolution" value={settings.params.resolution.toUpperCase()} />
             <Setting label="Quality" value={settings.params.quality} />
-            <Setting
-              label="Google Drive folder"
-              value={settings.driveFolderId ?? 'Not configured'}
-            />
+            <Setting label="Google Drive folder" value={driveDestination(settings).label} />
           </dl>
+          {/*
+            THE TRAP THAT COST TWO PRODUCTION ROUNDS, NAMED ON SCREEN. The scope
+            is drive.file, so this app can write only to a folder it created
+            itself. An operator who pastes in the id of a folder they made by
+            hand gets a valid-looking setting and a 404 on every upload, with
+            nothing anywhere to explain why. Saying it here is cheaper than
+            diagnosing it a third time.
+          */}
+          {driveDestination(settings).warning && (
+            <p className="mt-3 max-w-3xl text-xs text-amber-500">
+              {driveDestination(settings).warning}
+            </p>
+          )}
           {/*
             The API's `quality` and the Grok web app's Quality control are not
             documented as the same thing. Saying so here means an operator

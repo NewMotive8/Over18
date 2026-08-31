@@ -11,6 +11,7 @@ import {
 } from '../db/schema.js';
 import { createOutputRows } from './batches.js';
 import { OUTPUT_EXTENSION, type GenerationParams } from './config.js';
+import type { DriveFolderResolver } from './drive-folder.js';
 import { DriveError, type GoogleDriveClient } from './google-drive-client.js';
 import { XaiError, type XaiImageProvider } from './xai-image-provider.js';
 
@@ -47,8 +48,15 @@ export interface PromptRunnerDeps {
   drive: GoogleDriveClient;
   /** Root of the private spool. Never served, never linked, never public. */
   spoolDir: string;
-  /** Fallback Drive folder when a batch does not name one. */
-  defaultFolderId: string | null;
+  /**
+   * Resolves the Drive destination when a batch does not already name one,
+   * creating this application's own folder on first use.
+   *
+   * A RESOLVER RATHER THAN A STRING, because under `drive.file` the only
+   * addressable folder is one we created — so the destination is discovered at
+   * runtime and remembered, not configured ahead of time.
+   */
+  driveFolder: DriveFolderResolver;
   /** How many jobs may be in flight at once. */
   concurrency: number;
   now?: () => Date;
@@ -233,7 +241,22 @@ export async function executeJob(db: Db, deps: PromptRunnerDeps, jobId: string):
   await createOutputRows(db, job.id, job.originalFilename, job.requestedOutputs);
 
   const params = batch.params as GenerationParams;
-  const folderId = batch.driveFolderId ?? deps.defaultFolderId;
+  /**
+   * The batch's own recorded folder still wins, so a batch run last month is
+   * explained by where its images actually went. Only a batch that never
+   * recorded one asks the resolver — and that call is what creates the app's
+   * folder the very first time anything is generated.
+   */
+  let folderId = batch.driveFolderId;
+  if (!folderId) {
+    try {
+      folderId = (await deps.driveFolder.ensure()).folderId;
+    } catch {
+      // Resolution failed; leave it null. `uploadOne` records
+      // `drive_not_configured` per output and the spooled image is kept.
+      folderId = null;
+    }
+  }
 
   try {
     await generateOutstanding(db, deps, job, params);

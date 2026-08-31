@@ -48,7 +48,7 @@ export interface PromptGenerationRouteOptions {
   db: Db;
   runner: PromptRunnerDeps;
   /** Reported to the UI so it can say which providers are live. Never a secret. */
-  readiness: { xaiLive: boolean; driveLive: boolean; driveFolderId: string | null };
+  readiness: { xaiLive: boolean; driveLive: boolean };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -74,7 +74,14 @@ export default async function adminPromptGenerationRoutes(
   });
 
   /** Defaults and readiness, so the UI never hard-codes a price or a model. */
-  app.get('/admin/prompt-generation/settings', adminOnly, async () => ({
+  app.get('/admin/prompt-generation/settings', adminOnly, async () => {
+    /**
+     * `peek`, NEVER `ensure`. This endpoint is polled while the page is open;
+     * resolving here would create a folder in someone's Drive as a side effect
+     * of looking at a screen. The folder is made when work is actually queued.
+     */
+    const folder = await opts.runner.driveFolder.peek();
+    return {
     model: DEFAULT_MODEL,
     outputsPerPrompt: OUTPUTS_PER_PROMPT,
     params: DEFAULT_PARAMS,
@@ -82,7 +89,15 @@ export default async function adminPromptGenerationRoutes(
     pricePerImageUsd: pricePerImage(DEFAULT_PARAMS),
     xaiLive: opts.readiness.xaiLive,
     driveLive: opts.readiness.driveLive,
-    driveFolderId: opts.readiness.driveFolderId,
+    driveFolderId: folder.folderId,
+    /**
+     * Where that folder came from. Surfaced because the two sources fail
+     * differently: `app_created` works, and `configured` is an override that
+     * only works if it names a folder this app made — the exact trap that put
+     * a valid-looking id in front of a 404.
+     */
+    driveFolderSource: folder.source,
+    driveFolderName: folder.folderName,
     /**
      * Sent so the operator sees the same wording the code carries: the web
      * app's "Quality" control and the API's `quality` parameter are not
@@ -90,7 +105,8 @@ export default async function adminPromptGenerationRoutes(
      */
     qualityNote:
       "The API's quality parameter accepts low or medium. It is not documented as equivalent to the Grok web app's Quality control; 2K + medium is the highest-fidelity combination the API exposes.",
-  }));
+    };
+  });
 
   app.get('/admin/prompt-generation/batches', adminOnly, async () => ({
     batches: await listBatches(opts.db),
@@ -120,10 +136,17 @@ export default async function adminPromptGenerationRoutes(
       name: body.name ?? '',
       params,
       outputsPerPrompt: body.outputsPerPrompt,
-      // The destination is server configuration, never a browser-supplied
-      // folder id: a client that could name the folder could redirect an
-      // operator's images anywhere in their Drive.
-      driveFolderId: opts.readiness.driveFolderId,
+      /**
+       * The destination is server-resolved, never a browser-supplied folder
+       * id: a client that could name the folder could redirect an operator's
+       * images anywhere in their Drive.
+       *
+       * `ensure` here rather than at upload time so the folder exists — and is
+       * recorded — before a single paid image is generated. Creating a batch
+       * is the first moment the operator has committed to a destination, and
+       * it is free.
+       */
+      driveFolderId: (await opts.runner.driveFolder.ensure().catch(() => null))?.folderId ?? null,
       createdBy: request.currentUser?.id,
     });
     return reply.code(201).send({ batch: await getBatchDetail(opts.db, batch.id) });

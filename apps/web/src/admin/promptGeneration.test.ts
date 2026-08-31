@@ -10,6 +10,7 @@ import {
   batchSummary,
   canRetryOutput,
   costSentence,
+  driveDestination,
   formatUsd,
   isLargeBatch,
   jobStatusLabel,
@@ -251,5 +252,42 @@ describe('batch summary', () => {
     expect(batchSummary(batch({ totals: { prompts: 1, outputs: 2, completed: 2, failed: 0 } }))).toBe(
       '1 prompt · 2/2 images in Drive',
     );
+  });
+});
+
+describe('the Drive destination', () => {
+  it('shows the app-created folder by name, with nothing to warn about', () => {
+    expect(
+      driveDestination({
+        driveFolderSource: 'app_created',
+        driveFolderId: 'drive-folder-1',
+        driveFolderName: 'Over18 Generated Images',
+      }),
+    ).toEqual({ label: 'Over18 Generated Images', warning: null });
+  });
+
+  it('says a folder will be created rather than calling it unconfigured', () => {
+    // "Not configured" reads as a problem to fix. Nothing is wrong here: the
+    // folder is made the first time a batch is created.
+    expect(
+      driveDestination({
+        driveFolderSource: 'none',
+        driveFolderId: null,
+        driveFolderName: null,
+      }),
+    ).toEqual({ label: 'Created on first batch', warning: null });
+  });
+
+  it('WARNS about a configured override, because that is how production failed', () => {
+    const result = driveDestination({
+      driveFolderSource: 'configured',
+      driveFolderId: '1AbCdEfGhIjKlMnOpQrStUvWxYz',
+      driveFolderName: null,
+    });
+    expect(result.label).toBe('1AbCdEfGhIjKlMnOpQrStUvWxYz');
+    expect(result.warning).toContain('drive.file');
+    expect(result.warning).toContain('GOOGLE_DRIVE_FOLDER_ID');
+    // It has to say what to DO, not merely that something may be wrong.
+    expect(result.warning).toContain('Clear that setting');
   });
 });

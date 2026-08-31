@@ -144,6 +144,37 @@ export function startRefusalMessage(refusal: StartRefusal): string | null {
   }
 }
 
+/**
+ * What to show for the Drive destination, and whether to warn about it.
+ *
+ * THE WARNING IS THE POINT. The OAuth scope is `drive.file`, which reaches only
+ * files this application created. An operator who pastes the id of a folder
+ * they made by hand in Drive gets a setting that looks entirely correct and a
+ * 404 on every single upload — which is exactly how production failed, twice,
+ * with nothing on any screen to explain it.
+ */
+export function driveDestination(settings: {
+  driveFolderSource: 'app_created' | 'configured' | 'none';
+  driveFolderId: string | null;
+  driveFolderName: string | null;
+}): { label: string; warning: string | null } {
+  switch (settings.driveFolderSource) {
+    case 'app_created':
+      return {
+        label: settings.driveFolderName ?? settings.driveFolderId ?? 'Not created yet',
+        warning: null,
+      };
+    case 'configured':
+      return {
+        label: settings.driveFolderId ?? 'Not configured',
+        warning:
+          'This destination comes from the GOOGLE_DRIVE_FOLDER_ID setting. It works only if it names a folder this app created itself — a folder made by hand in Google Drive cannot be written to under the drive.file permission, and every upload will fail. Clear that setting to let the app create and use its own folder.',
+      };
+    case 'none':
+      return { label: 'Created on first batch', warning: null };
+  }
+}
+
 export interface SelectedFile {
   name: string;
   size: number;

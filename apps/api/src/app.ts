@@ -218,11 +218,10 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
    */
   await app.register(adminPromptGenerationRoutes, {
     db,
-    runner: options.promptGeneration ?? selectPromptGenerationDeps(env.promptGeneration),
+    runner: options.promptGeneration ?? selectPromptGenerationDeps(env.promptGeneration, db),
     readiness: {
       xaiLive: env.promptGeneration.xai.live,
       driveLive: env.promptGeneration.drive.live,
-      driveFolderId: env.promptGeneration.drive.folderId,
     },
   });
 
