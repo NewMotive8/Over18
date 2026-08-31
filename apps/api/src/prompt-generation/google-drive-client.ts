@@ -126,13 +126,60 @@ const DEFAULT_FILES_URL = 'https://www.googleapis.com/drive/v3/files';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 /**
- * Google's machine-readable failure reason, pulled out of an error body.
+ * The two OAuth fields an operator actually needs, and nothing else.
  *
- * SAFE TO READ HERE, AND ONLY HERE. A Drive error body describes a FILE — an
- * id, a name, a reason like `notFound` or `storageQuotaExceeded`. A *token*
- * error body is different: it echoes the client id and sometimes the refresh
- * token, which is why the token path stays deliberately body-free. The two are
- * not interchangeable and this function is never pointed at the token endpoint.
+ * A TOKEN ERROR BODY IS NOT SAFE TO ECHO WHOLESALE — it can carry the client
+ * id, and a malformed request is reflected back with the parameters that were
+ * sent. So this is an ALLOWLIST of exactly two Google-authored fields rather
+ * than a redaction of everything else: `error` (a code such as
+ * `invalid_grant`) and `error_description` (a sentence such as "Token has been
+ * expired or revoked."). Any other key in the body is not read at all, so it
+ * cannot leak by being overlooked.
+ *
+ * THREE INDEPENDENT GUARDS, because one is a single point of failure:
+ *  1. the allowlist above;
+ *  2. a character class per field — the code is an OAuth identifier and is
+ *     reduced to `[a-z0-9_-]`, so a token pasted into that field could not
+ *     survive intact; the description keeps only printable ASCII;
+ *  3. a final sweep for the configured credentials themselves. If Google ever
+ *     echoed one back inside these fields, it is replaced with `[redacted]`
+ *     rather than travelling into an error message or a log line.
+ */
+function oauthErrorReason(
+  body: string,
+  secrets: readonly string[],
+): { code: string | null; description: string | null } {
+  const redact = (value: string): string => {
+    let out = value;
+    for (const secret of secrets) {
+      if (secret.length >= 8) out = out.split(secret).join('[redacted]');
+    }
+    return out;
+  };
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown; error_description?: unknown };
+    const rawCode = typeof parsed.error === 'string' ? parsed.error : null;
+    const rawDescription =
+      typeof parsed.error_description === 'string' ? parsed.error_description : null;
+    const code = rawCode
+      ? redact(rawCode.trim().slice(0, 64)).replace(/[^a-zA-Z0-9_-]/g, '')
+      : null;
+    const description = rawDescription
+      ? redact(rawDescription.trim().slice(0, 200)).replace(/[^\x20-\x7e]/g, '')
+      : null;
+    return { code: code || null, description: description || null };
+  } catch {
+    return { code: null, description: null };
+  }
+}
+
+/**
+ * Google's machine-readable failure reason, pulled out of a DRIVE error body.
+ *
+ * A Drive error body describes a FILE — an id, a name, a reason like
+ * `notFound` or `storageQuotaExceeded` — so it is read whole. The token
+ * endpoint is a different shape with different risks and has its own reader
+ * above; this function is never pointed at it.
  */
 function driveErrorReason(body: string): { reason: string | null; message: string | null } {
   try {
@@ -159,6 +206,14 @@ export function createGoogleDriveClient(
   const tokenUrl = config.tokenUrl ?? DEFAULT_TOKEN_URL;
   const uploadUrl = config.uploadUrl ?? DEFAULT_UPLOAD_URL;
   const filesUrl = config.filesUrl ?? DEFAULT_FILES_URL;
+  /**
+   * The values that must never appear in a message or a log, whatever Google
+   * sends back. Held here so the check is against the ACTUAL configured
+   * credentials rather than a guess at their shape.
+   */
+  const secrets = [config.clientId, config.clientSecret, config.refreshToken].filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
 
   /**
    * The cached access token.
@@ -210,11 +265,25 @@ export function createGoogleDriveClient(
     }
 
     if (!response.ok) {
-      // Deliberately body-free: a token error body echoes the client id and
-      // sometimes the refresh token itself.
+      /**
+       * WHY THE BODY IS READ HERE NOW, AFTER BEING REFUSED ON PURPOSE.
+       *
+       * The original message named only an HTTP status, and production spent a
+       * round of diagnosis on "HTTP 400" that `invalid_grant` +
+       * "Token has been expired or revoked." would have answered instantly:
+       * one says something is wrong, the other says go and re-authorise.
+       * `oauthErrorReason` reads exactly two Google-authored fields and
+       * nothing else, so the reason reaches the operator while the rest of the
+       * body — including anything reflected back from our own request — is
+       * never touched.
+       */
+      const detail = oauthErrorReason(await response.text().catch(() => ''), secrets);
+      const reason = [detail.code, detail.description].filter(Boolean).join(': ');
       throw new DriveError(
         'auth',
-        `Google refused the refresh token (HTTP ${response.status}). Re-authorise the Drive connection.`,
+        `Google refused the refresh token (HTTP ${response.status}${
+          reason ? ` — ${reason}` : ''
+        }). Re-authorise the Drive connection.`,
         response.status,
       );
     }

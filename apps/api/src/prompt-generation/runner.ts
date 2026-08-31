@@ -275,12 +275,18 @@ export async function executeJob(db: Db, deps: PromptRunnerDeps, jobId: string):
       folderError = error;
       folderId = null;
       /**
-       * KIND ONLY, NEVER THE BODY. The kind is what tells an operator whether
-       * to re-authorise, wait, or look at their Drive; the body is where
-       * providers put things that must not reach a log.
+       * THE KIND AND THE SANITISED REASON — never a raw provider body.
+       *
+       * Every message that can arrive here is built by the Drive client from
+       * an allowlist: for a token failure, only Google's `error` and
+       * `error_description`, each character-classed and swept for the
+       * configured credentials; for a Drive failure, only a reason code. So
+       * what is logged is what the operator would need to act, and there is no
+       * path by which a key, secret, token or Authorization header reaches it.
        */
+      const payload = errorPayload(error);
       console.warn(
-        `Prompt generation: Drive destination could not be resolved (${errorPayload(error).kind})`,
+        `Prompt generation: Drive destination could not be resolved (${payload.kind}) ${payload.message}`,
       );
     }
   }

@@ -726,7 +726,7 @@ describe('authentication failures', () => {
     expect(tokenCalls).toBe(2);
   });
 
-  it('the token error stays body-free even now that Drive errors are read', async () => {
+  it('names the OAuth reason and still carries no credential', async () => {
     const client = createGoogleDriveClient(
       {
         clientId: 'client-id-that-must-not-leak',
@@ -752,11 +752,146 @@ describe('authentication failures', () => {
     const error = (await client.createFolder('x').catch((e: unknown) => e)) as DriveError;
 
     expect(error.kind).toBe('auth');
-    // A TOKEN body echoes the client id and sometimes the refresh token, so it
-    // is still never read. A DRIVE body describes a file and is safe. The two
-    // are deliberately not treated the same way.
+    /**
+     * THE REASON IS NOW SAID OUT LOUD. "HTTP 400" told an operator only that
+     * something was wrong; `invalid_grant` with "Token has been expired or
+     * revoked." tells them to go and re-authorise, which is the whole point.
+     */
+    expect(error.message).toContain('invalid_grant');
+    expect(error.message).toContain('Token has been expired or revoked.');
+    // And the client id sitting beside them in the SAME body is not read,
+    // because only two named fields ever are.
     expect(error.message).not.toContain('must-not-leak');
-    expect(error.message).not.toContain('invalid_grant');
+  });
+
+  it('reads only the two allowlisted fields, never anything else in the body', async () => {
+    const client = createGoogleDriveClient(
+      {
+        clientId: 'client-id-value',
+        clientSecret: 'client-secret-value',
+        refreshToken: 'refresh-token-value',
+        folderId: null,
+        timeoutMs: 1000,
+        tokenUrl: 'https://oauth.example/token',
+        uploadUrl: 'https://upload.example/files',
+        filesUrl: 'https://files.example/files',
+      },
+      (async () =>
+        new Response(
+          JSON.stringify({
+            error: 'unauthorized_client',
+            error_description: 'Unauthorized client or scope in request.',
+            // Everything below is what a reflected request can carry. None of
+            // it is on the allowlist, so none of it can be read.
+            client_id: 'client-id-value',
+            client_secret: 'client-secret-value',
+            refresh_token: 'refresh-token-value',
+            access_token: 'ya29.a0AfH6SMB-should-never-appear',
+            authorization: 'Bearer ya29.a0AfH6SMB-should-never-appear',
+            grant_type: 'refresh_token',
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )) as unknown as typeof fetch,
+    );
+
+    const error = (await client.createFolder('x').catch((e: unknown) => e)) as DriveError;
+
+    expect(error.message).toContain('unauthorized_client');
+    expect(error.message).toContain('Unauthorized client or scope in request.');
+    for (const forbidden of [
+      'client-id-value',
+      'client-secret-value',
+      'refresh-token-value',
+      'ya29.a0AfH6SMB-should-never-appear',
+      'Bearer',
+      'grant_type',
+    ]) {
+      expect(error.message).not.toContain(forbidden);
+    }
+  });
+
+  it('redacts a credential even if Google echoes one INSIDE the two fields', async () => {
+    // Belt and braces. The allowlist should make this impossible; the sweep is
+    // there for the case where it is not.
+    const client = createGoogleDriveClient(
+      {
+        clientId: 'client-id-value',
+        clientSecret: 'client-secret-value',
+        refreshToken: 'a-very-secret-refresh-token',
+        folderId: null,
+        timeoutMs: 1000,
+        tokenUrl: 'https://oauth.example/token',
+        uploadUrl: 'https://upload.example/files',
+        filesUrl: 'https://files.example/files',
+      },
+      (async () =>
+        new Response(
+          JSON.stringify({
+            error: 'invalid_grant',
+            error_description: 'The token a-very-secret-refresh-token is not valid.',
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )) as unknown as typeof fetch,
+    );
+
+    const error = (await client.createFolder('x').catch((e: unknown) => e)) as DriveError;
+
+    expect(error.message).toContain('invalid_grant');
+    expect(error.message).not.toContain('a-very-secret-refresh-token');
+    expect(error.message).toContain('[redacted]');
+  });
+
+  it('a token error with no readable body still says something useful', async () => {
+    const client = createGoogleDriveClient(
+      {
+        clientId: 'id',
+        clientSecret: 'secret',
+        refreshToken: 'refresh',
+        folderId: null,
+        timeoutMs: 1000,
+        tokenUrl: 'https://oauth.example/token',
+        uploadUrl: 'https://upload.example/files',
+        filesUrl: 'https://files.example/files',
+      },
+      (async () => new Response('<html>502 Bad Gateway</html>', { status: 502 })) as unknown as typeof fetch,
+    );
+
+    const error = (await client.createFolder('x').catch((e: unknown) => e)) as DriveError;
+
+    expect(error.kind).toBe('auth');
+    expect(error.message).toContain('HTTP 502');
+    expect(error.message).toContain('Re-authorise the Drive connection.');
+    // No stray punctuation from an empty reason.
+    expect(error.message).not.toContain('—');
+  });
+
+  it('the exact production example reads exactly as asked', async () => {
+    const client = createGoogleDriveClient(
+      {
+        clientId: 'id',
+        clientSecret: 'secret',
+        refreshToken: 'refresh',
+        folderId: null,
+        timeoutMs: 1000,
+        tokenUrl: 'https://oauth.example/token',
+        uploadUrl: 'https://upload.example/files',
+        filesUrl: 'https://files.example/files',
+      },
+      (async () =>
+        new Response(
+          JSON.stringify({
+            error: 'invalid_grant',
+            error_description: 'Token has been expired or revoked.',
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        )) as unknown as typeof fetch,
+    );
+
+    const error = (await client.createFolder('x').catch((e: unknown) => e)) as DriveError;
+
+    expect(error.message).toBe(
+      'Google refused the refresh token (HTTP 400 — invalid_grant: Token has been expired or revoked.). Re-authorise the Drive connection.',
+    );
   });
 
   it('an unconfigured Drive refuses folder work instead of pretending', async () => {
