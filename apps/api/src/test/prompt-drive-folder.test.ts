@@ -1,4 +1,5 @@
 import { mkdtempSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -18,10 +19,10 @@ import {
   type DriveUpload,
   type GoogleDriveClient,
 } from '../prompt-generation/google-drive-client.js';
-import { executeJob, type PromptRunnerDeps } from '../prompt-generation/runner.js';
+import { executeJob, retryJob, type PromptRunnerDeps } from '../prompt-generation/runner.js';
 import { addPromptFiles, createBatch } from '../prompt-generation/batches.js';
 import { DEFAULT_PARAMS } from '../prompt-generation/config.js';
-import { promptJobs } from '../db/schema.js';
+import { promptJobOutputs, promptJobs } from '../db/schema.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -787,5 +788,217 @@ describe('authentication failures', () => {
     expect(mock.folders.size).toBe(1);
     // And it refuses to "find" a folder it never made, exactly as Drive does.
     expect(await mock.getFolder('a-folder-someone-made-by-hand')).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 7. The reason a destination could not be resolved is REPORTED
+ * ------------------------------------------------------------------ */
+
+/**
+ * WHAT THESE PIN, AND WHY THEY EXIST.
+ *
+ * The first cut of the resolver was wired into `executeJob` behind a bare
+ * `catch`. A refusal from Google therefore reached the operator as the fixed
+ * sentence "No Google Drive destination folder is configured" — the very same
+ * string this feature used before a resolver existed. In production that sent
+ * the diagnosis after a missing setting which was in fact already correct,
+ * and cost a deploy cycle. These tests make the two situations distinguishable
+ * and keep them that way.
+ */
+describe('why a destination could not be resolved', () => {
+  /** Rebuilds a batch whose destination is null and whose images are spooled. */
+  async function spooledJobWithNoDestination() {
+    const batch = await createBatch(on.db, {
+      name: 'no destination',
+      params: DEFAULT_PARAMS,
+      driveFolderId: null,
+    });
+    await addPromptFiles(on.db, batch.id, [
+      { filename: 'luna_001.txt', bytes: Buffer.from('a real prompt', 'utf8') },
+    ]);
+    const [job] = await on.db.select().from(promptJobs).where(eq(promptJobs.batchId, batch.id));
+    const outputs = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.jobId, job!.id));
+    for (const output of outputs) {
+      const path = join(spoolDir, `resolved-${job!.id}-${output.ordinal}.jpg`);
+      await writeFile(path, Buffer.from(`PAID IMAGE ${output.ordinal}`));
+      await on.db
+        .update(promptJobOutputs)
+        .set({ status: 'drive_upload_failed', spoolPath: path, generatedAt: new Date() })
+        .where(eq(promptJobOutputs.id, output.id));
+    }
+    return job!.id;
+  }
+
+  /** A Drive that cannot make a folder, and must never be asked to upload. */
+  function refusingDrive(error: Error): GoogleDriveClient {
+    return {
+      async createFolder() {
+        throw error;
+      },
+      async getFolder() {
+        return null;
+      },
+      async upload() {
+        throw new Error('upload must not be reached without a folder');
+      },
+    };
+  }
+
+  function depsWith(drive: GoogleDriveClient, xaiCalls: unknown[]): PromptRunnerDeps {
+    return {
+      xai: {
+        async generate(request) {
+          xaiCalls.push(request);
+          return [{ bytes: Buffer.from('REGENERATED') }];
+        },
+      },
+      drive,
+      spoolDir,
+      driveFolder: createDriveFolderResolver({ db: on.db, drive, configuredFolderId: null }),
+      concurrency: 1,
+    };
+  }
+
+  it('records the REAL reason when Google refuses to create the folder', async () => {
+    const jobId = await spooledJobWithNoDestination();
+    const xaiCalls: unknown[] = [];
+    await executeJob(
+      on.db,
+      depsWith(
+        refusingDrive(
+          new DriveError('auth', 'Google refused the refresh token (HTTP 400).', 400),
+        ),
+        xaiCalls,
+      ),
+      jobId,
+    );
+
+    const outputs = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.jobId, jobId));
+    for (const output of outputs) {
+      const error = output.error as { kind: string; message: string };
+      expect(error.kind).toBe('drive_auth');
+      expect(error.message).toContain('refused the refresh token');
+      // The sentence that sent production looking for a setting that was
+      // already correct must NOT be what an operator sees here.
+      expect(error.message).not.toBe('No Google Drive destination folder is configured.');
+    }
+    expect(xaiCalls).toHaveLength(0);
+  });
+
+  it('distinguishes a folder Drive refused from Drive not being set up at all', async () => {
+    const jobId = await spooledJobWithNoDestination();
+    const xaiCalls: unknown[] = [];
+    // No credentials at all: the resolver resolves to nothing WITHOUT throwing,
+    // which is the genuine "not configured" case and keeps its own wording.
+    await executeJob(
+      on.db,
+      {
+        ...depsWith(createMockGoogleDriveClient(), xaiCalls),
+        driveFolder: createNullDriveFolderResolver(null),
+      },
+      jobId,
+    );
+
+    const [output] = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.jobId, jobId));
+    const error = output!.error as { kind: string; message: string };
+    expect(error.kind).toBe('drive_not_configured');
+    expect(error.message).toBe('No Google Drive destination folder is configured.');
+    expect(xaiCalls).toHaveLength(0);
+  });
+
+  it('carries no credential into the recorded reason, whatever Google said', async () => {
+    const jobId = await spooledJobWithNoDestination();
+    const xaiCalls: unknown[] = [];
+    await executeJob(
+      on.db,
+      depsWith(
+        refusingDrive(
+          // The shape the real client produces for a refused token: body-free
+          // by construction, because a token body echoes the credentials.
+          new DriveError(
+            'auth',
+            'Google refused the refresh token (HTTP 400). Re-authorise the Drive connection.',
+            400,
+          ),
+        ),
+        xaiCalls,
+      ),
+      jobId,
+    );
+
+    const outputs = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.jobId, jobId));
+    const serialised = JSON.stringify(outputs.map((o) => o.error));
+    for (const secret of [
+      'refresh_token',
+      'client_secret',
+      'client_id',
+      'invalid_grant',
+      'Bearer',
+      'access_token',
+    ]) {
+      expect(serialised).not.toContain(secret);
+    }
+  });
+
+  it('leaves the paid images spooled and regenerates nothing, however often it is retried', async () => {
+    const jobId = await spooledJobWithNoDestination();
+    const xaiCalls: unknown[] = [];
+    const deps = depsWith(refusingDrive(new DriveError('auth', 'refused', 400)), xaiCalls);
+
+    for (let i = 0; i < 4; i += 1) {
+      await retryJob(on.db, deps, jobId);
+      await executeJob(on.db, deps, jobId);
+    }
+
+    const outputs = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.jobId, jobId));
+    expect(outputs.every((o) => o.status === 'drive_upload_failed')).toBe(true);
+    expect(outputs.every((o) => o.spoolPath !== null)).toBe(true);
+    for (const output of outputs) {
+      // The bytes are untouched — still the image that was paid for.
+      expect((await readFile(output.spoolPath!)).toString('utf8')).toContain('PAID IMAGE');
+    }
+    expect(xaiCalls).toHaveLength(0);
+  });
+
+  it('once the refusal is resolved the same batch recovers with no new generation', async () => {
+    const jobId = await spooledJobWithNoDestination();
+    const xaiCalls: unknown[] = [];
+    await executeJob(
+      on.db,
+      depsWith(refusingDrive(new DriveError('auth', 'refused', 400)), xaiCalls),
+      jobId,
+    );
+
+    // Google starts working again. Nothing else changes.
+    const healthy = scopedDrive();
+    const deps = depsWith(healthy.client, xaiCalls);
+    await retryJob(on.db, deps, jobId);
+    await executeJob(on.db, deps, jobId);
+
+    const outputs = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.jobId, jobId));
+    expect(outputs.map((o) => o.status)).toEqual(['completed', 'completed']);
+    expect(outputs.every((o) => o.driveFileId !== null)).toBe(true);
+    expect(healthy.createCalls).toBe(1);
+    expect(healthy.uploads.every((u) => u.folderId === 'drive-folder-1')).toBe(true);
+    expect(xaiCalls).toHaveLength(0);
   });
 });

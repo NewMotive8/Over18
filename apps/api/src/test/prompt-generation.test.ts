@@ -1021,14 +1021,21 @@ describe('batch controls', () => {
   it('retry failed touches only the jobs that are not complete', async () => {
     const batchId = (await makeBatch()).json().batch.id as string;
     await uploadFiles(batchId, [
-      { filename: 'ok.txt', body: 'p' },
-      { filename: 'bad.txt', body: 'p' },
+      { filename: 'ok.txt', body: 'a good prompt' },
+      { filename: 'bad.txt', body: 'a doomed prompt' },
     ]);
-    // Fail the second job's generation only.
-    let call = 0;
+    /**
+     * FAIL THE DOOMED PROMPT, NOT "THE SECOND CALL".
+     *
+     * This used to throw on call number two, which quietly assumed the two
+     * jobs reached the provider in upload order. They do not: the runner's
+     * concurrency is 2, so both are in flight at once and which one arrives
+     * second is a race. The test therefore passed or failed by luck, and it
+     * was luck rather than the code that decided. Keying the failure to the
+     * prompt makes it deterministic under any interleaving.
+     */
     xai.behaviour = async (request) => {
-      call += 1;
-      if (call === 2) throw new XaiError('http', 'boom', 500);
+      if (request.prompt === 'a doomed prompt') throw new XaiError('http', 'boom', 500);
       return Array.from({ length: request.n }, () => ({ bytes: Buffer.from('img') }));
     };
     await drain(batchId);

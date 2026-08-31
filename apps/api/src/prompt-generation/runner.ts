@@ -248,19 +248,46 @@ export async function executeJob(db: Db, deps: PromptRunnerDeps, jobId: string):
    * folder the very first time anything is generated.
    */
   let folderId = batch.driveFolderId;
+  /**
+   * WHY THE ERROR IS KEPT RATHER THAN DROPPED.
+   *
+   * This `catch` used to be bare. Resolution failing therefore looked
+   * identical to Drive never having been configured, because `uploadOne`'s
+   * no-folder branch reports a fixed sentence — and that sentence is the same
+   * string this feature used before a resolver existed at all. Production
+   * consequently reported "No Google Drive destination folder is configured"
+   * while the truth was that a folder HAD been asked for and Google had
+   * refused, and an operator reading it went looking for a missing setting
+   * that was already correct.
+   *
+   * `errorPayload` renders a `DriveError` as `drive_<kind>` plus its message,
+   * and those messages are credential-free by construction: the token exchange
+   * never reads its response body precisely because that body echoes the
+   * client id and sometimes the refresh token, while Drive's own errors
+   * describe a file. So the reason can be recorded without any risk of
+   * carrying a secret with it.
+   */
+  let folderError: unknown = null;
   if (!folderId) {
     try {
       folderId = (await deps.driveFolder.ensure()).folderId;
-    } catch {
-      // Resolution failed; leave it null. `uploadOne` records
-      // `drive_not_configured` per output and the spooled image is kept.
+    } catch (error) {
+      folderError = error;
       folderId = null;
+      /**
+       * KIND ONLY, NEVER THE BODY. The kind is what tells an operator whether
+       * to re-authorise, wait, or look at their Drive; the body is where
+       * providers put things that must not reach a log.
+       */
+      console.warn(
+        `Prompt generation: Drive destination could not be resolved (${errorPayload(error).kind})`,
+      );
     }
   }
 
   try {
     await generateOutstanding(db, deps, job, params);
-    await uploadOutstanding(db, deps, job.id, folderId);
+    await uploadOutstanding(db, deps, job.id, folderId, folderError);
   } catch (error) {
     // A whole-job failure still leaves per-output rows intact and accurate;
     // the rollup below reads them rather than this error.
@@ -387,6 +414,8 @@ async function uploadOutstanding(
   deps: PromptRunnerDeps,
   jobId: string,
   folderId: string | null,
+  /** Why there is no folder, when the resolver was asked and refused. */
+  folderError: unknown = null,
 ): Promise<void> {
   const pending = await db
     .select()
@@ -403,7 +432,7 @@ async function uploadOutstanding(
   await db.update(promptJobs).set({ status: 'uploading' }).where(eq(promptJobs.id, jobId));
 
   for (const output of pending) {
-    await uploadOne(db, deps, output, folderId);
+    await uploadOne(db, deps, output, folderId, folderError);
   }
 }
 
@@ -412,17 +441,27 @@ async function uploadOne(
   deps: PromptRunnerDeps,
   output: PromptJobOutputRow,
   folderId: string | null,
+  folderError: unknown = null,
 ): Promise<void> {
   if (output.attempts >= MAX_OUTPUT_UPLOAD_ATTEMPTS + MAX_OUTPUT_GENERATION_ATTEMPTS) return;
   if (!folderId) {
+    /**
+     * TWO DIFFERENT SITUATIONS, NO LONGER ONE SENTENCE. Drive genuinely not
+     * being configured is an operator task; the resolver having been refused
+     * by Google is a credential or account problem, and telling someone to
+     * configure a setting they already configured sends them the wrong way.
+     * The recorded reason is the resolver's when there is one.
+     */
     await db
       .update(promptJobOutputs)
       .set({
         status: 'drive_upload_failed',
-        error: {
-          kind: 'drive_not_configured',
-          message: 'No Google Drive destination folder is configured.',
-        },
+        error: folderError
+          ? errorPayload(folderError)
+          : {
+              kind: 'drive_not_configured',
+              message: 'No Google Drive destination folder is configured.',
+            },
       })
       .where(eq(promptJobOutputs.id, output.id));
     return;
