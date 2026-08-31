@@ -37,6 +37,8 @@ export type DriveErrorKind =
   | 'timeout'
   | 'malformed_response'
   | 'not_configured'
+  /** No refresh token at all: nobody has pressed Connect yet. */
+  | 'not_connected'
   /**
    * The named folder is not addressable by this application.
    *
@@ -71,7 +73,15 @@ export class DriveError extends Error {
 export interface DriveConfig {
   clientId: string;
   clientSecret: string;
-  refreshToken: string;
+  /**
+   * Where the refresh token comes from, resolved PER EXCHANGE.
+   *
+   * A function rather than a string because the token now lives in the
+   * database, put there by the operator pressing Connect. Baking it in at boot
+   * would mean connecting Drive only took effect after a redeploy — which is
+   * most of the problem this replaces.
+   */
+  refreshToken: () => Promise<string | null>;
   /**
    * A pre-configured destination, or null to let the caller supply one per
    * upload. NO LONGER REQUIRED: the destination is normally a folder this
@@ -211,7 +221,7 @@ export function createGoogleDriveClient(
    * sends back. Held here so the check is against the ACTUAL configured
    * credentials rather than a guess at their shape.
    */
-  const secrets = [config.clientId, config.clientSecret, config.refreshToken].filter(
+  const staticSecrets = [config.clientId, config.clientSecret].filter(
     (value): value is string => typeof value === 'string' && value.length > 0,
   );
 
@@ -243,6 +253,23 @@ export function createGoogleDriveClient(
   }
 
   async function exchangeToken(): Promise<string> {
+    const refreshToken = await config.refreshToken();
+    if (!refreshToken) {
+      /**
+       * NOT `auth`, BECAUSE THE ANSWER IS DIFFERENT. `auth` means Google
+       * refused what we sent and the operator should re-authorise; this means
+       * we had nothing to send and the operator should CONNECT. Telling them to
+       * re-authorise a connection that was never made sends them looking for a
+       * broken thing that does not exist.
+       */
+      throw new DriveError(
+        'not_connected',
+        'Google Drive is not connected. Connect it in Admin -> Generation.',
+      );
+    }
+    // The live token joins the redaction set for this exchange only, so it can
+    // never survive into a message even if Google echoed it back.
+    const secrets = [...staticSecrets, refreshToken];
     let response: Response;
     try {
       response = await fetchImpl(tokenUrl, {
@@ -251,7 +278,7 @@ export function createGoogleDriveClient(
         body: new URLSearchParams({
           client_id: config.clientId,
           client_secret: config.clientSecret,
-          refresh_token: config.refreshToken,
+          refresh_token: refreshToken,
           grant_type: 'refresh_token',
         }).toString(),
         signal: AbortSignal.timeout(config.timeoutMs),

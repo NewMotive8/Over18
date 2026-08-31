@@ -24,6 +24,16 @@ import {
   type Resolution,
 } from '../prompt-generation/config.js';
 import {
+  authorizationUrl,
+  clearConnection,
+  connectionStatus,
+  consumeState,
+  DriveConnectionError,
+  exchangeAuthorizationCode,
+  mintState,
+  storeConnection,
+} from '../prompt-generation/drive-connection.js';
+import {
   pauseBatch,
   retryFailedInBatch,
   retryJob,
@@ -48,7 +58,22 @@ export interface PromptGenerationRouteOptions {
   db: Db;
   runner: PromptRunnerDeps;
   /** Reported to the UI so it can say which providers are live. Never a secret. */
-  readiness: { xaiLive: boolean; driveLive: boolean };
+  readiness: {
+    xaiLive: boolean;
+    driveLive: boolean;
+    /** Needed to build the authorization URL. A client id is not a secret. */
+    googleClientId: string | null;
+    googleClientSecret: string | null;
+    redirectUri: string | null;
+    tokenEncryptionKey: string | null;
+    envRefreshTokenPresent: boolean;
+    /** Where to send the operator back to. The web app, not the API. */
+    webBaseUrl: string;
+    /** Test-only endpoint overrides, exactly as the Drive client has. */
+    tokenUrlOverride?: string | null;
+    userinfoUrlOverride?: string | null;
+    authUrlOverride?: string | null;
+  };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -99,6 +124,11 @@ export default async function adminPromptGenerationRoutes(
     driveFolderSource: folder.source,
     driveFolderName: folder.folderName,
     /**
+     * The connection, so the page can say "Connected as …" or offer Connect.
+     * An email address and a timestamp — never a token, in any form.
+     */
+    driveConnection: await connectionStatus(opts.db, opts.readiness.envRefreshTokenPresent),
+    /**
      * Sent so the operator sees the same wording the code carries: the web
      * app's "Quality" control and the API's `quality` parameter are not
      * documented as the same thing, and nothing here claims they are.
@@ -106,6 +136,140 @@ export default async function adminPromptGenerationRoutes(
     qualityNote:
       "The API's quality parameter accepts low or medium. It is not documented as equivalent to the Grok web app's Quality control; 2K + medium is the highest-fidelity combination the API exposes.",
     };
+  });
+
+
+  /* ---------------------------------------------------------------- *
+   * Connect Google Drive
+   *
+   * THE BROWSER NEVER SEES A CREDENTIAL. It receives an authorization URL
+   * containing a client id and a random state, is redirected to Google, and
+   * comes back with an opaque one-time code. The code is worthless without the
+   * client secret, which is exchanged for a refresh token entirely on this
+   * server and never leaves it.
+   * ---------------------------------------------------------------- */
+
+  app.post('/admin/prompt-generation/drive/connect', adminOnly, async (request, reply) => {
+    const { googleClientId, redirectUri, tokenEncryptionKey } = opts.readiness;
+    if (!googleClientId || !opts.readiness.googleClientSecret) {
+      return reply.code(409).send({
+        error: 'not_configured',
+        message: 'The Google OAuth client is not configured on this server.',
+      });
+    }
+    if (!redirectUri) {
+      return reply.code(409).send({
+        error: 'not_configured',
+        message: 'GOOGLE_OAUTH_REDIRECT_URI is not set on this server.',
+      });
+    }
+    /**
+     * REFUSED BEFORE GOOGLE IS EVER CONTACTED. Without the key the token could
+     * not be stored encrypted, and the operator would complete a consent screen
+     * only to be told at the very end that it was pointless.
+     */
+    if (!tokenEncryptionKey) {
+      return reply.code(409).send({
+        error: 'no_encryption_key',
+        message:
+          'PROMPT_GENERATION_TOKEN_KEY is not set, so a Drive connection cannot be stored securely.',
+      });
+    }
+    const state = await mintState(opts.db, request.currentUser?.id ?? null);
+    return {
+      authorizationUrl: authorizationUrl({
+        clientId: googleClientId,
+        redirectUri,
+        state,
+        ...(opts.readiness.authUrlOverride ? { authUrl: opts.readiness.authUrlOverride } : {}),
+      }),
+    };
+  });
+
+  /**
+   * Google's redirect lands here.
+   *
+   * NOT `adminOnly`. The callback is a cross-site top-level navigation, so
+   * whether a session cookie arrives depends on `SameSite` — it does under
+   * `lax` and would not under `strict`. A security control that silently stops
+   * working when an unrelated setting changes is not a control, so the guard is
+   * the STATE: 32 random bytes, server-side, single-use, ten-minute expiry.
+   */
+  app.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
+    '/admin/prompt-generation/drive/callback',
+    async (request, reply) => {
+      const back = (params: Record<string, string>) =>
+        reply.redirect(
+          `${opts.readiness.webBaseUrl}/admin/generation?${new URLSearchParams(params).toString()}`,
+          302,
+        );
+
+      const state = typeof request.query.state === 'string' ? request.query.state : '';
+
+      /**
+       * The operator pressed Cancel on Google's screen. Not an error — but the
+       * state is still CONSUMED, so that one authorization attempt always
+       * corresponds to exactly one state row whatever the outcome. Returning
+       * early without consuming would leave a cancelled attempt's row sitting
+       * until it expired.
+       */
+      if (request.query.error) {
+        await consumeState(opts.db, state);
+        return back({ drive: 'cancelled' });
+      }
+      if (!(await consumeState(opts.db, state))) {
+        return back({ drive: 'failed', reason: 'bad_state' });
+      }
+      const code = typeof request.query.code === 'string' ? request.query.code : '';
+      if (!code) return back({ drive: 'failed', reason: 'no_code' });
+
+      const { googleClientId, googleClientSecret, redirectUri, tokenEncryptionKey } = opts.readiness;
+      if (!googleClientId || !googleClientSecret || !redirectUri) {
+        return back({ drive: 'failed', reason: 'not_configured' });
+      }
+
+      try {
+        const result = await exchangeAuthorizationCode({
+          code,
+          clientId: googleClientId,
+          clientSecret: googleClientSecret,
+          redirectUri,
+          ...(opts.readiness.tokenUrlOverride ? { tokenUrl: opts.readiness.tokenUrlOverride } : {}),
+          ...(opts.readiness.userinfoUrlOverride
+            ? { userinfoUrl: opts.readiness.userinfoUrlOverride }
+            : {}),
+        });
+        await storeConnection(opts.db, {
+          refreshToken: result.refreshToken,
+          googleAccountEmail: result.email,
+          scope: result.scope,
+          connectedBy: request.currentUser?.id ?? null,
+          encryptionKey: tokenEncryptionKey,
+        });
+        return back({ drive: 'connected' });
+      } catch (error) {
+        /**
+         * KIND ONLY IN THE URL. The reason travels as a short code the page
+         * turns into a sentence; a provider message in a query string would end
+         * up in browser history and server access logs.
+         */
+        const kind = error instanceof DriveConnectionError ? error.kind : 'exchange_failed';
+        request.log.warn(`Drive connect failed (${kind})`);
+        return back({ drive: 'failed', reason: kind });
+      }
+    },
+  );
+
+  app.post('/admin/prompt-generation/drive/disconnect', adminOnly, async () => {
+    /**
+     * Deletes our copy. It does NOT revoke at Google, deliberately: revoking
+     * invalidates every token issued to this client for the account, and an
+     * operator disconnecting to reconnect would be surprised by that reach.
+     * Removing the app at myaccount.google.com/permissions is the full revoke,
+     * and the UI says so.
+     */
+    const removed = await clearConnection(opts.db);
+    return { disconnected: removed };
   });
 
   app.get('/admin/prompt-generation/batches', adminOnly, async () => ({

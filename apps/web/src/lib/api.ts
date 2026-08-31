@@ -1492,7 +1492,21 @@ export interface PromptGenerationSettings {
    */
   driveFolderSource: 'app_created' | 'configured' | 'none';
   driveFolderName: string | null;
+  /** Never a token — an account name, a timestamp and an error KIND. */
+  driveConnection: DriveConnectionStatus;
   qualityNote: string;
+}
+
+export interface DriveConnectionStatus {
+  connected: boolean;
+  /** 'oauth' = connected from this screen; 'env' = the legacy variable. */
+  source: 'oauth' | 'env' | 'none';
+  googleAccountEmail: string | null;
+  scope: string | null;
+  connectedAt: string | null;
+  lastUsedAt: string | null;
+  lastErrorKind: string | null;
+  lastErrorAt: string | null;
 }
 
 export interface PromptIngestOutcome {
@@ -1542,6 +1556,19 @@ export const promptGenerationApi = {
       `/admin/prompt-generation/batches/${encodeURIComponent(batchId)}/pause`,
       { method: 'POST' },
     ),
+  /**
+   * Starts the Google consent flow. The server returns a URL; the browser
+   * navigates to it. NO CREDENTIAL PASSES THROUGH HERE — the client secret
+   * never leaves the API, and the code that comes back is exchanged there.
+   */
+  connectDrive: () =>
+    request<{ authorizationUrl: string }>('/admin/prompt-generation/drive/connect', {
+      method: 'POST',
+    }),
+  disconnectDrive: () =>
+    request<{ disconnected: boolean }>('/admin/prompt-generation/drive/disconnect', {
+      method: 'POST',
+    }),
   retryFailed: (batchId: string) =>
     request<{ retried: number; batch: PromptBatchView }>(
       `/admin/prompt-generation/batches/${encodeURIComponent(batchId)}/retry-failed`,

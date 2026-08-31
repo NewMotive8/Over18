@@ -222,6 +222,20 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     readiness: {
       xaiLive: env.promptGeneration.xai.live,
       driveLive: env.promptGeneration.drive.live,
+      googleClientId: env.promptGeneration.drive.clientId,
+      googleClientSecret: env.promptGeneration.drive.clientSecret,
+      redirectUri: env.promptGeneration.drive.redirectUri,
+      tokenEncryptionKey: env.promptGeneration.drive.tokenEncryptionKey,
+      envRefreshTokenPresent: Boolean(env.promptGeneration.drive.refreshToken),
+      /**
+       * The callback redirects the operator back to the PAGE they started
+       * from, which lives in the web app. `corsOrigin` is already the web
+       * app's origin, so there is one setting rather than two that can drift.
+       */
+      webBaseUrl: env.corsOrigin.split(',')[0]!.trim().replace(/\/$/, ''),
+      tokenUrlOverride: env.promptGeneration.drive.tokenUrl,
+      userinfoUrlOverride: env.promptGeneration.drive.userinfoUrl,
+      authUrlOverride: env.promptGeneration.drive.authUrl,
     },
   });
 

@@ -551,7 +551,7 @@ describe('Google Drive client', () => {
   const config = {
     clientId: 'client-id',
     clientSecret: 'client-secret',
-    refreshToken: 'refresh-token',
+    refreshToken: async () => 'refresh-token',
     folderId: 'folder-1',
     timeoutMs: 1000,
     tokenUrl: 'https://oauth.example/token',

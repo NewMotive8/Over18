@@ -1,5 +1,6 @@
 import type { Db } from '../db/client.js';
 import type { PromptGenerationEnv } from '../env.js';
+import { createRefreshTokenSource } from './drive-connection.js';
 import { createDriveFolderResolver, createNullDriveFolderResolver } from './drive-folder.js';
 import {
   createGoogleDriveClient,
@@ -55,11 +56,21 @@ export function selectPromptGenerationDeps(env: PromptGenerationEnv, db: Db): Pr
    * configuration impossible to express. The three credentials are the gate;
    * the destination is resolved after them.
    */
-  if (env.drive.live && env.drive.clientId && env.drive.clientSecret && env.drive.refreshToken) {
+  if (env.drive.live && env.drive.clientId && env.drive.clientSecret) {
     drive = createGoogleDriveClient({
       clientId: env.drive.clientId,
       clientSecret: env.drive.clientSecret,
-      refreshToken: env.drive.refreshToken,
+      /**
+       * THE TOKEN IS NO LONGER PART OF THE GATE, and cannot be: it now lives
+       * in the database, put there by an operator pressing Connect. Requiring
+       * it here would mean a freshly deployed server refused to offer the
+       * Connect button because nothing had been connected yet.
+       */
+      refreshToken: createRefreshTokenSource({
+        db,
+        encryptionKey: env.drive.tokenEncryptionKey,
+        envRefreshToken: env.drive.refreshToken,
+      }),
       folderId: env.drive.folderId,
       timeoutMs: env.drive.timeoutMs,
       ...(env.drive.tokenUrl ? { tokenUrl: env.drive.tokenUrl } : {}),

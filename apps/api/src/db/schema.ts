@@ -1298,6 +1298,72 @@ export const promptDriveFolders = pgTable(
   (table) => [uniqueIndex('prompt_drive_folders_slot_idx').on(table.slot)],
 );
 
+/**
+ * The Google Drive connection an operator made from Admin -> Generation.
+ *
+ * WHY THIS IS NOT `sessions`-SHAPED. A session token is SHA-256 hashed,
+ * because the only question ever asked of it is "does this match?". A refresh
+ * token has to be REPLAYED at Google's token endpoint, so it must survive in a
+ * reversible form — hashing is not merely inconvenient here, it is impossible.
+ * That is precisely why it is encrypted rather than stored plainly: a database
+ * dump travels further than an environment variable does, and this row would
+ * otherwise be a Drive credential sitting in it.
+ *
+ * AES-256-GCM, key from `PROMPT_GENERATION_TOKEN_KEY`. GCM rather than CBC
+ * because it authenticates as well as encrypts: a tampered ciphertext fails to
+ * decrypt instead of yielding rubbish that gets sent to Google.
+ *
+ * `slot` is unique for the same reason `prompt_drive_folders.slot` is: one
+ * destination account, and two processes cannot each record a different one.
+ */
+export const promptDriveConnections = pgTable(
+  'prompt_drive_connections',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    slot: text('slot').notNull(),
+    /** AES-256-GCM parts. Never returned by any route, in any shape. */
+    refreshTokenCiphertext: text('refresh_token_ciphertext').notNull(),
+    refreshTokenIv: text('refresh_token_iv').notNull(),
+    refreshTokenTag: text('refresh_token_tag').notNull(),
+    /**
+     * Which Google account this is. NOT a credential — it is the one fact an
+     * operator needs to confirm they connected the right Drive, and getting it
+     * wrong silently is how images end up in a stranger's account.
+     */
+    googleAccountEmail: text('google_account_email'),
+    /** Recorded so a scope that ever widens is visible rather than assumed. */
+    scope: text('scope'),
+    connectedBy: uuid('connected_by').references(() => users.id, { onDelete: 'set null' }),
+    connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    /** Kind only — `auth`, `network` — never a provider body. */
+    lastErrorKind: text('last_error_kind'),
+    lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+  },
+  (table) => [uniqueIndex('prompt_drive_connections_slot_idx').on(table.slot)],
+);
+
+/**
+ * One in-flight authorization attempt.
+ *
+ * THE STATE IS THE CSRF DEFENCE, and it is a row rather than a cookie because
+ * the callback arrives as a cross-site top-level redirect from Google. A `lax`
+ * cookie survives that today, but `strict` would not, and a security control
+ * that silently stops working when an unrelated setting changes is not a
+ * control. Single-use (deleted when consumed) and short-lived.
+ */
+export const promptDriveOauthStates = pgTable(
+  'prompt_drive_oauth_states',
+  {
+    state: text('state').primaryKey(),
+    /** Who started it, so the callback can be attributed and audited. */
+    startedBy: uuid('started_by').references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [index('prompt_drive_oauth_states_expires_idx').on(table.expiresAt)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -1327,3 +1393,4 @@ export type PromptBatchRow = typeof promptBatches.$inferSelect;
 export type PromptJobRow = typeof promptJobs.$inferSelect;
 export type PromptJobOutputRow = typeof promptJobOutputs.$inferSelect;
 export type PromptDriveFolderRow = typeof promptDriveFolders.$inferSelect;
+export type PromptDriveConnectionRow = typeof promptDriveConnections.$inferSelect;

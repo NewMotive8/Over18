@@ -175,6 +175,68 @@ export function driveDestination(settings: {
   }
 }
 
+/**
+ * What the Connect panel says, and what the button does.
+ *
+ * THE 7-DAY WARNING IS NOT DECORATION. Google issues a refresh token that
+ * expires in seven days to any app whose consent screen is still in "Testing"
+ * with an external user type, unless the only scopes are name/email/profile.
+ * `drive.file` is not in that set, so an operator whose connection keeps dying
+ * every week is looking at a publishing-status problem, not a bug — and there
+ * is nowhere else they would ever learn that.
+ */
+export function driveConnectionView(status: {
+  connected: boolean;
+  source: 'oauth' | 'env' | 'none';
+  googleAccountEmail: string | null;
+  lastErrorKind: string | null;
+}): { label: string; tone: 'ok' | 'warn' | 'bad'; action: 'connect' | 'reconnect' } {
+  if (!status.connected) {
+    return { label: 'Not connected', tone: 'bad', action: 'connect' };
+  }
+  if (status.lastErrorKind) {
+    return {
+      label: `Connected, but Google last refused us (${status.lastErrorKind})`,
+      tone: 'bad',
+      action: 'reconnect',
+    };
+  }
+  if (status.source === 'env') {
+    return {
+      label: 'Using the server refresh token (set by hand)',
+      tone: 'warn',
+      action: 'connect',
+    };
+  }
+  return {
+    label: status.googleAccountEmail
+      ? `Connected as ${status.googleAccountEmail}`
+      : 'Connected',
+    tone: 'ok',
+    action: 'reconnect',
+  };
+}
+
+/** Turns a callback `?reason=` code into a sentence. */
+export function driveConnectMessage(drive: string | null, reason: string | null): string | null {
+  if (drive === 'connected') return 'Google Drive connected.';
+  if (drive === 'cancelled') return 'Google Drive connection cancelled.';
+  if (drive !== 'failed') return null;
+  switch (reason) {
+    case 'bad_state':
+      return 'That connection attempt expired or was already used. Press Connect again.';
+    case 'no_refresh_token':
+      return 'Google did not return a refresh token. Remove Over18 at myaccount.google.com/permissions, then connect again.';
+    case 'no_key':
+    case 'bad_key':
+      return 'This server cannot store a Drive connection securely. PROMPT_GENERATION_TOKEN_KEY is missing or invalid.';
+    case 'not_configured':
+      return 'The Google OAuth client is not configured on this server.';
+    default:
+      return 'Connecting Google Drive failed. Press Connect to try again.';
+  }
+}
+
 export interface SelectedFile {
   name: string;
   size: number;

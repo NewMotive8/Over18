@@ -12,6 +12,8 @@ import {
   batchSummary,
   canRetryOutput,
   costSentence,
+  driveConnectMessage,
+  driveConnectionView,
   driveDestination,
   formatUsd,
   isLargeBatch,
@@ -94,6 +96,48 @@ export default function GenerationPage() {
   );
 
   const refusal = startRefusal(batch, settings?.driveLive ?? false, settings?.xaiLive ?? false);
+
+  /**
+   * The callback redirects back here with `?drive=…`, so the outcome is read
+   * from the URL once and then cleared — leaving it would make the banner
+   * reappear on every later reload of the page.
+   */
+  const [driveNotice, setDriveNotice] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const notice = driveConnectMessage(params.get('drive'), params.get('reason'));
+    if (!notice) return;
+    setDriveNotice(notice);
+    window.history.replaceState({}, '', window.location.pathname);
+    void promptGenerationApi.settings().then(setSettings).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function connectDrive() {
+    setBusy(true);
+    try {
+      const { authorizationUrl } = await promptGenerationApi.connectDrive();
+      // A full navigation, not a fetch: this is Google's consent screen and it
+      // must be shown to the operator in their own browser.
+      window.location.href = authorizationUrl;
+    } catch (error) {
+      setDriveNotice(messageOf(error));
+      setBusy(false);
+    }
+  }
+
+  async function disconnectDrive() {
+    setBusy(true);
+    try {
+      await promptGenerationApi.disconnectDrive();
+      setDriveNotice('Google Drive disconnected.');
+      setSettings(await promptGenerationApi.settings());
+    } catch (error) {
+      setDriveNotice(messageOf(error));
+    } finally {
+      setBusy(false);
+    }
+  }
   const refusalMessage = startRefusalMessage(refusal);
 
   async function guarded(work: () => Promise<void>) {
@@ -262,7 +306,51 @@ export default function GenerationPage() {
             <Setting label="Resolution" value={settings.params.resolution.toUpperCase()} />
             <Setting label="Quality" value={settings.params.quality} />
             <Setting label="Google Drive folder" value={driveDestination(settings).label} />
+            <Setting
+              label="Google Drive"
+              value={driveConnectionView(settings.driveConnection).label}
+            />
           </dl>
+
+          {/* ---------------- CONNECT GOOGLE DRIVE ---------------- */}
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={connectDrive}
+              disabled={busy}
+              className="rounded-md bg-neutral-100 px-3 py-1.5 text-sm font-semibold text-neutral-900 disabled:opacity-40"
+            >
+              {driveConnectionView(settings.driveConnection).action === 'connect'
+                ? 'Connect Google Drive'
+                : 'Reconnect Google Drive'}
+            </button>
+            {settings.driveConnection.source === 'oauth' && (
+              <button
+                type="button"
+                onClick={disconnectDrive}
+                disabled={busy}
+                className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 disabled:opacity-40"
+              >
+                Disconnect
+              </button>
+            )}
+            {driveNotice && <span className="text-xs text-neutral-300">{driveNotice}</span>}
+          </div>
+          {/*
+            SAID ON THE SCREEN, BECAUSE IT IS INVISIBLE EVERYWHERE ELSE. Google
+            expires a refresh token after seven days for any app whose consent
+            screen is still in "Testing" with an external user type, unless the
+            only scopes are name/email/profile. `drive.file` is not among those,
+            so a connection that dies every week is a publishing-status problem
+            rather than a bug — and an operator would otherwise have no way of
+            knowing that.
+          */}
+          <p className="mt-2 max-w-3xl text-xs text-neutral-500">
+            Only the drive.file permission is requested, which lets this app reach the files it
+            creates and nothing else in your Drive. While the Google consent screen is in
+            &ldquo;Testing&rdquo;, Google expires the connection after 7 days — publish the consent
+            screen to stop that.
+          </p>
           {/*
             THE TRAP THAT COST TWO PRODUCTION ROUNDS, NAMED ON SCREEN. The scope
             is drive.file, so this app can write only to a folder it created

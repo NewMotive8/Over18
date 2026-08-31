@@ -19,7 +19,7 @@ import {
   type DriveUpload,
   type GoogleDriveClient,
 } from '../prompt-generation/google-drive-client.js';
-import { executeJob, retryJob, type PromptRunnerDeps } from '../prompt-generation/runner.js';
+import { executeJob, type PromptRunnerDeps } from '../prompt-generation/runner.js';
 import { addPromptFiles, createBatch } from '../prompt-generation/batches.js';
 import { DEFAULT_PARAMS } from '../prompt-generation/config.js';
 import { promptJobOutputs, promptJobs } from '../db/schema.js';
@@ -165,7 +165,7 @@ describe('creating the destination folder', () => {
       {
         clientId: 'id',
         clientSecret: 'secret',
-        refreshToken: 'refresh',
+        refreshToken: async () => 'refresh',
         folderId: null,
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -207,7 +207,7 @@ describe('creating the destination folder', () => {
       {
         clientId: 'id',
         clientSecret: 'secret',
-        refreshToken: 'refresh',
+        refreshToken: async () => 'refresh',
         folderId: null,
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -419,7 +419,7 @@ describe('uploading into the created folder', () => {
       {
         clientId: 'id',
         clientSecret: 'secret',
-        refreshToken: 'refresh',
+        refreshToken: async () => 'refresh',
         folderId: 'hand-made-folder',
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -695,7 +695,7 @@ describe('authentication failures', () => {
       {
         clientId: 'id',
         clientSecret: 'secret',
-        refreshToken: 'refresh',
+        refreshToken: async () => 'refresh',
         folderId: null,
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -731,7 +731,7 @@ describe('authentication failures', () => {
       {
         clientId: 'client-id-that-must-not-leak',
         clientSecret: 'secret-that-must-not-leak',
-        refreshToken: 'refresh-that-must-not-leak',
+        refreshToken: async () => 'refresh-that-must-not-leak',
         folderId: null,
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -769,7 +769,7 @@ describe('authentication failures', () => {
       {
         clientId: 'client-id-value',
         clientSecret: 'client-secret-value',
-        refreshToken: 'refresh-token-value',
+        refreshToken: async () => 'refresh-token-value',
         folderId: null,
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -817,7 +817,7 @@ describe('authentication failures', () => {
       {
         clientId: 'client-id-value',
         clientSecret: 'client-secret-value',
-        refreshToken: 'a-very-secret-refresh-token',
+        refreshToken: async () => 'a-very-secret-refresh-token',
         folderId: null,
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -846,7 +846,7 @@ describe('authentication failures', () => {
       {
         clientId: 'id',
         clientSecret: 'secret',
-        refreshToken: 'refresh',
+        refreshToken: async () => 'refresh',
         folderId: null,
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -870,7 +870,7 @@ describe('authentication failures', () => {
       {
         clientId: 'id',
         clientSecret: 'secret',
-        refreshToken: 'refresh',
+        refreshToken: async () => 'refresh',
         folderId: null,
         timeoutMs: 1000,
         tokenUrl: 'https://oauth.example/token',
@@ -1093,8 +1093,12 @@ describe('why a destination could not be resolved', () => {
     const xaiCalls: unknown[] = [];
     const deps = depsWith(refusingDrive(new DriveError('auth', 'refused', 400)), xaiCalls);
 
+    // Four passes, WITHOUT `retryJob`: it ends with `scheduleJob`, so pairing
+    // it with an awaited `executeJob` runs the job twice concurrently and the
+    // assertions race a row that is mid-upload. The `!folderId` branch leaves
+    // status and attempts alone, so re-running `executeJob` is exactly the
+    // repeated retry this is asserting about.
     for (let i = 0; i < 4; i += 1) {
-      await retryJob(on.db, deps, jobId);
       await executeJob(on.db, deps, jobId);
     }
 
@@ -1123,7 +1127,6 @@ describe('why a destination could not be resolved', () => {
     // Google starts working again. Nothing else changes.
     const healthy = scopedDrive();
     const deps = depsWith(healthy.client, xaiCalls);
-    await retryJob(on.db, deps, jobId);
     await executeJob(on.db, deps, jobId);
 
     const outputs = await on.db
