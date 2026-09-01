@@ -1,0 +1,1 @@
+ALTER TABLE "prompt_job_outputs" ADD COLUMN "upload_attempts" integer DEFAULT 0 NOT NULL;

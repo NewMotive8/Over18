@@ -155,6 +155,13 @@
       "when": 1788199434100,
       "tag": "0021_dear_king_cobra",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788277869294,
+      "tag": "0022_dashing_mimic",
+      "breakpoints": true
     }
   ]
 }

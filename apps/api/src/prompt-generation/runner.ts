@@ -43,6 +43,24 @@ export const MAX_OUTPUT_UPLOAD_ATTEMPTS = 5;
 /** Times a job may be picked up by the recovery sweep before being abandoned. */
 export const MAX_JOB_ATTEMPTS = 5;
 
+/**
+ * The statuses a job may be claimed FROM.
+ *
+ * `generating` and `uploading` are absent, and that absence IS the mutual
+ * exclusion: a job already being executed cannot be claimed again, so it can
+ * never have two executions running at once. `cancelled` is absent too, because
+ * a cancelled job must stay cancelled until an operator deliberately retries it
+ * (which puts it back to `queued` first).
+ */
+const CLAIMABLE_JOB_STATUSES = ['queued', 'completed', 'partial', 'failed'] as const;
+
+/**
+ * Said in one place because it is said from three, and it has to promise the
+ * same thing every time: the bytes are gone, so this one must be made again.
+ */
+const SPOOL_MISSING_MESSAGE =
+  'The generated image is no longer on disk, so it has to be generated again.';
+
 export interface PromptRunnerDeps {
   xai: XaiImageProvider;
   drive: GoogleDriveClient;
@@ -156,9 +174,11 @@ export async function runBatch(db: Db, deps: PromptRunnerDeps, batchId: string):
       // than at the end of the batch.
       if (!batch || batch.status !== 'running') return;
 
+      // Already claimed by `claimNextJob`, so it runs directly rather than
+      // through `executeJob` — claiming twice would refuse its own claim.
       const job = await claimNextJob(db, batchId);
       if (!job) return;
-      await executeJob(db, deps, job.id);
+      await runClaimedJob(db, deps, job);
     }
   });
   await Promise.all(workers);
@@ -166,12 +186,40 @@ export async function runBatch(db: Db, deps: PromptRunnerDeps, batchId: string):
 }
 
 /**
- * Claims one job.
+ * Claims ONE job by id, or returns null because somebody else already has it.
  *
- * Candidates are read, then each is claimed with a CONDITIONAL UPDATE that
- * returns no row to a loser. This is the pattern the existing generation module
- * uses, and it is what makes two workers — or two processes — unable to run the
- * same prompt twice.
+ * THE SINGLE GATE. Every path that runs a job — the batch drain, a retry of a
+ * job, a retry of one output, the boot recovery sweep — goes through this one
+ * conditional UPDATE, and the database decides the winner. A loser gets no row
+ * back and does no work.
+ *
+ * WHY THIS HAD TO BECOME THE ONLY ENTRY POINT. `executeJob` used to run
+ * whatever it was handed without claiming anything, while only the batch drain
+ * claimed. So a retry that both scheduled the job directly AND restarted the
+ * batch drain produced two concurrent executions of the same job; both read the
+ * same `pending` outputs, and both called xAI for them. The images were paid
+ * for twice and one set was overwritten in the spool.
+ */
+async function claimJob(db: Db, jobId: string): Promise<PromptJobRow | null> {
+  const [claimed] = await db
+    .update(promptJobs)
+    .set({
+      status: 'generating',
+      startedAt: sql`coalesce(${promptJobs.startedAt}, now())`,
+      attempts: sql`${promptJobs.attempts} + 1`,
+    })
+    .where(and(eq(promptJobs.id, jobId), inArray(promptJobs.status, CLAIMABLE_JOB_STATUSES)))
+    .returning();
+  return claimed ?? null;
+}
+
+/**
+ * Claims the next queued job of a batch.
+ *
+ * Candidates are read, then each is claimed through `claimJob`, which returns
+ * no row to a loser. This is the pattern the existing generation module uses,
+ * and it is what makes two workers — or two processes — unable to run the same
+ * prompt twice.
  */
 async function claimNextJob(db: Db, batchId: string): Promise<PromptJobRow | null> {
   const candidates = await db
@@ -182,15 +230,7 @@ async function claimNextJob(db: Db, batchId: string): Promise<PromptJobRow | nul
     .limit(10);
 
   for (const candidate of candidates) {
-    const [claimed] = await db
-      .update(promptJobs)
-      .set({
-        status: 'generating',
-        startedAt: sql`coalesce(${promptJobs.startedAt}, now())`,
-        attempts: sql`${promptJobs.attempts} + 1`,
-      })
-      .where(and(eq(promptJobs.id, candidate.id), eq(promptJobs.status, 'queued')))
-      .returning();
+    const claimed = await claimJob(db, candidate.id);
     if (claimed) return claimed;
   }
   return null;
@@ -226,9 +266,24 @@ async function finaliseBatch(db: Db, batchId: string): Promise<void> {
  * failed sibling leave a completed one untouched.
  */
 export async function executeJob(db: Db, deps: PromptRunnerDeps, jobId: string): Promise<void> {
-  const [job] = await db.select().from(promptJobs).where(eq(promptJobs.id, jobId)).limit(1);
+  /**
+   * CLAIM FIRST, ALWAYS. Returning here is the correct outcome, not a failure:
+   * it means another execution of this job is already in flight and will finish
+   * the work. This is what makes scheduling idempotent — a job scheduled twice
+   * runs once.
+   */
+  const job = await claimJob(db, jobId);
   if (!job) return;
+  await runClaimedJob(db, deps, job);
+}
 
+/**
+ * Runs a job that the caller has ALREADY claimed.
+ *
+ * Never call this with an unclaimed job: the claim is the only thing standing
+ * between a double-scheduled retry and a double xAI bill.
+ */
+async function runClaimedJob(db: Db, deps: PromptRunnerDeps, job: PromptJobRow): Promise<void> {
   const [batch] = await db
     .select()
     .from(promptBatches)
@@ -291,18 +346,44 @@ export async function executeJob(db: Db, deps: PromptRunnerDeps, jobId: string):
     }
   }
 
+  /**
+   * THE UPLOAD PASS RUNS EVEN IF THE GENERATION PASS THREW.
+   *
+   * These were one `try` and the upload was therefore skipped whenever
+   * generation raised — which left already-generated outputs sitting in
+   * `generated`, a status the rollup counts as in flight. The job stayed
+   * `uploading`, `finaliseBatch` counted it as outstanding for ever, and the
+   * batch could never complete. Two passes, two catches: a failure in one
+   * cannot strand the other.
+   */
+  let jobError: unknown = null;
   try {
     await generateOutstanding(db, deps, job, params);
+  } catch (error) {
+    jobError = error;
+  }
+  try {
     await uploadOutstanding(db, deps, job.id, folderId, folderError);
   } catch (error) {
+    jobError ??= error;
+  }
+  if (jobError) {
     // A whole-job failure still leaves per-output rows intact and accurate;
     // the rollup below reads them rather than this error.
     await db
       .update(promptJobs)
-      .set({ error: errorPayload(error) })
+      .set({ error: errorPayload(jobError) })
       .where(eq(promptJobs.id, job.id));
   }
   await rollUpJob(db, deps, job.id);
+  /**
+   * A job run OUTSIDE a batch drain — a single-output retry, say — is the last
+   * thing standing between its batch and a terminal status. `finaliseBatch`
+   * only completes a batch with nothing left outstanding, so calling it here is
+   * a no-op while any sibling is still running and the closing move when this
+   * was the last one.
+   */
+  await finaliseBatch(db, job.batchId);
 }
 
 /**
@@ -393,6 +474,12 @@ async function failOutputGeneration(
  * `completed`, `generated`, `uploading` and `drive_upload_failed` are all
  * EXCLUDED, because each of those already has bytes. That exclusion is what
  * guarantees a Drive failure never costs a second generation.
+ *
+ * The `attempts` budget below counts GENERATIONS ONLY. It used to be shared
+ * with Drive uploads, so three upload failures could exhaust it and leave an
+ * output that had been generated exactly once permanently unable to be
+ * generated again — including after its spool file was lost, which is the one
+ * case where regenerating is the only way back.
  */
 async function outputsNeedingGeneration(db: Db, jobId: string): Promise<PromptJobOutputRow[]> {
   const rows = await db
@@ -449,7 +536,39 @@ async function uploadOne(
   folderId: string | null,
   folderError: unknown = null,
 ): Promise<void> {
-  if (output.attempts >= MAX_OUTPUT_UPLOAD_ATTEMPTS + MAX_OUTPUT_GENERATION_ATTEMPTS) return;
+  /**
+   * EXHAUSTION IS A STATE, NOT A SILENT RETURN.
+   *
+   * This used to `return` with the row still in `generated` — a status the
+   * rollup counts as in flight, so the job stayed `uploading`, `finaliseBatch`
+   * never completed the batch, and `retryFailedInBatch` (which selects only
+   * `failed` and `partial` jobs) could not even see it. The batch was stuck
+   * for ever with no operator action that could clear it.
+   *
+   * `drive_upload_failed` is the right terminal state and it is deliberately
+   * not `failed`: THE BYTES ARE STILL IN THE SPOOL. The rollup counts it as a
+   * failure so the job and batch reach a terminal status, the UI offers
+   * "Retry upload" rather than "Generate again", and the retry re-uploads at
+   * zero provider cost.
+   *
+   * The budget is checked against `uploadAttempts`, which counts uploads only.
+   * It used to be checked against the shared `attempts` column with the two
+   * ceilings added together to compensate — arithmetic that only worked while
+   * both budgets lived in one counter.
+   */
+  if (output.uploadAttempts >= MAX_OUTPUT_UPLOAD_ATTEMPTS) {
+    await db
+      .update(promptJobOutputs)
+      .set({
+        status: 'drive_upload_failed',
+        error: {
+          kind: 'drive_upload_attempts_exhausted',
+          message: `Drive refused this image ${MAX_OUTPUT_UPLOAD_ATTEMPTS} times. The generated image is still held, so retrying uploads it again and does not call the image provider.`,
+        },
+      })
+      .where(eq(promptJobOutputs.id, output.id));
+    return;
+  }
   if (!folderId) {
     /**
      * TWO DIFFERENT SITUATIONS, NO LONGER ONE SENTENCE. Drive genuinely not
@@ -477,7 +596,7 @@ async function uploadOne(
       .update(promptJobOutputs)
       .set({
         status: 'failed',
-        error: { kind: 'spool_missing', message: 'The generated image is no longer on disk.' },
+        error: { kind: 'spool_missing', message: SPOOL_MISSING_MESSAGE },
       })
       .where(eq(promptJobOutputs.id, output.id));
     return;
@@ -501,11 +620,25 @@ async function uploadOne(
   try {
     bytes = await readFile(output.spoolPath);
   } catch {
+    /**
+     * THE PATH IS CLEARED, AND THAT CLEARING IS THE WHOLE FIX.
+     *
+     * `spoolPath` is what the retry paths read to decide re-upload versus
+     * regenerate. Leaving a path here that no longer names a file sent every
+     * future retry straight back into the upload branch, where it failed on
+     * this same `readFile` and returned to `failed` — a loop the operator could
+     * press for ever while the image was never regenerated.
+     *
+     * Nulling it makes the decision honest: no bytes, so regenerate. This is
+     * the ONLY transition that moves an output holding a paid image back into
+     * generation, and it fires only once the bytes are provably gone.
+     */
     await db
       .update(promptJobOutputs)
       .set({
         status: 'failed',
-        error: { kind: 'spool_missing', message: 'The generated image is no longer on disk.' },
+        spoolPath: null,
+        error: { kind: 'spool_missing', message: SPOOL_MISSING_MESSAGE },
       })
       .where(eq(promptJobOutputs.id, output.id));
     return;
@@ -544,7 +677,10 @@ async function uploadOne(
       .set({
         status: 'drive_upload_failed',
         error: errorPayload(error),
-        attempts: sql`${promptJobOutputs.attempts} + 1`,
+        // The UPLOAD budget, not the generation one. Incrementing `attempts`
+        // here is what used to let a run of Drive outages quietly exhaust an
+        // output's right to ever be generated again.
+        uploadAttempts: sql`${promptJobOutputs.uploadAttempts} + 1`,
       })
       .where(eq(promptJobOutputs.id, output.id));
   }
@@ -594,6 +730,70 @@ export async function rollUpJob(db: Db, deps: PromptRunnerDeps, jobId: string): 
 export type RetryOutcome = { ok: true } | { ok: false; reason: string; message: string };
 
 /**
+ * THE ONE PLACE THAT DECIDES RE-UPLOAD VERSUS REGENERATE.
+ *
+ * The rule, and it is the rule the whole feature rests on: bytes in the spool
+ * mean the image is already paid for, so it is re-uploaded and xAI is never
+ * called again. No bytes mean there is nothing to upload, so it is generated.
+ * `spoolPath` is the single fact consulted, which is why `uploadOne` nulls it
+ * the moment the file proves to be gone — a stale path here would send a
+ * regenerable output back into the upload path for ever.
+ *
+ * BOTH budgets are reset, because this only ever runs for a deliberate
+ * operator action. An automatic sweep never gets one.
+ */
+function retryStateFor(output: PromptJobOutputRow): {
+  status: 'drive_upload_failed' | 'pending';
+  attempts: number;
+  uploadAttempts: number;
+  error: null;
+} {
+  return {
+    status: output.spoolPath ? 'drive_upload_failed' : 'pending',
+    attempts: 0,
+    uploadAttempts: 0,
+    error: null,
+  };
+}
+
+/**
+ * Resets a job and its outstanding outputs, WITHOUT scheduling anything.
+ *
+ * Scheduling is the caller's job precisely because it used to be done twice:
+ * `retryFailedInBatch` reset every job (each of which scheduled itself) and
+ * then restarted the batch drain as well, so the same job was handed to two
+ * executions. Separating the reset from the scheduling means each caller picks
+ * exactly one way to run the work.
+ */
+async function resetJobForRetry(db: Db, jobId: string): Promise<RetryOutcome> {
+  const [job] = await db.select().from(promptJobs).where(eq(promptJobs.id, jobId)).limit(1);
+  if (!job) return { ok: false, reason: 'not_found', message: 'That job no longer exists.' };
+
+  const outputs = await db
+    .select()
+    .from(promptJobOutputs)
+    .where(and(eq(promptJobOutputs.jobId, jobId), ne(promptJobOutputs.status, 'completed')));
+  if (outputs.length === 0) {
+    return {
+      ok: false,
+      reason: 'nothing_to_retry',
+      message: 'Every image for this prompt is already in Drive.',
+    };
+  }
+  for (const output of outputs) {
+    await db
+      .update(promptJobOutputs)
+      .set(retryStateFor(output))
+      .where(eq(promptJobOutputs.id, output.id));
+  }
+  await db
+    .update(promptJobs)
+    .set({ status: 'queued', attempts: 0, error: null, completedAt: null })
+    .where(eq(promptJobs.id, jobId));
+  return { ok: true };
+}
+
+/**
  * Retries ONE output.
  *
  * The distinction that matters: an output holding spooled bytes is
@@ -626,16 +826,24 @@ export async function retryOutput(
   const [job] = await db.select().from(promptJobs).where(eq(promptJobs.id, output.jobId)).limit(1);
   if (!job) return { ok: false, reason: 'not_found', message: 'That job no longer exists.' };
 
-  // Reset the attempt budget for this ONE output. A deliberate operator action
+  // Reset the attempt budgets for this ONE output. A deliberate operator action
   // is allowed to spend another attempt; an automatic sweep is not.
   await db
     .update(promptJobOutputs)
-    .set({
-      status: output.spoolPath ? 'drive_upload_failed' : 'pending',
-      attempts: 0,
-      error: null,
-    })
+    .set(retryStateFor(output))
     .where(eq(promptJobOutputs.id, outputId));
+
+  /**
+   * The JOB's own attempt counter is reset too. It bounds how often the boot
+   * recovery sweep may pick the job up, and every claim now increments it —
+   * including the claim this retry is about to cause. Without the reset, an
+   * operator retrying single outputs a handful of times would quietly push the
+   * job past `MAX_JOB_ATTEMPTS` and get it abandoned by the next restart.
+   */
+  await db
+    .update(promptJobs)
+    .set({ attempts: 0, error: null })
+    .where(eq(promptJobs.id, job.id));
 
   scheduleJob(db, deps, job.id);
   return { ok: true };
@@ -647,34 +855,9 @@ export async function retryJob(
   deps: PromptRunnerDeps,
   jobId: string,
 ): Promise<RetryOutcome> {
-  const [job] = await db.select().from(promptJobs).where(eq(promptJobs.id, jobId)).limit(1);
-  if (!job) return { ok: false, reason: 'not_found', message: 'That job no longer exists.' };
-
-  const outputs = await db
-    .select()
-    .from(promptJobOutputs)
-    .where(
-      and(eq(promptJobOutputs.jobId, jobId), ne(promptJobOutputs.status, 'completed')),
-    );
-  if (outputs.length === 0) {
-    return { ok: false, reason: 'nothing_to_retry', message: 'Every image for this prompt is already in Drive.' };
-  }
-  for (const output of outputs) {
-    await db
-      .update(promptJobOutputs)
-      .set({
-        status: output.spoolPath ? 'drive_upload_failed' : 'pending',
-        attempts: 0,
-        error: null,
-      })
-      .where(eq(promptJobOutputs.id, output.id));
-  }
-  await db
-    .update(promptJobs)
-    .set({ status: 'queued', attempts: 0, error: null, completedAt: null })
-    .where(eq(promptJobs.id, jobId));
-  scheduleJob(db, deps, jobId);
-  return { ok: true };
+  const outcome = await resetJobForRetry(db, jobId);
+  if (outcome.ok) scheduleJob(db, deps, jobId);
+  return outcome;
 }
 
 /** Retries every job in a batch that is not fully completed. */
@@ -694,7 +877,12 @@ export async function retryFailedInBatch(
     );
   let retried = 0;
   for (const job of jobs) {
-    const outcome = await retryJob(db, deps, job.id);
+    /**
+     * RESET ONLY — the batch drain below is the single thing that runs them.
+     * This used to call `retryJob`, which scheduled every job individually, and
+     * then `scheduleBatch` started the drain over the very same rows.
+     */
+    const outcome = await resetJobForRetry(db, job.id);
     if (outcome.ok) retried += 1;
   }
   if (retried > 0) {

@@ -1241,7 +1241,26 @@ export const promptJobOutputs = pgTable(
     spoolPath: text('spool_path'),
     driveFileId: text('drive_file_id'),
     driveWebViewLink: text('drive_web_view_link'),
+    /**
+     * GENERATION attempts only — how many times xAI has been asked for this
+     * image.
+     *
+     * IT USED TO COUNT UPLOADS TOO, AND THAT WAS A BUG. `outputsNeedingGeneration`
+     * gates regeneration on this column, so every failed Drive upload silently
+     * spent part of the generation budget: three Drive outages could leave an
+     * output that had been generated exactly once permanently ineligible to be
+     * generated again. The two budgets answer different questions and now have
+     * different columns.
+     */
     attempts: integer('attempts').notNull().default(0),
+    /**
+     * DRIVE UPLOAD attempts, counted separately from `attempts`.
+     *
+     * Bounded by `MAX_OUTPUT_UPLOAD_ATTEMPTS`. Exhausting it is a terminal but
+     * RETRYABLE state — the spooled bytes are still there, so an operator retry
+     * re-uploads them and never pays for the image twice.
+     */
+    uploadAttempts: integer('upload_attempts').notNull().default(0),
     error: jsonb('error'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     generatedAt: timestamp('generated_at', { withTimezone: true }),

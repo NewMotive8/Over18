@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Buffer } from 'node:buffer';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
-import { promptJobOutputs, promptJobs } from '../db/schema.js';
+import { promptBatches, promptJobOutputs, promptJobs } from '../db/schema.js';
 import {
   estimateCost,
   outputFilename,
@@ -35,7 +35,11 @@ import { createNullDriveFolderResolver } from '../prompt-generation/drive-folder
 import {
   executeJob,
   recoverInterruptedPromptJobs,
+  retryFailedInBatch,
   retryOutput,
+  runBatch,
+  MAX_OUTPUT_GENERATION_ATTEMPTS,
+  MAX_OUTPUT_UPLOAD_ATTEMPTS,
   type PromptRunnerDeps,
 } from '../prompt-generation/runner.js';
 import {
@@ -1191,5 +1195,382 @@ describe('the mock Drive client', () => {
     });
     expect(result.fileId).toContain('a_1.jpg');
     expect(mock.uploads).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Lifecycle regressions
+ *
+ * Four ways this feature could get stuck or spend money twice, each one
+ * reachable from the Admin UI with no unusual input. They are grouped because
+ * they share one subject: what happens on the SECOND failure, and on the retry
+ * after it.
+ * ------------------------------------------------------------------ */
+
+/** The one job of a single-prompt batch. */
+async function onlyJob(batchId: string) {
+  const [job] = await on.db.select().from(promptJobs).where(eq(promptJobs.batchId, batchId));
+  return job!;
+}
+
+async function outputsOf(jobId: string) {
+  return on.db
+    .select()
+    .from(promptJobOutputs)
+    .where(eq(promptJobOutputs.jobId, jobId))
+    .orderBy(promptJobOutputs.ordinal);
+}
+
+/**
+ * Waits for background work started with `setImmediate` to reach a terminal
+ * batch status, so an assertion cannot read a half-finished run.
+ */
+async function settleBatch(batchId: string, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const [batch] = await on.db.select().from(promptBatches).where(eq(promptBatches.id, batchId));
+    if (batch && batch.status === 'completed') return batch;
+    if (Date.now() > deadline) {
+      throw new Error(`batch ${batchId} never settled (status ${batch?.status ?? 'missing'})`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+describe('one execution per job (no double generation)', () => {
+  it('generates ONCE when the same job is executed twice concurrently', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'luna_001.txt', body: 'p' }]);
+    const job = await onlyJob(batchId);
+
+    /**
+     * The provider is held open so both executions are genuinely in flight at
+     * the same time. Without the gate the first could finish before the second
+     * even claims, and the test would pass for the wrong reason.
+     */
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    xai.behaviour = async (request) => {
+      await gate;
+      return Array.from({ length: request.n }, (_u, i) => ({
+        bytes: Buffer.from(`image-${i + 1}`),
+      }));
+    };
+
+    const first = executeJob(on.db, deps, job.id);
+    const second = executeJob(on.db, deps, job.id);
+    release();
+    await Promise.all([first, second]);
+
+    // THE ASSERTION THIS WHOLE FIX EXISTS FOR: one prompt, one paid call.
+    expect(xai.calls).toHaveLength(1);
+    expect(xai.calls[0]!.n).toBe(2);
+    expect(driveUploads).toHaveLength(2);
+    const outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['completed', 'completed']);
+  });
+
+  it('refuses to execute a job that is already being executed', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    const job = await onlyJob(batchId);
+    // The state a claim leaves behind. A second execution must decline it.
+    await on.db.update(promptJobs).set({ status: 'generating' }).where(eq(promptJobs.id, job.id));
+
+    await executeJob(on.db, deps, job.id);
+
+    expect(xai.calls).toHaveLength(0);
+    expect(driveUploads).toHaveLength(0);
+  });
+
+  it('generates each prompt once when two drains race over one batch', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [
+      { filename: 'a.txt', body: 'prompt a' },
+      { filename: 'b.txt', body: 'prompt b' },
+    ]);
+    await on.db
+      .update(promptBatches)
+      .set({ status: 'running' })
+      .where(eq(promptBatches.id, batchId));
+
+    // Two concurrent drains — what a retry used to cause by scheduling the
+    // jobs itself AND restarting the batch.
+    await Promise.all([runBatch(on.db, deps, batchId), runBatch(on.db, deps, batchId)]);
+
+    expect(xai.calls).toHaveLength(2);
+    expect(xai.calls.map((c) => c.prompt).sort()).toEqual(['prompt a', 'prompt b']);
+    expect(driveUploads).toHaveLength(4);
+  });
+
+  it('Retry failed schedules the batch drain only, never the jobs as well', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    // Generation fails, so the retry has to REGENERATE — the case where a
+    // duplicate schedule would be billed twice.
+    xai.behaviour = async () => {
+      throw new XaiError('http', 'provider is down', 500);
+    };
+    await drain(batchId);
+    const job = await onlyJob(batchId);
+    expect((await outputsOf(job.id)).every((o) => o.status === 'failed')).toBe(true);
+
+    xai.behaviour = async (request) =>
+      Array.from({ length: request.n }, (_u, i) => ({ bytes: Buffer.from(`image-${i + 1}`) }));
+    const callsBefore = xai.calls.length;
+
+    const { retried } = await retryFailedInBatch(on.db, deps, batchId);
+    expect(retried).toBe(1);
+    await settleBatch(batchId);
+
+    // Exactly one further generation for the one job that needed regenerating.
+    expect(xai.calls.length - callsBefore).toBe(1);
+    expect((await outputsOf(job.id)).map((o) => o.status)).toEqual(['completed', 'completed']);
+    expect(driveUploads).toHaveLength(2);
+  });
+});
+
+describe('a spent upload budget is terminal, not stuck', () => {
+  /** A job whose images exist and whose upload budget is already gone. */
+  async function jobWithSpentUploadBudget() {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    drive.failNext(2, new DriveError('network', 'Drive unreachable.'));
+    await drain(batchId);
+    const job = await onlyJob(batchId);
+    // The bytes are on disk; only the uploads have been spent.
+    await on.db
+      .update(promptJobOutputs)
+      .set({ status: 'generated', uploadAttempts: MAX_OUTPUT_UPLOAD_ATTEMPTS })
+      .where(eq(promptJobOutputs.jobId, job.id));
+    await on.db.update(promptJobs).set({ status: 'queued' }).where(eq(promptJobs.id, job.id));
+    await on.db
+      .update(promptBatches)
+      .set({ status: 'running', completedAt: null })
+      .where(eq(promptBatches.id, batchId));
+    return { batchId, job };
+  }
+
+  it('records a reason instead of leaving the output in generated', async () => {
+    const { job } = await jobWithSpentUploadBudget();
+    await executeJob(on.db, deps, job.id);
+
+    const outputs = await outputsOf(job.id);
+    // NOT `generated`. That status is counted as in flight, and it is what
+    // used to pin the job to `uploading` for ever.
+    expect(outputs.map((o) => o.status)).toEqual(['drive_upload_failed', 'drive_upload_failed']);
+    for (const output of outputs) {
+      expect((output.error as { kind: string }).kind).toBe('drive_upload_attempts_exhausted');
+      // The paid bytes are still held, which is why this is retryable at all.
+      expect(output.spoolPath).toBeTruthy();
+      expect(existsSync(output.spoolPath!)).toBe(true);
+    }
+  });
+
+  it('lets the job and the batch reach a terminal status', async () => {
+    const { batchId, job } = await jobWithSpentUploadBudget();
+    await executeJob(on.db, deps, job.id);
+
+    const [row] = await on.db.select().from(promptJobs).where(eq(promptJobs.id, job.id));
+    expect(row!.status).toBe('failed');
+    expect(row!.completedAt).not.toBeNull();
+    const [batch] = await on.db.select().from(promptBatches).where(eq(promptBatches.id, batchId));
+    expect(batch!.status).toBe('completed');
+  });
+
+  it('is recoverable with Retry failed, and costs nothing at the provider', async () => {
+    const { batchId, job } = await jobWithSpentUploadBudget();
+    await executeJob(on.db, deps, job.id);
+    const callsBefore = xai.calls.length;
+
+    const { retried } = await retryFailedInBatch(on.db, deps, batchId);
+    expect(retried).toBe(1);
+    await settleBatch(batchId);
+
+    const outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['completed', 'completed']);
+    expect(outputs.every((o) => o.driveFileId !== null)).toBe(true);
+    // The images were already paid for. Recovery is an upload, never a purchase.
+    expect(xai.calls.length).toBe(callsBefore);
+  });
+});
+
+describe('generation and upload budgets are separate', () => {
+  it('does not spend generation attempts on failed Drive uploads', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+
+    drive.failNext(2, new DriveError('network', 'Drive unreachable.'));
+    await drain(batchId);
+    const job = await onlyJob(batchId);
+
+    let outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['drive_upload_failed', 'drive_upload_failed']);
+    for (const output of outputs) {
+      expect(output.attempts).toBe(1); // one generation, which succeeded
+      expect(output.uploadAttempts).toBe(1);
+    }
+
+    // A second and third round of Drive failures.
+    for (const round of [2, 3]) {
+      drive.failNext(2, new DriveError('network', 'Drive unreachable.'));
+      await executeJob(on.db, deps, job.id);
+      outputs = await outputsOf(job.id);
+      for (const output of outputs) {
+        // THE POINT: three Drive outages, and the generation budget is
+        // untouched. Sharing one column is what used to make this output
+        // permanently ineligible to be generated again.
+        expect(output.attempts).toBe(1);
+        expect(output.uploadAttempts).toBe(round);
+      }
+    }
+
+    // And not one extra image was bought along the way.
+    expect(xai.calls).toHaveLength(1);
+  });
+
+  it('still enforces the generation attempt limit', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    xai.behaviour = async () => {
+      throw new XaiError('http', 'provider is down', 500);
+    };
+    const job = await onlyJob(batchId);
+
+    // One more pass than the budget allows.
+    for (let i = 0; i < MAX_OUTPUT_GENERATION_ATTEMPTS + 1; i += 1) {
+      await executeJob(on.db, deps, job.id);
+    }
+
+    expect(xai.calls).toHaveLength(MAX_OUTPUT_GENERATION_ATTEMPTS);
+    const outputs = await outputsOf(job.id);
+    for (const output of outputs) {
+      expect(output.status).toBe('failed');
+      expect(output.attempts).toBe(MAX_OUTPUT_GENERATION_ATTEMPTS);
+      expect(output.uploadAttempts).toBe(0);
+    }
+  });
+
+  it('never regenerates an image whose only problem was the upload', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    drive.failNext(2, new DriveError('network', 'Drive unreachable.'));
+    await drain(batchId);
+    const job = await onlyJob(batchId);
+
+    // Three more refusals — four in all, which stays one inside the upload
+    // budget so the fifth attempt is a real upload rather than the exhaustion
+    // branch. Exhaustion has its own tests.
+    for (let i = 0; i < 3; i += 1) {
+      drive.failNext(2, new DriveError('network', 'Drive unreachable.'));
+      await executeJob(on.db, deps, job.id);
+    }
+    await executeJob(on.db, deps, job.id);
+
+    // One generation for the whole story, however many uploads it took.
+    expect(xai.calls).toHaveLength(1);
+    const outputs = await outputsOf(job.id);
+    expect(outputs.every((o) => o.attempts === 1)).toBe(true);
+    expect(outputs.map((o) => o.status)).toEqual(['completed', 'completed']);
+  });
+});
+
+describe('a lost spool file becomes regenerable', () => {
+  /** A batch whose outputs have bytes recorded but no file on disk. */
+  async function jobWithLostSpoolFile() {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    drive.failNext(2, new DriveError('network', 'Drive unreachable.'));
+    await drain(batchId);
+    const job = await onlyJob(batchId);
+    for (const output of await outputsOf(job.id)) {
+      expect(output.spoolPath).toBeTruthy();
+      unlinkSync(output.spoolPath!); // the volume lost them
+    }
+    return { batchId, job };
+  }
+
+  it('clears the stale path and says the image must be generated again', async () => {
+    const { job } = await jobWithLostSpoolFile();
+    await executeJob(on.db, deps, job.id);
+
+    const outputs = await outputsOf(job.id);
+    for (const output of outputs) {
+      expect(output.status).toBe('failed');
+      // A path pointing at nothing is what sent every future retry back into
+      // the upload branch, where it failed on exactly this read.
+      expect(output.spoolPath).toBeNull();
+      expect((output.error as { kind: string }).kind).toBe('spool_missing');
+    }
+  });
+
+  it('regenerates on retry instead of retrying an upload for ever', async () => {
+    const { batchId, job } = await jobWithLostSpoolFile();
+    await executeJob(on.db, deps, job.id);
+    const callsBefore = xai.calls.length;
+
+    const { retried } = await retryFailedInBatch(on.db, deps, batchId);
+    expect(retried).toBe(1);
+    await settleBatch(batchId);
+
+    // The bytes were gone, so this time the provider IS called — that is the
+    // only correct answer, and the old code could never reach it.
+    expect(xai.calls.length).toBe(callsBefore + 1);
+    const outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['completed', 'completed']);
+    expect(outputs.every((o) => o.spoolPath === null)).toBe(true);
+  });
+
+  it('sends a retry to upload while bytes remain, and to generation once they do not', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    drive.failNext(2, new DriveError('network', 'Drive unreachable.'));
+    await drain(batchId);
+    const job = await onlyJob(batchId);
+    const outputs = await outputsOf(job.id);
+
+    // Bytes present -> the retry is an upload.
+    await retryOutput(on.db, deps, outputs[0]!.id);
+    let [reloaded] = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.id, outputs[0]!.id));
+    expect(reloaded!.status).toBe('drive_upload_failed');
+
+    // Sibling, bytes now gone -> the retry is a regeneration.
+    unlinkSync(outputs[1]!.spoolPath!);
+    await executeJob(on.db, deps, job.id);
+    const [lost] = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.id, outputs[1]!.id));
+    expect(lost!.spoolPath).toBeNull();
+    await retryOutput(on.db, deps, lost!.id);
+    [reloaded] = await on.db
+      .select()
+      .from(promptJobOutputs)
+      .where(eq(promptJobOutputs.id, outputs[1]!.id));
+    expect(reloaded!.status).toBe('pending');
+  });
+
+  it('never regenerates a completed image, whatever happens to the spool', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    await drain(batchId);
+    const job = await onlyJob(batchId);
+    const callsBefore = xai.calls.length;
+
+    const outputs = await outputsOf(job.id);
+    expect(outputs.every((o) => o.status === 'completed')).toBe(true);
+    // A completed output has already had its spool copy removed; running the
+    // job again must still find nothing to do.
+    await executeJob(on.db, deps, job.id);
+
+    expect(xai.calls.length).toBe(callsBefore);
+    const after = await outputsOf(job.id);
+    expect(after.map((o) => o.status)).toEqual(['completed', 'completed']);
+    expect(after.map((o) => o.driveFileId)).toEqual(outputs.map((o) => o.driveFileId));
   });
 });
