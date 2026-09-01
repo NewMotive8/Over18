@@ -505,7 +505,38 @@ async function outputsNeedingGeneration(db: Db, jobId: string): Promise<PromptJo
       ),
     )
     .orderBy(asc(promptJobOutputs.ordinal));
-  return rows.filter((row) => row.attempts < MAX_OUTPUT_GENERATION_ATTEMPTS);
+  return rows.filter(
+    (row) => row.attempts < MAX_OUTPUT_GENERATION_ATTEMPTS && !refusedByModeration(row.error),
+  );
+}
+
+/**
+ * Whether an output already failed because the provider refused the image it
+ * generated.
+ *
+ * WHY THIS IS A TERMINAL STATE AND NOT A FAILED ATTEMPT. The provider's own
+ * retry loop already declines to repeat a refusal within one call, but at this
+ * level a refusal looked like any other failed generation: the row sat in
+ * `failed` with attempts below the budget, so the next pass over the job — a
+ * batch drain, or the boot recovery sweep after any deploy — asked for the same
+ * image again. It cost roughly a hundred seconds of generation each time and
+ * could not succeed, because nothing about the request had changed.
+ *
+ * READ FROM THE STORED ERROR KIND, so no column and no migration are needed and
+ * rows written before this existed are unaffected — they keep the old kind and
+ * the old behaviour rather than being silently reinterpreted.
+ *
+ * THIS BOUNDS AUTOMATIC WORK ONLY. A deliberate operator retry clears `error`
+ * (see `retryStateFor`), so the row becomes eligible again and the person who
+ * pressed the button gets what they asked for. Only the machine is stopped from
+ * repeating it unprompted.
+ */
+function refusedByModeration(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { kind?: unknown }).kind === 'xai_content_moderated'
+  );
 }
 
 /**

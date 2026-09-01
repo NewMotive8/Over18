@@ -22,6 +22,19 @@ export type XaiErrorKind =
   | 'auth'
   | 'rate_limited'
   | 'http'
+  /**
+   * The provider generated an image and then refused to hand it over, because
+   * its own content moderation rejected the result.
+   *
+   * ITS OWN KIND, NOT `http`, BECAUSE THE ANSWER IS DIFFERENT. Every other 4xx
+   * says we asked wrongly; this one says the request was understood, the work
+   * was done, and the OUTPUT was refused. Nothing about waiting, or about
+   * sending the same prompt again, changes that — and it is not free: a refusal
+   * costs around 100 seconds of generation before it arrives. Collapsed into
+   * `http` it was indistinguishable from a malformed request, so the runner
+   * kept spending the output's generation budget on it.
+   */
+  | 'content_moderated'
   | 'network'
   | 'timeout'
   | 'malformed_response'
@@ -41,6 +54,11 @@ export class XaiError extends Error {
 
   /** Whether waiting and trying the same request again could plausibly work. */
   get retryable(): boolean {
+    // Stated explicitly rather than left to fall through the `http` test below.
+    // It already returned false there, but by accident of not being `http`
+    // rather than by intent — and "the provider refused the output" is the one
+    // kind where retrying is guaranteed to cost money and change nothing.
+    if (this.kind === 'content_moderated') return false;
     if (this.kind === 'rate_limited' || this.kind === 'network' || this.kind === 'timeout') {
       return true;
     }
@@ -227,10 +245,9 @@ export function createXaiImageProvider(
      * deliberately dropped here. Surfacing it would be a policy decision about
      * echoing provider prose, not a bug fix, so it is not taken silently.
      */
-    const reasonOf = async (): Promise<string> => {
-      const detail = xaiErrorReason(await response.text().catch(() => ''), secrets);
-      return detail.code ? ` — ${detail.code}` : '';
-    };
+    /** The allowlisted detail, read ONCE — a body can only be consumed once. */
+    const detailOf = async () => xaiErrorReason(await response.text().catch(() => ''), secrets);
+    const suffix = (code: string | null) => (code ? ` — ${code}` : '');
 
     if (response.status === 401 || response.status === 403) {
       // No body, ever — unchanged. An auth error body can name the key or the
@@ -241,17 +258,37 @@ export function createXaiImageProvider(
     if (response.status === 429) {
       // Named, because "rate limited" and "out of credit" arrive at the same
       // status and want opposite responses from the operator.
+      const detail = await detailOf();
       throw new XaiError(
         'rate_limited',
-        `The image provider is rate limiting us${await reasonOf()}.`,
+        `The image provider is rate limiting us${suffix(detail.code)}.`,
         429,
         parseRetryAfter(response.headers.get('retry-after')),
       );
     }
     if (!response.ok) {
+      const detail = await detailOf();
+      /**
+       * MODERATION IS MATCHED ON THE REASON CODE, NOT THE STATUS.
+       *
+       * The refusal arrives as a 400 today, but a 400 is also what a malformed
+       * request returns, and those want opposite handling — one is terminal,
+       * the other is a bug to fix. The code is the only field that separates
+       * them, and it survives the allowlist by construction. Matched loosely so
+       * a provider-side rename (`content-moderated` -> `content_moderated`,
+       * say) degrades to the old generic behaviour rather than to a wrong kind.
+       */
+      if (detail.code && /moderat/i.test(detail.code)) {
+        throw new XaiError(
+          'content_moderated',
+          `The image provider generated the image and then refused it${suffix(detail.code)}. ` +
+            'Asking again for the same prompt will be refused the same way, so this is not retried.',
+          response.status,
+        );
+      }
       throw new XaiError(
         'http',
-        `The image provider returned HTTP ${response.status}${await reasonOf()}.`,
+        `The image provider returned HTTP ${response.status}${suffix(detail.code)}.`,
         response.status,
       );
     }

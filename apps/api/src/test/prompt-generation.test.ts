@@ -1743,3 +1743,219 @@ describe('naming why the image provider refused', () => {
     expect(calls).toBe(1);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * A refused image is terminal
+ *
+ * The provider generates for ~100s and then refuses the result. That is not a
+ * failed attempt to be repeated — it is an answer. These pin that it is
+ * classified apart from ordinary 4xx, never retried automatically, and that
+ * genuinely transient failures are untouched by the distinction.
+ * ------------------------------------------------------------------ */
+
+describe('an image the provider refuses is terminal, not a spent attempt', () => {
+  const KEY = 'xai-key-abcdefghijklmnop';
+  const MODERATED = JSON.stringify({
+    code: 'imagine:content-moderated',
+    error: 'Generated image rejected by content moderation.',
+  });
+
+  const providerReturning = (status: number, body: string, onCall?: () => void) =>
+    createXaiImageProvider(
+      { baseUrl: 'https://stub/v1', apiKey: KEY, model: 'm', timeoutMs: 1000, maxAttempts: 3 },
+      new RateLimiter({ requestsPerSecond: 1000, maxConcurrent: 4 }),
+      (async () => {
+        onCall?.();
+        return new Response(body, { status });
+      }) as unknown as typeof fetch,
+      async () => {},
+    );
+
+  /* --- 1. the refusal is its own kind, and it is terminal --- */
+
+  it('classifies a moderation refusal apart from an ordinary 4xx', async () => {
+    const error = (await providerReturning(400, MODERATED)
+      .generate({ prompt: 'p', n: 2, params: DEFAULT_PARAMS })
+      .catch((e) => e)) as XaiError;
+    expect(error.kind).toBe('content_moderated');
+    expect(error.status).toBe(400);
+    // The reason code still reaches the operator.
+    expect(error.message).toContain('imagine:content-moderated');
+    // ...and the provider's prose still does not.
+    expect(error.message).not.toContain('Generated image rejected by content moderation.');
+  });
+
+  it('is not retryable, unlike a 4xx that merely means we asked wrongly', async () => {
+    const moderated = (await providerReturning(400, MODERATED)
+      .generate({ prompt: 'p', n: 1, params: DEFAULT_PARAMS })
+      .catch((e) => e)) as XaiError;
+    expect(moderated.retryable).toBe(false);
+    expect(new XaiError('content_moderated', 'x', 400).retryable).toBe(false);
+  });
+
+  it('still reports a NON-moderation 400 as a plain http failure', async () => {
+    const error = (await providerReturning(400, JSON.stringify({ code: 'invalid-argument' }))
+      .generate({ prompt: 'p', n: 1, params: DEFAULT_PARAMS })
+      .catch((e) => e)) as XaiError;
+    expect(error.kind).toBe('http');
+    expect(error.message).toContain('invalid-argument');
+  });
+
+  /* --- 2. no second generation attempt --- */
+
+  it('asks the provider exactly once, never maxAttempts times', async () => {
+    let calls = 0;
+    await providerReturning(400, MODERATED, () => {
+      calls += 1;
+    })
+      .generate({ prompt: 'p', n: 2, params: DEFAULT_PARAMS })
+      .catch(() => {});
+    expect(calls).toBe(1);
+  });
+
+  it('does not spend another generation attempt on the next pass over the job', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    const job = await onlyJob(batchId);
+
+    xai.behaviour = async () => {
+      throw new XaiError('content_moderated', 'refused — imagine:content-moderated', 400);
+    };
+    await executeJob(on.db, deps, job.id);
+
+    let outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['failed', 'failed']);
+    for (const output of outputs) {
+      expect((output.error as { kind: string }).kind).toBe('xai_content_moderated');
+    }
+    const callsAfterFirst = xai.calls.length;
+    expect(callsAfterFirst).toBe(1);
+
+    // Every later automatic pass: a batch drain, or the boot recovery sweep.
+    await executeJob(on.db, deps, job.id);
+    await executeJob(on.db, deps, job.id);
+
+    // THE POINT: not one further request, and the budget is untouched.
+    expect(xai.calls.length).toBe(callsAfterFirst);
+    outputs = await outputsOf(job.id);
+    expect(outputs.every((o) => o.attempts === 1)).toBe(true);
+    expect(outputs.every((o) => o.status === 'failed')).toBe(true);
+  });
+
+  it('lets the job and batch reach a terminal status rather than hanging', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    const job = await onlyJob(batchId);
+    // The batch has to be RUNNING for finaliseBatch to close it — a draft batch
+    // staying draft is correct, not a hang.
+    await on.db
+      .update(promptBatches)
+      .set({ status: 'running' })
+      .where(eq(promptBatches.id, batchId));
+    xai.behaviour = async () => {
+      throw new XaiError('content_moderated', 'refused — imagine:content-moderated', 400);
+    };
+    await executeJob(on.db, deps, job.id);
+
+    const [row] = await on.db.select().from(promptJobs).where(eq(promptJobs.id, job.id));
+    expect(row!.status).toBe('failed');
+    expect(row!.completedAt).not.toBeNull();
+    const [batch] = await on.db.select().from(promptBatches).where(eq(promptBatches.id, batchId));
+    expect(batch!.status).toBe('completed');
+  });
+
+  /* --- 3. transient failures are untouched --- */
+
+  it('still retries a 5xx inside one call, up to the attempt budget', async () => {
+    let calls = 0;
+    await providerReturning(500, JSON.stringify({ code: 'internal' }), () => {
+      calls += 1;
+    })
+      .generate({ prompt: 'p', n: 1, params: DEFAULT_PARAMS })
+      .catch(() => {});
+    expect(calls).toBe(3);
+  });
+
+  it('keeps timeout, network and rate_limited retryable', () => {
+    expect(new XaiError('timeout', 'x').retryable).toBe(true);
+    expect(new XaiError('network', 'x').retryable).toBe(true);
+    expect(new XaiError('rate_limited', 'x', 429).retryable).toBe(true);
+    expect(new XaiError('http', 'x', 503).retryable).toBe(true);
+    expect(new XaiError('http', 'x', 400).retryable).toBe(false);
+  });
+
+  it('still spends another generation attempt on a TRANSIENT failure', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    const job = await onlyJob(batchId);
+
+    xai.behaviour = async () => {
+      throw new XaiError('http', 'provider is down', 500);
+    };
+    await executeJob(on.db, deps, job.id);
+    expect(xai.calls).toHaveLength(1);
+
+    // A transient failure MUST still be picked up by the next pass — the whole
+    // point of separating the kinds is that this behaviour does not change.
+    await executeJob(on.db, deps, job.id);
+    expect(xai.calls).toHaveLength(2);
+    const outputs = await outputsOf(job.id);
+    expect(outputs.every((o) => o.attempts === 2)).toBe(true);
+  });
+
+  it('recovers a transient failure when the provider comes back', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    const job = await onlyJob(batchId);
+
+    xai.behaviour = async () => {
+      throw new XaiError('network', 'unreachable');
+    };
+    await executeJob(on.db, deps, job.id);
+    xai.behaviour = async (request) =>
+      Array.from({ length: request.n }, (_u, i) => ({ bytes: Buffer.from(`image-${i + 1}`) }));
+    await executeJob(on.db, deps, job.id);
+
+    const outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['completed', 'completed']);
+  });
+
+  /* --- 4. the ordinary lifecycle is unchanged --- */
+
+  it('leaves a clean generate-and-upload untouched', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'luna_001.txt', body: 'a prompt' }]);
+    const job = await onlyJob(batchId);
+    await executeJob(on.db, deps, job.id);
+
+    expect(xai.calls).toHaveLength(1);
+    expect(xai.calls[0]!.n).toBe(2);
+    expect(driveUploads).toHaveLength(2);
+    const outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['completed', 'completed']);
+    expect(outputs.every((o) => o.driveFileId !== null)).toBe(true);
+    expect(outputs.every((o) => o.spoolPath === null)).toBe(true);
+    expect(outputs.every((o) => o.attempts === 1)).toBe(true);
+    const [row] = await on.db.select().from(promptJobs).where(eq(promptJobs.id, job.id));
+    expect(row!.status).toBe('completed');
+    expect(row!.succeededCount).toBe(2);
+  });
+
+  it('leaves the Drive-failure path untouched — still re-uploads, never regenerates', async () => {
+    const batchId = (await makeBatch()).json().batch.id as string;
+    await uploadFiles(batchId, [{ filename: 'a.txt', body: 'p' }]);
+    const job = await onlyJob(batchId);
+    drive.failNext(2, new DriveError('network', 'Drive unreachable.'));
+    await executeJob(on.db, deps, job.id);
+
+    let outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['drive_upload_failed', 'drive_upload_failed']);
+    await executeJob(on.db, deps, job.id);
+
+    outputs = await outputsOf(job.id);
+    expect(outputs.map((o) => o.status)).toEqual(['completed', 'completed']);
+    // One generation for the whole story: a Drive failure is not a moderation
+    // failure and neither is a reason to buy the image twice.
+    expect(xai.calls).toHaveLength(1);
+  });
+});
