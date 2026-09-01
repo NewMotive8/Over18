@@ -20,6 +20,7 @@ import {
 } from '../prompt-generation/rate-limiter.js';
 import {
   createXaiImageProvider,
+  xaiErrorReason,
   XaiError,
   type GenerateRequest,
   type XaiImageProvider,
@@ -1572,5 +1573,173 @@ describe('a lost spool file becomes regenerable', () => {
     const after = await outputsOf(job.id);
     expect(after.map((o) => o.status)).toEqual(['completed', 'completed']);
     expect(after.map((o) => o.driveFileId)).toEqual(outputs.map((o) => o.driveFileId));
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The provider's reason, allowlisted
+ *
+ * "HTTP 400" is true and useless. These pin the two named fields that are
+ * read, and the two values that must never survive being read: our API key
+ * and the operator's prompt.
+ * ------------------------------------------------------------------ */
+
+describe('naming why the image provider refused', () => {
+  const SECRET = 'xai-key-abcdefghijklmnop';
+  const PROMPT = 'a very specific prompt that the provider might echo back at us';
+
+  it("reads xAI's flat {code, error} shape", () => {
+    const detail = xaiErrorReason(
+      JSON.stringify({ code: 'invalid_request:bad-parameter', error: 'resolution is invalid.' }),
+      [],
+    );
+    expect(detail.code).toBe('invalid_request:bad-parameter');
+    expect(detail.description).toBe('resolution is invalid.');
+  });
+
+  it('reads the nested OpenAI-compatible {error:{code,message}} shape too', () => {
+    const detail = xaiErrorReason(
+      JSON.stringify({ error: { code: 'content_policy_violation', message: 'Prompt rejected.' } }),
+      [],
+    );
+    expect(detail.code).toBe('content_policy_violation');
+    expect(detail.description).toBe('Prompt rejected.');
+  });
+
+  it('reads ONLY the two named fields, however much else the body carries', () => {
+    const detail = xaiErrorReason(
+      JSON.stringify({
+        code: 'moderation:refused',
+        error: 'That prompt was refused.',
+        // None of the below is an allowlisted field, so none of it is read.
+        api_key: SECRET,
+        authorization: `Bearer ${SECRET}`,
+        prompt: PROMPT,
+        request: { prompt: PROMPT, key: SECRET },
+        account_id: 'acct_should_not_appear',
+      }),
+      [SECRET, PROMPT],
+    );
+    expect(detail.code).toBe('moderation:refused');
+    expect(detail.description).toBe('That prompt was refused.');
+    const rendered = `${detail.code} ${detail.description}`;
+    expect(rendered).not.toContain(SECRET);
+    expect(rendered).not.toContain(PROMPT);
+    expect(rendered).not.toContain('acct_should_not_appear');
+  });
+
+  it('redacts the key and the prompt even INSIDE the allowlisted fields', () => {
+    const detail = xaiErrorReason(
+      JSON.stringify({
+        code: 'invalid_request',
+        error: `The prompt "${PROMPT}" was refused, key ${SECRET}.`,
+      }),
+      [SECRET, PROMPT],
+    );
+    expect(detail.description).toContain('[redacted]');
+    expect(detail.description).not.toContain(SECRET);
+    expect(detail.description).not.toContain(PROMPT);
+  });
+
+  it('reduces the code to an identifier, so a pasted key cannot survive in it', () => {
+    const detail = xaiErrorReason(
+      JSON.stringify({ code: 'bad code! with spaces/and slashes', error: 'x' }),
+      [],
+    );
+    expect(detail.code).toBe('badcodewithspacesandslashes');
+  });
+
+  it('bounds the description rather than carrying a payload', () => {
+    const detail = xaiErrorReason(JSON.stringify({ error: 'x'.repeat(5000) }), []);
+    expect(detail.description!.length).toBeLessThanOrEqual(200);
+  });
+
+  it('yields no reason at all for an unreadable body, instead of throwing', () => {
+    expect(xaiErrorReason('<html>502 Bad Gateway</html>', [])).toEqual({
+      code: null,
+      description: null,
+    });
+    expect(xaiErrorReason('', [])).toEqual({ code: null, description: null });
+  });
+
+  it('names the reason in the HTTP error the operator actually sees', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({ code: 'content_policy_violation', error: 'Prompt rejected.' }),
+        { status: 400 },
+      )) as unknown as typeof fetch;
+    const provider = createXaiImageProvider(
+      { baseUrl: 'https://stub/v1', apiKey: SECRET, model: 'm', timeoutMs: 1000, maxAttempts: 1 },
+      new RateLimiter({ requestsPerSecond: 100, maxConcurrent: 4 }),
+      fetchImpl,
+      async () => {},
+    );
+    const error = await provider
+      .generate({ prompt: PROMPT, n: 2, params: DEFAULT_PARAMS })
+      .catch((e) => e as XaiError);
+    expect(error).toBeInstanceOf(XaiError);
+    expect((error as XaiError).kind).toBe('http');
+    // The whole point: the message now says WHY.
+    expect((error as XaiError).message).toContain('content_policy_violation');
+    expect((error as XaiError).message).not.toContain(SECRET);
+    // ...and the provider's PROSE still never travels, per this file's rule
+    // that an error body can carry the prompt.
+    expect((error as XaiError).message).not.toContain('Prompt rejected.');
+  });
+
+  it('names the reason on a 429 too, so quota is distinguishable from pacing', async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ code: 'credits:exhausted', error: 'Out of credits.' }), {
+        status: 429,
+      })) as unknown as typeof fetch;
+    const provider = createXaiImageProvider(
+      { baseUrl: 'https://stub/v1', apiKey: SECRET, model: 'm', timeoutMs: 1000, maxAttempts: 1 },
+      new RateLimiter({ requestsPerSecond: 100, maxConcurrent: 4 }),
+      fetchImpl,
+      async () => {},
+    );
+    const error = await provider
+      .generate({ prompt: PROMPT, n: 1, params: DEFAULT_PARAMS })
+      .catch((e) => e as XaiError);
+    expect((error as XaiError).kind).toBe('rate_limited');
+    expect((error as XaiError).message).toContain('credits:exhausted');
+  });
+
+  it('still refuses to read an auth body, because the answer is always the same', async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ code: 'leaked', error: `key ${SECRET} for acct_12345` }), {
+        status: 401,
+      })) as unknown as typeof fetch;
+    const provider = createXaiImageProvider(
+      { baseUrl: 'https://stub/v1', apiKey: SECRET, model: 'm', timeoutMs: 1000, maxAttempts: 1 },
+      new RateLimiter({ requestsPerSecond: 100, maxConcurrent: 4 }),
+      fetchImpl,
+      async () => {},
+    );
+    const error = await provider
+      .generate({ prompt: PROMPT, n: 1, params: DEFAULT_PARAMS })
+      .catch((e) => e as XaiError);
+    expect((error as XaiError).kind).toBe('auth');
+    expect((error as XaiError).message).toBe('The image provider refused our credentials.');
+    expect((error as XaiError).message).not.toContain('acct_12345');
+  });
+
+  it('leaves retry semantics exactly as they were', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ code: 'invalid_request', error: 'nope' }), {
+        status: 400,
+      });
+    }) as unknown as typeof fetch;
+    const provider = createXaiImageProvider(
+      { baseUrl: 'https://stub/v1', apiKey: SECRET, model: 'm', timeoutMs: 1000, maxAttempts: 3 },
+      new RateLimiter({ requestsPerSecond: 100, maxConcurrent: 4 }),
+      fetchImpl,
+      async () => {},
+    );
+    await provider.generate({ prompt: PROMPT, n: 1, params: DEFAULT_PARAMS }).catch(() => {});
+    // A 400 is still not retryable. Naming it must not make us pay for it 3x.
+    expect(calls).toBe(1);
   });
 });

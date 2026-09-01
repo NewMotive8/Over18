@@ -419,6 +419,19 @@ async function generateOutstanding(
     });
   } catch (error) {
     const payload = errorPayload(error);
+    /**
+     * LOGGED, NOT JUST STORED.
+     *
+     * A generation failure used to reach the database and stop there, so the
+     * only way to see why a batch failed was to open the Admin UI and read one
+     * output at a time — and nothing at all reached the server logs. The
+     * provider's reason is built by the xAI client from an allowlist of two
+     * named fields, already swept for the key and the prompt, so what is
+     * written here is what the operator would need to act and nothing else.
+     */
+    console.warn(
+      `Prompt generation: image generation failed (${payload.kind}) ${payload.message}`,
+    );
     for (const output of needing) {
       await failOutputGeneration(db, output, payload);
     }

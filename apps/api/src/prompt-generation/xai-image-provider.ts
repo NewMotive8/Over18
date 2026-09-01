@@ -88,6 +88,82 @@ interface XaiImagePayload {
 const truncate = (text: string, max = 300) =>
   text.length > max ? `${text.slice(0, max)}…` : text;
 
+const pickString = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim().length > 0 ? value : null;
+
+/**
+ * The reason xAI refused us, and nothing else from the body.
+ *
+ * WHY THIS EXISTS. "The image provider returned HTTP 400." is true and
+ * useless — it says something is wrong without saying whether to fix the
+ * prompt, wait, top up the account, or change the request. xAI had already
+ * answered that in the response body and this client threw the body away, so a
+ * production failure could not be diagnosed at all without guessing. This is
+ * the same lesson already learned on the Google token path; the fix is the
+ * same shape, deliberately.
+ *
+ * AN ALLOWLIST, NOT A REDACTION, for the same reason as there: a provider error
+ * body is not safe to echo wholesale. Exactly two fields are read BY NAME —
+ * a machine-readable `code` and a human-readable message — so every other key
+ * is never looked at and cannot leak by being overlooked.
+ *
+ * TWO BODY SHAPES, BOTH READ BY NAME. xAI answers with a flat
+ * `{ code, error }`; the OpenAI-compatible convention nests
+ * `{ error: { code, message } }`. Reading both by name costs one branch and
+ * means a provider-side shape change degrades to "no reason" rather than to a
+ * wrong one.
+ *
+ * SWEPT FOR THE API KEY *AND* THE PROMPT. The key is obvious. The prompt
+ * matters because this file's standing rule is that a provider error body can
+ * contain it, and prompts here are operator content that has no business
+ * travelling into a stored error row. The reason code survives that sweep,
+ * which is the part worth having.
+ */
+export function xaiErrorReason(
+  body: string,
+  secrets: readonly string[],
+): { code: string | null; description: string | null } {
+  const redact = (value: string): string => {
+    let out = value;
+    for (const secret of secrets) {
+      // Short strings are not swept: they match everywhere and would turn a
+      // useful sentence into confetti.
+      if (secret.length >= 8) out = out.split(secret).join('[redacted]');
+    }
+    return out;
+  };
+
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown; error?: unknown; message?: unknown };
+    const nested =
+      typeof parsed.error === 'object' && parsed.error !== null
+        ? (parsed.error as { code?: unknown; message?: unknown })
+        : null;
+
+    const rawCode = pickString(parsed.code) ?? pickString(nested?.code);
+    const rawDescription =
+      pickString(typeof parsed.error === 'string' ? parsed.error : null) ??
+      pickString(nested?.message) ??
+      pickString(parsed.message);
+
+    // The code is a machine identifier — xAI's own look like
+    // `unauthenticated:no-credentials`, so `:` and `.` are kept and nothing
+    // else is. A key or a prompt pasted into this field could not survive it.
+    const code = rawCode
+      ? redact(rawCode.trim().slice(0, 64)).replace(/[^a-zA-Z0-9_:.-]/g, '')
+      : null;
+    // Printable ASCII only, and bounded: enough to name a reason, never enough
+    // to carry a payload.
+    const description = rawDescription
+      ? redact(rawDescription.trim().slice(0, 200)).replace(/[^\x20-\x7e]/g, '')
+      : null;
+
+    return { code: code || null, description: description || null };
+  } catch {
+    return { code: null, description: null };
+  }
+}
+
 /**
  * The live provider.
  *
@@ -133,14 +209,41 @@ export function createXaiImageProvider(
       throw new XaiError('network', 'Image request could not reach the provider.');
     }
 
+    // The values that must never appear in a message or a log, whatever the
+    // provider sends back: our key, and the operator's prompt.
+    const secrets = [config.apiKey, request.prompt];
+    /**
+     * The provider's reason CODE, and deliberately not its prose.
+     *
+     * THE CODE ONLY, AND WHY THAT IS THE WHOLE POINT. This file's standing rule
+     * is that a provider error body can contain the prompt, so no part of it is
+     * echoed. A reason code does not break that rule and a human message would:
+     * xAI's codes are namespaced machine identifiers — `unauthenticated:no-credentials`
+     * — which are enough to tell a content refusal from a bad parameter from an
+     * exhausted account, while being structurally incapable of carrying prose.
+     * The character class below enforces that rather than trusting it.
+     *
+     * The human-readable message IS parsed by `xaiErrorReason` and is
+     * deliberately dropped here. Surfacing it would be a policy decision about
+     * echoing provider prose, not a bug fix, so it is not taken silently.
+     */
+    const reasonOf = async (): Promise<string> => {
+      const detail = xaiErrorReason(await response.text().catch(() => ''), secrets);
+      return detail.code ? ` — ${detail.code}` : '';
+    };
+
     if (response.status === 401 || response.status === 403) {
-      // No body, ever: an auth error body can name the key or the account.
+      // No body, ever — unchanged. An auth error body can name the key or the
+      // account, and neither is something an operator needs in order to act:
+      // the answer is always "fix the credential".
       throw new XaiError('auth', 'The image provider refused our credentials.', response.status);
     }
     if (response.status === 429) {
+      // Named, because "rate limited" and "out of credit" arrive at the same
+      // status and want opposite responses from the operator.
       throw new XaiError(
         'rate_limited',
-        'The image provider is rate limiting us.',
+        `The image provider is rate limiting us${await reasonOf()}.`,
         429,
         parseRetryAfter(response.headers.get('retry-after')),
       );
@@ -148,7 +251,7 @@ export function createXaiImageProvider(
     if (!response.ok) {
       throw new XaiError(
         'http',
-        `The image provider returned HTTP ${response.status}.`,
+        `The image provider returned HTTP ${response.status}${await reasonOf()}.`,
         response.status,
       );
     }
