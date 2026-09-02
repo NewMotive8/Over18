@@ -97,8 +97,8 @@ describe('createPromptBuilder with context window (US-10)', () => {
     const messages = builder(context);
     expect(messages).toHaveLength(2); // system + newest user message survive any window
     expect(messages[0]!.role).toBe('system');
-    expect(messages[0]!.content).toContain('You are Luna.');
-    expect(messages[0]!.content).toContain(LUNA.systemPrompt);
+    expect(messages[0]!.content).toContain('Her name is Luna.');
+    expect(messages[0]!.content).toContain('HOW SHE TALKS');
     expect(messages.at(-1)).toEqual({ role: 'user', content: 'the newest user message' });
   });
 
@@ -194,7 +194,7 @@ describe('context window through the API (US-10 integration)', () => {
     // most recent exchanges in order, system prompt present and first.
     const last = captured[7]!;
     expect(last.messages[0]!.role).toBe('system');
-    expect(last.messages[0]!.content).toContain('You are Luna.');
+    expect(last.messages[0]!.content).toContain('Her name is Luna.');
     expect(last.messages.at(-1)).toEqual({ role: 'user', content: 'user message 8' });
     // Window = 4 → the four most recent prior messages, chronological:
     // exchange 6 (user + reply) then exchange 7 (user + reply).

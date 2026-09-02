@@ -140,11 +140,14 @@ describe('prompt injection of memories (US-12)', () => {
     }
   });
 
-  it('keeps US-09 persona and conduct rules intact alongside memories', () => {
+  it('keeps identity and the behaviour layer intact alongside memories', () => {
+    // Phase 1 separation: identity is DESCRIBED, and the stored systemPrompt is
+    // no longer injected. Memory injection must be unaffected by either.
     const prompt = buildCharacterSystemPrompt(contextFor(LUNA, { memories: ['A fact.'] }));
-    expect(prompt).toContain('You are Luna.');
-    expect(prompt).toContain(LUNA.systemPrompt);
-    expect(prompt).toContain('Always stay in character as Luna.');
+    expect(prompt).toContain('Her name is Luna.');
+    expect(prompt).toContain('HOW SHE TALKS');
+    expect(prompt).toContain('never break character');
+    expect(prompt).toContain('A fact.');
   });
 
   it('createPromptBuilder bounds injected memories and leaves history/user message alone', () => {
@@ -605,7 +608,7 @@ describe('memory through the API (extraction → storage → injection)', () => 
     await send(luna.cookies, emberConversation, 'Hi Ember, nice to meet you!');
 
     const emberSystem = lastSystemPrompt();
-    expect(emberSystem).toContain('You are Ember.');
+    expect(emberSystem).toContain('Her name is Ember.');
     expect(emberSystem).not.toContain('Maya');
     expect(emberSystem).not.toContain('Dana');
     expect(emberSystem).not.toContain('Things you remember about this person');

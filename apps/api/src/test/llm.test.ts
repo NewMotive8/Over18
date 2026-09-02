@@ -109,12 +109,15 @@ describe('LLM reply provider through the API (fake client)', () => {
     const first = await send(cookies, conversationId, 'First message');
     const second = await send(cookies, conversationId, 'Second message');
 
-    // Request 1: composed character context (persona + system_prompt) + the new user message.
+    // Request 1: composed character context + the new user message. Since the
+    // Phase 1 separation the stored systemPrompt is deliberately NOT injected —
+    // identity is described, and behaviour comes from the one code-owned layer.
     const req1 = fake.captured[0]!;
     expect(req1.messages[0]!.role).toBe('system');
-    expect(req1.messages[0]!.content).toContain(LUNA.systemPrompt); // US-09: composed, not raw
-    expect(req1.messages[0]!.content).toContain('You are Luna.');
+    expect(req1.messages[0]!.content).not.toContain(LUNA.systemPrompt);
+    expect(req1.messages[0]!.content).toContain('Her name is Luna.');
     expect(req1.messages[0]!.content).toContain(LUNA.personality);
+    expect(req1.messages[0]!.content).toContain('HOW SHE TALKS');
     expect(req1.messages.at(-1)).toEqual({ role: 'user', content: 'First message' });
     expect(req1.maxTokens).toBe(256);
     expect(req1.temperature).toBe(0.7);
