@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import type { PublicCharacter } from '@over18/shared';
-import { useCharacters } from '../hooks/useCharacters';
+import type { PublicPlayWithMeCard } from '../lib/api';
+import { usePlayWithMe } from '../hooks/usePlayWithMe';
+import { useFavourites } from '../hooks/useFavourites';
+import { heartAction, swipeAction } from '../lib/favourites';
 import SwipeDeck, { type SwipeDeckHandle } from '../components/SwipeDeck';
 import DiscoverActions from '../components/DiscoverActions';
 import EmptyState from '../components/EmptyState';
@@ -9,10 +11,36 @@ import { DiscoverIcon, LikeIcon, SparkleIcon } from '../components/icons';
 import type { SwipeDecision } from '../lib/swipe';
 
 /**
- * Swipe discovery (US-19), preserved as a SECONDARY interaction under the v2
- * lobby (US-28). The Tinder-style deck is no longer the primary Discover
- * experience — the media-rich lobby is — but it remains fully available here at
- * /discover/swipe and reuses the exact US-19 deck components unchanged.
+ * Swipe discovery — the Tinder-style deck, kept as a secondary interaction
+ * under the v2 lobby and reached from the Play with me rail.
+ *
+ * ── ONE POPULATION, SHARED WITH HOME ─────────────────────────────────────────
+ *
+ * The deck is `usePlayWithMe`, which reads `/api/play-with-me` — the SAME
+ * `listPlayWithMe` that composes `home.playWithMe`. It used to be
+ * `useCharacters` (`/api/characters`), which is every active character
+ * regardless of what she has published, so the deck contained people the rail
+ * had already dropped and the client dressed them in whatever media it could
+ * find. Home and Swipe now cannot disagree, because there is one list.
+ *
+ * ── SWIPE, HEART, AND WHAT EACH ONE MEANS ────────────────────────────────────
+ *
+ *   left / pass   → move on. Writes nothing. Never touches a favourite.
+ *   right / like  → save her, then move on. Already saved stays saved.
+ *   heart tap     → toggle the saved state, IN PLACE. The only way to remove.
+ *   tap the card  → open her profile.
+ *
+ * The mapping from a gesture to a stored change is `swipeAction` /
+ * `heartAction` in `lib/favourites`, not an `if` in a handler here, so "a right
+ * swipe never removes a favourite" is a function with a truth table a node test
+ * can read.
+ *
+ * ── SIGNED OUT STILL BROWSES ─────────────────────────────────────────────────
+ *
+ * Swipe is a public route. Without an account the deck works, the profile opens
+ * and passing works; the heart is simply unavailable, and a right swipe says so
+ * rather than pretending to save. That is why `useFavourites` reports
+ * 'signed-out' as a state distinct from an error.
  */
 function DeckSkeleton() {
   return (
@@ -33,46 +61,83 @@ function DeckSkeleton() {
 }
 
 export default function SwipePage() {
-  const { state, reload } = useCharacters();
+  const { state, reload } = usePlayWithMe();
+  const favourites = useFavourites();
   const navigate = useNavigate();
   const deckRef = useRef<SwipeDeckHandle>(null);
 
   const [index, setIndex] = useState(0);
-  const [liked, setLiked] = useState<Set<string>>(() => new Set());
   const [feedback, setFeedback] = useState<string | null>(null);
   const feedbackTimer = useRef<number | null>(null);
 
   const characters = state.status === 'ready' ? state.characters : [];
-  const current: PublicCharacter | undefined = characters[index];
-  const next: PublicCharacter | undefined = characters[index + 1];
+  const current: PublicPlayWithMeCard | undefined = characters[index];
+  const next: PublicPlayWithMeCard | undefined = characters[index + 1];
+  const signedOut = favourites.status === 'signed-out';
+  const currentFavourited = current ? favourites.favourited.has(current.id) : false;
+  /**
+   * The heart is inert until the persisted set has actually arrived.
+   *
+   * Before then `favourited` is an empty set, so every heart would read as
+   * outline — a state that happens to be wrong for anyone already saved. The
+   * fill must never be a guess, so the control does not invite a tap it cannot
+   * yet answer honestly. Swiping is unaffected; only the heart waits.
+   */
+  const heartUnavailable = signedOut || favourites.status === 'loading';
 
   const flash = useCallback((message: string) => {
     setFeedback(message);
     if (feedbackTimer.current) window.clearTimeout(feedbackTimer.current);
-    feedbackTimer.current = window.setTimeout(() => setFeedback(null), 1100);
+    feedbackTimer.current = window.setTimeout(() => setFeedback(null), 1400);
   }, []);
 
   const openProfile = useCallback(
-    (character: PublicCharacter) => navigate(`/characters/${character.id}`),
+    (character: PublicPlayWithMeCard) => navigate(`/characters/${character.id}`),
     [navigate],
   );
 
+  /**
+   * A completed swipe.
+   *
+   * The deck advances EITHER WAY and immediately — the save is not something a
+   * user should wait on, and a failed save must not strand them on a card they
+   * have already flung. The message that follows reports what actually
+   * happened, so a signed-out right swipe says "sign in", not "liked".
+   */
   const handleDecision = useCallback(
-    (decision: SwipeDecision, character: PublicCharacter) => {
-      if (decision === 'like') {
-        setLiked((prev) => {
-          const nextSet = new Set(prev);
-          nextSet.add(character.id);
-          return nextSet;
-        });
-        flash(`Liked ${character.displayName}`);
-      } else {
-        flash(`Passed on ${character.displayName}`);
-      }
+    (decision: SwipeDecision, character: PublicPlayWithMeCard) => {
+      const action = swipeAction(decision, favourites.favourited.has(character.id));
       setIndex((i) => i + 1);
+
+      if (decision === 'pass') {
+        flash(`Passed on ${character.displayName}`);
+        return;
+      }
+      void favourites.run(character.id, action).then((outcome) => {
+        if (outcome === 'signed-out') flash('Sign in to save Favourites');
+        else if (outcome === 'failed') flash(`Couldn't save ${character.displayName}`);
+        // 'unchanged' is a right swipe on someone already saved: she stays
+        // saved, and saying so is more honest than a second "Saved!".
+        else if (outcome === 'unchanged') flash(`${character.displayName} is in Favourites`);
+        else flash(`Saved ${character.displayName} to Favourites`);
+      });
     },
-    [flash],
+    [favourites, flash],
   );
+
+  /** The heart. Toggles the stored state and stays on the card. */
+  const toggleFavourite = useCallback(() => {
+    if (!current) return;
+    const character = current;
+    void favourites
+      .run(character.id, heartAction(favourites.favourited.has(character.id)))
+      .then((outcome) => {
+        if (outcome === 'signed-out') flash('Sign in to save Favourites');
+        else if (outcome === 'failed') flash('Something went wrong');
+        else if (outcome === 'removed') flash(`Removed ${character.displayName} from Favourites`);
+        else flash(`Saved ${character.displayName} to Favourites`);
+      });
+  }, [current, favourites, flash]);
 
   const restart = useCallback(() => {
     setIndex(0);
@@ -136,6 +201,11 @@ export default function SwipePage() {
     );
   }
 
+  /**
+   * NOTHING PUBLISHED MEANS AN EMPTY DECK, and that is the correct answer.
+   * The old page could not reach this state honestly: `/api/characters` returned
+   * everyone, so the deck was never empty and never truthful.
+   */
   if (characters.length === 0) {
     return (
       <div className="flex flex-1 min-h-0 flex-col justify-center gap-3">
@@ -151,7 +221,7 @@ export default function SwipePage() {
   }
 
   if (!current) {
-    const likedCount = liked.size;
+    const savedCount = favourites.favourited.size;
     return (
       <div className="flex flex-1 min-h-0 flex-col justify-center gap-3">
         {backLink}
@@ -159,18 +229,28 @@ export default function SwipePage() {
           icon={<LikeIcon />}
           title="You're all caught up"
           description={
-            likedCount > 0
-              ? `You liked ${likedCount} ${likedCount === 1 ? 'character' : 'characters'}. More are on the way.`
+            savedCount > 0
+              ? `You have ${savedCount} ${savedCount === 1 ? 'character' : 'characters'} in Favourites. More are on the way.`
               : 'That’s everyone for now. More characters are on the way.'
           }
           action={
-            <button
-              type="button"
-              onClick={restart}
-              className="rounded-lg bg-rose-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
-            >
-              Start over
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={restart}
+                className="rounded-lg bg-rose-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+              >
+                Start over
+              </button>
+              {savedCount > 0 && (
+                <Link
+                  to="/favourites"
+                  className="rounded-lg border border-zinc-700 px-5 py-2 text-sm font-semibold text-zinc-200 transition-colors hover:border-zinc-500"
+                >
+                  Favourites
+                </Link>
+              )}
+            </div>
           }
         />
       </div>
@@ -206,8 +286,19 @@ export default function SwipePage() {
       <DiscoverActions
         onPass={() => deckRef.current?.pass()}
         onOpen={() => openProfile(current)}
-        onLike={() => deckRef.current?.like()}
+        onToggleFavourite={toggleFavourite}
+        favourited={currentFavourited}
+        favouriteDisabled={heartUnavailable}
       />
+
+      {signedOut && (
+        <p className="text-center text-xs text-zinc-500">
+          <Link to="/login" className="font-semibold text-rose-400 hover:text-rose-300">
+            Sign in
+          </Link>{' '}
+          to save characters to Favourites.
+        </p>
+      )}
     </div>
   );
 }

@@ -200,6 +200,49 @@ export const memories = pgTable(
 );
 
 /**
+ * favourites — the user-to-character relationship behind the Favourites tab.
+ *
+ * ONE ROW = ONE USER SAVED ONE CHARACTER, and that is the entire model. It is
+ * deliberately the same shape as `conversations`: a composite identity over
+ * (user, character) with cascade deletes on both sides, so a deleted account or
+ * a deleted character takes its favourites with it and no orphan can be read.
+ *
+ * NO MEDIA COLUMN, ON PURPOSE. There is no asset id and no url here. What a
+ * favourite DISPLAYS is resolved at read time by the same `representativeClips`
+ * query that decides Play with me, so replacing a character's published clip
+ * changes what Favourites shows on the very next request. A stored locator
+ * would have gone stale the moment an operator swapped her content, and would
+ * have needed reaping every time an asset lost approval.
+ *
+ * NO SWIPE HISTORY. A left swipe writes nothing at all — passing is not a
+ * decision this product remembers, and there is no table here that could
+ * accumulate one. Swiping right inserts; only the heart deletes.
+ *
+ * The composite primary key is what makes a right swipe IDEMPOTENT: an
+ * `on conflict do nothing` insert of an existing pair is a no-op, so swiping
+ * right on a character who is already a favourite leaves her favourited with
+ * her original `created_at` intact rather than resurfacing her to the top.
+ */
+export const favourites = pgTable(
+  'favourites',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.characterId] }),
+    // Every read is "this user's favourites"; the primary key already leads
+    // with user_id, so this index exists for the ordering the gallery uses.
+    index('favourites_user_created_idx').on(table.userId, table.createdAt),
+  ],
+);
+
+/**
  * ── Character Visual Identity (US-16A) ──────────────────────────────────
  *
  * Swipey owns the character's visual identity: a versioned Visual DNA record

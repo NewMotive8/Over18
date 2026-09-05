@@ -74,6 +74,25 @@ export function LikeIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+/**
+ * The SAME heart as `LikeIcon`, drawn as a stroke instead of a fill.
+ *
+ * One path, two renderings: the outline and the filled heart must read as the
+ * same shape changing state, not as two icons. `d` is copied verbatim from
+ * `LikeIcon` on purpose — if the heart is ever redrawn, both must move
+ * together, and having them differ by exactly one attribute makes that obvious.
+ *
+ * Outline means NOT favourited; filled means favourited. The fill is a readout
+ * of what the server holds, never tap feedback.
+ */
+export function HeartOutlineIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12 20.3S3.5 15 3.5 8.9A4.4 4.4 0 0 1 12 6.9a4.4 4.4 0 0 1 8.5 2c0 6.1-8.5 11.4-8.5 11.4Z" />
+    </svg>
+  );
+}
+
 export function OpenProfileIcon(props: SVGProps<SVGSVGElement>) {
   // chevron up — open / expand the profile
   return (

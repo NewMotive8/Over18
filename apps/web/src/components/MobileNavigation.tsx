@@ -1,11 +1,11 @@
 import { Link, useLocation } from 'react-router-dom';
 import { PRIMARY_DESTINATIONS, activeDestinationKey, type DestinationKey } from './nav/destinations';
-import { DiscoverIcon, GoSteadyIcon, ProfileIcon } from './icons';
+import { DiscoverIcon, GoSteadyIcon, LikeIcon, ProfileIcon } from './icons';
 
 /**
  * Persistent, mobile-first primary navigation (US-18).
  *
- * Renders the three primary destinations with clear active state. Active
+ * Renders the primary destinations with clear active state. Active
  * detection uses the platform-independent `activeDestinationKey` so the rule is
  * shared with tests (and a future native shell) rather than duplicated in the
  * component. Thumb-friendly targets; still usable on desktop.
@@ -13,6 +13,9 @@ import { DiscoverIcon, GoSteadyIcon, ProfileIcon } from './icons';
 const ICONS: Record<DestinationKey, (props: { className?: string }) => JSX.Element> = {
   discover: DiscoverIcon,
   'go-steady': GoSteadyIcon,
+  // The filled heart — the same mark the swipe deck's favourite action uses, so
+  // the tab and the action a user just took are visibly the same thing.
+  favourites: LikeIcon,
   profile: ProfileIcon,
 };
 

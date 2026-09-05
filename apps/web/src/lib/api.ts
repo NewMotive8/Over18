@@ -902,6 +902,20 @@ export interface PublicDiscoveryCategory {
 
 export const homeApi = {
   get: () => request<PublicHome>('/api/home'),
+  /**
+   * The Play with me population, on its own.
+   *
+   * SAME SHAPE, SAME RULE, SAME SERVER FUNCTION as `home.playWithMe`. Swipe
+   * reads this; Home reads the copy embedded in `/api/home`. Neither is a
+   * fallback for the other and there is no third source — `charactersApi.list()`
+   * is NOT a population for these surfaces, because it returns every active
+   * character whether or not she has published anything, which is exactly how
+   * the deck used to fill up with characters the rail had already dropped.
+   *
+   * Every card here is eligible by construction: the server drops a character
+   * with no publicly reachable video rather than returning her with a null clip.
+   */
+  playWithMe: () => request<{ characters: PublicPlayWithMeCard[] }>('/api/play-with-me'),
   /** The lobby's category pills — App Categories, the one editorial system. */
   categories: () => request<{ categories: PublicCategoryPill[] }>('/api/categories'),
   /**
@@ -931,6 +945,46 @@ export const homeApi = {
     const qs = search.toString();
     return request<{ clips: PublicClip[] }>(`/api/browse/clips${qs ? `?${qs}` : ''}`);
   },
+};
+
+/**
+ * Favourites — the user's saved characters. AUTHENTICATED, always.
+ *
+ * `credentials: 'include'` is already the default for every call through
+ * `request`, so the HttpOnly session cookie carries the identity and no user id
+ * is ever sent from the browser. A signed-out caller gets 401 from all three.
+ *
+ * THE SERVER IS THE SOURCE OF TRUTH. Nothing in this feature is written to
+ * localStorage; the browser holds only what it read back from here, which is
+ * why a favourite survives a refresh, a new session and another device.
+ */
+export interface FavouritesResponse {
+  /**
+   * The gallery cards, composed exactly as Play with me composes them. `clip`
+   * is null for a saved character with no currently publishable video — the
+   * page renders no tile for her rather than substituting an image.
+   */
+  favourites: PublicPlayWithMeCard[];
+  /**
+   * The raw persisted relationship, unfiltered by eligibility. This is what the
+   * heart reflects: a character can be saved while temporarily unrenderable,
+   * and her heart must stay filled through that.
+   */
+  characterIds: string[];
+}
+
+export const favouritesApi = {
+  list: () => request<FavouritesResponse>('/api/favourites'),
+  /** Save. Idempotent — repeating it leaves her favourited, never toggles. */
+  add: (characterId: string) =>
+    request<{ favourited: boolean }>(`/api/favourites/${encodeURIComponent(characterId)}`, {
+      method: 'PUT',
+    }),
+  /** Remove. The filled heart is the only caller. */
+  remove: (characterId: string) =>
+    request<{ favourited: boolean }>(`/api/favourites/${encodeURIComponent(characterId)}`, {
+      method: 'DELETE',
+    }),
 };
 
 export const discoveryApi = {

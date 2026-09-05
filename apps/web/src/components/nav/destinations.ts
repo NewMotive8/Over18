@@ -7,7 +7,7 @@
  * (icons, layout) lives in MobileNavigation; product routing rules live here.
  */
 
-export type DestinationKey = 'discover' | 'go-steady' | 'profile';
+export type DestinationKey = 'discover' | 'go-steady' | 'favourites' | 'profile';
 
 export interface NavDestination {
   key: DestinationKey;
@@ -21,8 +21,16 @@ export interface NavDestination {
 }
 
 /**
- * The three primary destinations of the application shell.
+ * The primary destinations of the application shell, in bar order.
  * Discover reuses the existing lobby route (`/characters`) — no duplicate route.
+ *
+ * Favourites sits between Get Steady and Profile: it is a browsing destination
+ * like the two before it, and it must not displace Profile from the edge of the
+ * bar, which is where people reach for it.
+ *
+ * ORDER IS DECLARATION ORDER. `MobileNavigation` maps this array straight to
+ * `<li>`s, so the position of the entry below is the position on screen — there
+ * is no second ordering to keep in step.
  */
 export const PRIMARY_DESTINATIONS: NavDestination[] = [
   {
@@ -38,6 +46,13 @@ export const PRIMARY_DESTINATIONS: NavDestination[] = [
     path: '/go-steady',
     matchPrefixes: ['/go-steady'],
     description: 'Your closer connections',
+  },
+  {
+    key: 'favourites',
+    label: 'Favourites',
+    path: '/favourites',
+    matchPrefixes: ['/favourites'],
+    description: 'Characters you saved',
   },
   {
     key: 'profile',

@@ -6,10 +6,44 @@ import {
 } from './destinations';
 
 describe('primary navigation destinations', () => {
-  it('exposes exactly Discover, Go Steady, and Profile with their routes', () => {
-    expect(PRIMARY_DESTINATIONS.map((d) => d.key)).toEqual(['discover', 'go-steady', 'profile']);
-    expect(PRIMARY_DESTINATIONS.map((d) => d.path)).toEqual(['/characters', '/go-steady', '/profile']);
-    expect(PRIMARY_DESTINATIONS.map((d) => d.label)).toEqual(['Discover', 'Go Steady', 'Profile']);
+  it('exposes exactly Discover, Go Steady, Favourites and Profile with their routes', () => {
+    expect(PRIMARY_DESTINATIONS.map((d) => d.key)).toEqual([
+      'discover',
+      'go-steady',
+      'favourites',
+      'profile',
+    ]);
+    expect(PRIMARY_DESTINATIONS.map((d) => d.path)).toEqual([
+      '/characters',
+      '/go-steady',
+      '/favourites',
+      '/profile',
+    ]);
+    expect(PRIMARY_DESTINATIONS.map((d) => d.label)).toEqual([
+      'Discover',
+      'Go Steady',
+      'Favourites',
+      'Profile',
+    ]);
+  });
+
+  /**
+   * The bar order is the requirement, not an accident of the array: Favourites
+   * goes BETWEEN Get Steady and Profile, and Profile keeps the edge. Asserting
+   * the neighbours rather than only the set is what would catch an append.
+   */
+  it('places Favourites between Go Steady and Profile', () => {
+    const keys = PRIMARY_DESTINATIONS.map((d) => d.key);
+    expect(keys.indexOf('favourites')).toBe(keys.indexOf('go-steady') + 1);
+    expect(keys.indexOf('profile')).toBe(keys.indexOf('favourites') + 1);
+  });
+
+  /** The three pre-existing destinations are unchanged by the addition. */
+  it('leaves the existing destinations intact', () => {
+    const byKey = new Map(PRIMARY_DESTINATIONS.map((d) => [d.key, d]));
+    expect(byKey.get('discover')!.path).toBe('/characters');
+    expect(byKey.get('go-steady')!.path).toBe('/go-steady');
+    expect(byKey.get('profile')!.path).toBe('/profile');
   });
 });
 
@@ -21,6 +55,7 @@ describe('activeDestinationKey', () => {
 
   it('marks the matching primary destination active', () => {
     expect(activeDestinationKey('/go-steady')).toBe('go-steady');
+    expect(activeDestinationKey('/favourites')).toBe('favourites');
     expect(activeDestinationKey('/profile')).toBe('profile');
   });
 

@@ -7,6 +7,7 @@ import LobbyPage from './pages/LobbyPage';
 import SwipePage from './pages/SwipePage';
 import CharacterDetailPage from './pages/CharacterDetailPage';
 import GoSteadyPage from './pages/GoSteadyPage';
+import FavouritesPage from './pages/FavouritesPage';
 import ProfilePage from './pages/ProfilePage';
 import SubscriptionPage from './pages/SubscriptionPage';
 import ChatPage from './pages/ChatPage';
@@ -30,11 +31,12 @@ import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
 /**
  * Application routes (US-18).
  *
- * Every screen renders inside the persistent AppShell. The three primary
+ * Every screen renders inside the persistent AppShell. The primary
  * destinations are Discover (`/characters`, the existing lobby — reused, not
- * duplicated), Go Steady (`/go-steady`) and Profile (`/profile`). Root redirects
- * to Discover, the primary entry point. Character profile, chat, auth, the
- * subscription placeholder, and the not-found fallback are all preserved.
+ * duplicated), Go Steady (`/go-steady`), Favourites (`/favourites`) and Profile
+ * (`/profile`). Root redirects to Discover, the primary entry point. Character
+ * profile, chat, auth, the subscription placeholder, and the not-found fallback
+ * are all preserved.
  */
 export default function App() {
   return (
@@ -84,6 +86,14 @@ export default function App() {
         {/* Primary destination: the v2 media-rich Lobby & Discovery Hub (US-28) */}
         <Route path="/characters" element={<LobbyPage />} />
         <Route path="/go-steady" element={<GoSteadyPage />} />
+        {/*
+          Favourites — the user's saved characters. NOT wrapped in RequireAuth:
+          the page reports "sign in to see your Favourites" in place, which
+          keeps a persistent footer tab from bouncing a signed-out visitor
+          straight out of the shell to /login. The DATA is authenticated
+          regardless — every /api/favourites route requires a session.
+        */}
+        <Route path="/favourites" element={<FavouritesPage />} />
         <Route path="/profile" element={<ProfilePage />} />
 
         {/* Swipe discovery (US-19) preserved as a secondary interaction */}

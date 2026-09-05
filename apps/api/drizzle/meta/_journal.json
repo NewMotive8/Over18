@@ -162,6 +162,13 @@
       "when": 1788277869294,
       "tag": "0022_dashing_mimic",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788547849998,
+      "tag": "0023_small_sandman",
+      "breakpoints": true
     }
   ]
 }

@@ -8,14 +8,14 @@ import {
   type PointerEvent as ReactPointerEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
-import type { PublicCharacter } from '@over18/shared';
+import type { PublicPlayWithMeCard } from '../lib/api';
 import {
   swipeDecisionFor,
   swipeProgress,
   TAP_SLOP_PX,
   type SwipeDecision,
 } from '../lib/swipe';
-import DiscoverCard from './DiscoverCard';
+import SwipeCard from './SwipeCard';
 
 export interface SwipeDeckHandle {
   like: () => void;
@@ -38,14 +38,26 @@ export interface SwipeDeckHandle {
  *
  * The deck is controlled: it animates the card out, THEN calls `onDecision`, so
  * the parent can advance its index only once the fling has played.
+ *
+ * THE CARDS ARE PLAY WITH ME CARDS. The deck used to take `PublicCharacter` —
+ * the full roster shape, with no clip on it — and render `DiscoverCard`, which
+ * then hunted for media through a fallback chain ending in a lettered tile.
+ * It now takes the same card the Home rail renders, whose `clip` is a real
+ * published video the server has already vouched for. The gesture code below is
+ * untouched: this is a change of what the deck contains, not how it behaves.
+ *
+ * NOTHING HERE DECIDES A FAVOURITE. The deck reports 'like' or 'pass' and the
+ * page maps that onto the stored relationship through `swipeAction`, so the
+ * rule that a right swipe never removes a favourite lives in one testable
+ * place rather than in a gesture handler.
  */
 const SwipeDeck = forwardRef<
   SwipeDeckHandle,
   {
-    current: PublicCharacter;
-    next?: PublicCharacter;
-    onDecision: (decision: SwipeDecision, character: PublicCharacter) => void;
-    onOpen: (character: PublicCharacter) => void;
+    current: PublicPlayWithMeCard;
+    next?: PublicPlayWithMeCard;
+    onDecision: (decision: SwipeDecision, character: PublicPlayWithMeCard) => void;
+    onOpen: (character: PublicPlayWithMeCard) => void;
     disabled?: boolean;
   }
 >(function SwipeDeck({ current, next, onDecision, onOpen, disabled = false }, ref) {
@@ -175,7 +187,7 @@ const SwipeDeck = forwardRef<
       {/* Peek of the next card behind the top card. */}
       {next && (
         <div aria-hidden className="pointer-events-none absolute inset-0 scale-[0.94] opacity-60">
-          <DiscoverCard character={next} />
+          <SwipeCard character={next} />
         </div>
       )}
 
@@ -199,7 +211,7 @@ const SwipeDeck = forwardRef<
           if (e.propertyName === 'transform' && fling && committingRef.current) commit(fling);
         }}
       >
-        <DiscoverCard character={current} onOpen={() => onOpen(current)} />
+        <SwipeCard character={current} onOpen={() => onOpen(current)} />
 
         {/* Gesture feedback stamps. */}
         <div

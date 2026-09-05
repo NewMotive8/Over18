@@ -5,6 +5,7 @@ import {
   browsePublicCharacters,
   browsePublicClips,
   composeHome,
+  listPlayWithMe,
   listPublicCategoryPills,
 } from '../services/home-composition-service.js';
 import {
@@ -98,6 +99,38 @@ export default async function publicHomeRoutes(
     reply.header('cache-control', 'private, no-store');
     return reply.send(home);
   });
+
+  /**
+   * THE PLAY WITH ME POPULATION, on its own.
+   *
+   * The SAME `listPlayWithMe` that produces `home.playWithMe` — not a similar
+   * query, not a second definition, the same function called a second way. That
+   * is the entire reason this route exists: Swipe must contain exactly the
+   * characters Home's rail contains, and the only way to guarantee that is for
+   * both to read one source. Swipe used to populate itself from
+   * `/api/characters`, which is every active character regardless of whether
+   * she has published anything, so the deck showed characters the rail had
+   * already dropped and dressed them in whatever fallback media the client
+   * could find.
+   *
+   * WHY NOT JUST CALL `/api/home`? Because Swipe would then also compose
+   * banners, hero clips, every published category rail and the search grid —
+   * work it discards. The composition is shared where it matters (the rule) and
+   * not where it does not (the payload).
+   *
+   * PUBLIC, LIKE HOME. Browsing needs no account, and this carries the same
+   * narrow projection: a display name, an age band, category chips and one real
+   * clip. Saving one of these characters DOES need an account, and that lives
+   * in its own authenticated plugin.
+   *
+   * Every card here is eligible by construction — `listPlayWithMe` drops a
+   * character with no publicly reachable video rather than returning her with a
+   * null clip — so the deck needs no filtering rule of its own and could not
+   * apply a laxer one if it had.
+   */
+  app.get('/api/play-with-me', async () => ({
+    characters: await listPlayWithMe(opts.db),
+  }));
 
   /** The lower-page discovery strip, in order. Position 0 is the default pill. */
   app.get('/api/discovery/categories', async () => ({

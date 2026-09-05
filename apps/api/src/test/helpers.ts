@@ -127,7 +127,7 @@ export async function createTestContext(
 
 export async function truncateAll(ctx: TestContext): Promise<void> {
   await ctx.pool.query(
-    'TRUNCATE TABLE prompt_drive_connections, prompt_drive_oauth_states, prompt_drive_folders, prompt_job_outputs, prompt_jobs, prompt_batches, discovery_category_keywords, discovery_categories, asset_keywords, content_keywords, home_hero_clips, home_recent_characters, home_banners, banner_creatives, app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, messages, conversations, sessions, users, characters CASCADE',
+    'TRUNCATE TABLE prompt_drive_connections, prompt_drive_oauth_states, prompt_drive_folders, prompt_job_outputs, prompt_jobs, prompt_batches, discovery_category_keywords, discovery_categories, asset_keywords, content_keywords, home_hero_clips, home_recent_characters, home_banners, banner_creatives, app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, favourites, messages, conversations, sessions, users, characters CASCADE',
   );
 }
 

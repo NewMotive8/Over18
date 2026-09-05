@@ -571,61 +571,15 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
  * holds.
  */
 export async function listPlayWithMe(db: Db): Promise<PublicPlayWithMeCardView[]> {
-  const rows = await db
-    .select({
-      id: characters.id,
-      displayName: characters.displayName,
-      /**
-       * The ONE Visual Identity value a Home card renders, read here instead of
-       * over HTTP.
-       *
-       * `->` not `->>`, so the driver hands back the stored JSON value with its
-       * type intact and `renderValue` sees exactly what the Character page's
-       * projection sees. `->>` would flatten a list or an object to raw JSON
-       * text and the two surfaces would print different strings.
-       *
-       * A LEFT JOIN, so a character with no active identity still gets her
-       * card — with a null band, which is precisely the state a failed or empty
-       * visual-identity fetch produced before. At most one row can join: the
-       * schema carries a unique index over (character_id) where status =
-       * 'active', so this cannot multiply the roster.
-       */
-      apparentAgeBand: sql<unknown>`${characterVisualIdentities.visualDna} -> 'apparentAgeBand'`,
-    })
-    .from(characters)
-    .leftJoin(
-      characterVisualIdentities,
-      and(
-        eq(characterVisualIdentities.characterId, characters.id),
-        eq(characterVisualIdentities.status, 'active'),
-      ),
-    )
-    .where(eq(characters.status, 'active'))
-    .orderBy(asc(characters.displayName), asc(characters.id));
-
-  const ids = rows.map((row) => row.id);
-  const [clips, categories] = await Promise.all([
-    representativeClips(db, ids),
-    characterCategoryNames(db, ids),
-  ]);
-
-  const cards: PublicPlayWithMeCardView[] = rows.map((row) => ({
-    id: row.id,
-    displayName: row.displayName,
-    // The SAME renderer the Character page's About tab uses — see renderValue.
-    apparentAgeBand: renderValue(row.apparentAgeBand),
-    categories: categories.get(row.id) ?? [],
-    clip: clips.get(row.id) ?? null,
-  }));
-  const eligible = cards.filter((card) => card.clip !== null && card.clip.mediaType === 'video');
+  const eligible = eligibleCards(await playWithMeCards(db, null));
 
   /**
    * THE OPERATOR'S ORDER, WHERE THERE IS ONE.
    *
    * `home_play_with_me_characters` was defined for exactly this. EMPTY MEANS
    * AUTOMATIC: with no rows the rail is every active character alphabetically,
-   * byte for byte what the lines above already computed, so an installation
-   * that never touches the new control cannot observe a change.
+   * byte for byte what the line above already computed, so an installation
+   * that never touches the control cannot observe a change.
    *
    * ORDER IS KEYED ON THE CHARACTER, NOT THE CLIP, and that is the whole
    * reason this is its own table rather than rows in `app_category_assets`.
@@ -670,6 +624,121 @@ export async function listPlayWithMe(db: Db): Promise<PublicPlayWithMeCardView[]
   // alphabetical order she already had. `eligible` is the source, so this
   // preserves it without a second sort.
   return [...placed, ...eligible.filter((card) => byId.has(card.id))];
+}
+
+/**
+ * THE ELIGIBILITY PREDICATE, as one named function.
+ *
+ * Play with me, Swipe and Favourites all ask the same question — "does this
+ * character have a real published clip to represent her right now?" — and this
+ * is the only place that answers it. It used to be an inline `.filter` inside
+ * `listPlayWithMe`; naming it is what lets the other two surfaces share the
+ * rule by CALLING it rather than by restating it and hoping the restatements
+ * stay identical.
+ *
+ * The clause is unchanged: a card needs a clip, and that clip must be a video.
+ * `representativeClips` has already restricted the choice to a non-reference,
+ * approved, publicly reachable video owned by that character, so this is the
+ * second lock on a decision the SQL already made — not a new rule.
+ */
+export function isEligibleCard(card: PublicPlayWithMeCardView): boolean {
+  return card.clip !== null && card.clip.mediaType === 'video';
+}
+
+/** The eligible subset, order preserved. */
+export function eligibleCards(
+  cards: readonly PublicPlayWithMeCardView[],
+): PublicPlayWithMeCardView[] {
+  return cards.filter(isEligibleCard);
+}
+
+/**
+ * Cards for a NAMED set of characters, composed exactly as the rail composes
+ * them — same identity join, same clip query, same category membership.
+ *
+ * THIS IS HOW FAVOURITES STAYS HONEST. A favourite holds a character id and no
+ * media locator at all, so the gallery has to ask what that character looks
+ * like RIGHT NOW. Because the composition is literally the code path Home runs,
+ * a favourite cannot display something Play with me would have refused to show,
+ * and replacing a character's published clip changes her Favourites tile on the
+ * very next request.
+ *
+ * CARDS MAY CARRY A NULL CLIP, and the caller decides what that means.
+ * `listPlayWithMe` drops them; Favourites keeps the row and renders no tile.
+ * Filtering in here would have denied the caller that distinction.
+ *
+ * INACTIVE CHARACTERS ARE ABSENT, not blank — the `status = 'active'` gate
+ * lives in the shared row query, so no caller can opt out of it.
+ */
+export async function playWithMeCardsFor(
+  db: Db,
+  characterIds: readonly string[],
+): Promise<PublicPlayWithMeCardView[]> {
+  if (characterIds.length === 0) return [];
+  return playWithMeCards(db, [...characterIds]);
+}
+
+/**
+ * The row-to-card assembly both callers share.
+ *
+ * `restrictTo` null means every active character (the rail); a list means those
+ * characters and no others (Favourites). The `status = 'active'` condition is
+ * NOT parameterised: it is the one gate neither surface may relax.
+ */
+async function playWithMeCards(
+  db: Db,
+  restrictTo: string[] | null,
+): Promise<PublicPlayWithMeCardView[]> {
+  const rows = await db
+    .select({
+      id: characters.id,
+      displayName: characters.displayName,
+      /**
+       * The ONE Visual Identity value a Home card renders, read here instead of
+       * over HTTP.
+       *
+       * `->` not `->>`, so the driver hands back the stored JSON value with its
+       * type intact and `renderValue` sees exactly what the Character page's
+       * projection sees. `->>` would flatten a list or an object to raw JSON
+       * text and the two surfaces would print different strings.
+       *
+       * A LEFT JOIN, so a character with no active identity still gets her
+       * card — with a null band, which is precisely the state a failed or empty
+       * visual-identity fetch produced before. At most one row can join: the
+       * schema carries a unique index over (character_id) where status =
+       * 'active', so this cannot multiply the roster.
+       */
+      apparentAgeBand: sql<unknown>`${characterVisualIdentities.visualDna} -> 'apparentAgeBand'`,
+    })
+    .from(characters)
+    .leftJoin(
+      characterVisualIdentities,
+      and(
+        eq(characterVisualIdentities.characterId, characters.id),
+        eq(characterVisualIdentities.status, 'active'),
+      ),
+    )
+    .where(
+      restrictTo
+        ? and(eq(characters.status, 'active'), inArray(characters.id, restrictTo))
+        : eq(characters.status, 'active'),
+    )
+    .orderBy(asc(characters.displayName), asc(characters.id));
+
+  const ids = rows.map((row) => row.id);
+  const [clips, categories] = await Promise.all([
+    representativeClips(db, ids),
+    characterCategoryNames(db, ids),
+  ]);
+
+  return rows.map((row) => ({
+    id: row.id,
+    displayName: row.displayName,
+    // The SAME renderer the Character page's About tab uses — see renderValue.
+    apparentAgeBand: renderValue(row.apparentAgeBand),
+    categories: categories.get(row.id) ?? [],
+    clip: clips.get(row.id) ?? null,
+  }));
 }
 
 /* ------------------------------------------------------------------ *
