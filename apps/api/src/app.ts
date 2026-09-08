@@ -44,6 +44,10 @@ import {
   unconfiguredProfileAuthor,
   type ProfileAuthor,
 } from './services/character-profile-service.js';
+import {
+  unconfiguredPersonaGenerator,
+  type PersonaGenerator,
+} from './services/character-persona-generator.js';
 import type { MediaProviders } from './media-pipeline/types.js';
 
 export interface BuildAppOptions {
@@ -71,6 +75,12 @@ export interface BuildAppOptions {
    * "fail clearly, never fake" rule the reply provider follows.
    */
   profileAuthor?: ProfileAuthor;
+  /**
+   * Avatar-derived persona generation (Phase 2). Defaults to the
+   * unconfigured generator, which reports itself unavailable rather than
+   * inventing a persona — same "fail clearly, never fake" rule as above.
+   */
+  personaGenerator?: PersonaGenerator;
   /**
    * Admin -> Generation dependencies (xAI + Google Drive + the spool).
    *
@@ -141,6 +151,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
       servePathPrefix: '/admin/content/uploads',
     },
     profileAuthor: options.profileAuthor ?? unconfiguredProfileAuthor,
+    personaGenerator: options.personaGenerator ?? unconfiguredPersonaGenerator,
   });
   // Admin → Settings. Content requirements are configuration, so they get their
   // own plugin rather than living inside the content-review surface that reads
