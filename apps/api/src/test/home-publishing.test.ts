@@ -146,6 +146,11 @@ async function makeApprovedVideoAsset(characterId = LUNA.id) {
  * Separate from `publishViaKeyword` on purpose, and the distinction is the
  * point of this whole model: a keyword makes a clip reachable from HOME and
  * Discovery, this makes it appear on HER PAGE. Approval alone does neither.
+ *
+ * THIS IS ALSO WHAT MAKES HER DISCOVERABLE. Play with me, Swipe and Favourites
+ * ask whether a character's content was RELEASED, not whether an operator
+ * merchandised it onto Home, so this is the lever those surfaces answer to.
+ * Tests that need a character on the rail call this one.
  */
 async function releaseToPosts(assetId: string) {
   const res = await on.app.inject({
@@ -156,7 +161,14 @@ async function releaseToPosts(assetId: string) {
   expect(res.statusCode).toBe(200);
 }
 
-/** Makes an approved video PUBLICLY REACHABLE via a discovery keyword. */
+/**
+ * MERCHANDISES an approved clip onto Home, via a discovery keyword.
+ *
+ * Editorial placement, and nothing more: it makes the bytes publicly fetchable
+ * and puts the clip on the search grid. It does NOT put the character on Play
+ * with me or Swipe -- those read publication, not placement -- so a test that
+ * wants a rail card wants `releaseToPosts` instead.
+ */
 async function publishViaKeyword(assetId: string, keyword = 'railtest') {
   await api.createDiscovery({ name: `Rail ${keyword} ${++seq}`, keywords: [keyword] });
   await api.setAssetKeywords(assetId, [keyword]);
@@ -668,8 +680,8 @@ describe('Play with Me', () => {
     // is the card COUNT, which must stay 1 however many clips exist.
     const a = await makeApprovedVideoAsset();
     const b = await makeApprovedVideoAsset();
-    await publishViaKeyword(a.id, 'onecard');
-    await api.setAssetKeywords(b.id, ['onecard']);
+    await releaseToPosts(a.id);
+    await releaseToPosts(b.id);
     const home = (await api.home()).json();
     expect(home.playWithMe.filter((c: { id: string }) => c.id === LUNA.id)).toHaveLength(1);
     const luna = home.playWithMe.find((c: { id: string }) => c.id === LUNA.id);
@@ -700,7 +712,7 @@ describe('Play with Me', () => {
     expect(assetA!.kind).toBe('reference');
 
     const assetB = await makeApprovedVideoAsset();
-    await publishViaKeyword(assetB.id);
+    await releaseToPosts(assetB.id);
 
     const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
     expect(luna.clip).not.toBeNull();
@@ -712,7 +724,7 @@ describe('Play with Me', () => {
 
   it('a character with a canonical image AND an approved video gets the VIDEO', async () => {
     const video = await makeApprovedVideoAsset();
-    await publishViaKeyword(video.id);
+    await releaseToPosts(video.id);
     const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
     expect(luna.clip.id).toBe(video.id);
     // Stable across reads — the choice is deterministic, not sampled.
@@ -722,9 +734,9 @@ describe('Play with Me', () => {
 
   it('the representative video belongs to THAT character and no other', async () => {
     const lunaVideo = await makeApprovedVideoAsset(LUNA.id);
-    await publishViaKeyword(lunaVideo.id, 'lunaonly');
+    await releaseToPosts(lunaVideo.id);
     const emberVideo = await makeApprovedVideoAsset(EMBER.id);
-    await publishViaKeyword(emberVideo.id, 'emberonly');
+    await releaseToPosts(emberVideo.id);
 
     const home = (await api.home()).json();
     const luna = home.playWithMe.find((c: { id: string }) => c.id === LUNA.id);
@@ -760,8 +772,10 @@ describe('Play with Me', () => {
     expect(rail.map((c) => c.id)).not.toContain(LUNA.id);
   });
 
-  it('does NOT select a video that is approved but not publicly reachable', async () => {
-    // Approved, but in no category, no Hero and carrying no keyword.
+  it('does NOT select a video that is approved but never RELEASED', async () => {
+    // Approved and released to nothing: not on her Posts tab, and also in no
+    // category, no Hero and carrying no keyword. Approval is not publication,
+    // which is the whole of this rule.
     await makeApprovedVideoAsset();
     const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
     expect(rail.map((c) => c.id)).not.toContain(LUNA.id);
@@ -769,7 +783,7 @@ describe('Play with Me', () => {
 
   it('does NOT select a video belonging to an INACTIVE character', async () => {
     const video = await makeApprovedVideoAsset(EMBER.id);
-    await publishViaKeyword(video.id, 'emberinactive');
+    await releaseToPosts(video.id);
     // Reachable while she is live...
     expect(
       (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === EMBER.id).clip.id,
@@ -808,7 +822,7 @@ describe('Play with Me', () => {
     // An uploaded image is legitimate content, but these rails are video
     // surfaces. It must not become the card's media.
     const image = await makeApprovedAsset();
-    await publishViaKeyword(image.id, 'imageonly');
+    await releaseToPosts(image.id);
     const res = await api.home();
     const rail = res.json().playWithMe as Array<{ id: string }>;
     expect(rail.map((c) => c.id)).not.toContain(LUNA.id);
@@ -820,13 +834,13 @@ describe('Play with Me', () => {
     // An operator who uploads a new clip expects to see it, not to wonder why
     // the rail still shows her first ever upload.
     const first = await makeApprovedVideoAsset();
-    await publishViaKeyword(first.id, 'multi');
+    await releaseToPosts(first.id);
     await on.db
       .update(characterVisualAssets)
       .set({ createdAt: new Date(Date.now() - 60_000) })
       .where(eq(characterVisualAssets.id, first.id));
     const second = await makeApprovedVideoAsset();
-    await api.setAssetKeywords(second.id, ['multi']);
+    await releaseToPosts(second.id);
 
     const luna = (await api.home()).json().playWithMe.find((c: { id: string }) => c.id === LUNA.id);
     expect(luna.clip.id).toBe(second.id);
@@ -874,9 +888,9 @@ describe('Play with Me', () => {
 describe('Play with me is one deterministic rule', () => {
   it('is every active character WITH a video, alphabetically, one card each', async () => {
     const luna = await makeApprovedVideoAsset(LUNA.id);
-    await publishViaKeyword(luna.id, 'detlu');
+    await releaseToPosts(luna.id);
     const ember = await makeApprovedVideoAsset(EMBER.id);
-    await publishViaKeyword(ember.id, 'detem');
+    await releaseToPosts(ember.id);
 
     const rail = (await api.home()).json().playWithMe as Array<{
       id: string;
@@ -896,7 +910,7 @@ describe('Play with me is one deterministic rule', () => {
 
   it('is STABLE across reads — the same rail, not a sample', async () => {
     const video = await makeApprovedVideoAsset(LUNA.id);
-    await publishViaKeyword(video.id, 'detstable');
+    await releaseToPosts(video.id);
     const once = (await api.home()).json().playWithMe;
     const twice = (await api.home()).json().playWithMe;
     expect(twice).toEqual(once);
@@ -1977,6 +1991,11 @@ describe('the Hero falls back rather than disappearing', () => {
    * (a reference image is no longer passed off as a clip). So a borrowable
    * video has to exist for there to be anything to borrow — that is the new
    * rule showing through, not a weakened assertion.
+   *
+   * MERCHANDISED, NOT RELEASED. The fallback is strictly editorial: it borrows
+   * clips an operator PLACED on Home, never a character's released content. So
+   * the fixture places one — the rail's own lever would leave the Hero empty,
+   * which is the property the last test in this suite pins directly.
    */
   beforeEach(async () => {
     const video = await makeApprovedVideoAsset();
@@ -1987,13 +2006,38 @@ describe('the Hero falls back rather than disappearing', () => {
     const home = (await api.home()).json();
     expect(home.hero.length).toBeGreaterThan(0);
     expect(home.hero.length).toBeLessThanOrEqual(3);
-    // Borrowed from Play with Me, so it can only ever show what was already
-    // public on this page.
-    const playable = home.playWithMe
-      .filter((c: { clip: unknown }) => c.clip)
-      .map((c: { clip: { id: string } }) => c.clip.id);
-    for (const clip of home.hero) expect(playable).toContain(clip.id);
+    // Borrowed from the EDITORIAL character cards, so it can only ever show a
+    // clip an operator merchandised — and every one of them is fetchable.
+    const grid = (await on.app.inject({ method: 'GET', url: '/api/browse/characters' })).json()
+      .characters as Array<{ clip: { id: string } | null }>;
+    const merchandised = grid.filter((c) => c.clip).map((c) => c.clip!.id);
+    for (const clip of home.hero as Array<{ id: string }>) {
+      expect(merchandised).toContain(clip.id);
+      expect((await api.media(clip.id)).statusCode).toBe(200);
+    }
   });
+
+  /**
+   * THE FALLBACK IS STRICTLY EDITORIAL, and this is the assertion that says so.
+   *
+   * The Hero is the most prominent slot on Home. Releasing a clip to a
+   * character's own page makes her discoverable — it must not put her content
+   * at the top of Home, which is an editorial decision nobody made. She reaches
+   * Play with me, and her clip still does not reach the Hero.
+   */
+  it('will NOT borrow a merely published clip — publication is not a Home decision', async () => {
+    const released = await makeApprovedVideoAsset(EMBER.id);
+    await releaseToPosts(released.id);
+
+    const home = (await api.home()).json();
+    // She is discoverable, and reachable through the media route...
+    expect(home.playWithMe.map((c: { id: string }) => c.id)).toContain(EMBER.id);
+    expect((await api.media(released.id)).statusCode).toBe(200);
+    // ...and her clip is nowhere near the top of Home, because nobody put it
+    // there. Only the merchandised fixture clip is borrowed.
+    expect((home.hero as Array<{ id: string }>).map((c) => c.id)).not.toContain(released.id);
+  });
+
 
   it('a configured Hero is the source of truth — the fallback never tops it up', async () => {
     const asset = await makeApprovedAsset();
@@ -2331,7 +2375,9 @@ describe('the Hero fallback is never persisted', () => {
   /**
    * Same reason as the suite above, and TWO characters' videos rather than one:
    * a test below asserts the fallback borrows more than a single clip before a
-   * configured clip replaces the whole of it.
+   * configured clip replaces the whole of it. MERCHANDISED, not released: the
+   * fallback is strictly editorial, so placement is what makes a clip
+   * borrowable here.
    */
   beforeEach(async () => {
     const luna = await makeApprovedVideoAsset(LUNA.id);
@@ -2538,6 +2584,11 @@ describe('the Nova journey', () => {
     /* 9. Publish the category. */
     expect((await api.publish(category.id, true)).statusCode).toBe(200);
 
+    /* 9b. RELEASE her video to her own page. A separate act from placing it,
+          and the one Play with me reads: merchandising decides what Home shows,
+          publication decides whether she is a character anyone can discover. */
+    await releaseToPosts(videoAssetId);
+
     /* 10. Put one of her clips in the Hero. Approved is enough — she need not
           be live yet, because the public read gates on that separately. */
     const heroRes = await on.app.inject({
@@ -2572,8 +2623,8 @@ describe('the Nova journey', () => {
     expect(patched.json().status).toBe('active');
 
     /* 13. She is on Play with me BY RULE — going live plus an approved,
-          publicly reachable video is the whole of it. There is no rail to add
-          her to, and nothing an operator has to remember to do. */
+          RELEASED video is the whole of it. There is no rail to add her to, and
+          nothing an operator has to remember to do. */
     const railIds = ((await api.home()).json().playWithMe as Array<{ id: string }>).map(
       (c) => c.id,
     );
@@ -2684,10 +2735,9 @@ describe('an uploaded video becomes the public card’s clip', () => {
     expect((await approve(assetId)).statusCode).toBe(200);
     expect((await publish(nova.id)).statusCode).toBe(200);
 
-    // Placement is what makes it public — the same rule as every other clip.
-    const category = await makeCategory('Nova Video Cat');
-    expect((await assign(category.id, [assetId])).statusCode).toBe(200);
-    expect((await api.publish(category.id, true)).statusCode).toBe(200);
+    // Releasing it to her page is what puts her on the rail -- the same rule as
+    // every other clip. Approval alone is not publication.
+    await releaseToPosts(assetId);
 
     const card = await cardFor(nova.id);
     expect(card).toBeDefined();
@@ -2720,9 +2770,7 @@ describe('an uploaded video becomes the public card’s clip', () => {
   it('keeps her media NON-PUBLIC entirely while she is unpublished', async () => {
     const { nova, assetId } = await novaWithVideo();
     await approve(assetId);
-    const category = await makeCategory('Unpublished Owner Cat');
-    await assign(category.id, [assetId]);
-    await api.publish(category.id, true);
+    await releaseToPosts(assetId);
 
     // She is still inactive: she is not on the rail at all, and her bytes 404.
     const home = (await api.home()).json();
@@ -2740,9 +2788,7 @@ describe('an uploaded video becomes the public card’s clip', () => {
     const { nova, assetId } = await novaWithVideo();
     await approve(assetId);
     await publish(nova.id);
-    const category = await makeCategory('Offline Again Cat');
-    await assign(category.id, [assetId]);
-    await api.publish(category.id, true);
+    await releaseToPosts(assetId);
     expect((await cardFor(nova.id))!.clip!.mediaType).toBe('video');
 
     await on.db.update(characters).set({ status: 'inactive' }).where(eq(characters.id, nova.id));
@@ -2768,11 +2814,10 @@ describe('an uploaded video becomes the public card’s clip', () => {
     const { nova, assetId } = await novaWithVideo();
     await approve(assetId);
     await publish(nova.id);
-    const category = await makeCategory('Hero Independence Cat');
-    await assign(category.id, [assetId]);
-    await api.publish(category.id, true);
+    await releaseToPosts(assetId);
 
-    // Her card has the video, and the Hero has not adopted it.
+    // Her card has the video, and the Hero has not adopted it: the CONFIGURED
+    // Hero is still empty, however her content reached the rail.
     expect((await cardFor(nova.id))!.clip!.id).toBe(assetId);
     const heroIds = (await api.adminHome()).json().hero.map((c: { assetId: string }) => c.assetId);
     expect(heroIds).not.toContain(assetId);
@@ -3033,16 +3078,61 @@ describe('a character’s public content collection', () => {
       .toContain(asset.id);
   });
 
-  it('releasing to Posts does NOT put the clip on Play with me or the search grid', async () => {
+  /**
+   * THE HALF THAT INVERTED, and the reason this change exists.
+   *
+   * Releasing a clip to Posts is what makes a character DISCOVERABLE, so it now
+   * puts her on Play with me and Swipe. This test previously asserted the
+   * opposite, and the production result is what proved the old rule wrong: Ana,
+   * Jordy, Mery, Svetlana and Tia all had published, playable video and none of
+   * them appeared on the rail, because nobody had ALSO merchandised one of
+   * their clips onto Home.
+   */
+  it('releasing to Posts DOES put her on Play with me and Swipe', async () => {
+    const asset = await makeApprovedVideoAsset(LUNA.id);
+
+    // Nothing of hers is merchandised, so she starts off the rail.
+    expect(
+      ((await api.home()).json().playWithMe as Array<{ id: string }>).map((c) => c.id),
+    ).not.toContain(LUNA.id);
+
+    await releaseToPosts(asset.id);
+
+    const card = ((await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string; mediaType: string } | null;
+    }>).find((c) => c.id === LUNA.id);
+    expect(card?.clip?.id).toBe(asset.id);
+    expect(card?.clip?.mediaType).toBe('video');
+
+    // Swipe reads the same function, so it cannot disagree.
+    const swipe = (await on.app.inject({ method: 'GET', url: '/api/play-with-me' })).json();
+    expect(swipe.characters.map((c: { id: string }) => c.id)).toContain(LUNA.id);
+  });
+
+  /**
+   * THE HALF THAT STILL HOLDS, and the reason the two conditions were kept
+   * SEPARATE rather than OR-ed together.
+   *
+   * `browseClips` is the editorial search grid: it carries clips an operator
+   * PLACED. Publication is not a placement, so releasing to Posts must not
+   * reach it, nor any published category rail. The rail moved from one axis to
+   * the other; the axes did not merge.
+   */
+  it('releasing to Posts does NOT merchandise the clip onto Home', async () => {
     const asset = await makeApprovedVideoAsset(LUNA.id);
     await releaseToPosts(asset.id);
 
     const home = (await api.home()).json();
-    expect(home.playWithMe.map((c: { id: string }) => c.id)).not.toContain(LUNA.id);
     expect(home.browseClips.map((c: { id: string }) => c.id)).not.toContain(asset.id);
-
-    const swipe = (await on.app.inject({ method: 'GET', url: '/api/play-with-me' })).json();
-    expect(swipe.characters.map((c: { id: string }) => c.id)).not.toContain(LUNA.id);
+    for (const rail of home.categories as Array<{ clips: Array<{ id: string }> }>) {
+      expect(rail.clips.map((c) => c.id)).not.toContain(asset.id);
+    }
+    // Nor the Hero, in EITHER of its forms. The configured Hero is empty here,
+    // and the unconfigured fallback is strictly editorial, so a published clip
+    // cannot reach the top of Home by the back door either.
+    expect((await api.adminHome()).json().hero).toEqual([]);
+    expect(home.hero.map((c: { id: string }) => c.id)).not.toContain(asset.id);
   });
 
   it('NEVER returns a reference/primary asset as a content clip', async () => {
@@ -3134,8 +3224,8 @@ describe('Play with Me: one real video per character, or no card', () => {
   it('gives a character with an eligible video exactly one card', async () => {
     const a = await makeApprovedVideoAsset(LUNA.id);
     const b = await makeApprovedVideoAsset(LUNA.id);
-    await publishViaKeyword(a.id, 'pwmone');
-    await publishViaKeyword(b.id, 'pwmtwo');
+    await releaseToPosts(a.id);
+    await releaseToPosts(b.id);
 
     const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
     expect(rail.filter((c) => c.id === LUNA.id)).toHaveLength(1);
@@ -3143,7 +3233,7 @@ describe('Play with Me: one real video per character, or no card', () => {
 
   it('the selected asset is a VIDEO and belongs to the displayed character', async () => {
     const video = await makeApprovedVideoAsset(LUNA.id);
-    await publishViaKeyword(video.id, 'pwmowner');
+    await releaseToPosts(video.id);
 
     const rail = (await api.home()).json().playWithMe as Array<{
       id: string;
@@ -3159,14 +3249,14 @@ describe('Play with Me: one real video per character, or no card', () => {
 
   it('picks the NEWEST eligible video when a character has several', async () => {
     const older = await makeApprovedVideoAsset(EMBER.id);
-    await publishViaKeyword(older.id, 'pwmold');
+    await releaseToPosts(older.id);
     // Force a strictly later createdAt so the ordering is unambiguous.
     await on.db
       .update(characterVisualAssets)
       .set({ createdAt: new Date(Date.now() - 60_000) })
       .where(eq(characterVisualAssets.id, older.id));
     const newer = await makeApprovedVideoAsset(EMBER.id);
-    await publishViaKeyword(newer.id, 'pwmnew');
+    await releaseToPosts(newer.id);
 
     const card = ((await api.home()).json().playWithMe as Array<{
       id: string;
@@ -3177,7 +3267,7 @@ describe('Play with Me: one real video per character, or no card', () => {
 
   it('EXCLUDES a character whose only content is an IMAGE', async () => {
     const image = await makeApprovedAsset(EMBER.id);
-    await publishViaKeyword(image.id, 'pwmimage');
+    await releaseToPosts(image.id);
 
     const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
     expect(rail.map((c) => c.id)).not.toContain(EMBER.id);
@@ -3215,9 +3305,10 @@ describe('Play with Me: one real video per character, or no card', () => {
     expect(rail.map((c) => c.id)).not.toContain(EMBER.id);
   });
 
-  it('EXCLUDES a video that is approved but reachable from nowhere', async () => {
+  it('EXCLUDES a video that is approved but released nowhere', async () => {
     const orphan = await makeApprovedVideoAsset(EMBER.id);
-    // Deliberately NOT published to any keyword, category or the Hero.
+    // Deliberately NOT released to Posts, and NOT placed on any keyword,
+    // category or the Hero. Neither axis says yes, so neither surface shows it.
     const rail = (await api.home()).json().playWithMe as Array<{ id: string }>;
     expect(rail.map((c) => c.id)).not.toContain(EMBER.id);
     // And its bytes are refused, which is the same rule stated twice.
@@ -3226,7 +3317,7 @@ describe('Play with Me: one real video per character, or no card', () => {
 
   it('EXCLUDES an inactive character even with a published video', async () => {
     const video = await makeApprovedVideoAsset(EMBER.id);
-    await publishViaKeyword(video.id, 'pwminactive');
+    await releaseToPosts(video.id);
     await on.db
       .update(characters)
       .set({ status: 'inactive' })
@@ -3238,7 +3329,7 @@ describe('Play with Me: one real video per character, or no card', () => {
 
   it('leaks no storage key or filesystem path with the rail', async () => {
     const video = await makeApprovedVideoAsset(LUNA.id);
-    await publishViaKeyword(video.id, 'pwmleak');
+    await releaseToPosts(video.id);
     const payload = (await api.home()).payload;
     expect(payload).not.toContain('storageKey');
     expect(payload).not.toContain('/app/var/media');
@@ -3429,12 +3520,12 @@ describe('Play with Me has no MEMBERSHIP admin surface', () => {
   });
 
   it('the rail is the RULE, not an arrangement: publishing a video is the only lever', async () => {
-    // active character → newest approved/public video → one card.
+    // active character → newest approved/RELEASED video → one card.
     const absent = ((await api.home()).json().playWithMe as Array<{ id: string }>).map((c) => c.id);
     expect(absent).not.toContain(EMBER.id);
 
     const video = await makeApprovedVideoAsset(EMBER.id);
-    await publishViaKeyword(video.id, 'onlylever');
+    await releaseToPosts(video.id);
 
     const card = ((await api.home()).json().playWithMe as Array<{
       id: string;
@@ -3867,9 +3958,9 @@ describe('Play with me is a category in the Admin, with derived membership', () 
   /** Luna and Ember, both on the rail. Alphabetically Ember precedes Luna. */
   async function twoOnTheRail() {
     const luna = await makeApprovedVideoAsset(LUNA.id);
-    await publishViaKeyword(luna.id, `pwmluna${++seq}`);
+    await releaseToPosts(luna.id);
     const ember = await makeApprovedVideoAsset(EMBER.id);
-    await publishViaKeyword(ember.id, `pwmember${++seq}`);
+    await releaseToPosts(ember.id);
     return { lunaId: LUNA.id, emberId: EMBER.id, lunaAsset: luna.id, emberAsset: ember.id };
   }
 
@@ -3984,7 +4075,7 @@ describe('Play with me is a category in the Admin, with derived membership', () 
     expect(await railIds()).toEqual([lunaId, emberId]);
 
     const replacement = await makeApprovedVideoAsset(LUNA.id);
-    await publishViaKeyword(replacement.id, `pwmswap${++seq}`);
+    await releaseToPosts(replacement.id);
 
     // Same order, same number of cards, and exactly one card per character.
     expect(await railIds()).toEqual([lunaId, emberId]);
@@ -4016,12 +4107,12 @@ describe('Play with me is a category in the Admin, with derived membership', () 
     await api.orderPlayWithMe([lunaAsset, emberAsset]);
 
     // Sage is seeded inactive, so she is genuinely NEWLY eligible here:
-    // activating her and publishing a video is exactly the lever that puts a
+    // activating her and releasing a video is exactly the lever that puts a
     // character on the rail.
     const sage = SEED_CHARACTERS.find((c) => c.name === 'sage')!;
     await on.db.update(characters).set({ status: 'active' }).where(eq(characters.id, sage.id));
     const sageClip = await makeApprovedVideoAsset(sage.id);
-    await publishViaKeyword(sageClip.id, `pwmsage${++seq}`);
+    await releaseToPosts(sageClip.id);
 
     // The saved pair keeps its arrangement; the newcomer lands after it.
     expect(await railIds()).toEqual([lunaId, emberId, sage.id]);
@@ -4660,5 +4751,199 @@ describe('Admin publishable counts match what the rail renders', () => {
     }>;
     expect(outcomes[0]!.added).toBe(false);
     expect(outcomes[0]!.reason).toBe('no_media');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * THE CANONICAL PLAY WITH ME RULE
+ *
+ * An ACTIVE character with a PUBLISHED, USABLE VIDEO is on Play with me. That
+ * is the whole rule, and it is the product rule as confirmed: essentially every
+ * such character appears, and nothing an operator does on Home changes it.
+ *
+ * HOME PLACEMENT IS NOT CONSULTED, IN EITHER DIRECTION. It cannot add a
+ * character to the rail and it cannot remove one. Merchandising is a Home
+ * decision about Home, and the rail never asks about it -- so the two can never
+ * disagree the way they did when five characters with published, playable video
+ * were missing from the rail for want of an editorial placement.
+ *
+ * `representativeClips` therefore takes the REACH its caller means, and the two
+ * reaches are deliberately not OR-ed:
+ *
+ *   editorial      has an operator PLACED this clip on Home? What the lobby
+ *                  grid and the search grid ask, and only they.
+ *   discoverable   has this clip been RELEASED to her page? The canonical
+ *                  eligibility rule, asked by Play with me, Swipe and
+ *                  Favourites.
+ *
+ * An OR would have answered "reachable from anywhere", which is neither
+ * question, and would have widened the lobby grid along with the rail. These
+ * pin both halves, that neither leaked into the other, and that placement moves
+ * nobody on or off.
+ * ------------------------------------------------------------------ */
+describe('Play with me is discoverability, Home is merchandising', () => {
+  const rail = async () =>
+    ((await api.home()).json().playWithMe as Array<{ id: string }>).map((c) => c.id);
+  const grid = async () =>
+    (await on.app.inject({ method: 'GET', url: '/api/browse/characters' })).json()
+      .characters as Array<{ id: string; clip: { id: string } | null }>;
+
+  it('a character whose ONLY qualification is a released clip is on the rail', async () => {
+    const video = await makeApprovedVideoAsset(LUNA.id);
+    expect(await rail()).not.toContain(LUNA.id);
+
+    await releaseToPosts(video.id);
+
+    expect(await rail()).toContain(LUNA.id);
+    // And the bytes she is shown with are actually fetchable, which is the
+    // property that makes choosing by publication safe: the media route accepts
+    // published content, so a card can never point at a clip it would refuse.
+    expect((await api.media(video.id)).statusCode).toBe(200);
+  });
+
+  it('editorial placement cannot ADD a character to the rail', async () => {
+    // All three placements, none of them a release.
+    const viaKeyword = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(viaKeyword.id, `reachkw${++seq}`);
+    const viaHero = await makeApprovedVideoAsset(EMBER.id);
+    await api.addHero([viaHero.id]);
+    const viaCategory = await makeApprovedVideoAsset(EMBER.id);
+    const category = await makeCategory('Reach Only Cat');
+    await assign(category.id, [viaCategory.id]);
+    await api.publish(category.id, true);
+
+    // Every one of them is publicly reachable...
+    for (const asset of [viaKeyword, viaHero, viaCategory]) {
+      expect((await api.media(asset.id)).statusCode).toBe(200);
+    }
+    // ...and none of them makes her discoverable, because none of them is a
+    // publication. Merchandising says where a clip appears on Home, never
+    // whether the character behind it is someone a visitor can meet.
+    expect(await rail()).not.toContain(EMBER.id);
+
+    // Releasing ONE of them does, and that is the only lever that does.
+    await releaseToPosts(viaCategory.id);
+    expect(await rail()).toContain(EMBER.id);
+  });
+
+  /**
+   * THE OTHER DIRECTION, and the guarantee that matters most in production: an
+   * operator cannot cost a character her place on the rail by merchandising.
+   *
+   * The fixture is the strongest available shape. The clip that gets placed is
+   * NEWER than the released one, so if placement were consulted at all -- as an
+   * OR-ed condition, or by leaking into the `distinct on` ordering -- it would
+   * be the clip that won the card, and her card would point at content the rail
+   * is not entitled to show.
+   */
+  it('editorial placement can NEVER remove a character from the rail', async () => {
+    const published = await makeApprovedVideoAsset(LUNA.id);
+    await releaseToPosts(published.id);
+    expect(await rail()).toContain(LUNA.id);
+
+    // A newer clip of hers, merchandised every way Home allows, released never.
+    const unreleased = await makeApprovedVideoAsset(LUNA.id);
+    await publishViaKeyword(unreleased.id, `keepkw${++seq}`);
+    await api.addHero([unreleased.id]);
+    const category = await makeCategory('Keep On Rail Cat');
+    await assign(category.id, [unreleased.id]);
+    await api.publish(category.id, true);
+
+    // She is still on the rail, still carrying her RELEASED clip.
+    const card = ((await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string } | null;
+    }>).find((c) => c.id === LUNA.id);
+    expect(card?.clip?.id).toBe(published.id);
+    expect(card?.clip?.id).not.toBe(unreleased.id);
+
+    // And merchandising the RELEASED clip is equally inert: placement is not
+    // consulted, so doing it or undoing it moves nobody.
+    await api.addHero([published.id]);
+    expect(await rail()).toContain(LUNA.id);
+    await api.removeHero(published.id);
+    expect(await rail()).toContain(LUNA.id);
+  });
+
+  /**
+   * THE RULE AS A SET, not as a membership check. Every other test here asks
+   * whether one character is present; this asks whether the rail is EXACTLY the
+   * population the product rule names, so a future condition that quietly
+   * admits or drops someone has to fail here.
+   */
+  it('is EXACTLY the active characters that have a published video', async () => {
+    // IN: released video.
+    const luna = await makeApprovedVideoAsset(LUNA.id);
+    await releaseToPosts(luna.id);
+
+    // IN: released video AND merchandised -- placement changes nothing.
+    const ember = await makeApprovedVideoAsset(EMBER.id);
+    await releaseToPosts(ember.id);
+    await publishViaKeyword(ember.id, `exact${++seq}`);
+
+    // OUT: active, approved video, never released. Approval is not publication.
+    const maria = SEED_CHARACTERS.find((c) => c.name === 'maria')!;
+    await makeApprovedVideoAsset(maria.id);
+
+    // OUT: released video, but she is inactive.
+    const sage = SEED_CHARACTERS.find((c) => c.name === 'sage')!;
+    await releaseToPosts((await makeApprovedVideoAsset(sage.id)).id);
+
+    expect([...(await rail())].sort()).toEqual([EMBER.id, LUNA.id].sort());
+  });
+
+  it('the lobby grid still reads PLACEMENT, not publication', async () => {
+    // Ember is merchandised: the grid gives her a clip, as it always did.
+    const placed = await makeApprovedVideoAsset(EMBER.id);
+    await publishViaKeyword(placed.id, `gridkw${++seq}`);
+    // Luna is only released: the grid must NOT start showing her a clip.
+    const released = await makeApprovedVideoAsset(LUNA.id);
+    await releaseToPosts(released.id);
+
+    const cards = await grid();
+    expect(cards.find((c) => c.id === EMBER.id)?.clip?.id).toBe(placed.id);
+    expect(cards.find((c) => c.id === LUNA.id)?.clip).toBeNull();
+
+    // Both are on the grid as CHARACTERS -- that was never clip-gated. What
+    // changed for one of them and not the other is only the clip.
+    expect(cards.map((c) => c.id)).toEqual(expect.arrayContaining([EMBER.id, LUNA.id]));
+  });
+
+  it('Swipe is byte-identical to the Home rail, still', async () => {
+    const luna = await makeApprovedVideoAsset(LUNA.id);
+    await releaseToPosts(luna.id);
+    const ember = await makeApprovedVideoAsset(EMBER.id);
+    await releaseToPosts(ember.id);
+
+    const home = (await api.home()).json().playWithMe;
+    const swipe = (await on.app.inject({ method: 'GET', url: '/api/play-with-me' })).json()
+      .characters;
+    expect(home.length).toBeGreaterThan(1);
+    // Not "the same ids" -- the same payload, because they are one function.
+    expect(JSON.stringify(swipe)).toBe(JSON.stringify(home));
+  });
+
+  /**
+   * THE THREE EXCLUSIONS THAT MUST SURVIVE. Widening which publication step the
+   * rail reads must not relax what it accepts: still approved, still a video,
+   * still an active character.
+   */
+  it('an unpublished, a non-video and an inactive character still cannot reach it', async () => {
+    // 1. Approved video, never released.
+    await makeApprovedVideoAsset(LUNA.id);
+    expect(await rail()).not.toContain(LUNA.id);
+
+    // 2. Released, but an IMAGE.
+    const image = await makeApprovedAsset(EMBER.id);
+    await releaseToPosts(image.id);
+    expect(await rail()).not.toContain(EMBER.id);
+
+    // 3. Released video, but the character is inactive.
+    const sage = SEED_CHARACTERS.find((c) => c.name === 'sage')!;
+    const clip = await makeApprovedVideoAsset(sage.id);
+    await releaseToPosts(clip.id);
+    expect(await rail()).not.toContain(sage.id);
+    // Her bytes are refused too, published_at notwithstanding.
+    expect((await api.media(clip.id)).statusCode).toBe(404);
   });
 });

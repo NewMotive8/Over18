@@ -139,12 +139,37 @@ const api = {
     }),
 };
 
-/** One character on the rail, with a real publicly reachable video. */
+/**
+ * RELEASES an approved clip to the character's Posts tab.
+ *
+ * The publication axis. A character reaches Play with me because her content is
+ * live on her own page — not because an operator merchandised a clip of hers
+ * onto Home, which is the separate editorial axis `assign` + `publish` drives.
+ */
+async function release(assetId: string) {
+  const res = await on.app.inject({
+    method: 'POST',
+    url: `/admin/content/assets/${assetId}/publish`,
+    cookies: adminCookies,
+  });
+  expect(res.statusCode).toBe(200);
+}
+
+/**
+ * One character on the rail, with a real video, carrying category chips.
+ *
+ * BOTH AXES, because this fixture needs both. RELEASING the clip to her page is
+ * what puts her on the rail; ASSIGNING it to a published category is what gives
+ * her card its chips — that membership is editorial and is read separately by
+ * `characterCategoryNames`. A fixture doing only one of the two would either
+ * produce no card, or a card with no chips.
+ */
 async function railCharacter(characterId: string) {
   const asset = await makeAsset(characterId, 'webm');
   const category = await makeCategory();
   await api.assign(category.id, [asset.id]);
   await api.publish(category.id);
+  await release(asset.id);
   return { asset, category };
 }
 
@@ -293,11 +318,10 @@ describe('the category pills ride along with Home', () => {
 
 describe('the representative clip is still the newest eligible video', () => {
   it('prefers the NEWER video when a character has two', async () => {
-    const category = await makeCategory('Newest');
     const older = await makeAsset(LUNA.id, 'webm');
     const newer = await makeAsset(LUNA.id, 'webm');
-    await api.assign(category.id, [older.id, newer.id]);
-    await api.publish(category.id);
+    await release(older.id);
+    await release(newer.id);
     await on.db
       .update(characterVisualAssets)
       .set({ createdAt: new Date('2020-01-01T00:00:00Z') })
@@ -315,11 +339,12 @@ describe('the representative clip is still the newest eligible video', () => {
     // The behaviour the old JavaScript loop had, and the reason a plain
     // `distinct on` without the media-type condition would have been wrong: the
     // newest asset is an image, and the card must still be the older video.
-    const category = await makeCategory('SkipImage');
     const video = await makeAsset(LUNA.id, 'webm');
     const image = await makeAsset(LUNA.id, 'png');
-    await api.assign(category.id, [video.id, image.id]);
-    await api.publish(category.id);
+    // BOTH are released, so the image is genuinely a candidate the media-type
+    // condition has to reject — not one that was never eligible anyway.
+    await release(video.id);
+    await release(image.id);
     await on.db
       .update(characterVisualAssets)
       .set({ createdAt: new Date('2020-01-01T00:00:00Z') })
@@ -338,10 +363,8 @@ describe('the representative clip is still the newest eligible video', () => {
     // A manual upload's storage key has no extension, so only provenance says
     // it is a video. The SQL translation has to honour that, or every uploaded
     // clip would vanish from the rail.
-    const category = await makeCategory('Provenance');
     const asset = await makeAsset(LUNA.id, 'png', { mediaType: 'video' });
-    await api.assign(category.id, [asset.id]);
-    await api.publish(category.id);
+    await release(asset.id);
 
     const card = (await playWithMe()).find((c) => c.id === LUNA.id)!;
     expect(card.clip!.id).toBe(asset.id);
@@ -349,12 +372,10 @@ describe('the representative clip is still the newest eligible video', () => {
   });
 
   it('gives one card per character, never two', async () => {
-    const category = await makeCategory('OnePer');
     const a = await makeAsset(LUNA.id, 'webm');
     const b = await makeAsset(LUNA.id, 'webm');
     const c = await makeAsset(EMBER.id, 'webm');
-    await api.assign(category.id, [a.id, b.id, c.id]);
-    await api.publish(category.id);
+    for (const asset of [a, b, c]) await release(asset.id);
 
     const rail = await playWithMe();
     expect(rail.filter((card) => card.id === LUNA.id)).toHaveLength(1);

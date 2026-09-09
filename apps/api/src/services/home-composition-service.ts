@@ -62,8 +62,10 @@ import {
  * construction. That ordering is a product decision recorded in the ticket, not
  * an emergent property of the queries.
  *
- * PLAY WITH ME HAS NO MERCHANDISING. It is one deterministic rule — active
- * character, her newest publicly reachable video, one card — with no
+ * PLAY WITH ME HAS NO MERCHANDISING, and that is now literal rather than only
+ * a matter of there being no admin control: it asks whether her content was
+ * RELEASED, not whether an operator placed it here. One deterministic rule —
+ * active character, her newest RELEASED video, one card — with no
  * automatic/curated modes and no operator arrangement. Its override table is
  * retained in the schema and read by nothing.
  *
@@ -379,9 +381,50 @@ export async function listPublicCharacterClips(
  * `clipView` still produces every projection, so the media type on the returned
  * view is decided by `mediaTypeOf` exactly as it always was.
  */
+/**
+ * WHICH QUESTION A SURFACE IS ASKING ABOUT A CLIP.
+ *
+ * There are two, they are genuinely different, and conflating them is what put
+ * five characters with published video off the Play with me rail:
+ *
+ *   editorial      Has an operator PLACED this clip on Home -- a Hero slot, an
+ *                  enabled+published category, or a keyword an enabled
+ *                  discovery category queries? This is a merchandising
+ *                  decision and Home must keep asking it.
+ *
+ *   discoverable   Has this clip been RELEASED to the character's own page?
+ *                  That is what makes her a real, browsable character, and it
+ *                  is the right question for a discovery surface: Play with me
+ *                  and Swipe are not editorial placements, they are the roster
+ *                  of characters a visitor can meet.
+ *
+ * A SELECTOR, NOT A UNION. These are deliberately not OR-ed together. An OR
+ * would answer "reachable from anywhere", which is neither question, and it
+ * would silently widen `browsePublicCharacters` -- the other caller of
+ * `representativeClips` -- along with the rail. Each surface names the question
+ * it means, and the two stay separable.
+ *
+ * NEITHER IS RELAXED. Both still require an approved, non-chat, non-reference
+ * asset belonging to an ACTIVE character; they differ only in what publication
+ * step they demand. The video and storage-key rules below are shared by both,
+ * because "usable video" is a property of the RAIL, not of either reach.
+ */
+const REACH_CONDITION = {
+  editorial: publiclyReachableCondition,
+  discoverable: characterPostsCondition,
+} as const;
+
+export type ClipReach = keyof typeof REACH_CONDITION;
+
 export async function representativeClips(
   db: Db,
   characterIds: string[],
+  /**
+   * Defaults to `editorial`, which is exactly what this function did before
+   * the parameter existed -- so `characterCards` / `browsePublicCharacters`
+   * are byte-for-byte unchanged and only the caller that opts in moves.
+   */
+  reach: ClipReach = 'editorial',
 ): Promise<Map<string, PublicClipView>> {
   const found = new Map<string, PublicClipView>();
   if (characterIds.length === 0) return found;
@@ -404,10 +447,16 @@ export async function representativeClips(
         // Excluded here rather than de-prioritised, so no ordering change can
         // ever let it back in.
         inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
-        // The SAME predicate the media route enforces. Choosing a clip the media
-        // route would refuse gives every card a broken image; this makes the two
-        // agree by construction rather than by coincidence.
-        publiclyReachableCondition(),
+        /**
+         * The reach the CALLER asked for -- see REACH_CONDITION above.
+         *
+         * Either way this is a predicate the media route also honours
+         * (`getPublicAsset` accepts publiclyReachable OR characterPosts), so a
+         * clip chosen here can always be fetched. Choosing one the media route
+         * would refuse is what gives every card a broken tile, and that stays
+         * impossible by construction rather than by coincidence.
+         */
+        REACH_CONDITION[reach](),
         // VIDEO ONLY — the rule the JavaScript loop used to apply after the
         // fact, moved into the query so the database can pick the winner.
         videoAssetCondition(),
@@ -575,8 +624,8 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
  * retained in the schema but nothing reads or writes it, so this removal needs
  * no migration.
  *
- * ONE CARD = ONE CHARACTER + ONE REAL CMS VIDEO. A character with no publicly
- * reachable video is NOT on this rail — dropped, never rendered as a portrait,
+ * ONE CARD = ONE CHARACTER + ONE REAL CMS VIDEO. A character with no RELEASED
+ * video is NOT on this rail — dropped, never rendered as a portrait,
  * a placeholder or an empty frame. That is the point: the rail used to fall
  * back to her canonical identity image, which made an operator believe her
  * content was live when nothing of hers had been published. An honest rail is
@@ -616,7 +665,7 @@ export async function listPlayWithMe(db: Db): Promise<PublicPlayWithMeCardView[]
    * the table needs no reaping, no backfill and no add/remove surface.
    *
    * ELIGIBILITY IS NOT NEGOTIABLE, and curating does not become a way around
-   * it. A curated character with no publicly reachable video is DROPPED, not
+   * it. A curated character with no RELEASED video is DROPPED, not
    * rendered as a portrait or an empty frame — the same honesty rule the
    * automatic rail follows, and the reason `eligible` is filtered before this
    * runs rather than after. Ordering decides sequence, never visibility.
@@ -659,8 +708,9 @@ export async function listPlayWithMe(db: Db): Promise<PublicPlayWithMeCardView[]
  *
  * The clause is unchanged: a card needs a clip, and that clip must be a video.
  * `representativeClips` has already restricted the choice to a non-reference,
- * approved, publicly reachable video owned by that character, so this is the
- * second lock on a decision the SQL already made — not a new rule.
+ * approved video owned by that character and reachable at the REACH its caller
+ * asked for — `discoverable` for this rail — so this is the second lock on a
+ * decision the SQL already made, not a new rule.
  */
 export function isEligibleCard(card: PublicPlayWithMeCardView): boolean {
   return card.clip !== null && card.clip.mediaType === 'video';
@@ -748,7 +798,32 @@ async function playWithMeCards(
 
   const ids = rows.map((row) => row.id);
   const [clips, categories] = await Promise.all([
-    representativeClips(db, ids),
+    /**
+     * THE CANONICAL ELIGIBILITY RULE: an ACTIVE character with a PUBLISHED,
+     * USABLE VIDEO is on Play with me. That is the whole of it.
+     *
+     * HOME PLACEMENT IS NOT CONSULTED, IN EITHER DIRECTION. Merchandising
+     * cannot put a character on this rail and cannot take her off it. That is
+     * not a side effect of asking a different question -- it is the point of
+     * asking a different question, and it is why the two conditions are a
+     * SELECTOR rather than an OR. An OR would have made every editorial act on
+     * Home a change to who is discoverable.
+     *
+     * The rail used to ask the editorial question, and nothing revealed the
+     * mistake until publishing and merchandising could disagree. Then five
+     * characters with published, playable video -- Ana, Jordy, Mery, Svetlana
+     * and Tia -- were absent from Play with me and Swipe because nobody had
+     * ALSO placed one of their clips on Home. Being a character someone can
+     * discover and meet is not an editorial decision; releasing her content to
+     * her own page is what earns it.
+     *
+     * NOBODY DROPPED OFF when this changed. Every clip reachable on Home was
+     * also published -- verified against production, 33 reachable and all 33
+     * published -- so the move was a strict widening. Swipe and Favourites
+     * inherit it automatically: all three compose through this one function, so
+     * the populations cannot drift.
+     */
+    representativeClips(db, ids, 'discoverable'),
     characterCategoryNames(db, ids),
   ]);
 
@@ -1001,7 +1076,8 @@ export async function composeHome(
   // AN UNCONFIGURED HERO FALLS BACK; A CONFIGURED ONE NEVER DOES. See
   // heroFallback: assignment is the operator's statement of intent, and once
   // they have made it nothing may add to or override it.
-  const hero = assignedHero.length > 0 ? assignedHero : heroFallback(playWithMe);
+  const hero =
+    assignedHero.length > 0 ? assignedHero : heroFallback(await browsePublicCharacters(db));
   return {
     banners,
     hero,
@@ -1023,12 +1099,26 @@ export const HERO_FALLBACK_LIMIT = 3;
  * worse default than a reasonable one — so an unconfigured Hero borrows the
  * clips Play with Me already resolved rather than going blank.
  *
- * WHY IT IS SAFE. It invents nothing and relaxes nothing. Every clip here came
- * from `representativeClips`, which applies `publiclyReachableCondition` — the
- * same predicate the media route enforces — so the fallback can only ever show
- * a clip that was already public on this page. Characters with no publicly
- * reachable clip contribute nothing, and if none qualify the Hero is empty,
- * exactly as before.
+ * STRICTLY EDITORIAL, AND DELIBERATELY NOT THE RAIL. The pool is
+ * `browsePublicCharacters` — clips an operator MERCHANDISED onto Home — not
+ * Play with me, which asks the publication question instead. The Hero is Home's
+ * most prominent slot, so even the unconfigured case stays inside the editorial
+ * axis: content nobody placed on Home cannot reach the top of Home merely by
+ * being live on a character's own page.
+ *
+ * This is the one place the two axes could have leaked into each other. The
+ * fallback borrowed from the rail when the rail WAS editorial, and following it
+ * to publication would have quietly made a Posts release a front-page decision.
+ *
+ * IT IS ALSO LAZY. The extra read happens only when the Hero is unconfigured;
+ * a configured Hero short-circuits before it, so the common path costs nothing.
+ *
+ * WHY IT IS SAFE. It invents nothing and relaxes nothing. Every clip came from
+ * `representativeClips` under the SAME `publiclyReachableCondition` the media
+ * route enforces, so the fallback can only ever show a clip this page could
+ * already serve, and it is video-only for the same reason the rail is.
+ * Characters with no qualifying clip contribute nothing, and if none qualify
+ * the Hero is empty, exactly as before.
  *
  * WHY IT IS NOT A MERGE. The moment an operator assigns one clip, that list is
  * the Hero, whole. A fallback that topped up a short assigned list would put

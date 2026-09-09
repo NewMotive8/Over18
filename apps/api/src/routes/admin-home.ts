@@ -16,7 +16,11 @@ import {
   reorderHomeCategories,
   setCategoryHomePublication,
 } from '../services/home-admin-service.js';
-import { composeHome, heroFallback, listPlayWithMe } from '../services/home-composition-service.js';
+import {
+  browsePublicCharacters,
+  composeHome,
+  heroFallback,
+} from '../services/home-composition-service.js';
 
 /**
  * Admin → Categories & Publishing → Home (US-102.4).
@@ -94,7 +98,9 @@ export default async function adminHomeRoutes(
        * like configuration that does not exist. Empty whenever `hero` is not,
        * because a configured Hero is never topped up.
        */
-      heroFallback: hero.length > 0 ? [] : heroFallback(await listPlayWithMe(opts.db)),
+      // The SAME source `composeHome` falls back to — editorial, not the rail —
+      // so what an operator previews here is what the page renders.
+      heroFallback: hero.length > 0 ? [] : heroFallback(await browsePublicCharacters(opts.db)),
     };
   });
 

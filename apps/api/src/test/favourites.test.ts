@@ -121,7 +121,13 @@ async function makeAsset(
   return { ...asset, storageKey: path };
 }
 
-/** Makes an asset PUBLICLY REACHABLE via a discovery keyword. */
+/**
+ * MERCHANDISES an asset onto Home via a discovery keyword.
+ *
+ * Editorial placement only. It makes the bytes publicly fetchable, and it is
+ * still the right lever for asserting that reachability alone does NOT qualify
+ * a character -- but it no longer puts her on Play with me or Swipe.
+ */
 async function publish(assetId: string, keyword = `fav${++seq}`) {
   await on.app.inject({
     method: 'POST',
@@ -137,10 +143,31 @@ async function publish(assetId: string, keyword = `fav${++seq}`) {
   });
 }
 
-/** An eligible character: one approved, publicly reachable video. */
+/**
+ * RELEASES an approved clip to the character's Posts tab, through the real admin
+ * endpoint. This is the publication axis, and what Play with me, Swipe and
+ * Favourites all read.
+ */
+async function releaseToPosts(assetId: string) {
+  const res = await on.app.inject({
+    method: 'POST',
+    url: `/admin/content/assets/${assetId}/publish`,
+    cookies: adminCookies,
+  });
+  expect(res.statusCode).toBe(200);
+}
+
+/**
+ * An eligible character: one approved, RELEASED video.
+ *
+ * Eligibility is publication, not placement. A character is discoverable
+ * because her content is live on her own page, not because an operator
+ * merchandised one of her clips onto Home -- which is why this helper releases
+ * rather than assigning a keyword.
+ */
 async function makeEligible(characterId: string) {
   const asset = await makeAsset(characterId, { video: true });
-  await publish(asset.id);
+  await releaseToPosts(asset.id);
   return asset;
 }
 
@@ -224,6 +251,9 @@ describe('ineligible characters cannot enter Swipe', () => {
   });
 
   it('an UNAPPROVED video does not make her eligible', async () => {
+    // Merchandised rather than released, because an unapproved asset CANNOT be
+    // released -- the publish endpoint refuses it. So this gives it the most
+    // reach it can possibly have, and it still does not qualify.
     const asset = await makeAsset(EMBER.id, { video: true, approved: false });
     await publish(asset.id);
     expect(idsOf((await api.swipe()).json().characters)).not.toContain(EMBER.id);
@@ -236,11 +266,13 @@ describe('ineligible characters cannot enter Swipe', () => {
 
   it('an approved IMAGE does not make her eligible — these are video surfaces', async () => {
     const asset = await makeAsset(EMBER.id, { video: false });
-    await publish(asset.id);
+    await releaseToPosts(asset.id);
     expect(idsOf((await api.swipe()).json().characters)).not.toContain(EMBER.id);
   });
 
   it('a REFERENCE asset is her identity, not her content, and never qualifies', async () => {
+    // Also merchandised rather than released: a reference is identity, and the
+    // publish endpoint refuses to release one to Posts.
     const asset = await makeAsset(EMBER.id, { video: true, kind: 'reference' });
     await publish(asset.id);
     expect(idsOf((await api.swipe()).json().characters)).not.toContain(EMBER.id);
@@ -280,7 +312,7 @@ describe('every card carries real published content and nothing else', () => {
     // Maria is ACTIVE and has only an approved still — she must not appear
     // wearing it. Using an already-inactive character here would have made this
     // pass for the wrong reason.
-    await publish((await makeAsset(MARIA.id, { video: false })).id);
+    await releaseToPosts((await makeAsset(MARIA.id, { video: false })).id);
 
     for (const card of (await api.swipe()).json().characters) {
       expect(card.clip).not.toBeNull();

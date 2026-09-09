@@ -512,8 +512,9 @@ export async function listHeroCandidates(db: Db, limit?: number) {
  * Two things about it are NOT like any other category, and both are the point.
  *
  * MEMBERSHIP IS DERIVED, NOT STORED. There is no add and no remove. A character
- * is on the rail when she is active and has a publicly reachable video, and
- * that rule is untouched. The previous curation was deleted for a reason worth
+ * is on the rail when she is active and has a RELEASED video — published to her
+ * own page, which is a different question from whether a clip of hers was
+ * merchandised onto Home — and that rule is derived here, never stored. The previous curation was deleted for a reason worth
  * not repeating: it was "automatic unless overridden", so in the automatic
  * state the rail already held every candidate, the Add picker had nothing left
  * to offer, and a removed character could not be put back.

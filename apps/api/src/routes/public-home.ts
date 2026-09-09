@@ -124,9 +124,9 @@ export default async function publicHomeRoutes(
    * in its own authenticated plugin.
    *
    * Every card here is eligible by construction — `listPlayWithMe` drops a
-   * character with no publicly reachable video rather than returning her with a
-   * null clip — so the deck needs no filtering rule of its own and could not
-   * apply a laxer one if it had.
+   * character with no RELEASED video rather than returning her with a null clip
+   * — so the deck needs no filtering rule of its own and could not apply a
+   * laxer one if it had.
    */
   app.get('/api/play-with-me', async () => ({
     characters: await listPlayWithMe(opts.db),
