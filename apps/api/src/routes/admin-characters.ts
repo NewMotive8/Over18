@@ -550,7 +550,12 @@ export default async function adminCharacterRoutes(
       try {
         const row = await regenerateCharacterPersona(
           opts.db,
-          character.displayName,
+          {
+            displayName: character.displayName,
+            shortBio: character.shortBio,
+            personality: character.personality,
+            interests: character.interests,
+          },
           characterId,
           personaGenerator,
         );
