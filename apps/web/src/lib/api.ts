@@ -1,5 +1,7 @@
 import type {
+  AdminAccessView,
   ApiError,
+  AuditEntryView,
   AuthCredentials,
   AuthUser,
   BannerAudience,
@@ -1110,6 +1112,35 @@ export interface TaggableAssetView {
   previewUrl: string | null;
   keywords: KeywordView[];
 }
+
+/** PRD v1.2 §34 -- operator access and the audit log. */
+export interface AuditPage {
+  entries: AuditEntryView[];
+  nextCursor: number | null;
+}
+
+export interface AuditFilters {
+  objectType?: string;
+  actorUserId?: string;
+}
+
+function auditQuery(filters: AuditFilters & { before?: number; limit?: number }): string {
+  const params = new URLSearchParams();
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  if (filters.before !== undefined) params.set('before', String(filters.before));
+  if (filters.objectType) params.set('objectType', filters.objectType);
+  if (filters.actorUserId) params.set('actorUserId', filters.actorUserId);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
+export const adminAccessApi = {
+  me: () => request<AdminAccessView>('/admin/me/access'),
+  audit: (filters: AuditFilters & { before?: number; limit?: number } = {}) =>
+    request<AuditPage>(`/admin/audit${auditQuery(filters)}`),
+  /** A plain URL: the browser downloads it with the session cookie. */
+  exportUrl: (filters: AuditFilters = {}) => `${API_URL}/admin/audit/export.csv${auditQuery(filters)}`,
+};
 
 export const adminDiscoveryApi = {
   categories: () => request<{ categories: DiscoveryCategoryView[] }>('/admin/discovery/categories'),

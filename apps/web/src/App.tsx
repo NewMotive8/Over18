@@ -24,6 +24,7 @@ import BannersPage from './pages/admin/BannersPage';
 import BannerEditorPage from './pages/admin/BannerEditorPage';
 import HomeComposerPage from './pages/admin/HomeComposerPage';
 import GenerationPage from './pages/admin/GenerationPage';
+import AdminAuditPage from './pages/admin/AdminAuditPage';
 import DiscoveryCategoriesPage from './pages/admin/DiscoveryCategoriesPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
@@ -77,6 +78,10 @@ export default function App() {
         <Route path="publishing/:categorySlug" element={<CategoryMerchandisingPage />} />
         {/* Admin -> Generation: prompt files -> xAI -> Google Drive. */}
         <Route path="generation" element={<GenerationPage />} />
+        {/* PRD v1.2 §34 -- the audit log. Always routable for staff (the
+            server enforces access); only LISTED in the navigation once the
+            audit switch is on and the operator holds audit.read. */}
+        <Route path="audit" element={<AdminAuditPage />} />
       </Route>
 
       <Route element={<AppShell />}>

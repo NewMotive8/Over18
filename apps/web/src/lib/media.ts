@@ -217,59 +217,6 @@ export interface CharacterMediaItem {
   media: HeroMedia;
   /** Premium-gated: viewing requires the Premium tier (US-19 gate). */
   premium: boolean;
-  /** True for clearly-isolated placeholder tiles that have no real asset yet. */
-  mock?: boolean;
-}
-
-/**
- * The ordered media set for a character's profile gallery (US-19),
- * provider-agnostic:
- *  - item 0 is the free hero (video-first when available);
- *  - any additional REAL canonical stills follow, free and viewable;
- *  - to keep the Premium gate demonstrable in the PoC (seed characters ship a
- *    single canonical asset today), a few clearly-flagged MOCK tiles are
- *    appended and marked premium.
- *
- * When a real media provider (selected in US-17) supplies multiple assets, the
- * mock tiles simply stop being generated — no UI change is needed, which is the
- * whole point of routing every media surface through this one function.
- */
-export function characterMediaList(
-  character: MediaCharacter,
-  visual?: CharacterVisualIdentityResponse | null,
-  opts: { minItems?: number } = {},
-): CharacterMediaItem[] {
-  const minItems = opts.minItems ?? 6;
-  const items: CharacterMediaItem[] = [];
-
-  items.push({
-    id: `${character.id}:hero`,
-    media: resolveHeroMedia(character, visual),
-    premium: false,
-  });
-
-  const sorted = (visual?.canonicalAssets ?? [])
-    .slice()
-    .sort(
-      (a, b) =>
-        (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER),
-    );
-  for (let i = 1; i < sorted.length; i += 1) {
-    const url = absoluteMediaUrl(sorted[i]?.imageUrl);
-    if (url) items.push({ id: sorted[i]!.id, media: { kind: 'image', src: url }, premium: false });
-  }
-
-  const still = firstCanonicalImage(visual) ?? character.profileImage ?? undefined;
-  const lockedMedia: HeroMedia = still
-    ? { kind: 'image', src: still }
-    : { kind: 'placeholder', initial: (character.displayName || character.name || '?').charAt(0).toUpperCase() };
-  let n = 0;
-  while (items.length < minItems) {
-    n += 1;
-    items.push({ id: `${character.id}:locked:${n}`, media: lockedMedia, premium: true, mock: true });
-  }
-
-  return items;
 }
 
 /**

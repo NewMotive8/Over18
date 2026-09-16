@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import { ADMIN_DESTINATIONS, activeAdminDestination } from './adminNav';
+import type { AdminAccessView } from '@over18/shared';
+import { activeAdminDestination, visibleAdminDestinations } from './adminNav';
 import { useAuth } from '../auth/AuthContext';
+import { adminAccessApi } from '../lib/api';
 
 /**
  * Persistent admin shell (US-99).
@@ -19,6 +22,28 @@ export default function AdminShell() {
   const active = activeAdminDestination(pathname);
   const { user } = useAuth();
 
+  /**
+   * What this operator may see. Fetched once per shell mount. Until it
+   * arrives, and if it fails, the navigation is the six ungated areas it has
+   * always been -- a failure here must never cost an operator a section.
+   */
+  const [access, setAccess] = useState<AdminAccessView | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    adminAccessApi
+      .me()
+      .then((view) => {
+        if (!cancelled) setAccess(view);
+      })
+      .catch(() => {
+        if (!cancelled) setAccess(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const destinations = visibleAdminDestinations(access);
+
   return (
     <div className="flex min-h-dvh w-full bg-zinc-950 text-zinc-100">
       <aside className="hidden w-64 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 md:flex">
@@ -33,7 +58,7 @@ export default function AdminShell() {
 
         <nav aria-label="Admin sections" className="flex-1 overflow-y-auto px-3 py-4">
           <ul className="space-y-1">
-            {ADMIN_DESTINATIONS.map((dest) => {
+            {destinations.map((dest) => {
               const isActive = dest.key === active;
               return (
                 <li key={dest.key}>
@@ -74,7 +99,7 @@ export default function AdminShell() {
           aria-label="Admin sections"
           className="flex gap-1 overflow-x-auto border-b border-zinc-800 px-3 py-2 md:hidden"
         >
-          {ADMIN_DESTINATIONS.map((dest) => (
+          {destinations.map((dest) => (
             <NavLink
               key={dest.key}
               to={dest.path}

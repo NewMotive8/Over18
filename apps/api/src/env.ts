@@ -131,6 +131,45 @@ export interface PromptGenerationEnv {
   spoolDir: string;
 }
 
+/**
+ * Admin roles and audit (PRD v1.2 §34). BOTH SWITCHES DEFAULT OFF.
+ *
+ * `permissionsEnforced` OFF means `requirePermission` behaves exactly like
+ * `requireAdmin`: any staff member passes. That is what makes shipping the role
+ * model dark safe -- nobody can be locked out of the admin by a deploy, and
+ * enforcement is switched on only once every operator holds the grants they
+ * need.
+ *
+ * `auditEnabled` OFF means the generic admin-write hook records nothing. Role
+ * changes are audited regardless, because that route is new and the audit row
+ * is written in the same transaction as the change it describes.
+ */
+export interface AdminEnv {
+  auditEnabled: boolean;
+  permissionsEnforced: boolean;
+}
+
+/** The only providers that exist before a vendor is chosen (D-4, D-8). */
+export type CommerceProviderName = 'none' | 'fake';
+
+/**
+ * Subscription and App Economy (PRD v1.2). EVERYTHING DEFAULTS OFF.
+ *
+ * `enabled` is the master switch for anything a user could see. In P0 nothing
+ * reads it yet; it exists so every later phase lands behind one flag rather
+ * than inventing its own.
+ *
+ * A `fake` provider can NEVER be active in production: `loadEnv` maps it to
+ * `none` there, and the provider selectors refuse it independently. A fake
+ * payment provider that reached production would grant Credits for nothing.
+ */
+export interface CommerceEnv {
+  enabled: boolean;
+  paymentProvider: CommerceProviderName;
+  ageVerificationProvider: CommerceProviderName;
+  analyticsEnabled: boolean;
+}
+
 export interface Env {
   databaseUrl: string;
   port: number;
@@ -145,11 +184,19 @@ export interface Env {
   media: MediaEnv;
   chatMedia: ChatMediaEnv;
   promptGeneration: PromptGenerationEnv;
+  admin: AdminEnv;
+  commerce: CommerceEnv;
 }
 
 /** True for "true" / "TRUE" / " true " — ignores accidental whitespace. */
 function envFlagTrue(name: string): boolean {
   return (process.env[name] ?? '').trim().toLowerCase() === 'true';
+}
+
+/** `fake` only outside production; anything else, or nothing, is `none`. */
+function commerceProvider(name: string, isProduction: boolean): CommerceProviderName {
+  const value = (process.env[name] ?? '').trim().toLowerCase();
+  return value === 'fake' && !isProduction ? 'fake' : 'none';
 }
 
 function envNonEmpty(name: string): boolean {
@@ -219,6 +266,19 @@ export function loadEnv(): Env {
     },
     // Default OFF: anything other than exactly "true" leaves chat text-only.
     chatMedia: { enabled: envFlagTrue('CHAT_MEDIA_ENABLED') },
+    admin: {
+      auditEnabled: envFlagTrue('ADMIN_AUDIT_ENABLED'),
+      permissionsEnforced: envFlagTrue('ADMIN_PERMISSIONS_ENFORCED'),
+    },
+    commerce: {
+      enabled: envFlagTrue('ECONOMY_ENABLED'),
+      paymentProvider: commerceProvider('PAYMENT_PROVIDER', process.env.NODE_ENV === 'production'),
+      ageVerificationProvider: commerceProvider(
+        'AGE_VERIFICATION_PROVIDER',
+        process.env.NODE_ENV === 'production',
+      ),
+      analyticsEnabled: envFlagTrue('ANALYTICS_ENABLED'),
+    },
     media: {
       storageDir: process.env.MEDIA_STORAGE_DIR ?? 'var/media',
       publicBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL || null,

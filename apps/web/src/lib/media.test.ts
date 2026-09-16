@@ -3,7 +3,6 @@ import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/s
 import {
   apparentAge,
   characterHeaderItems,
-  characterMediaList,
   firstCanonicalImage,
   resolveHeroMedia,
   resolveRailMedia,
@@ -92,36 +91,6 @@ describe('firstCanonicalImage', () => {
     ).toBe('https://img.example/zero.png');
     expect(firstCanonicalImage(visual([{ id: 'a1', position: 0, imageUrl: '   ' }]))).toBeUndefined();
     expect(firstCanonicalImage(null)).toBeUndefined();
-  });
-});
-
-describe('characterMediaList', () => {
-  it('opens with a free hero and gates the rest behind Premium (mock-filled) by default', () => {
-    const items = characterMediaList(character(), null);
-    expect(items).toHaveLength(6); // default minItems
-    expect(items[0]?.premium).toBe(false); // hero is free
-    expect(items[0]?.media).toEqual({ kind: 'image', src: 'https://img.example/nova.png' });
-    expect(items.filter((i) => i.premium).length).toBe(5);
-    expect(items.slice(1).every((i) => i.premium && i.mock)).toBe(true); // padded tiles are flagged mock
-  });
-
-  it('treats additional REAL canonical stills as free, viewable media', () => {
-    const items = characterMediaList(
-      character(),
-      visual([
-        { id: 'a1', position: 0, imageUrl: 'https://img.example/one.png' },
-        { id: 'a2', position: 1, imageUrl: 'https://img.example/two.png' },
-        { id: 'a3', position: 2, imageUrl: 'https://img.example/three.png' },
-      ]),
-    );
-    const free = items.filter((i) => !i.premium);
-    expect(free.length).toBe(3); // hero + 2 additional canonical
-    expect(free[1]?.media).toEqual({ kind: 'image', src: 'https://img.example/two.png' });
-    expect(items.filter((i) => i.premium).length).toBe(3); // padded to minItems 6
-  });
-
-  it('respects a custom minItems', () => {
-    expect(characterMediaList(character(), null, { minItems: 3 })).toHaveLength(3);
   });
 });
 

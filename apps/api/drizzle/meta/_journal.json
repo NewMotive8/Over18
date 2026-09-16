@@ -176,6 +176,20 @@
       "when": 1788630811324,
       "tag": "0024_daily_the_anarchist",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789595522913,
+      "tag": "0025_petite_roland_deschain",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789595538506,
+      "tag": "0026_audit_log_append_only",
+      "breakpoints": true
     }
   ]
 }

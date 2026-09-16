@@ -1461,6 +1461,99 @@ export const promptDriveOauthStates = pgTable(
   (table) => [index('prompt_drive_oauth_states_expires_idx').on(table.expiresAt)],
 );
 
+/* ------------------------------------------------------------------ *
+ * Admin roles and the audit log (PRD v1.2 §34, build step 0c)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The six operator roles of PRD §34.1.
+ *
+ * `users.role` IS UNCHANGED AND STILL DECIDES WHO IS STAFF. `requireAdmin`
+ * reads it exactly as before, so nothing here can lock an operator out of the
+ * admin. A grant refines what a staff member may do; it never makes an ordinary
+ * user staff.
+ *
+ * ALL SIX EXIST AS DATA even if the team decides to run with three (D-9):
+ * collapsing is simply not granting the other three, which needs no migration.
+ */
+export const adminRole = pgEnum('admin_role', [
+  'administrator',
+  'economy_editor',
+  'content_editor',
+  'marketing',
+  'support',
+  'analyst',
+]);
+
+/**
+ * admin_role_grants -- which roles a staff member holds.
+ *
+ * One row per (user, role). The migration that creates this table grants
+ * `administrator` to every existing `users.role = 'admin'`, so the day
+ * permission enforcement is switched on, every current operator can still do
+ * exactly what they can do today.
+ *
+ * THERE IS NO IMPLICIT FALLBACK. An admin with no grant has no permissions once
+ * enforcement is on. The alternative -- "no grants means administrator" -- makes
+ * revoking someone's last narrow role silently promote them to administrator.
+ */
+export const adminRoleGrants = pgTable(
+  'admin_role_grants',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: adminRole('role').notNull(),
+    grantedBy: uuid('granted_by').references(() => users.id, { onDelete: 'set null' }),
+    grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.role] })],
+);
+
+/**
+ * audit_log -- every attributed admin write, append-only.
+ *
+ * APPEND-ONLY IS ENFORCED BY THE DATABASE, not merely by convention: migration
+ * 0026 installs a trigger that rejects UPDATE and DELETE on this table. The
+ * service layer exposes no update or delete either, but a lock that only the
+ * application honours is not a lock (PRD §5).
+ *
+ * THE ACTOR IS DELIBERATELY NOT A FOREIGN KEY. An `ON DELETE SET NULL` would be
+ * an UPDATE, which the trigger refuses -- so deleting a user would fail -- and
+ * an audit trail must outlive the account that wrote it anyway. The email is
+ * snapshotted for the same reason: the log has to read correctly after the
+ * user row is gone.
+ *
+ * `before` / `after` are null when the writer cannot know them. The generic
+ * request hook records WHICH route was called on WHICH ids but never a request
+ * body, because bodies carry credentials (the Drive OAuth flow) and free text;
+ * services that own a change record the real before and after explicitly.
+ */
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    actorUserId: uuid('actor_user_id'),
+    actorEmail: text('actor_email'),
+    /** e.g. `admin.roles.grant`, or `PATCH /admin/home/categories/:categoryId`. */
+    action: text('action').notNull(),
+    objectType: text('object_type').notNull(),
+    objectId: text('object_id'),
+    before: jsonb('before').$type<unknown>(),
+    after: jsonb('after').$type<unknown>(),
+    /** Required by the service for anything that affects money or access. */
+    reason: text('reason'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (table) => [
+    index('audit_log_occurred_idx').on(table.occurredAt),
+    index('audit_log_object_idx').on(table.objectType, table.objectId),
+    index('audit_log_actor_idx').on(table.actorUserId),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -1491,3 +1584,5 @@ export type PromptJobRow = typeof promptJobs.$inferSelect;
 export type PromptJobOutputRow = typeof promptJobOutputs.$inferSelect;
 export type PromptDriveFolderRow = typeof promptDriveFolders.$inferSelect;
 export type PromptDriveConnectionRow = typeof promptDriveConnections.$inferSelect;
+export type AdminRoleGrantRow = typeof adminRoleGrants.$inferSelect;
+export type AuditLogRow = typeof auditLog.$inferSelect;

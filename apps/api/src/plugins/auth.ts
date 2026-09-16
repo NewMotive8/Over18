@@ -1,6 +1,8 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
+import type { AdminPermission } from '@over18/shared';
 import type { Db } from '../db/client.js';
+import { adminAccessFor } from '../services/admin-permissions-service.js';
 import { getUserForToken, type SafeUser } from '../services/auth-service.js';
 
 export const SESSION_COOKIE = 'over18_session';
@@ -19,6 +21,18 @@ declare module 'fastify' {
      * an authorization check on the user the session already resolved.
      */
     requireAdmin: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /**
+     * preHandler factory for a specific admin capability (PRD §34.1).
+     *
+     * ALWAYS at least as strict as `requireAdmin`: an unauthenticated caller
+     * gets 401 and a non-staff caller 403, exactly as there. With permission
+     * enforcement OFF that is ALL it checks, so moving a route onto it cannot
+     * change who may call that route until enforcement is deliberately
+     * switched on.
+     */
+    requirePermission: (
+      permission: AdminPermission,
+    ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
 
@@ -35,7 +49,10 @@ declare module 'fastify' {
  * layer; the underlying token validation (auth-service) is transport-agnostic
  * so a future React Native client can present the same token differently.
  */
-export default fp(async function authPlugin(app, opts: { db: Db }) {
+export default fp(async function authPlugin(
+  app,
+  opts: { db: Db; permissionsEnforced?: boolean },
+) {
   app.decorateRequest('currentUser', null);
 
   app.addHook('preHandler', async (request) => {
@@ -64,5 +81,28 @@ export default fp(async function authPlugin(app, opts: { db: Db }) {
         .code(403)
         .send({ error: 'forbidden', message: 'Administrator access required.' });
     }
+  });
+
+  const permissionsEnforced = opts.permissionsEnforced ?? false;
+
+  app.decorate('requirePermission', (permission: AdminPermission) => {
+    return async (request: FastifyRequest, reply: FastifyReply) => {
+      await app.requireAdmin(request, reply);
+      if (reply.sent || !permissionsEnforced) return;
+
+      const access = await adminAccessFor(opts.db, request.currentUser!, {
+        enforced: true,
+        auditLogEnabled: false,
+      });
+      if (!access.granted.has(permission)) {
+        // The permission is named so an operator refused an action knows what
+        // to ask an administrator for, rather than guessing.
+        await reply.code(403).send({
+          error: 'forbidden',
+          message: 'Your role does not permit this action.',
+          permission,
+        });
+      }
+    };
   });
 });

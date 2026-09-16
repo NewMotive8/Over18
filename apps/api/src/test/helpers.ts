@@ -95,6 +95,16 @@ export const testEnv: Env = {
     },
     spoolDir: `${tmpdir()}/over18-test-media/prompt-generation`,
   },
+  // Production's defaults: everything OFF. Suites that exercise the audit hook
+  // or permission enforcement opt in through createTestContext, so every other
+  // suite proves both switches are genuinely inert.
+  admin: { auditEnabled: false, permissionsEnforced: false },
+  commerce: {
+    enabled: false,
+    paymentProvider: 'none',
+    ageVerificationProvider: 'none',
+    analyticsEnabled: false,
+  },
 };
 
 export function migrateTestDb(): void {
@@ -112,14 +122,34 @@ export interface TestContext {
 }
 
 export async function createTestContext(
-  options: BuildAppOptions & { chatMediaEnabled?: boolean; optimisedMediaEnabled?: boolean } = {},
+  options: BuildAppOptions & {
+    chatMediaEnabled?: boolean;
+    optimisedMediaEnabled?: boolean;
+    adminAuditEnabled?: boolean;
+    adminPermissionsEnforced?: boolean;
+  } = {},
 ): Promise<TestContext> {
-  const { chatMediaEnabled, optimisedMediaEnabled, ...appOptions } = options;
+  const {
+    chatMediaEnabled,
+    optimisedMediaEnabled,
+    adminAuditEnabled,
+    adminPermissionsEnforced,
+    ...appOptions
+  } = options;
   const { db, pool } = createDb(TEST_DATABASE_URL);
   let env: Env = testEnv;
   if (chatMediaEnabled) env = { ...env, chatMedia: { enabled: true } };
   if (optimisedMediaEnabled) {
     env = { ...env, media: { ...env.media, optimisedEnabled: true } };
+  }
+  if (adminAuditEnabled || adminPermissionsEnforced) {
+    env = {
+      ...env,
+      admin: {
+        auditEnabled: Boolean(adminAuditEnabled),
+        permissionsEnforced: Boolean(adminPermissionsEnforced),
+      },
+    };
   }
   const app = await buildApp(env, db, appOptions);
   return { app, db, pool };
@@ -127,7 +157,7 @@ export async function createTestContext(
 
 export async function truncateAll(ctx: TestContext): Promise<void> {
   await ctx.pool.query(
-    'TRUNCATE TABLE prompt_drive_connections, prompt_drive_oauth_states, prompt_drive_folders, prompt_job_outputs, prompt_jobs, prompt_batches, discovery_category_keywords, discovery_categories, asset_keywords, content_keywords, home_hero_clips, home_recent_characters, home_banners, banner_creatives, app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, favourites, messages, conversations, sessions, users, characters CASCADE',
+    'TRUNCATE TABLE audit_log, admin_role_grants, prompt_drive_connections, prompt_drive_oauth_states, prompt_drive_folders, prompt_job_outputs, prompt_jobs, prompt_batches, discovery_category_keywords, discovery_categories, asset_keywords, content_keywords, home_hero_clips, home_recent_characters, home_banners, banner_creatives, app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, favourites, messages, conversations, sessions, users, characters CASCADE',
   );
 }
 
