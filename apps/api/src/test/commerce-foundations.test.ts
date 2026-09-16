@@ -6,6 +6,7 @@ import {
   createFakePaymentProvider,
   signFakePayload,
 } from '../commerce/fake-providers.js';
+import { fakeProvidersAllowed } from '../commerce/fake-provider-policy.js';
 import {
   FakeProviderInProductionError,
   selectAgeVerificationProvider,
@@ -47,6 +48,11 @@ describe('economy and admin flags', () => {
     PAYMENT_PROVIDER: undefined,
     AGE_VERIFICATION_PROVIDER: undefined,
     ANALYTICS_ENABLED: undefined,
+    RAILWAY_ENVIRONMENT: undefined,
+    RAILWAY_ENVIRONMENT_ID: undefined,
+    RAILWAY_ENVIRONMENT_NAME: undefined,
+    RAILWAY_PROJECT_ID: undefined,
+    RAILWAY_SERVICE_ID: undefined,
   };
 
   it('defaults every switch OFF', () => {
@@ -74,6 +80,31 @@ describe('economy and admin flags', () => {
     const prod = load({ ...UNSET, NODE_ENV: 'production', PAYMENT_PROVIDER: 'fake', AGE_VERIFICATION_PROVIDER: 'fake' });
     expect(prod.commerce.paymentProvider).toBe('none');
     expect(prod.commerce.ageVerificationProvider).toBe('none');
+  });
+
+  it('fails closed: an unset or unrecognised NODE_ENV counts as production', () => {
+    for (const NODE_ENV of [undefined, '', 'staging', 'prod', 'Development', 'PRODUCTION']) {
+      const env = load({ ...UNSET, NODE_ENV, PAYMENT_PROVIDER: 'fake', AGE_VERIFICATION_PROVIDER: 'fake' });
+      expect(env.commerce.paymentProvider, `NODE_ENV=${String(NODE_ENV)}`).toBe('none');
+      expect(env.commerce.ageVerificationProvider, `NODE_ENV=${String(NODE_ENV)}`).toBe('none');
+    }
+  });
+
+  it('refuses a fake on Railway even when NODE_ENV claims development', () => {
+    const env = load({
+      ...UNSET,
+      NODE_ENV: 'development',
+      RAILWAY_ENVIRONMENT_ID: 'any-railway-environment',
+      PAYMENT_PROVIDER: 'fake',
+      AGE_VERIFICATION_PROVIDER: 'fake',
+    });
+    expect(env.commerce.paymentProvider).toBe('none');
+    expect(env.commerce.ageVerificationProvider).toBe('none');
+  });
+
+  it('does not change isProduction, which still means NODE_ENV === "production"', () => {
+    expect(load({ ...UNSET, NODE_ENV: undefined }).isProduction).toBe(false);
+    expect(load({ ...UNSET, NODE_ENV: 'production' }).isProduction).toBe(true);
   });
 
   it('treats an unknown provider name as none, never as a guess', () => {
@@ -192,22 +223,76 @@ const signed = (body: unknown, secret = SECRET) => {
   return { headers: { [FAKE_SIGNATURE_HEADER]: signFakePayload(secret, rawBody) }, rawBody };
 };
 
+describe('the fake-provider policy', () => {
+  it('allows a fake only for an explicit development or test NODE_ENV off Railway', () => {
+    expect(fakeProvidersAllowed({ NODE_ENV: 'development' })).toBe(true);
+    expect(fakeProvidersAllowed({ NODE_ENV: ' test ' })).toBe(true);
+  });
+
+  it('fails closed for production, unset, empty and unrecognised values', () => {
+    for (const NODE_ENV of ['production', undefined, '', '  ', 'staging', 'Development', 'dev']) {
+      expect(fakeProvidersAllowed({ NODE_ENV }), `NODE_ENV=${String(NODE_ENV)}`).toBe(false);
+    }
+  });
+
+  it('fails closed whenever any Railway identity variable is present', () => {
+    for (const name of [
+      'RAILWAY_ENVIRONMENT',
+      'RAILWAY_ENVIRONMENT_ID',
+      'RAILWAY_ENVIRONMENT_NAME',
+      'RAILWAY_PROJECT_ID',
+      'RAILWAY_SERVICE_ID',
+    ]) {
+      expect(fakeProvidersAllowed({ NODE_ENV: 'development', [name]: 'x' }), name).toBe(false);
+    }
+    // A blank value is not a Railway identity.
+    expect(fakeProvidersAllowed({ NODE_ENV: 'test', RAILWAY_PROJECT_ID: ' ' })).toBe(true);
+  });
+});
+
 describe('provider selection', () => {
-  const opts = (isProduction: boolean) => ({ isProduction, secret: SECRET, baseUrl: 'http://localhost:5173' });
+  const opts = (environ: NodeJS.ProcessEnv) => ({ environ, secret: SECRET, baseUrl: 'http://localhost:5173' });
+  const DEV = { NODE_ENV: 'development' };
 
   it('returns null for none -- a missing provider means switched off', () => {
-    expect(selectPaymentProvider('none', opts(true))).toBeNull();
-    expect(selectAgeVerificationProvider('none', opts(false))).toBeNull();
+    expect(selectPaymentProvider('none', opts({ NODE_ENV: 'production' }))).toBeNull();
+    expect(selectAgeVerificationProvider('none', opts({}))).toBeNull();
   });
 
   it('refuses a fake in production, independently of loadEnv', () => {
-    expect(() => selectPaymentProvider('fake', opts(true))).toThrow(FakeProviderInProductionError);
-    expect(() => selectAgeVerificationProvider('fake', opts(true))).toThrow(FakeProviderInProductionError);
+    expect(() => selectPaymentProvider('fake', opts({ NODE_ENV: 'production' }))).toThrow(FakeProviderInProductionError);
+    expect(() => selectAgeVerificationProvider('fake', opts({ NODE_ENV: 'production' }))).toThrow(
+      FakeProviderInProductionError,
+    );
   });
 
-  it('returns a fake outside production', () => {
-    expect(selectPaymentProvider('fake', opts(false))?.name).toBe('fake');
-    expect(selectAgeVerificationProvider('fake', opts(false))?.name).toBe('fake');
+  it('refuses a fake when NODE_ENV is unset -- the case that used to fail open', () => {
+    expect(() => selectPaymentProvider('fake', opts({}))).toThrow(FakeProviderInProductionError);
+    expect(() => selectAgeVerificationProvider('fake', opts({}))).toThrow(FakeProviderInProductionError);
+  });
+
+  it('refuses a fake on Railway even with NODE_ENV=development', () => {
+    const railway = { ...DEV, RAILWAY_ENVIRONMENT_ID: 'x' };
+    expect(() => selectPaymentProvider('fake', opts(railway))).toThrow(FakeProviderInProductionError);
+    expect(() => selectAgeVerificationProvider('fake', opts(railway))).toThrow(FakeProviderInProductionError);
+  });
+
+  it('returns a fake in an explicit development environment', () => {
+    expect(selectPaymentProvider('fake', opts(DEV))?.name).toBe('fake');
+    expect(selectAgeVerificationProvider('fake', opts(DEV))?.name).toBe('fake');
+  });
+
+  it('judges process.env itself when no environment is passed', () => {
+    const saved = { ...process.env };
+    try {
+      process.env = { ...saved, NODE_ENV: undefined };
+      delete process.env.NODE_ENV;
+      expect(() => selectPaymentProvider('fake', { secret: SECRET, baseUrl: 'http://x' })).toThrow(
+        FakeProviderInProductionError,
+      );
+    } finally {
+      process.env = saved;
+    }
   });
 });
 

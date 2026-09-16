@@ -5,6 +5,8 @@
  * missing. Its value is never logged anywhere.
  */
 
+import { fakeProvidersAllowed } from './commerce/fake-provider-policy.js';
+
 export interface LlmEnv {
   provider: 'openai-compatible';
   baseUrl: string;
@@ -160,8 +162,10 @@ export type CommerceProviderName = 'none' | 'fake';
  * than inventing its own.
  *
  * A `fake` provider can NEVER be active in production: `loadEnv` maps it to
- * `none` there, and the provider selectors refuse it independently. A fake
- * payment provider that reached production would grant Credits for nothing.
+ * `none` unless NODE_ENV is explicitly development/test AND the process is not
+ * on Railway, and the provider selectors refuse it independently on the same
+ * rule. An unset NODE_ENV counts as production. A fake payment provider that
+ * reached production would grant Credits for nothing.
  */
 export interface CommerceEnv {
   enabled: boolean;
@@ -193,10 +197,13 @@ function envFlagTrue(name: string): boolean {
   return (process.env[name] ?? '').trim().toLowerCase() === 'true';
 }
 
-/** `fake` only outside production; anything else, or nothing, is `none`. */
-function commerceProvider(name: string, isProduction: boolean): CommerceProviderName {
+/**
+ * `fake` only where fakes are explicitly allowed (fail closed -- see
+ * commerce/fake-provider-policy.ts); anything else, or nothing, is `none`.
+ */
+function commerceProvider(name: string): CommerceProviderName {
   const value = (process.env[name] ?? '').trim().toLowerCase();
-  return value === 'fake' && !isProduction ? 'fake' : 'none';
+  return value === 'fake' && fakeProvidersAllowed(process.env) ? 'fake' : 'none';
 }
 
 function envNonEmpty(name: string): boolean {
@@ -272,11 +279,8 @@ export function loadEnv(): Env {
     },
     commerce: {
       enabled: envFlagTrue('ECONOMY_ENABLED'),
-      paymentProvider: commerceProvider('PAYMENT_PROVIDER', process.env.NODE_ENV === 'production'),
-      ageVerificationProvider: commerceProvider(
-        'AGE_VERIFICATION_PROVIDER',
-        process.env.NODE_ENV === 'production',
-      ),
+      paymentProvider: commerceProvider('PAYMENT_PROVIDER'),
+      ageVerificationProvider: commerceProvider('AGE_VERIFICATION_PROVIDER'),
       analyticsEnabled: envFlagTrue('ANALYTICS_ENABLED'),
     },
     media: {
