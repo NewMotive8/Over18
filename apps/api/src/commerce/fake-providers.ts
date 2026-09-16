@@ -26,7 +26,8 @@ import type {
  * which is the worst moment to find it broken. Callbacks are HMAC-SHA256 over
  * the exact bytes, compared in constant time.
  *
- * NEVER IN PRODUCTION. `loadEnv` will not select one there, and
+ * NEVER IN PRODUCTION. `loadEnv` selects one only in an explicit development/test
+ * process off Railway (see fake-provider-policy.ts), and
  * `select-providers` refuses independently.
  */
 
