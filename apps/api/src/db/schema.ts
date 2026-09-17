@@ -2051,6 +2051,108 @@ export const economyRulesetRewards = pgTable(
   ],
 );
 
+/* ------------------------------------------------------------------ *
+ * THE COMMERCIAL BOUNDARY (P0.8)
+ *
+ * Where content meets the future economy -- and the only place it does.
+ *
+ *   Asset -> OFFER (commercial state) -> [future] Entitlement -> user access
+ *
+ * NOT `asset.status = 'purchased'`. Moderation (P0.4), distribution (P0.5) and
+ * commercial state are three independent axes, and collapsing any two of them
+ * is the mistake this table exists to make impossible: an asset does not stop
+ * being approved because nobody bought it, and does not become public because
+ * somebody did.
+ *
+ * NOTHING READS THIS YET. No route, no public surface and no admin screen
+ * consults an offer; the economy is dark (ECONOMY_ENABLED, off by default) and
+ * P1/P8 switch it on. What exists here is the shape those phases attach to.
+ * ------------------------------------------------------------------ */
+
+/**
+ * What an offer says about its content:
+ *
+ *   free      no commercial condition -- today's entire library, implicitly
+ *   locked    visible, but access is conditional (subscription, unlock, grant)
+ *   paid      access is bought outright
+ *   retired   no longer offered. History, never deletion: entitlements already
+ *             granted stay valid, which is why this is a state and not a
+ *             removed row.
+ */
+export const commercialState = pgEnum('commercial_state', ['free', 'locked', 'paid', 'retired']);
+
+/**
+ * content_offers -- one asset's commercial standing, and the durable identity a
+ * future entitlement points at.
+ *
+ * ── WHY THE LINKS ARE NULLABLE ───────────────────────────────────────────────
+ *
+ * `asset_id` and `character_id` are ON DELETE SET NULL, not CASCADE, and that
+ * is the whole point of the table. A purchase must outlive the thing that was
+ * purchased: P9.4 deletes characters permanently, and a customer's entitlement,
+ * receipt and download window have to remain answerable afterwards. Cascading
+ * would erase the commercial history along with the media -- exactly the
+ * outcome the retention rules forbid.
+ *
+ * `snapshot` is what makes the surviving row mean something: what was sold, as
+ * it was at the time. A future "your purchases" list reads it and does not have
+ * to join to content that may be gone.
+ *
+ * ── WHAT IS NOT HERE ─────────────────────────────────────────────────────────
+ *
+ * No price, no credit amount, no currency. Those are economy CONFIGURATION
+ * (P1.1) resolved at a point in time (P1.2); an offer names the configuration
+ * it uses through `economy_ref` and never carries a copy of it, so a price
+ * change is a configuration decision and not an edit to every asset.
+ *
+ * No entitlement, wallet, purchase or ledger table. Those are P2/P3/P8. When
+ * they arrive, an entitlement references `content_offers.id` -- never an asset
+ * id -- which is what lets it survive everything above.
+ */
+export const contentOffers = pgTable(
+  'content_offers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** The content this offer is for. NULL once that content is gone. */
+    assetId: uuid('asset_id').references(() => characterVisualAssets.id, {
+      onDelete: 'set null',
+    }),
+    /** Denormalised owner, for the same reason and with the same nullability. */
+    characterId: uuid('character_id').references(() => characters.id, { onDelete: 'set null' }),
+    state: commercialState('state').notNull().default('free'),
+    /**
+     * What was offered, recorded when the offer was written: character name,
+     * asset kind and media type. Never authoritative for live content -- read
+     * the asset for that -- and the only description left after a deletion.
+     */
+    snapshot: jsonb('snapshot').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * How the economy resolves this offer's price or cost: plan/pack codes and
+     * nothing else (see economy_* tables). Null while the economy is dark.
+     */
+    economyRef: jsonb('economy_ref').$type<Record<string, unknown>>(),
+    /** Set exactly while `state = 'retired'`; the check below holds them together. */
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * At most ONE live offer per asset, so "what is this asset's commercial
+     * state?" has exactly one answer. Retired offers stay for history, which is
+     * why the index is partial rather than a plain unique constraint.
+     */
+    uniqueIndex('content_offers_live_asset_idx')
+      .on(t.assetId)
+      .where(sql`${t.retiredAt} is null and ${t.assetId} is not null`),
+    index('content_offers_character_idx').on(t.characterId),
+    check(
+      'content_offers_retired_consistent',
+      sql`(${t.state} = 'retired') = (${t.retiredAt} is not null)`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -2091,3 +2193,4 @@ export type EconomyRulesetRow = typeof economyRulesets.$inferSelect;
 export type EconomyRulesetActionCostRow = typeof economyRulesetActionCosts.$inferSelect;
 export type EconomyRulesetAllowanceRow = typeof economyRulesetAllowances.$inferSelect;
 export type EconomyRulesetRewardRow = typeof economyRulesetRewards.$inferSelect;
+export type ContentOfferRow = typeof contentOffers.$inferSelect;

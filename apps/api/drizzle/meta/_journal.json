@@ -225,6 +225,13 @@
       "when": 1789661972155,
       "tag": "0031_purple_viper",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789678938193,
+      "tag": "0032_chief_ser_duncan",
+      "breakpoints": true
     }
   ]
 }
