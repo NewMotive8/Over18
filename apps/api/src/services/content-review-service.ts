@@ -1,6 +1,11 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { characters, characterVisualAssets, type CharacterVisualAssetRow } from '../db/schema.js';
+import {
+  characters,
+  characterVisualAssets,
+  type CharacterVisualAssetRow,
+  type CharacterVisualIdentityRow,
+} from '../db/schema.js';
 import {
   VisualAssetNotFoundError,
   VisualAssetTransitionError,
@@ -9,6 +14,8 @@ import {
 } from './visual-asset-service.js';
 import { assetLifecycleOf, checkTransition, type AssetLifecycleView } from './asset-lifecycle.js';
 import { describeAssetDistribution, type AssetDistribution } from './asset-distribution.js';
+import { identityRefOf, type IdentityVersionRef } from './identity-lineage-service.js';
+import { listVisualIdentityVersions } from './visual-identity-service.js';
 
 /**
  * US-106 — read model for the content-review workflow.
@@ -340,6 +347,16 @@ export interface CharacterContentAsset extends AssetLifecycleView {
    */
   previewUrl: string | null;
   /**
+   * WHICH IDENTITY VERSION THIS ASSET WAS MADE AGAINST (P0.6).
+   *
+   * The binding is the asset's own NOT NULL column, written when it was
+   * created; this reports the version NUMBER and status behind that id, which
+   * no admin surface showed. A retired version here is not a problem with the
+   * asset -- content is never invalidated by a redesign -- it is a fact an
+   * operator could not previously see.
+   */
+  visualIdentity: IdentityVersionRef;
+  /**
    * WHERE IT IS EXPOSED TO CUSTOMERS (P0.5) -- Posts, Hero, Categories and
    * Discovery in one model, each saying whether it is merely placed or actually
    * live, and why not when it is not. It replaced a `placement` field that knew
@@ -363,25 +380,41 @@ export interface CharacterContentAsset extends AssetLifecycleView {
 }
 
 /**
- * Every asset belonging to one character, newest first, whatever its status.
+ * Every asset belonging to one character, newest first, whatever its status --
+ * and the identity VERSIONS they belong to, returned together.
  *
  * Rejected rows are included deliberately: an operator looking at a character
  * needs to see that something was rejected rather than wonder where it went.
  * The caller decides how to group them.
+ *
+ * The versions come back with the assets (P0.6) because the lineage summary
+ * needs both and this read already has to load them to name each asset's
+ * version. One pass, no second query, and no second source for either fact.
  */
+export interface CharacterContentPage {
+  assets: CharacterContentAsset[];
+  /** The canonical version rows, newest first, exactly as identity owns them. */
+  identities: CharacterVisualIdentityRow[];
+}
+
 export async function listCharacterContent(
   db: Db,
   characterId: string,
-): Promise<CharacterContentAsset[]> {
+): Promise<CharacterContentPage> {
   // The character's own status comes with the rows: whether she is published is
   // part of the distribution gate, and asking per asset would be N+1.
-  const joined = await db
-    .select({ asset: characterVisualAssets, characterStatus: characters.status })
-    .from(characterVisualAssets)
-    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
-    .where(eq(characterVisualAssets.characterId, characterId))
-    .orderBy(desc(characterVisualAssets.createdAt), desc(characterVisualAssets.id));
-  if (joined.length === 0) return [];
+  const [joined, identities] = await Promise.all([
+    db
+      .select({ asset: characterVisualAssets, characterStatus: characters.status })
+      .from(characterVisualAssets)
+      .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+      .where(eq(characterVisualAssets.characterId, characterId))
+      .orderBy(desc(characterVisualAssets.createdAt), desc(characterVisualAssets.id)),
+    // The canonical identity rows, from the service that owns them.
+    listVisualIdentityVersions(db, characterId),
+  ]);
+  if (joined.length === 0) return { assets: [], identities };
+  const identityById = new Map(identities.map((row) => [row.id, identityRefOf(row)]));
 
   const rows = joined.map((row) => row.asset);
   const characterStatus = joined[0]!.characterStatus;
@@ -400,7 +433,7 @@ export async function listCharacterContent(
     })),
   );
 
-  return rows.map((row) => ({
+  const assets = rows.map((row) => ({
     assetId: row.id,
     characterId: row.characterId,
     kind: row.kind,
@@ -417,11 +450,16 @@ export async function listCharacterContent(
     // MEDIA_STORAGE_DIR, so the caller never needs to know which it holds.
     previewUrl: row.storageKey ? `/admin/content/assets/${row.id}/file` : null,
     distribution: distribution.get(row.id)!,
+    // Non-null by construction: the column is NOT NULL with a foreign key, and
+    // every version of this character was just loaded.
+    visualIdentity: identityById.get(row.visualIdentityId)!,
     createdAt: row.createdAt.toISOString(),
     approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
   }));
+
+  return { assets, identities };
 }
 
 /* ------------------------------------------------------------------ *

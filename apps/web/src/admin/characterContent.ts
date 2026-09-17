@@ -1,4 +1,10 @@
-import type { AssetAction, AssetDistribution, CharacterContentAsset } from '../lib/api';
+import type {
+  AssetAction,
+  AssetDistribution,
+  CharacterContentAsset,
+  IdentityLineage,
+  IdentityVersionUsage,
+} from '../lib/api';
 
 /**
  * A character's content shelf — presentation logic, React-free.
@@ -272,6 +278,61 @@ export function assetActions(asset: CharacterContentAsset): AssetActions {
     canPublish: offered.has('publish'),
     canUnpublish: offered.has('unpublish'),
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Identity lineage (P0.6)
+ *
+ * Which version a piece of content was made against, and how much of her
+ * content still sits on an older one. Reporting only: a retired version is not
+ * a defect, and nothing here suggests content should be redone.
+ * ------------------------------------------------------------------ */
+
+/** "Identity v2" -- with the version's state when it is not the active one. */
+export function identityLabel(asset: Pick<CharacterContentAsset, 'visualIdentity'>): string {
+  const identity = asset.visualIdentity;
+  if (identity.active) return `Identity v${identity.version}`;
+  return `Identity v${identity.version} · ${identity.status === 'draft' ? 'draft' : 'retired'}`;
+}
+
+/** One version's line in the identity list: what it carries, plainly. */
+export function identityUsageSummary(version: IdentityVersionUsage): string {
+  const counts = version.counts;
+  if (counts.total === 0) return 'No content on this version';
+  const parts = [`${counts.total} item${counts.total === 1 ? '' : 's'}`];
+  if (counts.references > 0) parts.push(`${counts.references} reference${counts.references === 1 ? '' : 's'}`);
+  if (counts.approved > 0) {
+    parts.push(counts.live > 0 ? `${counts.approved} approved (${counts.live} live)` : `${counts.approved} approved`);
+  }
+  if (counts.pendingReview > 0) parts.push(`${counts.pendingReview} in review`);
+  if (counts.archived > 0) parts.push(`${counts.archived} archived`);
+  if (counts.rejected > 0) parts.push(`${counts.rejected} rejected`);
+  return parts.join(' · ');
+}
+
+/**
+ * How much approved content predates the active version, said once, at the top
+ * of Visual identity -- the question an operator cannot otherwise answer.
+ */
+export function identityLineageSummary(lineage: IdentityLineage): string {
+  if (lineage.activeVersion === null) {
+    return lineage.versions.length === 0
+      ? 'No identity version yet.'
+      : 'No version is active, so nothing says which identity new content would use.';
+  }
+  if (lineage.staleApproved === 0) {
+    return `All approved content was made against the active identity (v${lineage.activeVersion}).`;
+  }
+  const items = `${lineage.staleApproved} approved item${lineage.staleApproved === 1 ? '' : 's'}`;
+  const versions = lineage.staleVersions
+    .sort((a, b) => a - b)
+    .map((version) => `v${version}`)
+    .join(', ');
+  const live =
+    lineage.staleLive > 0
+      ? `, ${lineage.staleLive} of them live`
+      : ', none of them live';
+  return `${items} still use ${versions}, not the active v${lineage.activeVersion}${live}. Nothing was changed by activating it — this is for your judgement.`;
 }
 
 /* ------------------------------------------------------------------ *

@@ -1466,6 +1466,43 @@ export interface AssetDistribution {
   discovery: Array<{ keyword: string; categories: string[]; live: boolean }>;
 }
 
+/**
+ * WHICH IDENTITY VERSION AN ASSET BELONGS TO (P0.6), and what each version
+ * carries. Read straight from the canonical identity rows -- the browser
+ * neither derives nor stores a second answer.
+ */
+export interface IdentityVersionRef {
+  id: string;
+  version: number;
+  status: 'draft' | 'active' | 'retired';
+  label: string | null;
+  active: boolean;
+}
+
+export interface IdentityUsageCounts {
+  total: number;
+  pendingReview: number;
+  approved: number;
+  rejected: number;
+  archived: number;
+  live: number;
+  references: number;
+}
+
+export interface IdentityVersionUsage extends IdentityVersionRef {
+  counts: IdentityUsageCounts;
+}
+
+export interface IdentityLineage {
+  activeVersion: number | null;
+  versions: IdentityVersionUsage[];
+  /** Approved content made against a version that is no longer the active one. */
+  staleApproved: number;
+  /** How much of that is reaching customers right now. */
+  staleLive: number;
+  staleVersions: number[];
+}
+
 /** One item on a character's content shelf. */
 export interface CharacterContentAsset extends AssetLifecycle {
   assetId: string;
@@ -1481,6 +1518,8 @@ export interface CharacterContentAsset extends AssetLifecycle {
   previewUrl: string | null;
   /** P0.5 -- Posts, Hero, Categories and Discovery in one model. */
   distribution: AssetDistribution;
+  /** P0.6 -- the identity version this asset was made against. */
+  visualIdentity: IdentityVersionRef;
   createdAt: string;
   approvedAt: string | null;
   /**
@@ -1519,7 +1558,7 @@ export const adminCharactersApi = {
    * its Hero position. Saves a trip to Review just to find out what exists.
    */
   content: (characterId: string) =>
-    request<{ assets: CharacterContentAsset[] }>(
+    request<{ assets: CharacterContentAsset[]; identityLineage: IdentityLineage }>(
       `/admin/characters/${encodeURIComponent(characterId)}/content`,
     ),
   /** What this character still needs, derived from the configuration. */

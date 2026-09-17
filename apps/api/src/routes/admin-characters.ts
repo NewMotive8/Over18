@@ -53,6 +53,7 @@ import {
   planMissingContentFor,
 } from '../services/requirement-status-service.js';
 import { assessCharacter } from '../services/character-readiness-service.js';
+import { summariseIdentityLineage } from '../services/identity-lineage-service.js';
 import { assetLifecycleOf } from '../services/asset-lifecycle.js';
 import type { CharacterVisualAssetRow, CharacterVisualIdentityRow } from '../db/schema.js';
 
@@ -379,7 +380,24 @@ export default async function adminCharacterRoutes(
       const { characterId } = request.params;
       if (!UUID_RE.test(characterId)) return notFound(reply);
       if (!(await getCharacterForAdmin(opts.db, characterId))) return notFound(reply);
-      return { assets: await listCharacterContent(opts.db, characterId) };
+      const { assets, identities } = await listCharacterContent(opts.db, characterId);
+      /**
+       * P0.6 -- the same assets, plus what their identity VERSIONS carry.
+       *
+       * Derived here from what the read already loaded, so the page cannot
+       * disagree with the shelf it is looking at, and nothing about identity
+       * or content lifecycle changes by being counted.
+       */
+      const identityLineage = summariseIdentityLineage(
+        identities,
+        assets.map((asset) => ({
+          visualIdentityId: asset.visualIdentity.id,
+          workflow: asset.workflow,
+          role: asset.role,
+          live: asset.distribution.liveAnywhere,
+        })),
+      );
+      return { assets, identityLineage };
     },
   );
 

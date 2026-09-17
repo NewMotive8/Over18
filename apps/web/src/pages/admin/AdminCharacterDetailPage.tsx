@@ -8,6 +8,9 @@ import {
   removeKeyword,
   characterReadiness,
   distributionLabel,
+  identityLabel as identityVersionLabel,
+  identityLineageSummary,
+  identityUsageSummary,
   statusLabel,
   originLabel,
   groupBySection,
@@ -36,6 +39,7 @@ import {
   type VisualIdentityView,
   type CharacterContentAsset,
   type AssetAction,
+  type IdentityLineage,
   contentReviewApi,
 } from '../../lib/api';
 
@@ -121,6 +125,8 @@ export default function AdminCharacterDetailPage() {
 
   /** Her whole content shelf, loaded alongside the detail. */
   const [content, setContent] = useState<CharacterContentAsset[] | null>(null);
+  /** P0.6 -- what each identity version carries, from the same read. */
+  const [lineage, setLineage] = useState<IdentityLineage | null>(null);
 
   /* ---------------- acting on her content, from here ----------------
    *
@@ -232,7 +238,10 @@ export default function AdminCharacterDetailPage() {
         setAutofilled(false);
       })
       .then(() => adminCharactersApi.content(characterId))
-      .then((res) => setContent(res.assets))
+      .then((res) => {
+        setContent(res.assets);
+        setLineage(res.identityLineage);
+      })
       .catch((err) => {
         if (err instanceof ApiRequestError && err.status === 404) setNotFound(true);
         else setError("Couldn't load this character.");
@@ -254,6 +263,7 @@ export default function AdminCharacterDetailPage() {
       adminCharactersApi.get(characterId),
     ]);
     setContent(res.assets);
+    setLineage(res.identityLineage);
     setDetail((prev) =>
       prev ? { ...prev, readiness: next.readiness, publishability: next.publishability } : prev,
     );
@@ -703,6 +713,16 @@ export default function AdminCharacterDetailPage() {
           Editing never overwrites history: a change creates a new version.
         </p>
 
+        {/* P0.6 -- IDENTITY LINEAGE. Activating a version changes no content:
+            approved and released items keep the version they were made
+            against, and keep appearing wherever they already appear. This says
+            how much of her content that is, which no screen could answer. */}
+        {lineage && (
+          <p className="mb-3 text-xs text-zinc-400" data-testid="identity-lineage">
+            {identityLineageSummary(lineage)}
+          </p>
+        )}
+
         {identityOpen && (
           <div className="mb-4 space-y-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
             <h3 className="text-sm font-medium text-zinc-200">
@@ -789,6 +809,27 @@ export default function AdminCharacterDetailPage() {
                       : identity.status === 'draft'
                         ? 'Draft — not used yet'
                         : 'Retired — kept for history'}
+                  </p>
+                  {/* What this version actually carries (P0.6). */}
+                  <p className="text-xs text-zinc-500" data-testid="identity-usage">
+                    {identityUsageSummary(
+                      lineage?.versions.find((version) => version.id === identity.id) ?? {
+                        id: identity.id,
+                        version: identity.version,
+                        status: identity.status,
+                        label: identity.label,
+                        active: identity.isActive,
+                        counts: {
+                          total: 0,
+                          pendingReview: 0,
+                          approved: 0,
+                          rejected: 0,
+                          archived: 0,
+                          live: 0,
+                          references: 0,
+                        },
+                      },
+                    )}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -947,6 +988,15 @@ export default function AdminCharacterDetailPage() {
                       </p>
                       <p className="truncate text-[11px] text-zinc-500" data-testid="asset-origin">
                         {originLabel(asset)}
+                      </p>
+                      {/* Which identity version this was made against (P0.6). */}
+                      <p
+                        className={`truncate text-[11px] ${
+                          asset.visualIdentity.active ? 'text-zinc-500' : 'text-amber-400/80'
+                        }`}
+                        data-testid="asset-identity"
+                      >
+                        {identityVersionLabel(asset)}
                       </p>
                       {/* WHERE IT IS, in the server's own distribution model:
                           Posts, Hero, Categories and Discovery, with what is

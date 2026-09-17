@@ -24,6 +24,9 @@ import {
   liveChannels,
   dormantChannels,
   distributionBlockerLabel,
+  identityLabel,
+  identityLineageSummary,
+  identityUsageSummary,
   sectionSummary,
   SECTION_ACCEPTS,
   SECTION_FILE_ACCEPT,
@@ -34,7 +37,12 @@ import {
   removeKeyword,
   statusLabel,
 } from './characterContent';
-import type { AssetDistribution, CharacterContentAsset } from '../lib/api';
+import type {
+  AssetDistribution,
+  CharacterContentAsset,
+  IdentityLineage,
+  IdentityVersionUsage,
+} from '../lib/api';
 
 /**
  * The server's distribution model for one asset (P0.5). Tests build it exactly
@@ -130,6 +138,7 @@ function asset(over: Partial<CharacterContentAsset> = {}): CharacterContentAsset
     position: null,
     previewUrl: '/admin/content/assets/a1/file',
     distribution: dist(),
+    visualIdentity: { id: 'identity-2', version: 2, status: 'active', label: null, active: true },
     createdAt: '2026-08-01T00:00:00.000Z',
     approvedAt: '2026-08-02T00:00:00.000Z',
     ...over,
@@ -1112,5 +1121,96 @@ describe('the admin screens hold no transition logic', () => {
   it('the guard itself catches a planted rule', () => {
     expect(ASSET_STATUS_TEST.test("if (asset.status === 'approved') offer();")).toBe(true);
     expect(ASSET_STATUS_TEST.test("character.status === 'active'")).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * P0.6 -- identity lineage, reported and never acted upon
+ * ------------------------------------------------------------------ */
+
+const usage = (over: Partial<IdentityVersionUsage> = {}): IdentityVersionUsage => ({
+  id: 'v2',
+  version: 2,
+  status: 'active',
+  label: null,
+  active: true,
+  counts: { total: 0, pendingReview: 0, approved: 0, rejected: 0, archived: 0, live: 0, references: 0 },
+  ...over,
+});
+
+describe('which identity version an asset was made against', () => {
+  it('names the version, and says when it is no longer the active one', () => {
+    expect(identityLabel(asset())).toBe('Identity v2');
+    expect(
+      identityLabel(
+        asset({ visualIdentity: { id: 'v1', version: 1, status: 'retired', label: null, active: false } }),
+      ),
+    ).toBe('Identity v1 · retired');
+    expect(
+      identityLabel(
+        asset({ visualIdentity: { id: 'v3', version: 3, status: 'draft', label: 'Next', active: false } }),
+      ),
+    ).toBe('Identity v3 · draft');
+  });
+
+  it('summarises what one version carries, by workflow', () => {
+    expect(identityUsageSummary(usage())).toBe('No content on this version');
+    expect(
+      identityUsageSummary(
+        usage({
+          counts: { total: 7, pendingReview: 1, approved: 4, rejected: 1, archived: 1, live: 2, references: 1 },
+        }),
+      ),
+    ).toBe('7 items · 1 reference · 4 approved (2 live) · 1 in review · 1 archived · 1 rejected');
+    expect(
+      identityUsageSummary(
+        usage({ counts: { total: 2, pendingReview: 0, approved: 2, rejected: 0, archived: 0, live: 0, references: 0 } }),
+      ),
+    ).toBe('2 items · 2 approved');
+  });
+});
+
+describe('how much content is still on an older identity version', () => {
+  const lineage = (over: Partial<IdentityLineage> = {}): IdentityLineage => ({
+    activeVersion: 2,
+    versions: [usage(), usage({ id: 'v1', version: 1, status: 'retired', active: false })],
+    staleApproved: 0,
+    staleLive: 0,
+    staleVersions: [],
+    ...over,
+  });
+
+  it('says plainly when everything is on the active version', () => {
+    expect(identityLineageSummary(lineage())).toBe(
+      'All approved content was made against the active identity (v2).',
+    );
+  });
+
+  it('names how much, which versions, and how much of it customers can see', () => {
+    expect(
+      identityLineageSummary(lineage({ staleApproved: 3, staleLive: 1, staleVersions: [1] })),
+    ).toBe(
+      '3 approved items still use v1, not the active v2, 1 of them live. Nothing was changed by activating it — this is for your judgement.',
+    );
+    expect(
+      identityLineageSummary(lineage({ staleApproved: 1, staleLive: 0, staleVersions: [1] })),
+    ).toContain('1 approved item still use');
+    expect(
+      identityLineageSummary(lineage({ staleApproved: 2, staleLive: 0, staleVersions: [1] })),
+    ).toContain('none of them live');
+  });
+
+  it('never suggests the content is wrong -- only that it predates the active version', () => {
+    const message = identityLineageSummary(lineage({ staleApproved: 3, staleLive: 1, staleVersions: [1] }));
+    for (const word of ['regenerate', 'invalid', 'stale', 'outdated', 'must']) {
+      expect({ word, present: message.toLowerCase().includes(word) }).toEqual({ word, present: false });
+    }
+  });
+
+  it('handles a character with no active version, and one with none at all', () => {
+    expect(identityLineageSummary(lineage({ activeVersion: null }))).toContain('No version is active');
+    expect(identityLineageSummary(lineage({ activeVersion: null, versions: [] }))).toBe(
+      'No identity version yet.',
+    );
   });
 });
