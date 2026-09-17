@@ -103,12 +103,19 @@ async function adminCookie(email = 'op@example.com'): Promise<string> {
   return `${c.name}=${c.value}`;
 }
 
-/** Uploads through the REAL route, exactly as the Character page does. */
+/**
+ * Uploads through the REAL route, exactly as the Character page does -- and,
+ * unless told not to, APPROVES through the real route too. Since P0.4 a shelf
+ * upload waits for review, and this suite is about the KIND boundary: without
+ * approval every "never selects / never offers" assertion below would pass
+ * vacuously on an unapproved row.
+ */
 async function uploadToShelf(
   cookie: string,
   section: 'regular' | 'explicit' | 'chat',
   media: 'video' | 'image' = 'video',
   characterId: string = LUNA.id,
+  approve = true,
 ) {
   const file =
     media === 'video'
@@ -129,7 +136,15 @@ async function uploadToShelf(
     payload,
   });
   expect(res.statusCode).toBe(201);
-  return res.json() as { assetId: string; status: string; mediaType: string };
+  const uploaded = res.json() as { assetId: string; status: string; mediaType: string };
+  if (!approve) return uploaded;
+  const approved = await ctx.app.inject({
+    method: 'POST',
+    url: `/admin/content/assets/${uploaded.assetId}/approve`,
+    headers: { cookie },
+  });
+  expect(approved.statusCode).toBe(200);
+  return approved.json() as { assetId: string; status: string; mediaType: string };
 }
 
 async function rowFor(assetId: string) {
@@ -209,14 +224,35 @@ beforeEach(async () => {
  * ================================================================== */
 
 describe('the shelf an operator uploads through is recorded on the asset', () => {
-  it('stores a Chat upload as kind=chat, approved, and not canonical', async () => {
+  it('stores a Chat upload as kind=chat, WAITING FOR REVIEW, and not canonical', async () => {
     const cookie = await adminCookie();
-    const asset = await uploadToShelf(cookie, 'chat', 'video');
+    const asset = await uploadToShelf(cookie, 'chat', 'video', LUNA.id, false);
     const row = await rowFor(asset.assetId);
     expect(row.kind).toBe('chat');
-    expect(row.status).toBe('approved');
-    expect(row.approvedAt).not.toBeNull();
+    expect(row.status).toBe('under_review');
+    expect(row.approvedAt).toBeNull();
     expect(row.isCanonical).toBe(false);
+
+    // Approving it keeps it chat, and never canonical.
+    const approved = await uploadToShelf(cookie, 'chat', 'video');
+    const approvedRow = await rowFor(approved.assetId);
+    expect([approvedRow.kind, approvedRow.status, approvedRow.isCanonical]).toEqual(['chat', 'approved', false]);
+  });
+
+  it('an unapproved Chat upload is never selected for a conversation', async () => {
+    const cookie = await adminCookie();
+    await uploadToShelf(cookie, 'chat', 'video', LUNA.id, false);
+    const [user] = await ctx.db
+      .insert(users)
+      .values({ email: 'pending-chat@example.com', passwordHash: 'x' })
+      .returning();
+    const [conv] = await ctx.db.insert(conversations).values({ userId: user!.id, characterId: LUNA.id }).returning();
+    const picked = await createDeterministicMediaSelector(testEnv.media.storageDir)(ctx.db, {
+      characterId: LUNA.id,
+      conversationId: conv!.id,
+      requested: 'video',
+    });
+    expect(picked).toBeNull();
   });
 
   it('accepts an IMAGE on Chat Content', async () => {

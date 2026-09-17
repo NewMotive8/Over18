@@ -4,8 +4,10 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Db } from '../db/client.js';
 import {
   approveVisualAsset,
+  archiveVisualAsset,
   getVisualAssetById,
   rejectVisualAsset,
+  unarchiveVisualAsset,
   VisualAssetNotFoundError,
   VisualAssetTransitionError,
   type ContentRating,
@@ -52,6 +54,7 @@ import {
 } from '../services/requirement-status-service.js';
 import { getCharacterForAdmin } from '../services/character-service.js';
 import { resolveMediaFile } from '../services/message-media-service.js';
+import { assetLifecycleOf } from '../services/asset-lifecycle.js';
 import {
   adoptOptimisedDerivative,
   revokeOptimisedDerivative,
@@ -61,17 +64,18 @@ import {
  * US-106 — admin content review API.
  *
  * Every route is `requireAuth` + `requireAdmin`, reusing the existing session
- * auth established in US-99/US-103. No new lifecycle: approve and reject are
- * the existing EPIC 7 operations, and "remove" is a REJECT, never a delete, so
- * provenance survives.
+ * auth established in US-99/US-103. Approve and reject are the existing EPIC 7
+ * operations, and "remove" is a REJECT, never a delete, so provenance survives.
+ * P0.4 adds archive/unarchive beside them; every one of them is checked by
+ * `asset-lifecycle.ts`.
  */
 const RATINGS: ContentRating[] = ['sfw', 'explicit'];
 
 /**
  * The Character page's content shelves.
  *
- * The upload route accepts a SHELF NAME and derives the asset's kind, approval
- * and accepted media types from it. It deliberately does NOT accept a kind: a
+ * The upload route accepts a SHELF NAME and derives the asset's kind, rating
+ * and accepted media types from it. It never derives an approval (P0.4). It deliberately does NOT accept a kind: a
  * client that could name a kind could put its own upload on the front page, or
  * keep it off every surface — `kind` is the axis the public boundary is built
  * on, so it stays the server's to decide.
@@ -91,6 +95,9 @@ function assetView(a: Awaited<ReturnType<typeof getReviewAsset>>) {
     mediaType: a.mediaType,
     status: a.status,
     kind: a.kind,
+    // P0.3: role, origin and workflow, each from its own column. `kind` and
+    // `status` stay for existing clients; these are the names to read.
+    ...assetLifecycleOf(a),
     contentRating: a.contentRating,
     /** Which configured requirement this item is filed under, if any. */
     requirementKey: a.requirementKey,
@@ -108,6 +115,10 @@ function assetView(a: Awaited<ReturnType<typeof getReviewAsset>>) {
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
     approvedAt: a.approvedAt,
+    /** Released to her Posts tab (P0.4 shows it in Review), or null. */
+    publishedAt: a.publishedAt,
+    /** Archived (P0.4), or null. */
+    archivedAt: a.archivedAt,
     // Only what the model actually stores — nothing invented.
     provenance: {
       jobId: provenance.jobId ?? null,
@@ -255,14 +266,14 @@ export default async function adminContentRoutes(
      * WHICH CHARACTER-PAGE SHELF THIS UPLOAD CAME FROM, if any.
      *
      * The browser names a SHELF. It never names a kind, a status or an
-     * approval — the server derives all three from the shelf below. That
+     * approval — the server derives the kind from the shelf below. That
      * asymmetry is the whole security property: `kind` decides which surfaces
      * an asset may ever reach, so a client that could set it could publish its
      * own private media or hide its own public media.
      *
-     * ABSENT is the Content Library, unchanged in every respect: the upload
-     * lands `under_review`, kind `generated`, and an operator decides in
-     * Review exactly as before.
+     * ABSENT is the Content Library: the upload lands `under_review`, kind
+     * `generated`, and an operator decides in Review. Since P0.4 every shelf
+     * lands `under_review` as well -- no upload path approves content.
      */
     const section = (file.fields.section as { value?: string } | undefined)?.value;
     if (section !== undefined && !CHARACTER_SHELVES.includes(section as CharacterShelf)) {
@@ -328,26 +339,17 @@ export default async function adminContentRoutes(
          * meaning.
          */
         kind: shelf === 'chat' ? 'chat' : undefined,
-        // Review by default; a Character-page shelf opts out. Uploading to a
-        // character IS the editorial decision — a second queue to re-make it
-        // was ceremony, not safety. The Content Library omits `section` and is
-        // therefore untouched.
-        approve: shelf !== undefined,
         /**
-         * AND RELEASED, for the two shelves that ARE her page.
+         * NOT APPROVED, NOT RELEASED -- on every shelf (P0.4).
          *
-         * This is the same editorial decision the line above already trusts,
-         * recorded rather than implied: an operator putting a clip on her
-         * Regular or Explicit shelf means it to appear on her Posts tab. Before
-         * `published_at` existed there was nowhere to write that down, so Posts
-         * fell back to asking whether the clip had been merchandised onto HOME
-         * — a different decision entirely — and hid everything that had not.
-         *
-         * `chat` is excluded because Chat Content is private by construction,
-         * and the Content Library (no `section`) is excluded because uploading
-         * there is explicitly NOT a decision to publish — it lands in Review.
+         * Regular, Explicit and Chat uploads used to approve on arrival, and
+         * Regular and Explicit also went straight onto her Posts tab, on the
+         * reasoning that uploading to a character was itself the decision. It
+         * meant no upload was ever moderated. Every upload now waits for
+         * Approve or Reject on the Character page or in Review, like
+         * generated content. No `approve` is passed, and the
+         * service refuses one for content anyway.
          */
-        publish: shelf === 'regular' || shelf === 'explicit',
         // Optional, and never defaulted: the operator may say which requirement
         // this satisfies at upload time, or leave it for triage in Review.
         requirementKey,
@@ -900,9 +902,51 @@ export default async function adminContentRoutes(
   }
 
   /**
+   * P0.4 -- the lifecycle verbs added to approve / publish / reject.
+   *
+   *   archive    approved (released or not) -> archived. Hidden from every
+   *              surface; nothing is removed.
+   *   unarchive  archived -> approved, and NOT released or placed: it clears
+   *              the release and placements rather than putting the asset
+   *              back in front of customers by itself.
+   *
+   * There is no combined approve-and-release verb: releasing stays its own
+   * decision. Every refusal is the rule's own reason from
+   * `asset-lifecycle.ts`, as 409.
+   */
+  const lifecycleVerbs = [
+    ['archive', (assetId: string, userId?: string) => archiveVisualAsset(opts.db, assetId, userId)],
+    ['unarchive', (assetId: string) => unarchiveVisualAsset(opts.db, assetId)],
+  ] as const;
+  for (const [verb, apply] of lifecycleVerbs) {
+    app.post<{ Params: { assetId: string } }>(
+      `/admin/content/assets/:assetId/${verb}`,
+      adminOnly,
+      async (request, reply) => {
+        const { assetId } = request.params;
+        if (!UUID_RE.test(assetId)) {
+          return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+        }
+        try {
+          await apply(assetId, request.currentUser?.id);
+          return reply.send(assetView(await getReviewAsset(opts.db, assetId)));
+        } catch (err) {
+          if (err instanceof VisualAssetNotFoundError) {
+            return reply.code(404).send({ error: 'not_found', message: 'Asset not found.' });
+          }
+          if (err instanceof VisualAssetTransitionError) {
+            return reply.code(409).send({ error: 'invalid_transition', message: err.message });
+          }
+          throw err;
+        }
+      },
+    );
+  }
+
+  /**
    * Reject === the operator's "remove". The row, its provenance and its media
-   * are preserved; only the lifecycle status changes. There is deliberately no
-   * hard-delete endpoint.
+   * are preserved; only the lifecycle status changes. Deleting is a separate,
+   * explicit Library operation (DELETE above).
    */
   app.post<{ Params: { assetId: string } }>(
     '/admin/content/assets/:assetId/reject',

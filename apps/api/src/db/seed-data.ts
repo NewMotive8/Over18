@@ -251,6 +251,9 @@ function canonicalRefs(
     characterId,
     visualIdentityId: identityId,
     kind: 'reference',
+    // Scaffolding placeholders predate recorded origin, and are not generated,
+    // uploaded or imported content.
+    origin: 'legacy',
     status: 'approved',
     isCanonical: true,
     position: i + 1,
@@ -282,6 +285,8 @@ export const SEED_VISUAL_ASSETS: VisualAssetSeed[] = [
     characterId: MARIA_ID,
     visualIdentityId: MARIA_IDENTITY,
     kind: 'reference',
+    // The supplied site portrait: existing outside content brought in as-is.
+    origin: 'imported',
     status: 'approved',
     isCanonical: true,
     position: 1,

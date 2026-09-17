@@ -280,11 +280,78 @@ export const visualIdentityStatus = pgEnum('visual_identity_status', [
  * browser can name a shelf, never an enum value.
  */
 export const visualAssetKind = pgEnum('visual_asset_kind', ['reference', 'generated', 'chat']);
+/**
+ * WHERE AN ASSET CAME FROM -- its ORIGIN, recorded once, at creation (P0.3).
+ *
+ * The asset model separates concerns that used to be implicit:
+ *
+ *   role          `kind`          reference | generated (= CONTENT) | chat
+ *   origin        `origin`        generated | manual | imported | legacy
+ *   workflow      `status`        moderation state (see visual_asset_status)
+ *   requirement   `requirement_key`
+ *   distribution  `published_at` (Posts) plus the placement tables
+ *                 (Hero, categories, keywords) -- never a column here
+ *   commercial    reserved for the economy work; nothing here
+ *
+ * WHY ORIGIN NEEDED ITS OWN COLUMN. It was never recorded as a fact, only
+ * implied: a manual upload wrote `provenance.source = 'manual-upload'`, a
+ * generation wrote a `jobId` and no source at all, and `kind = 'generated'` --
+ * whose name reads like an origin -- is written by BOTH, because `kind` is the
+ * asset's ROLE. So "was this generated or uploaded?" had no reliable answer.
+ *
+ * `provenance` REMAINS THE DETAIL (provider, model, prompt, paths, file name).
+ * `origin` is the coarse classification every writer states explicitly; it does
+ * not replace or duplicate that detail.
+ *
+ *   generated  produced by this system's generation pipeline
+ *   manual     uploaded by an operator (Character page shelves, Content
+ *              Library, and the Content Inbox, which is manual intake staged
+ *              before a character is chosen)
+ *   imported   brought in from an existing outside source without a per-file
+ *              operator upload (e.g. the supplied site portrait)
+ *   legacy     origin was never recorded and cannot be established -- never a
+ *              guess dressed up as a fact
+ */
+export const visualAssetOrigin = pgEnum('visual_asset_origin', [
+  'generated',
+  'manual',
+  'imported',
+  'legacy',
+]);
+/**
+ * WORKFLOW -- where an asset stands in moderation (P0.4). Read through
+ * `services/asset-lifecycle.ts`, never compared ad hoc:
+ *
+ *   generated, under_review  PENDING REVIEW. Two historical names for one
+ *                            queue; both stay valid and neither is rewritten.
+ *   approved                 passed moderation. Exposes nothing by itself --
+ *                            release (`published_at`) and placement do that.
+ *   rejected                 failed moderation. The row, file and provenance
+ *                            stay; only deletion removes them.
+ *   archived                 was approved, now retired from every surface.
+ *                            Media, provenance, lineage and the original
+ *                            approval are kept, so nothing is lost; the
+ *                            release time and placements are kept too, and
+ *                            unarchiving CLEARS them -- it returns the asset to
+ *                            Approved, never straight back in front of
+ *                            customers.
+ *
+ * WHY ARCHIVED IS A STATUS AND NOT A FLAG. Every public reader already requires
+ * `status = 'approved'` (Posts, Home, categories, Hero, discovery, search, the
+ * media route, the chat selector, requirement counts). An archived row fails
+ * that one test, so it is hidden from all of them by the rule they already
+ * apply -- a separate `archived` flag would have needed every one of those
+ * readers edited, and the one that was missed would leak.
+ *
+ * Appended LAST: Postgres enum order is creation order, and nothing here sorts
+ * by it.
+ */
 export const visualAssetStatus = pgEnum('visual_asset_status', [
   'generated',
   'under_review',
   'approved',
   'rejected',
+  'archived',
 ]);
 /** 18+ readiness plug-point ONLY. US-16A carries the classification; it does
  * NOT implement adult generation, policy, moderation, or access control. */
@@ -352,6 +419,13 @@ export const characterVisualAssets = pgTable(
       .notNull()
       .references(() => characterVisualIdentities.id, { onDelete: 'cascade' }),
     kind: visualAssetKind('kind').notNull(),
+    /**
+     * See `visual_asset_origin`. The DEFAULT exists only for backward safety: a
+     * process still running the previous code during a deploy keeps inserting
+     * successfully, and an unstated origin honestly reads as `legacy`. Every
+     * current writer states its origin explicitly.
+     */
+    origin: visualAssetOrigin('origin').notNull().default('legacy'),
     status: visualAssetStatus('status').notNull(),
     isCanonical: boolean('is_canonical').notNull().default(false),
     position: integer('position'),
@@ -417,10 +491,28 @@ export const characterVisualAssets = pgTable(
      * change meaning.
      */
     publishedAt: timestamp('published_at', { withTimezone: true }),
+    /**
+     * When, and by whom, this asset was ARCHIVED (P0.4). Set exactly while
+     * `status = 'archived'` -- the check below holds the two together -- and
+     * cleared on unarchive. Archiving writes nothing else: `approved_*`,
+     * `published_at`, provenance and placements are left as they were.
+     */
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    archivedBy: uuid('archived_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    /**
+     * Archived exactly when an archive time is recorded. Compared as TEXT on
+     * purpose: the migration that adds the `archived` enum value runs in the
+     * same transaction as this constraint, and Postgres refuses a new enum
+     * value as a literal until that transaction commits.
+     */
+    check(
+      'character_visual_assets_archived_consistent',
+      sql`(${table.status}::text = 'archived') = (${table.archivedAt} is not null)`,
+    ),
     index('character_visual_assets_character_idx').on(table.characterId),
     index('character_visual_assets_identity_kind_status_idx').on(
       table.visualIdentityId,

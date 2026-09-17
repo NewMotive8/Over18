@@ -212,6 +212,8 @@ export function blockedReason(asset: CategoryAssetView): string {
     case 'under_review':
     case 'generated':
       return 'Waiting on Review, so it is hidden from the app. Still assigned — approving it brings it back.';
+    case 'archived':
+      return 'Archived, so it is hidden from the app. Still assigned — unarchiving it brings it back.';
     default:
       return `Not approved (${asset.status}), so it is hidden from the app. Still assigned.`;
   }

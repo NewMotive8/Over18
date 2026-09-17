@@ -3,6 +3,7 @@ import {
   API_URL,
   ApiRequestError,
   contentReviewApi,
+  type AssetAction,
   type InboxItemView,
   type RequirementEntryView,
   type ReviewAssetView,
@@ -19,6 +20,13 @@ import {
   triageExplanation,
   type BoardSlot,
 } from '../../admin/requirementBoard';
+import {
+  archiveConsequence,
+  LIFECYCLE_ACTION_LABEL,
+  orderedActions,
+  statusLabel,
+  unarchiveConsequence,
+} from '../../admin/characterContent';
 import {
   cancel,
   canReject,
@@ -57,6 +65,8 @@ export default function ContentReviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [intent, setIntent] = useState<DecisionIntent>(IDLE);
+  /** Archive / unarchive awaiting confirmation (reject keeps its own guard). */
+  const [pendingChange, setPendingChange] = useState<{ assetId: string; action: AssetAction } | null>(null);
   const uploadTarget = useRef<{ characterId: string; requirementKey?: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const inboxInput = useRef<HTMLInputElement>(null);
@@ -101,6 +111,23 @@ export default function ContentReviewPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * P0.4: release, take off Posts, archive and unarchive from the inspector.
+   * Which of them appear is `asset.actions` -- the server's answer.
+   */
+  async function change(asset: ReviewAssetView, action: AssetAction) {
+    setPendingChange(null);
+    const call: Record<AssetAction, (assetId: string) => Promise<unknown>> = {
+      approve: contentReviewApi.approve,
+      reject: contentReviewApi.reject,
+      publish: contentReviewApi.publish,
+      unpublish: contentReviewApi.unpublish,
+      archive: contentReviewApi.archive,
+      unarchive: contentReviewApi.unarchive,
+    };
+    await run(() => call[action](asset.assetId), 'That change could not be saved.');
   }
 
   async function decide(asset: ReviewAssetView, decision: 'approve' | 'reject') {
@@ -389,7 +416,12 @@ export default function ContentReviewPage() {
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
               <p className="text-sm font-medium capitalize text-white">{selected.characterName}</p>
               <p className="text-xs text-zinc-500">
-                {selected.mediaType} · {selected.status.replace('_', ' ')}
+                {selected.mediaType} · {statusLabel(selected)}
+                {selected.workflow === 'approved' && selected.role === 'content'
+                  ? selected.publishedAt
+                    ? ' · on her Posts tab'
+                    : ' · not released'
+                  : ''}
               </p>
 
               <div className="mt-3 overflow-hidden rounded bg-zinc-950">
@@ -486,30 +518,71 @@ export default function ContentReviewPage() {
                     </button>
                   </div>
                 </div>
+              ) : pendingChange?.assetId === selected.assetId ? (
+                <div
+                  role="alertdialog"
+                  aria-label={`${LIFECYCLE_ACTION_LABEL[pendingChange.action]} this content?`}
+                  className="mt-4 rounded-md border border-amber-900 bg-amber-950/30 p-3"
+                >
+                  <p className="text-sm font-medium text-white">
+                    {LIFECYCLE_ACTION_LABEL[pendingChange.action]} this content?
+                  </p>
+                  <p className="mt-1 text-xs leading-snug text-zinc-400">
+                    {pendingChange.action === 'archive'
+                      ? archiveConsequence(selected)
+                      : unarchiveConsequence(selected)}
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPendingChange(null)}
+                      className="flex-1 rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void change(selected, pendingChange.action)}
+                      className="flex-1 rounded-md bg-amber-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      {LIFECYCLE_ACTION_LABEL[pendingChange.action]}
+                    </button>
+                  </div>
+                </div>
               ) : (
-                selected.status !== 'approved' && (
+                selected.actions.length > 0 && (
                   <>
-                    <div className="mt-4 flex gap-2">
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void decide(selected, 'approve')}
-                        className="flex-1 rounded-md bg-rose-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => setIntent(requestReject(selected.assetId))}
-                        className="flex-1 rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300 disabled:opacity-50"
-                      >
-                        {REJECT_ACTION_LABEL}
-                      </button>
+                    {/* The server's action list, in a fixed order. Reject keeps
+                        its confirmation state machine; archive and unarchive
+                        confirm with what they will do. */}
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {orderedActions(selected.actions).map((action) => (
+                        <button
+                          key={action}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            if (action === 'approve') void decide(selected, 'approve');
+                            else if (action === 'reject') setIntent(requestReject(selected.assetId));
+                            else if (action === 'archive' || action === 'unarchive') {
+                              setPendingChange({ assetId: selected.assetId, action });
+                            } else void change(selected, action);
+                          }}
+                          className={
+                            action === 'approve'
+                              ? 'flex-1 rounded-md bg-rose-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50'
+                              : 'flex-1 rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300 disabled:opacity-50'
+                          }
+                        >
+                          {action === 'reject' ? REJECT_ACTION_LABEL : LIFECYCLE_ACTION_LABEL[action]}
+                        </button>
+                      ))}
                     </div>
                     <p className="mt-2 text-[11px] leading-snug text-zinc-600">
-                      Approving counts this toward the character&rsquo;s requirement and adds it to
-                      the Library. Rejecting removes it from the active workflow.
+                      {selected.workflow === 'pending_review'
+                        ? 'Approving counts this toward the character\u2019s requirement and adds it to the Library. It is not released anywhere until you release it. Rejecting removes it from the active workflow.'
+                        : 'Releasing puts it on her Posts tab. Archiving hides it everywhere without deleting anything.'}
                     </p>
                   </>
                 )

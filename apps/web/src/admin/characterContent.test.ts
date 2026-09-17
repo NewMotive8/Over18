@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   addKeywords,
   approveConsequence,
+  archiveConsequence,
   assetActions,
+  lifecycleNotice,
+  LIFECYCLE_ACTION_LABEL,
+  needsConfirmation,
+  orderedActions,
+  unarchiveConsequence,
   assetDeletable,
   categoryChoices,
   characterReadiness,
@@ -36,18 +44,46 @@ import type { CharacterContentAsset } from '../lib/api';
  * reachable by anyone.
  */
 
+/**
+ * What the SERVER sends for each stored status (P0.4's contract, which the API
+ * suite asserts). The fixture fills `workflow` and `actions` from it so a test
+ * that only sets `status` still describes a row the server could have sent. A
+ * test ABOUT actions sets `actions` itself -- the page must follow that list,
+ * not these defaults.
+ */
+const SERVER_WORKFLOW = {
+  generated: 'pending_review',
+  under_review: 'pending_review',
+  approved: 'approved',
+  rejected: 'rejected',
+  archived: 'archived',
+} as const;
+const SERVER_ACTIONS: Record<CharacterContentAsset['workflow'], CharacterContentAsset['actions']> = {
+  pending_review: ['approve', 'reject'],
+  approved: ['publish', 'archive'],
+  rejected: [],
+  archived: ['unarchive'],
+};
+
 function asset(over: Partial<CharacterContentAsset> = {}): CharacterContentAsset {
+  const status = over.status ?? 'approved';
+  const workflow = over.workflow ?? SERVER_WORKFLOW[status];
   return {
     assetId: 'a1',
     characterId: 'c1',
     kind: 'generated',
-    status: 'approved',
+    status,
+    role: 'content',
+    origin: 'manual',
+    workflow,
+    actions: SERVER_ACTIONS[workflow],
     mediaType: 'video',
     contentRating: 'sfw',
     requirementKey: null,
     // Not released by default: approving no longer publishes, so the fixture
     // must not quietly assume it does.
     publishedAt: null,
+    archivedAt: null,
     isPrimary: false,
     position: null,
     previewUrl: '/admin/content/assets/a1/file',
@@ -99,12 +135,17 @@ describe('the shelf splits content the way an operator reads it', () => {
       asset({ assetId: '3', status: 'under_review' }),
       asset({ assetId: '4', status: 'rejected' }),
       asset({ assetId: '5', status: 'generated' }),
+      asset({ assetId: '6', status: 'archived' }),
     ];
     const shelf = groupCharacterContent(assets);
-    const seen = [...shelf.primary, ...shelf.approved, ...shelf.pending, ...shelf.rejected].map(
-      (x) => x.assetId,
-    );
-    expect(seen.sort()).toEqual(['1', '2', '3', '4', '5']);
+    const seen = [
+      ...shelf.primary,
+      ...shelf.approved,
+      ...shelf.pending,
+      ...shelf.rejected,
+      ...shelf.archived,
+    ].map((x) => x.assetId);
+    expect(seen.sort()).toEqual(['1', '2', '3', '4', '5', '6']);
     expect(new Set(seen).size).toBe(assets.length);
   });
 
@@ -114,7 +155,25 @@ describe('the shelf splits content the way an operator reads it', () => {
       approved: [],
       pending: [],
       rejected: [],
+      archived: [],
     });
+  });
+
+  it('keeps ARCHIVED items in their own bucket, never among the approved (P0.4)', () => {
+    const shelf = groupCharacterContent([
+      asset({ assetId: 'a' }),
+      asset({ assetId: 'z', status: 'archived', publishedAt: '2026-08-03T00:00:00.000Z' }),
+    ]);
+    expect(shelf.archived.map((x) => x.assetId)).toEqual(['z']);
+    expect(shelf.approved.map((x) => x.assetId)).toEqual(['a']);
+  });
+
+  it('groups by the server workflow, so both legacy pending statuses stay one queue', () => {
+    const shelf = groupCharacterContent([
+      asset({ assetId: 'g', status: 'generated' }),
+      asset({ assetId: 'u', status: 'under_review' }),
+    ]);
+    expect(shelf.pending.map((x) => x.assetId)).toEqual(['g', 'u']);
   });
 });
 
@@ -157,6 +216,14 @@ describe('placement says whether anyone can actually see it', () => {
     expect(placementLabel(asset({ status: 'under_review' }))).toBe('Not placed');
   });
 
+  it('never makes an ARCHIVED item read as live, while saying what it kept', () => {
+    expect(placementLabel(asset({ status: 'archived' }))).toBe('Hidden while archived');
+    expect(
+      placementLabel(asset({ status: 'archived', placement: { categories: [], heroPosition: 0 } })),
+    ).toBe('Hidden while archived (kept: Hero #1)');
+    expect(isUnplaced(asset({ status: 'archived' }))).toBe(false);
+  });
+
   it('flags approved-but-unreachable, and only that', () => {
     expect(isUnplaced(asset())).toBe(true);
     expect(isUnplaced(asset({ status: 'under_review' }))).toBe(false);
@@ -185,6 +252,7 @@ describe('status wording', () => {
     expect(statusLabel(asset({ kind: 'reference', isPrimary: true }))).toBe('Primary reference');
     expect(statusLabel(asset())).toBe('Approved');
     expect(statusLabel(asset({ status: 'rejected' }))).toBe('Rejected');
+    expect(statusLabel(asset({ status: 'archived' }))).toBe('Archived');
   });
 });
 
@@ -197,6 +265,11 @@ describe('the one-line summary', () => {
       asset({ assetId: '4', status: 'rejected' }),
     ]);
     expect(shelfSummary(shelf)).toBe('4 items · 2 approved · 1 in review · 1 rejected');
+  });
+
+  it('counts archived items too', () => {
+    const shelf = groupCharacterContent([asset({ assetId: '1' }), asset({ assetId: '2', status: 'archived' })]);
+    expect(shelfSummary(shelf)).toBe('2 items · 1 approved · 1 archived');
   });
 
   it('omits empty buckets and singularises', () => {
@@ -273,6 +346,8 @@ describe('the controls an item offers', () => {
     expect(assetActions(asset({ status: 'rejected' }))).toEqual({
       canApprove: false,
       canReject: false,
+      canArchive: false,
+      canUnarchive: false,
       canAddToCategory: false,
       canAddToHero: false,
       inHero: false,
@@ -806,5 +881,152 @@ describe('the confirmation names what the tile cannot show', () => {
 
   it('does not give the chat warning to a Regular or Explicit clip', () => {
     expect(deletionConsequence(asset({ kind: 'generated' }))).not.toContain('attachment');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * P0.4 -- lifecycle actions come from the server, and are said plainly
+ * ------------------------------------------------------------------ */
+
+describe('lifecycle controls follow the server, never a status name', () => {
+  it('Pending review -> Approve / Reject', () => {
+    const actions = assetActions(asset({ status: 'under_review' }));
+    expect([actions.canApprove, actions.canReject]).toEqual([true, true]);
+    expect([actions.canPublish, actions.canArchive, actions.canUnarchive]).toEqual([false, false, false]);
+  });
+
+  it('Approved -> Release / Archive', () => {
+    const actions = assetActions(asset());
+    expect([actions.canPublish, actions.canArchive]).toEqual([true, true]);
+    expect([actions.canApprove, actions.canReject, actions.canUnarchive]).toEqual([false, false, false]);
+  });
+
+  it('Released -> Archive (and the existing Take off Posts)', () => {
+    const actions = assetActions(
+      asset({ publishedAt: '2026-08-03T00:00:00.000Z', actions: ['unpublish', 'archive'] }),
+    );
+    expect([actions.canArchive, actions.canUnpublish, actions.canPublish]).toEqual([true, true, false]);
+  });
+
+  it('Archived -> Unarchive only', () => {
+    expect(assetActions(asset({ status: 'archived' }))).toMatchObject({
+      canUnarchive: true,
+      canApprove: false,
+      canReject: false,
+      canPublish: false,
+      canUnpublish: false,
+      canArchive: false,
+      canAddToCategory: false,
+      canAddToHero: false,
+    });
+  });
+
+  it('infers NOTHING from status: an empty server list offers nothing, whatever the status', () => {
+    for (const status of ['generated', 'under_review', 'approved', 'archived'] as const) {
+      const actions = assetActions(asset({ status, actions: [] }));
+      expect({
+        status,
+        offered: [
+          actions.canApprove,
+          actions.canReject,
+          actions.canPublish,
+          actions.canUnpublish,
+          actions.canArchive,
+          actions.canUnarchive,
+        ],
+      }).toEqual({ status, offered: [false, false, false, false, false, false] });
+    }
+  });
+
+  it('draws buttons in a fixed order whatever order the server listed them', () => {
+    expect(orderedActions(['unarchive', 'archive', 'publish', 'reject', 'approve'])).toEqual([
+      'approve',
+      'reject',
+      'publish',
+      'archive',
+      'unarchive',
+    ]);
+    expect(LIFECYCLE_ACTION_LABEL.publish).toBe('Release to Posts');
+  });
+
+  it('asks before reject, archive and unarchive -- and only those', () => {
+    expect(orderedActions(['approve', 'reject', 'publish', 'unpublish', 'archive', 'unarchive']).filter(needsConfirmation)).toEqual([
+      'reject',
+      'archive',
+      'unarchive',
+    ]);
+  });
+});
+
+describe('lifecycle wording', () => {
+  it('says archiving deletes nothing, and that chat keeps already-sent messages', () => {
+    expect(archiveConsequence({ role: 'content' })).toContain('Nothing is deleted');
+    expect(archiveConsequence({ role: 'content' })).toContain('Posts tab');
+    expect(archiveConsequence({ role: 'chat' })).toContain('messages that already carried it keep it');
+    expect(archiveConsequence({ role: 'chat' })).not.toContain('Posts tab');
+  });
+
+  it('says unarchiving does NOT put it back in front of customers, and names what it clears', () => {
+    const wasLive = unarchiveConsequence(
+      asset({
+        status: 'archived',
+        publishedAt: '2026-08-03T00:00:00.000Z',
+        placement: { heroPosition: 0, categories: [{ id: 'c', slug: 's', name: 'Sexy', position: 0 }] },
+      }),
+    );
+    expect(wasLive).toContain('returns to Approved');
+    expect(wasLive).toContain('stays hidden from customers');
+    expect(wasLive).toContain('will NOT go back on her Posts tab, the Home Hero, Sexy');
+    expect(wasLive).toContain('Discovery keywords');
+
+    // Nothing to lose: it still says releasing is a separate decision.
+    expect(unarchiveConsequence(asset({ status: 'archived' }))).toContain('separate decisions afterwards');
+    expect(unarchiveConsequence({ role: 'chat', publishedAt: null })).toContain('never appears anywhere public');
+  });
+
+  it('the unarchive notice never claims it went live again', () => {
+    expect(lifecycleNotice('unarchive', { role: 'content' })).toBe(
+      'Unarchived. It is approved again, and not released or placed — release it when you want it live.',
+    );
+    expect(lifecycleNotice('unarchive', { role: 'chat' })).toBe('Unarchived. She can send it in chats again.');
+  });
+
+  it('never tells an operator that approving released anything', () => {
+    expect(lifecycleNotice('approve', { role: 'content' })).toBe(
+      'Approved. It is not on her Posts tab until you release it.',
+    );
+    expect(lifecycleNotice('reject', { role: 'content' })).toContain('delete it separately');
+  });
+});
+
+/**
+ * NO LIFECYCLE RULES IN THE BROWSER. The screens that show asset actions may
+ * render `asset.actions`, but may not decide an action from a status name. Only
+ * asset status comparisons are forbidden -- a character's or an identity's own
+ * status is a different thing. Comments are stripped first.
+ */
+describe('the admin screens hold no transition logic', () => {
+  const source = (relative: string) =>
+    readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  const ASSET_STATUS_TEST =
+    /\.status\s*[!=]==?\s*'(generated|under_review|approved|rejected|archived)'/;
+
+  for (const file of [
+    './characterContent.ts',
+    '../pages/admin/AdminCharacterDetailPage.tsx',
+    '../pages/admin/ContentReviewPage.tsx',
+  ]) {
+    it(`${file} decides nothing from an asset status`, () => {
+      const code = source(file);
+      expect({ file, match: code.match(ASSET_STATUS_TEST)?.[0] ?? null }).toEqual({ file, match: null });
+      expect({ file, pendingSet: code.includes('PENDING_STATUSES') }).toEqual({ file, pendingSet: false });
+    });
+  }
+
+  it('the guard itself catches a planted rule', () => {
+    expect(ASSET_STATUS_TEST.test("if (asset.status === 'approved') offer();")).toBe(true);
+    expect(ASSET_STATUS_TEST.test("character.status === 'active'")).toBe(false);
   });
 });

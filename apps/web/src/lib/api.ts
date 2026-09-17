@@ -154,13 +154,44 @@ export const authApi = {
   },
 };
 
+/**
+ * P0.3 -- an asset's three independent facts, as the SERVER reads them.
+ *
+ *   role      what it is for          (the stored `kind` 'generated' is CONTENT)
+ *   origin    where it came from      (never inferred from role or workflow)
+ *   workflow  where it is in review   (`generated` and `under_review` are both pending)
+ *
+ * Distribution (Posts, Home, categories, Discovery) is reported separately and
+ * is never implied by any of these.
+ */
+export interface AssetLifecycle {
+  role: 'reference' | 'content' | 'chat';
+  origin: 'generated' | 'manual' | 'imported' | 'legacy';
+  workflow: 'pending_review' | 'approved' | 'rejected' | 'archived';
+  /**
+   * P0.4 -- what an operator may do next, decided by the SERVER from the same
+   * rules it enforces. The admin screens draw a button per action here and
+   * hold no lifecycle rule of their own.
+   */
+  actions: AssetAction[];
+}
+
+/** `publish` / `unpublish` are the Posts release; the UI says Release. */
+export type AssetAction =
+  | 'approve'
+  | 'reject'
+  | 'publish'
+  | 'unpublish'
+  | 'archive'
+  | 'unarchive';
+
 /** US-106 — admin content review. Uses the same session-cookie request helper. */
-export interface ReviewAssetView {
+export interface ReviewAssetView extends AssetLifecycle {
   assetId: string;
   characterId: string;
   characterName: string;
   mediaType: 'image' | 'video';
-  status: 'generated' | 'under_review' | 'approved' | 'rejected';
+  status: 'generated' | 'under_review' | 'approved' | 'rejected' | 'archived';
   contentRating: 'sfw' | 'explicit';
   /** The configured content requirement this item is filed under, if any. */
   requirementKey: string | null;
@@ -173,6 +204,10 @@ export interface ReviewAssetView {
   previewUrl: string | null;
   createdAt: string;
   approvedAt: string | null;
+  /** Released to her Posts tab, or null. */
+  publishedAt: string | null;
+  /** Archived (P0.4), or null. */
+  archivedAt: string | null;
   provenance: {
     jobId: string | null;
     provider: string | null;
@@ -204,7 +239,7 @@ export const contentLibraryApi = {
        * from it. Passing the status is how a caller asks for the items that are
        * still waiting, using the filter the route has always accepted.
        */
-      status?: 'generated' | 'under_review' | 'approved' | 'rejected';
+      status?: 'generated' | 'under_review' | 'approved' | 'rejected' | 'archived';
     } = {},
   ) => {
     const q = new URLSearchParams();
@@ -1247,6 +1282,16 @@ export const contentReviewApi = {
     request<ReviewAssetView>(`/admin/content/assets/${assetId}/publish`, { method: 'POST' }),
   unpublish: (assetId: string) =>
     request<ReviewAssetView>(`/admin/content/assets/${assetId}/unpublish`, { method: 'POST' }),
+  /**
+   * P0.4. Archive hides an approved item everywhere without removing anything.
+   * Unarchive returns it to Approved ONLY -- its release and placements are
+   * cleared, so nothing goes back in front of customers by itself. Approve
+   * never releases either.
+   */
+  archive: (assetId: string) =>
+    request<ReviewAssetView>(`/admin/content/assets/${assetId}/archive`, { method: 'POST' }),
+  unarchive: (assetId: string) =>
+    request<ReviewAssetView>(`/admin/content/assets/${assetId}/unarchive`, { method: 'POST' }),
 };
 
 /* ------------------------------------------------------------------ *
@@ -1290,7 +1335,7 @@ export interface VisualIdentityView {
   updatedAt: string;
 }
 
-export interface PrimaryReferenceView {
+export interface PrimaryReferenceView extends AssetLifecycle {
   assetId: string;
   characterId: string;
   visualIdentityId: string;
@@ -1304,11 +1349,35 @@ export interface PrimaryReferenceView {
   createdAt: string;
 }
 
+/**
+ * The server's verdicts (API character-readiness-service). Rendered as given:
+ * the browser never re-derives either. Blockers carry the server's own message;
+ * the extra fields are for context, not for re-evaluating anything.
+ */
+export interface EligibilityBlocker {
+  code: string;
+  message: string;
+  [detail: string]: unknown;
+}
+
+export interface CharacterReadiness {
+  ready: boolean;
+  blockers: EligibilityBlocker[];
+  requirements: { required: number; approved: number; pending: number; missing: number; complete: boolean };
+}
+
+export interface CharacterPublishability {
+  publishable: boolean;
+  blockers: EligibilityBlocker[];
+}
+
 export interface AdminCharacterDetail {
   character: AdminCharacterView;
   identities: VisualIdentityView[];
   activeIdentity: VisualIdentityView | null;
   primaryReferences: PrimaryReferenceView[];
+  readiness: CharacterReadiness;
+  publishability: CharacterPublishability;
 }
 
 /** Fields an operator may set. Exactly the columns the schema already has. */
@@ -1367,11 +1436,11 @@ async function postMultipart<T>(path: string, form: FormData, failure: string): 
 }
 
 /** One item on a character's content shelf. */
-export interface CharacterContentAsset {
+export interface CharacterContentAsset extends AssetLifecycle {
   assetId: string;
   characterId: string;
   kind: string;
-  status: 'generated' | 'under_review' | 'approved' | 'rejected';
+  status: 'generated' | 'under_review' | 'approved' | 'rejected' | 'archived';
   mediaType: 'image' | 'video';
   contentRating: 'sfw' | 'explicit';
   requirementKey: string | null;
@@ -1391,6 +1460,8 @@ export interface CharacterContentAsset {
    * releasing is what puts it on her page.
    */
   publishedAt: string | null;
+  /** When it was archived (P0.4), or null. Its release time is kept. */
+  archivedAt: string | null;
 }
 
 export const adminCharactersApi = {

@@ -67,6 +67,7 @@ export async function seedVisualIdentities(
           characterId: seed.characterId,
           visualIdentityId: seed.visualIdentityId,
           kind: seed.kind,
+          origin: seed.origin,
           status: seed.status,
           isCanonical: seed.isCanonical,
           position: seed.position,

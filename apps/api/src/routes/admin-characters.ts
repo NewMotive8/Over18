@@ -52,6 +52,8 @@ import {
   getRequirementStatus,
   planMissingContentFor,
 } from '../services/requirement-status-service.js';
+import { assessCharacter } from '../services/character-readiness-service.js';
+import { assetLifecycleOf } from '../services/asset-lifecycle.js';
 import type { CharacterVisualAssetRow, CharacterVisualIdentityRow } from '../db/schema.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -105,6 +107,7 @@ function referenceView(row: CharacterVisualAssetRow) {
     visualIdentityId: row.visualIdentityId,
     kind: row.kind,
     status: row.status,
+    ...assetLifecycleOf(row),
     isPrimary: row.isCanonical,
     position: row.position,
     contentRating: row.contentRating,
@@ -300,6 +303,9 @@ export default async function adminCharacterRoutes(
         characterId: character.id,
         visualIdentityId: active.id,
         kind: 'reference',
+        // Identity, not content: choosing her portrait IS the approval, and it
+        // is what makes it her primary reference. Stated, never defaulted.
+        approve: true,
         requirementKey,
         mimeType: file.mimeType,
         bytes: file.bytes,
@@ -448,12 +454,23 @@ export default async function adminCharacterRoutes(
         ? await listCanonicalReferences(opts.db, characterId, active.id)
         : [];
 
+      // The two authoritative answers, computed on the server from the same
+      // state this response already loaded. The page renders them; it never
+      // re-derives them.
+      const { readiness, publishability } = await assessCharacter(opts.db, characterId, {
+        character,
+        activeIdentity: active ? { id: active.id, version: active.version } : null,
+        approvedPrimaryReferenceCount: primaryReferences.length,
+      });
+
       return {
         character,
         // Newest version first — the operator works at the head of the list.
         identities: [...versions].sort((a, b) => b.version - a.version).map(identityView),
         activeIdentity: active ? identityView(active) : null,
         primaryReferences: primaryReferences.map(referenceView),
+        readiness,
+        publishability,
       };
     },
   );
@@ -614,14 +631,16 @@ export default async function adminCharacterRoutes(
             characterId: identity.characterId,
             visualIdentityId: identityId,
             kind: 'reference',
+            // Identity, not content (see quick-create above): explicit.
+            approve: true,
             mimeType: file.mimetype,
             bytes,
             originalName: file.filename,
             uploadedBy: request.currentUser!.id,
           },
         );
-        // uploadLibraryAsset approves it, and approveVisualAsset promotes ONLY
-        // references to canonical — so this is already a primary reference.
+        // approveVisualAsset promotes ONLY references to canonical — so this
+        // is already a primary reference.
         return reply.code(201).send(referenceView(asset));
       } catch (error) {
         if (error instanceof LibraryUploadError) {

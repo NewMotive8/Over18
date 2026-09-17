@@ -1,4 +1,4 @@
-import type { CharacterContentAsset } from '../lib/api';
+import type { AssetAction, CharacterContentAsset } from '../lib/api';
 
 /**
  * A character's content shelf — presentation logic, React-free.
@@ -25,9 +25,9 @@ export interface ContentShelf {
   pending: CharacterContentAsset[];
   /** Rejected. Shown rather than hidden, so nothing appears to have vanished. */
   rejected: CharacterContentAsset[];
+  /** Archived (P0.4): hidden everywhere, kept intact, restorable. */
+  archived: CharacterContentAsset[];
 }
-
-const PENDING_STATUSES = new Set(['generated', 'under_review']);
 
 /**
  * Splits the shelf.
@@ -39,24 +39,56 @@ const PENDING_STATUSES = new Set(['generated', 'under_review']);
 export function groupCharacterContent(
   assets: readonly CharacterContentAsset[],
 ): ContentShelf {
-  const shelf: ContentShelf = { primary: [], approved: [], pending: [], rejected: [] };
+  const shelf: ContentShelf = { primary: [], approved: [], pending: [], rejected: [], archived: [] };
+  // By the SERVER's workflow, not by status names: both pending statuses are
+  // already one state there, and a new status cannot fall through here.
   for (const asset of assets) {
-    if (asset.status === 'rejected') shelf.rejected.push(asset);
-    else if (PENDING_STATUSES.has(asset.status)) shelf.pending.push(asset);
-    else if (asset.isPrimary) shelf.primary.push(asset);
-    else shelf.approved.push(asset);
+    switch (asset.workflow) {
+      case 'rejected':
+        shelf.rejected.push(asset);
+        break;
+      case 'pending_review':
+        shelf.pending.push(asset);
+        break;
+      case 'archived':
+        shelf.archived.push(asset);
+        break;
+      case 'approved':
+        (asset.isPrimary ? shelf.primary : shelf.approved).push(asset);
+        break;
+    }
   }
   return shelf;
 }
 
 /** Operator-facing status wording. Never an upstream term like "generated". */
-export function statusLabel(asset: CharacterContentAsset): string {
-  switch (asset.status) {
+/**
+ * How an asset's ORIGIN reads on screen (P0.3). A label for the value the server
+ * sent -- nothing is inferred here from kind, status or provenance.
+ */
+export function originLabel(asset: Pick<CharacterContentAsset, 'origin'>): string {
+  switch (asset.origin) {
+    case 'generated':
+      return 'Generated';
+    case 'manual':
+      return 'Manual upload';
+    case 'imported':
+      return 'Imported';
+    case 'legacy':
+      return 'Origin not recorded';
+  }
+}
+
+/** Operator-facing workflow wording (P0.4 reads the server's `workflow`). */
+export function statusLabel(asset: Pick<CharacterContentAsset, 'workflow' | 'isPrimary'>): string {
+  switch (asset.workflow) {
     case 'approved':
       return asset.isPrimary ? 'Primary reference' : 'Approved';
     case 'rejected':
       return 'Rejected';
-    default:
+    case 'archived':
+      return 'Archived';
+    case 'pending_review':
       return 'In review';
   }
 }
@@ -77,14 +109,21 @@ export function placementLabel(asset: CharacterContentAsset): string {
   for (const category of asset.placement.categories) {
     parts.push(`${category.name} #${category.position + 1}`);
   }
+  // Archived keeps its placements but shows on none of them -- saying "Hero #1"
+  // alone would read as live.
+  if (asset.workflow === 'archived') {
+    return parts.length > 0
+      ? `Hidden while archived (kept: ${parts.join(' · ')})`
+      : 'Hidden while archived';
+  }
   if (parts.length > 0) return parts.join(' · ');
-  return asset.status === 'approved' ? 'Approved, not placed anywhere yet' : 'Not placed';
+  return asset.workflow === 'approved' ? 'Approved, not placed anywhere yet' : 'Not placed';
 }
 
 /** True when this item is approved but reaches no public surface. */
 export function isUnplaced(asset: CharacterContentAsset): boolean {
   return (
-    asset.status === 'approved' &&
+    asset.workflow === 'approved' &&
     !asset.isPrimary &&
     asset.placement.heroPosition === null &&
     asset.placement.categories.length === 0
@@ -94,13 +133,18 @@ export function isUnplaced(asset: CharacterContentAsset): boolean {
 /** "12 items · 8 approved · 3 in review · 1 rejected" — the shelf in one line. */
 export function shelfSummary(shelf: ContentShelf): string {
   const total =
-    shelf.primary.length + shelf.approved.length + shelf.pending.length + shelf.rejected.length;
+    shelf.primary.length +
+    shelf.approved.length +
+    shelf.pending.length +
+    shelf.rejected.length +
+    shelf.archived.length;
   if (total === 0) return 'No content yet';
   const parts = [`${total} item${total === 1 ? '' : 's'}`];
   const approved = shelf.primary.length + shelf.approved.length;
   if (approved > 0) parts.push(`${approved} approved`);
   if (shelf.pending.length > 0) parts.push(`${shelf.pending.length} in review`);
   if (shelf.rejected.length > 0) parts.push(`${shelf.rejected.length} rejected`);
+  if (shelf.archived.length > 0) parts.push(`${shelf.archived.length} archived`);
   return parts.join(' · ');
 }
 
@@ -122,6 +166,10 @@ export interface AssetActions {
   /** Awaiting a decision: Approve and Reject apply. */
   canApprove: boolean;
   canReject: boolean;
+  /** Approved, released or not: it may be archived. */
+  canArchive: boolean;
+  /** Archived: it may be restored. */
+  canUnarchive: boolean;
   /** Approved: it may be placed on a public surface. */
   canAddToCategory: boolean;
   canAddToHero: boolean;
@@ -140,28 +188,128 @@ export interface AssetActions {
 /**
  * The controls one item offers.
  *
- * Mirrors the SERVER'S rules rather than inventing gentler ones: Review accepts
- * approve/reject only on an undecided item, and both the category picker and
- * the Hero accept approved content only. A rejected item offers nothing here —
- * re-approving is a Review decision, and this page is not a second Review.
+ * THE LIFECYCLE CONTROLS ARE THE SERVER'S LIST (P0.4). `asset.actions` comes
+ * from the same rules the server enforces on every transition, so this reads
+ * it and decides nothing: an item offers Approve because the server said it
+ * may be approved, not because this file recognised a status name.
+ *
+ * Placement (category, Hero) is merchandising rather than moderation; it stays
+ * "approved only", which the server's write-side rule for both also requires.
  */
 export function assetActions(asset: CharacterContentAsset): AssetActions {
-  const pending = PENDING_STATUSES.has(asset.status);
-  const approved = asset.status === 'approved';
+  const offered = new Set<AssetAction>(asset.actions);
+  const approved = asset.workflow === 'approved';
   const inHero = asset.placement.heroPosition !== null;
-  // Content only. The server refuses to publish a reference or chat asset, so
-  // offering the control for one would promise something it would reject.
-  const isContent = asset.kind === 'generated';
-  const live = asset.publishedAt !== null;
   return {
-    canApprove: pending,
-    canReject: pending,
+    canApprove: offered.has('approve'),
+    canReject: offered.has('reject'),
+    canArchive: offered.has('archive'),
+    canUnarchive: offered.has('unarchive'),
     canAddToCategory: approved,
     canAddToHero: approved && !inHero,
     inHero,
-    canPublish: approved && isContent && !live,
-    canUnpublish: approved && isContent && live,
+    canPublish: offered.has('publish'),
+    canUnpublish: offered.has('unpublish'),
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Lifecycle actions, as the operator reads them (P0.4)
+ * ------------------------------------------------------------------ */
+
+/** The button for each server action. The API says publish; the product says release. */
+export const LIFECYCLE_ACTION_LABEL: Record<AssetAction, string> = {
+  approve: 'Approve',
+  reject: 'Reject',
+  publish: 'Release to Posts',
+  unpublish: 'Take off Posts',
+  archive: 'Archive',
+  unarchive: 'Unarchive',
+};
+
+/** The order buttons appear in, whatever order the server listed them. */
+const ACTION_ORDER: readonly AssetAction[] = [
+  'approve',
+  'reject',
+  'publish',
+  'unpublish',
+  'archive',
+  'unarchive',
+];
+
+export function orderedActions(actions: readonly AssetAction[]): AssetAction[] {
+  return ACTION_ORDER.filter((action) => actions.includes(action));
+}
+
+/**
+ * Actions that ask first. Reject and archive take something out of use, and
+ * unarchive can put something back on public surfaces -- each says what will
+ * happen before it does. Approve and the release toggle are single explicit
+ * clicks whose label already says what they do.
+ */
+export function needsConfirmation(action: AssetAction): boolean {
+  return action === 'reject' || action === 'archive' || action === 'unarchive';
+}
+
+/** What archiving does and does NOT do, said before the operator confirms. */
+export function archiveConsequence(asset: Pick<CharacterContentAsset, 'role'>): string {
+  const surfaces =
+    asset.role === 'chat'
+      ? 'She stops sending it in new chats; messages that already carried it keep it.'
+      : 'It disappears from her Posts tab, Home, categories and Discovery.';
+  return `${surfaces} Nothing is deleted: the file, its history, its approval, its release and its placements are all kept, and Unarchive restores them.`;
+}
+
+/**
+ * What unarchiving does -- and what it will NOT put back.
+ *
+ * Unarchiving returns an item to Approved and nothing more: its release and
+ * placements are cleared, so nothing reappears in front of customers without
+ * someone choosing it. Where it USED to be is named, because that is what the
+ * operator is giving up and will have to redo.
+ *
+ * `placement` is optional because Review's view does not carry it.
+ */
+export function unarchiveConsequence(
+  asset: Pick<CharacterContentAsset, 'role' | 'publishedAt'> &
+    Partial<Pick<CharacterContentAsset, 'placement'>>,
+): string {
+  if (asset.role === 'chat') {
+    return 'It returns to Approved, and she can send it in chats again. It never appears anywhere public.';
+  }
+  const cleared: string[] = [];
+  if (asset.publishedAt) cleared.push('her Posts tab');
+  if (asset.placement && asset.placement.heroPosition !== null) cleared.push('the Home Hero');
+  for (const category of asset.placement?.categories ?? []) cleared.push(category.name);
+  const base = 'It returns to Approved, and stays hidden from customers: releasing it to her Posts tab and placing it are separate decisions afterwards.';
+  if (cleared.length > 0) {
+    return `${base} It will NOT go back on ${cleared.join(', ')} — those are cleared, along with any Discovery keywords, and you would add them again.`;
+  }
+  return asset.placement
+    ? base
+    : `${base} Any release, placement or Discovery keyword it had is cleared.`;
+}
+
+/** The notice after an action succeeds. */
+export function lifecycleNotice(action: AssetAction, asset: Pick<CharacterContentAsset, 'role'>): string {
+  switch (action) {
+    case 'approve':
+      return asset.role === 'chat'
+        ? 'Approved. She can now send it in chats.'
+        : 'Approved. It is not on her Posts tab until you release it.';
+    case 'reject':
+      return 'Rejected. It stays on record; delete it separately if you want it gone.';
+    case 'publish':
+      return 'Released to her Posts tab.';
+    case 'unpublish':
+      return 'Taken off her Posts tab. It is still approved — nothing was rejected or deleted.';
+    case 'archive':
+      return 'Archived. It is hidden everywhere, and nothing was deleted.';
+    case 'unarchive':
+      return asset.role === 'chat'
+        ? 'Unarchived. She can send it in chats again.'
+        : 'Unarchived. It is approved again, and not released or placed — release it when you want it live.';
+  }
 }
 
 /**

@@ -14,13 +14,15 @@ import {
   type ContentRating,
   type VisualAssetStatus,
 } from './visual-asset-service.js';
+import { assetLifecycleOf, checkTransition, type AssetLifecycleView } from './asset-lifecycle.js';
 
 /**
  * US-106 — read model for the content-review workflow.
  *
  * Deliberately a THIN read layer over the existing tables. It introduces no new
  * lifecycle: approve/reject remain `visual-asset-service`'s job, and the
- * statuses are EPIC 7's (`generated | under_review | approved | rejected`).
+ * statuses are EPIC 7's (`generated | under_review | approved | rejected`)
+ * plus P0.4's `archived`, all read through `asset-lifecycle.ts`.
  *
  * `listVisualAssets` in visual-asset-service is scoped to one character AND one
  * identity version, which is right for identity work but too narrow for a
@@ -333,7 +335,7 @@ export interface AssetPlacement {
   heroPosition: number | null;
 }
 
-export interface CharacterContentAsset {
+export interface CharacterContentAsset extends AssetLifecycleView {
   assetId: string;
   characterId: string;
   kind: string;
@@ -363,6 +365,8 @@ export interface CharacterContentAsset {
    * distinction the screen previously had no way to show.
    */
   publishedAt: string | null;
+  /** When it was archived (P0.4), or null. Its release time above is kept. */
+  archivedAt: string | null;
 }
 
 /**
@@ -416,6 +420,7 @@ export async function listCharacterContent(
     characterId: row.characterId,
     kind: row.kind,
     status: row.status,
+    ...assetLifecycleOf(row),
     mediaType: mediaTypeOf(row.storageKey, row.provenance),
     contentRating: row.contentRating,
     requirementKey: row.requirementKey,
@@ -433,6 +438,7 @@ export async function listCharacterContent(
     createdAt: row.createdAt.toISOString(),
     approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
   }));
 }
 
@@ -460,37 +466,35 @@ export async function listCharacterContent(
  *
  * IDEMPOTENT: publishing an already-published asset keeps its ORIGINAL release
  * time rather than moving it, so "when did this go out?" stays answerable.
+ *
+ * The rules above live in `asset-lifecycle.ts` (P0.4), which also refuses to
+ * release an ARCHIVED asset -- the same table the admin UI's buttons come from.
  */
 export async function setAssetPublished(
   db: Db,
   assetId: string,
   published: boolean,
 ): Promise<CharacterVisualAssetRow> {
-  const [row] = await db
-    .select()
-    .from(characterVisualAssets)
-    .where(eq(characterVisualAssets.id, assetId))
-    .limit(1);
-  if (!row) throw new VisualAssetNotFoundError(assetId);
+  // Locked, so a release cannot land on a row an archive committed meanwhile.
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, assetId))
+      .limit(1)
+      .for('update');
+    if (!row) throw new VisualAssetNotFoundError(assetId);
 
-  if (published) {
-    if (row.status !== 'approved') {
-      throw new VisualAssetTransitionError(
-        'Only approved content can be published. Approve it in Review first.',
-      );
-    }
-    if (row.kind !== 'generated') {
-      throw new VisualAssetTransitionError(
-        'Only character content can be published to Posts. References are identity, and chat media is private.',
-      );
-    }
-    if (row.publishedAt) return row; // already live — keep the original time
-  }
+    const check = checkTransition(row, published ? 'publish' : 'unpublish');
+    if (!check.allowed) throw new VisualAssetTransitionError(check.reason);
+    // Already live keeps the original time; already down has nothing to clear.
+    if (check.noop) return row;
 
-  const [updated] = await db
-    .update(characterVisualAssets)
-    .set({ publishedAt: published ? new Date() : null, updatedAt: new Date() })
-    .where(eq(characterVisualAssets.id, assetId))
-    .returning();
-  return updated!;
+    const [updated] = await tx
+      .update(characterVisualAssets)
+      .set({ publishedAt: published ? new Date() : null, updatedAt: new Date() })
+      .where(eq(characterVisualAssets.id, assetId))
+      .returning();
+    return updated!;
+  });
 }

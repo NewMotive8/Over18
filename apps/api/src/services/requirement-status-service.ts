@@ -2,6 +2,7 @@ import { asc, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { characters, characterVisualAssets, type CharacterVisualAssetRow } from '../db/schema.js';
 import { mediaTypeOf, type MediaType } from './content-review-service.js';
+import { isInActiveWorkflow } from './asset-lifecycle.js';
 import {
   listEnabledContentRequirements,
   type ContentRequirement,
@@ -86,7 +87,7 @@ function qualifies(asset: RequirementAsset, requirement: ContentRequirement): bo
   return (
     asset.requirementKey === requirement.key &&
     asset.mediaType === requirement.mediaType &&
-    asset.status !== 'rejected'
+    isInActiveWorkflow(asset.status)
   );
 }
 
@@ -110,7 +111,9 @@ export function computeRequirementStatus(
   requirements: readonly ContentRequirement[],
   assets: readonly RequirementAsset[],
 ): CharacterRequirementStatus {
-  const live = assets.filter((a) => a.status !== 'rejected');
+  // Pending or approved only. Rejected and ARCHIVED content has left the
+  // workflow: it fills no slot, counts toward nothing and needs no triage.
+  const live = assets.filter((a) => isInActiveWorkflow(a.status));
   const byKey = new Map(requirements.map((r) => [r.key, r] as const));
 
   const entries: RequirementStatusEntry[] = requirements.map((requirement) => {

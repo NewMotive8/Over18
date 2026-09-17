@@ -559,6 +559,10 @@ describe('resolveMediaFile', () => {
     characterId: 'c',
     visualIdentityId: 'v',
     kind: 'generated' as const,
+    // Origin is irrelevant to file resolution; stated only because a full row has one.
+    origin: 'manual' as const,
+    archivedAt: null,
+    archivedBy: null,
     status: 'approved' as const,
     isCanonical: false,
     position: null,

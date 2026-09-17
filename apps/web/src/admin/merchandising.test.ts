@@ -217,10 +217,16 @@ describe('publishability', () => {
     expect(blockedReason(list[2]!)).toContain('Still assigned');
   });
 
+  it('says an ARCHIVED item is hidden and how to bring it back (P0.4)', () => {
+    const reason = blockedReason(asset({ assetId: 'x', status: 'archived', publishable: false }));
+    expect(reason).toContain('Archived');
+    expect(reason).toContain('unarchiving it brings it back');
+  });
+
   it('handles an unexpected status without inventing a story', () => {
-    expect(blockedReason(asset({ assetId: 'x', status: 'archived', publishable: false }))).toContain(
-      'archived',
-    );
+    expect(
+      blockedReason(asset({ assetId: 'x', status: 'mystery' as never, publishable: false })),
+    ).toContain('mystery');
   });
 
   /* ---------------- blocked for reasons that are NOT approval ---------------- */
