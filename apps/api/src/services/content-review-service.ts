@@ -1,13 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import {
-  appCategories,
-  appCategoryAssets,
-  characters,
-  characterVisualAssets,
-  homeHeroClips,
-  type CharacterVisualAssetRow,
-} from '../db/schema.js';
+import { characters, characterVisualAssets, type CharacterVisualAssetRow } from '../db/schema.js';
 import {
   VisualAssetNotFoundError,
   VisualAssetTransitionError,
@@ -15,6 +8,7 @@ import {
   type VisualAssetStatus,
 } from './visual-asset-service.js';
 import { assetLifecycleOf, checkTransition, type AssetLifecycleView } from './asset-lifecycle.js';
+import { describeAssetDistribution, type AssetDistribution } from './asset-distribution.js';
 
 /**
  * US-106 — read model for the content-review workflow.
@@ -327,14 +321,6 @@ export async function listRecentLibrary(db: Db, limit = 12): Promise<LibraryAsse
  * lifecycle, no new state and no new permission.
  * ------------------------------------------------------------------ */
 
-/** Where one asset currently appears, editorially. */
-export interface AssetPlacement {
-  /** App Categories this asset is in, with its operator-chosen position. */
-  categories: Array<{ id: string; slug: string; name: string; position: number }>;
-  /** Its position in the Hero, or null when it is not assigned there. */
-  heroPosition: number | null;
-}
-
 export interface CharacterContentAsset extends AssetLifecycleView {
   assetId: string;
   characterId: string;
@@ -353,7 +339,14 @@ export interface CharacterContentAsset extends AssetLifecycleView {
    * every other admin surface.
    */
   previewUrl: string | null;
-  placement: AssetPlacement;
+  /**
+   * WHERE IT IS EXPOSED TO CUSTOMERS (P0.5) -- Posts, Hero, Categories and
+   * Discovery in one model, each saying whether it is merely placed or actually
+   * live, and why not when it is not. It replaced a `placement` field that knew
+   * only about the Hero and categories, so a clip released to Posts read as
+   * "not placed anywhere".
+   */
+  distribution: AssetDistribution;
   createdAt: string;
   approvedAt: string | null;
   /**
@@ -380,40 +373,32 @@ export async function listCharacterContent(
   db: Db,
   characterId: string,
 ): Promise<CharacterContentAsset[]> {
-  const rows = await db
-    .select()
+  // The character's own status comes with the rows: whether she is published is
+  // part of the distribution gate, and asking per asset would be N+1.
+  const joined = await db
+    .select({ asset: characterVisualAssets, characterStatus: characters.status })
     .from(characterVisualAssets)
+    .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
     .where(eq(characterVisualAssets.characterId, characterId))
     .orderBy(desc(characterVisualAssets.createdAt), desc(characterVisualAssets.id));
-  if (rows.length === 0) return [];
+  if (joined.length === 0) return [];
 
-  const ids = rows.map((row) => row.id);
+  const rows = joined.map((row) => row.asset);
+  const characterStatus = joined[0]!.characterStatus;
 
-  const [categoryRows, heroRows] = await Promise.all([
-    db
-      .select({
-        assetId: appCategoryAssets.assetId,
-        position: appCategoryAssets.position,
-        id: appCategories.id,
-        slug: appCategories.slug,
-        name: appCategories.name,
-      })
-      .from(appCategoryAssets)
-      .innerJoin(appCategories, eq(appCategories.id, appCategoryAssets.categoryId))
-      .where(inArray(appCategoryAssets.assetId, ids)),
-    db
-      .select({ assetId: homeHeroClips.assetId, position: homeHeroClips.position })
-      .from(homeHeroClips)
-      .where(inArray(homeHeroClips.assetId, ids)),
-  ]);
-
-  const byAsset = new Map<string, AssetPlacement['categories']>();
-  for (const row of categoryRows) {
-    const list = byAsset.get(row.assetId) ?? [];
-    list.push({ id: row.id, slug: row.slug, name: row.name, position: row.position });
-    byAsset.set(row.assetId, list);
-  }
-  const heroAt = new Map(heroRows.map((row) => [row.assetId, row.position]));
+  // ONE distribution model, built by the module that owns it (P0.5). This read
+  // states no rule about what is live; it asks.
+  const distribution = await describeAssetDistribution(
+    db,
+    rows.map((row) => ({
+      id: row.id,
+      status: row.status,
+      kind: row.kind,
+      storageKey: row.storageKey,
+      publishedAt: row.publishedAt,
+      characterStatus,
+    })),
+  );
 
   return rows.map((row) => ({
     assetId: row.id,
@@ -431,10 +416,7 @@ export async function listCharacterContent(
     // generated asset's from the key) and refuses anything escaping
     // MEDIA_STORAGE_DIR, so the caller never needs to know which it holds.
     previewUrl: row.storageKey ? `/admin/content/assets/${row.id}/file` : null,
-    placement: {
-      categories: (byAsset.get(row.id) ?? []).sort((a, b) => a.position - b.position),
-      heroPosition: heroAt.get(row.id) ?? null,
-    },
+    distribution: distribution.get(row.id)!,
     createdAt: row.createdAt.toISOString(),
     approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,

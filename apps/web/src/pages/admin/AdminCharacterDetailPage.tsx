@@ -7,7 +7,7 @@ import {
   keywordsDiffer,
   removeKeyword,
   characterReadiness,
-  placementLabel,
+  distributionLabel,
   statusLabel,
   originLabel,
   groupBySection,
@@ -18,7 +18,6 @@ import {
   SECTION_RATING,
   SECTION_FILE_ACCEPT,
   type ContentSection,
-  isPublished,
   LIFECYCLE_ACTION_LABEL,
   orderedActions,
   needsConfirmation,
@@ -949,19 +948,18 @@ export default function AdminCharacterDetailPage() {
                       <p className="truncate text-[11px] text-zinc-500" data-testid="asset-origin">
                         {originLabel(asset)}
                       </p>
-                      <p className="truncate text-[11px] text-zinc-500">
-                        {placementLabel(asset)}
+                      {/* WHERE IT IS, in the server's own distribution model:
+                          Posts, Hero, Categories and Discovery, with what is
+                          merely placed kept separate from what is live. */}
+                      <p
+                        className={`truncate text-[11px] ${
+                          asset.distribution.liveAnywhere ? 'text-emerald-400' : 'text-zinc-500'
+                        }`}
+                        title={distributionLabel(asset)}
+                        data-testid="asset-distribution"
+                      >
+                        {distributionLabel(asset)}
                       </p>
-                      {/* Approved and live are different questions now. */}
-                      {asset.workflow === 'approved' && asset.role === 'content' && (
-                        <p
-                          className={`truncate text-[11px] ${
-                            isPublished(asset) ? 'text-emerald-400' : 'text-amber-400'
-                          }`}
-                        >
-                          {isPublished(asset) ? 'On her Posts tab' : 'Not on her Posts tab'}
-                        </p>
-                      )}
                       <div className="flex flex-wrap gap-1 pt-1">
                         <button
                           type="button"

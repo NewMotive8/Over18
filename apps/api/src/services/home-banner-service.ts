@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import {
   audienceMatches,
   bannerEffectiveState,
@@ -14,6 +14,7 @@ import {
   type HomeBannerSlot,
 } from '@over18/shared';
 import type { Db } from '../db/client.js';
+import { distributableWorkflowCondition } from './asset-distribution.js';
 import {
   appCategories,
   bannerCreatives,
@@ -892,7 +893,8 @@ export async function listBannerDestinations(db: Db) {
       })
       .from(characterVisualAssets)
       .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
-      .where(and(eq(characterVisualAssets.status, 'approved')))
+      // The P0.5 workflow gate, so an archived creative cannot be offered.
+      .where(distributableWorkflowCondition())
       .orderBy(asc(characters.name))
       .limit(200),
   ]);

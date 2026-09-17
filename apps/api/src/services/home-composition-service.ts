@@ -16,7 +16,8 @@ import {
   homePlayWithMeCharacters,
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
-import { PUBLISHABLE_STATUS, homeRenderableConditions } from './app-merchandising-service.js';
+import { homeRenderableConditions } from './app-merchandising-service.js';
+import { distributableWorkflowCondition } from './asset-distribution.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 import { mediaTypeOf, videoAssetCondition } from './content-review-service.js';
 import { renderValue } from './visual-read-service.js';
@@ -589,7 +590,7 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
     // depend on a write path having been correct for every row ever inserted.
     .where(
       and(
-        eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+        distributableWorkflowCondition(),
         eq(characters.status, 'active'),
         inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
       ),

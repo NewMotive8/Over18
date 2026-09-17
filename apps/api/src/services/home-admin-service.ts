@@ -12,6 +12,7 @@ import {
   assetPreviewUrl,
   categoryAssignmentCounts,
 } from './app-merchandising-service.js';
+import { distributableWorkflowCondition } from './asset-distribution.js';
 import { mediaTypeOf } from './content-review-service.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 /**
@@ -464,7 +465,7 @@ export async function listHeroCandidates(db: Db, limit?: number) {
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
     .where(
       and(
-        eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+        distributableWorkflowCondition(),
         eq(characters.status, 'active'),
         /**
          * CONTENT ONLY.

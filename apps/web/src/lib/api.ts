@@ -1435,6 +1435,37 @@ async function postMultipart<T>(path: string, form: FormData, failure: string): 
   return (await res.json()) as T;
 }
 
+/**
+ * WHERE AN ASSET IS EXPOSED TO CUSTOMERS (P0.5), exactly as the server reports
+ * it. Each channel says whether a record EXISTS (placed) and whether it is
+ * actually showing (live); `blocker` is the asset-level reason nothing of it
+ * can be live -- the browser works none of this out for itself.
+ */
+export type DistributionBlocker =
+  | 'pending_review'
+  | 'rejected'
+  | 'archived'
+  | 'not_content'
+  | 'no_media'
+  | 'character_inactive';
+
+export interface AssetDistribution {
+  blocker: DistributionBlocker | null;
+  liveAnywhere: boolean;
+  placedAnywhere: boolean;
+  posts: { released: boolean; releasedAt: string | null; live: boolean };
+  hero: { placed: boolean; position: number | null; live: boolean };
+  categories: Array<{
+    id: string;
+    slug: string;
+    name: string;
+    position: number;
+    live: boolean;
+    reason: 'category_disabled' | 'category_unpublished' | null;
+  }>;
+  discovery: Array<{ keyword: string; categories: string[]; live: boolean }>;
+}
+
 /** One item on a character's content shelf. */
 export interface CharacterContentAsset extends AssetLifecycle {
   assetId: string;
@@ -1448,10 +1479,8 @@ export interface CharacterContentAsset extends AssetLifecycle {
   position: number | null;
   /** Opaque id-keyed admin locator. Never a storage key or path. */
   previewUrl: string | null;
-  placement: {
-    categories: Array<{ id: string; slug: string; name: string; position: number }>;
-    heroPosition: number | null;
-  };
+  /** P0.5 -- Posts, Hero, Categories and Discovery in one model. */
+  distribution: AssetDistribution;
   createdAt: string;
   approvedAt: string | null;
   /**

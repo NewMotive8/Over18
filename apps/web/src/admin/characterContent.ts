@@ -1,4 +1,4 @@
-import type { AssetAction, CharacterContentAsset } from '../lib/api';
+import type { AssetAction, AssetDistribution, CharacterContentAsset } from '../lib/api';
 
 /**
  * A character's content shelf — presentation logic, React-free.
@@ -93,40 +93,101 @@ export function statusLabel(asset: Pick<CharacterContentAsset, 'workflow' | 'isP
   }
 }
 
-/**
- * Where this item currently appears, in one line.
+/* ------------------------------------------------------------------ *
+ * Distribution, as one line on a tile (P0.5)
  *
- * States placement plainly because approved is NOT the same as visible: an
- * approved clip reaches the public app only through the Hero, a published
- * category, or a discovery keyword. An operator who cannot see that difference
- * assumes approval was the last step.
- */
-export function placementLabel(asset: CharacterContentAsset): string {
-  const parts: string[] = [];
-  if (asset.placement.heroPosition !== null) {
-    parts.push(`Hero #${asset.placement.heroPosition + 1}`);
+ * The shelf used to describe placement only -- the Hero and categories -- so a
+ * clip released to her Posts tab read as "Approved, not placed anywhere yet",
+ * which was simply false. Posts, Hero, Categories and Discovery are now one
+ * model from the server, and this says what it says.
+ * ------------------------------------------------------------------ */
+
+/** Each LIVE channel, named the way an operator would say it. */
+export function liveChannels(distribution: AssetDistribution): string[] {
+  const live: string[] = [];
+  if (distribution.posts.live) live.push('Posts');
+  if (distribution.hero.live) live.push(`Hero #${(distribution.hero.position ?? 0) + 1}`);
+  for (const category of distribution.categories) {
+    if (category.live) live.push(`${category.name} #${category.position + 1}`);
   }
-  for (const category of asset.placement.categories) {
-    parts.push(`${category.name} #${category.position + 1}`);
-  }
-  // Archived keeps its placements but shows on none of them -- saying "Hero #1"
-  // alone would read as live.
-  if (asset.workflow === 'archived') {
-    return parts.length > 0
-      ? `Hidden while archived (kept: ${parts.join(' · ')})`
-      : 'Hidden while archived';
-  }
-  if (parts.length > 0) return parts.join(' · ');
-  return asset.workflow === 'approved' ? 'Approved, not placed anywhere yet' : 'Not placed';
+  const discovery = distribution.discovery.filter((entry) => entry.live);
+  if (discovery.length > 0) live.push(`Discovery: ${discovery.map((d) => d.keyword).join(', ')}`);
+  return live;
 }
 
-/** True when this item is approved but reaches no public surface. */
-export function isUnplaced(asset: CharacterContentAsset): boolean {
+/** Channels that hold a record but show nothing, each with the reason. */
+export function dormantChannels(distribution: AssetDistribution): string[] {
+  const dormant: string[] = [];
+  if (distribution.posts.released && !distribution.posts.live) dormant.push('Posts');
+  if (distribution.hero.placed && !distribution.hero.live) dormant.push('Home Hero');
+  for (const category of distribution.categories) {
+    if (category.live) continue;
+    dormant.push(
+      category.reason === 'category_disabled'
+        ? `${category.name} (category disabled)`
+        : category.reason === 'category_unpublished'
+          ? `${category.name} (category not on Home)`
+          : category.name,
+    );
+  }
+  for (const entry of distribution.discovery) {
+    if (!entry.live) {
+      dormant.push(
+        entry.categories.length === 0
+          ? `keyword "${entry.keyword}" (no Discovery category uses it)`
+          : `keyword "${entry.keyword}"`,
+      );
+    }
+  }
+  return dormant;
+}
+
+/** Why nothing of this asset can be live, said plainly. */
+export function distributionBlockerLabel(blocker: AssetDistribution['blocker']): string | null {
+  switch (blocker) {
+    case 'pending_review':
+      return 'waiting for review';
+    case 'rejected':
+      return 'rejected';
+    case 'archived':
+      return 'archived';
+    case 'not_content':
+      return 'not content — identity and chat media are never distributed';
+    case 'no_media':
+      return 'it has no file';
+    case 'character_inactive':
+      return 'she is not published';
+    case null:
+      return null;
+  }
+}
+
+/**
+ * Where this item currently appears, in one line -- and when it appears
+ * nowhere, why.
+ */
+export function distributionLabel(asset: CharacterContentAsset): string {
+  const live = liveChannels(asset.distribution);
+  if (live.length > 0) return `Live: ${live.join(' · ')}`;
+
+  const dormant = dormantChannels(asset.distribution);
+  const blocker = distributionBlockerLabel(asset.distribution.blocker);
+  if (dormant.length > 0) {
+    return blocker
+      ? `Not live (${blocker}) — kept: ${dormant.join(' · ')}`
+      : `Not live — kept: ${dormant.join(' · ')}`;
+  }
+  if (blocker) return `Not distributed (${blocker})`;
+  return 'Approved, not distributed anywhere yet';
+}
+
+/** True when this item could be distributed but reaches nobody. */
+export function isUndistributed(asset: CharacterContentAsset): boolean {
   return (
     asset.workflow === 'approved' &&
     !asset.isPrimary &&
-    asset.placement.heroPosition === null &&
-    asset.placement.categories.length === 0
+    asset.distribution.blocker === null &&
+    !asset.distribution.liveAnywhere
   );
 }
 
@@ -199,7 +260,7 @@ export interface AssetActions {
 export function assetActions(asset: CharacterContentAsset): AssetActions {
   const offered = new Set<AssetAction>(asset.actions);
   const approved = asset.workflow === 'approved';
-  const inHero = asset.placement.heroPosition !== null;
+  const inHero = asset.distribution.hero.placed;
   return {
     canApprove: offered.has('approve'),
     canReject: offered.has('reject'),
@@ -268,24 +329,24 @@ export function archiveConsequence(asset: Pick<CharacterContentAsset, 'role'>): 
  * someone choosing it. Where it USED to be is named, because that is what the
  * operator is giving up and will have to redo.
  *
- * `placement` is optional because Review's view does not carry it.
+ * `distribution` is optional because Review's view does not carry it.
  */
 export function unarchiveConsequence(
   asset: Pick<CharacterContentAsset, 'role' | 'publishedAt'> &
-    Partial<Pick<CharacterContentAsset, 'placement'>>,
+    Partial<Pick<CharacterContentAsset, 'distribution'>>,
 ): string {
   if (asset.role === 'chat') {
     return 'It returns to Approved, and she can send it in chats again. It never appears anywhere public.';
   }
   const cleared: string[] = [];
   if (asset.publishedAt) cleared.push('her Posts tab');
-  if (asset.placement && asset.placement.heroPosition !== null) cleared.push('the Home Hero');
-  for (const category of asset.placement?.categories ?? []) cleared.push(category.name);
+  if (asset.distribution?.hero.placed) cleared.push('the Home Hero');
+  for (const category of asset.distribution?.categories ?? []) cleared.push(category.name);
   const base = 'It returns to Approved, and stays hidden from customers: releasing it to her Posts tab and placing it are separate decisions afterwards.';
   if (cleared.length > 0) {
     return `${base} It will NOT go back on ${cleared.join(', ')} — those are cleared, along with any Discovery keywords, and you would add them again.`;
   }
-  return asset.placement
+  return asset.distribution
     ? base
     : `${base} Any release, placement or Discovery keyword it had is cleared.`;
 }
@@ -327,7 +388,7 @@ export function categoryChoices(
   asset: CharacterContentAsset,
   categories: readonly { id: string; name: string }[],
 ): { id: string; name: string }[] {
-  const already = new Set(asset.placement.categories.map((c) => c.id));
+  const already = new Set(asset.distribution.categories.map((c) => c.id));
   return categories.filter((category) => !already.has(category.id));
 }
 
@@ -622,8 +683,10 @@ export function deletionConsequence(asset: CharacterContentAsset): string {
   const parts = ['This permanently deletes the item and its stored file. It cannot be undone.'];
 
   const placements: string[] = [];
-  if (asset.placement.heroPosition !== null) placements.push('the Home Hero');
-  for (const category of asset.placement.categories) placements.push(category.name);
+  if (asset.distribution.posts.released) placements.push('her Posts tab');
+  if (asset.distribution.hero.placed) placements.push('the Home Hero');
+  for (const category of asset.distribution.categories) placements.push(category.name);
+  for (const entry of asset.distribution.discovery) placements.push(`Discovery ("${entry.keyword}")`);
   if (placements.length > 0) {
     parts.push(`It is currently in ${placements.join(', ')} and will be removed from there.`);
   }

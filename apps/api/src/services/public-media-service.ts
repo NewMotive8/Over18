@@ -1,20 +1,8 @@
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import {
-  appCategories,
-  appCategoryAssets,
-  assetKeywords,
-  characters,
-  characterVisualAssets,
-  characterVisualIdentities,
-  discoveryCategories,
-  discoveryCategoryKeywords,
-  homeHeroClips,
-  type CharacterVisualAssetRow,
-} from '../db/schema.js';
+import { characterVisualAssets, type CharacterVisualAssetRow } from '../db/schema.js';
 import { resolveMediaFile, type ResolvedMediaFile } from './message-media-service.js';
-import { PUBLISHABLE_STATUS } from './app-merchandising-service.js';
-import { PUBLIC_CONTENT_KINDS, PUBLICLY_REACHABLE_KINDS } from './asset-kinds.js';
+import { characterPostsCondition, publiclyReachableCondition } from './asset-distribution.js';
 
 /**
  * Public media access (US-102.4).
@@ -88,141 +76,14 @@ export function publicAssetUrl(assetId: string, storageKey: string | null): stri
 }
 
 /**
- * The one predicate for "this asset is visible to the public right now".
+ * THE TWO PUBLIC PREDICATES LIVE IN `asset-distribution` (P0.5).
  *
- * Expressed as SQL rather than as a set of ids so it composes into any query
- * and cannot drift from the reads that use it. EXISTS rather than joins so an
- * asset in five published categories still yields one row.
+ * They are re-exported here because this module is where every caller already
+ * looks for them, and because the media route below has to serve exactly what
+ * the public surfaces list. Moving the definitions rather than copying them is
+ * the point: one distribution model, consumed everywhere.
  */
-export function publiclyReachableCondition() {
-  return and(
-    eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
-    /**
-     * THE KIND GATE, and it is deliberately the FIRST condition.
-     *
-     * Chat media is authorised per-message per-user by the conversation route
-     * and has no business being reachable by id. Without this line the four
-     * `or` arms below would each let it out: an operator tagging a chat clip
-     * with a keyword that some enabled discovery category happens to query
-     * would publish it, silently, with no admin action that looks like
-     * publishing.
-     *
-     * An ALLOW-LIST, not `kind != 'chat'`: the next kind anyone adds is
-     * excluded by default rather than admitted by default.
-     */
-    inArray(characterVisualAssets.kind, [...PUBLICLY_REACHABLE_KINDS]),
-    // The owning character must still be active — see condition 3 above.
-    sql`exists (
-      select 1 from ${characters}
-      where ${characters.id} = ${characterVisualAssets.characterId}
-        and ${characters.status} = 'active'
-    )`,
-    or(
-      // A canonical reference of the character's ACTIVE identity version — the
-      // gallery is version-scoped (visual-read-service passes active.id), so
-      // omitting the version here would keep a superseded portrait fetchable
-      // long after it stopped being shown anywhere.
-      and(
-        eq(characterVisualAssets.isCanonical, true),
-        eq(characterVisualAssets.kind, 'reference'),
-        sql`exists (
-          select 1 from ${characterVisualIdentities}
-          where ${characterVisualIdentities.id} = ${characterVisualAssets.visualIdentityId}
-            and ${characterVisualIdentities.characterId} = ${characterVisualAssets.characterId}
-            and ${characterVisualIdentities.status} = 'active'
-        )`,
-      ),
-      // An admin-assigned Hero clip.
-      sql`exists (select 1 from ${homeHeroClips} where ${homeHeroClips.assetId} = ${characterVisualAssets.id})`,
-      // Merchandised into a category that is enabled AND published to Home.
-      sql`exists (
-        select 1
-        from ${appCategoryAssets}
-        join ${appCategories} on ${appCategories.id} = ${appCategoryAssets.categoryId}
-        where ${appCategoryAssets.assetId} = ${characterVisualAssets.id}
-          and ${appCategories.enabled} = true
-          and ${appCategories.homePublished} = true
-      )`,
-      // Carries a keyword an ENABLED discovery category queries — i.e. the
-      // strip can actually reach it. Not merely "has any keyword".
-      sql`exists (
-        select 1
-        from ${assetKeywords}
-        join ${discoveryCategoryKeywords}
-          on ${discoveryCategoryKeywords.keywordId} = ${assetKeywords.keywordId}
-        join ${discoveryCategories}
-          on ${discoveryCategories.id} = ${discoveryCategoryKeywords.discoveryCategoryId}
-        where ${assetKeywords.assetId} = ${characterVisualAssets.id}
-          and ${discoveryCategories.enabled} = true
-      )`,
-    ),
-  );
-}
-
-/**
- * Fetches an asset row ONLY when it is currently public. Returns null for
- * unknown, unapproved and unreachable alike — every one of them reads as "not
- * found" so the route leaks no existence information.
- */
-/**
- * HER POSTS TAB — a published clip on the character's own page.
- *
- * ── THE BUG THIS FIXES ───────────────────────────────────────────────────────
- *
- * `publiclyReachableCondition` above asks a PLACEMENT question: has an operator
- * put this clip on Home, in a published category, or behind a discovery
- * keyword? That is the right question for Home, the search grid and the
- * character rails, which are all placements onto Home.
- *
- * It was the wrong question for the Posts tab, which is not a placement — it is
- * the character's own collection, reached only by someone already looking at
- * her. Gating it on Home placement meant a character with five approved clips
- * showed only the one that happened to be merchandised, and none if none was.
- * Measured against the real query, before this change: 0 of 5 with nothing
- * placed, then 1, 2 and 3 as each clip was individually merchandised, and back
- * to 2 when one category was un-published from Home. Production matched that
- * shape — 30 reachable clips across 29 characters, almost exactly the single
- * clip per character her Play with me card requires.
- *
- * ── APPROVED IS STILL NOT ENOUGH ─────────────────────────────────────────────
- *
- * `published_at is not null` is required, and that is the whole point of the
- * column. Approval remains a MODERATION verdict that exposes nothing, so the
- * standing rule holds unchanged: an approved asset nobody released is a 404
- * here, and no amount of id guessing reaches it.
- *
- * ── WHAT IT CANNOT ADMIT ─────────────────────────────────────────────────────
- *
- * `PUBLIC_CONTENT_KINDS` is `generated` alone, so `chat` — the private
- * per-conversation pool — fails this condition exactly as it fails every other
- * public rule, and a `reference` portrait cannot become a post. Unapproved and
- * unpublished rows fail on their own columns, and an INACTIVE character's
- * content fails the exists-check, so retiring her closes her page immediately.
- *
- * ── IT IS A SEPARATE FUNCTION, NOT A FIFTH ARM ───────────────────────────────
- *
- * Adding an arm to `publiclyReachableCondition` would have changed Play with
- * me, Swipe, Favourites, the search grid and Discovery in one edit — every one
- * of them would have begun counting clips no operator had placed. Those are
- * placements and must keep asking the placement question. Exactly two callers
- * use this instead: the Posts query, and the media route that has to serve what
- * Posts lists.
- */
-export function characterPostsCondition() {
-  return and(
-    eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
-    // RELEASED, not merely approved. This is the line that keeps moderation and
-    // publication apart.
-    sql`${characterVisualAssets.publishedAt} is not null`,
-    // Content only: 'chat' and 'reference' are both absent from this list.
-    inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
-    sql`exists (
-      select 1 from ${characters}
-      where ${characters.id} = ${characterVisualAssets.characterId}
-        and ${characters.status} = 'active'
-    )`,
-  );
-}
+export { publiclyReachableCondition, characterPostsCondition } from './asset-distribution.js';
 
 export async function getPublicAsset(
   db: Db,
