@@ -15,6 +15,7 @@ import {
   resolvePackVersion,
   resolvePlanCatalog,
   resolvePlanVersion,
+  lockEconomyRefForRecording,
   resolveRuleset,
   rewardFor,
   type EconomyInstant,
@@ -606,5 +607,153 @@ describe('the resolver is the only reader of economy configuration', () => {
       .filter((rel) => !ALLOWED.has(rel))
       .filter((rel) => ECONOMY_TABLES.test(readFileSync(join(src, rel), 'utf8')));
     expect(offenders).toEqual([]);
+  });
+});
+
+/* ================================================================== *
+ * Recording a decision: the lock that makes the 0029 margin exact
+ * ================================================================== */
+
+/**
+ * Migration 0029 refuses a cancellation inside the last minute before a version
+ * takes effect. That is a TIME buffer measured on the database clock: it proves
+ * the cancelling STATEMENT ran in time, and cannot stop that transaction
+ * committing later still. `lockEconomyRefForRecording` is the hard guarantee at
+ * the moment it matters -- a SHARE lock, taken in the transaction that records
+ * the decision, which an in-flight cancel must wait for.
+ */
+describe('locking the configuration a decision is recorded against', () => {
+  it('locks a live version and hands back the same ref', async () => {
+    const planId = await newPlan('premium');
+    const versionId = await planVersion(planId, 1, 999);
+    await publish('economy_plan_versions', versionId);
+    const asOf = await economyNow(on.db);
+    const resolved = await resolvePlanVersion(on.db, 'premium', asOf);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+
+    const locked = await lockEconomyRefForRecording(on.db, resolved.value.ref);
+    expect(locked).toEqual({ ok: true, ref: resolved.value.ref });
+  });
+
+  it('refuses a version that is gone, or that is not live', async () => {
+    expect(await lockEconomyRefForRecording(on.db, { kind: 'plan_version', id: randomUUID(), code: 'x', version: 1 })).toEqual({
+      ok: false,
+      reason: 'version_gone',
+    });
+
+    const packId = await newPack('bundle');
+    const draft = await packVersion(packId, 1, 100, 499);
+    expect(await lockEconomyRefForRecording(on.db, { kind: 'pack_version', id: draft, code: 'bundle', version: 1 })).toMatchObject({
+      ok: false,
+      reason: 'not_live',
+      status: 'draft',
+    });
+
+    // A separate pack: P1.1 allows only one draft per parent at a time.
+    // Scheduled far enough ahead that 0029 still allows the cancellation.
+    const otherPackId = await newPack('bundle_plus');
+    const scheduled = await packVersion(otherPackId, 1, 200, 899);
+    await publish('economy_pack_versions', scheduled, await inFuture('10 minutes'));
+    await cancel('economy_pack_versions', scheduled);
+    expect(await lockEconomyRefForRecording(on.db, { kind: 'pack_version', id: scheduled, code: 'bundle_plus', version: 1 })).toMatchObject({
+      ok: false,
+      reason: 'not_live',
+      status: 'cancelled',
+    });
+  });
+
+  it('locks a ruleset too -- the third thing a decision can be recorded against', async () => {
+    const rulesetId = await rulesetWith(1, async (id) => {
+      await cost(id, 'image_generation', 'standard', null, 5);
+    });
+    await publish('economy_rulesets', rulesetId);
+    const asOf = await economyNow(on.db);
+    const resolved = await resolveRuleset(on.db, asOf);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(await lockEconomyRefForRecording(on.db, resolved.value.ref)).toEqual({
+      ok: true,
+      ref: resolved.value.ref,
+    });
+  });
+
+  /**
+   * THE RACE, DEMONSTRATED. An uncommitted cancellation holds the row; a
+   * recording transaction that tries to lock it WAITS rather than reading it as
+   * live. Proven with a short statement_timeout: the lock request blocks until
+   * the timeout fires, which it could not do if the row were free.
+   */
+  it('waits for an in-flight cancellation instead of recording against it', async () => {
+    const packId = await newPack('bundle');
+    const versionId = await packVersion(packId, 1, 500, 1999);
+    await publish('economy_pack_versions', versionId, await inFuture('10 minutes'));
+    const ref = { kind: 'pack_version', id: versionId, code: 'bundle', version: 1 } as const;
+
+    // A second connection, so the two transactions are genuinely concurrent.
+    const canceller = await on.pool.connect();
+    try {
+      await canceller.query('BEGIN');
+      await canceller.query(
+        `UPDATE economy_pack_versions SET status = 'cancelled', cancelled_by = $2, cancel_reason = 'test' WHERE id = $1`,
+        [versionId, ACTOR],
+      );
+      // NOT committed: the row is held.
+
+      const blocked = await on.pool.connect();
+      try {
+        await blocked.query('BEGIN');
+        await blocked.query("SET LOCAL statement_timeout = '400ms'");
+        await expect(
+          blocked.query('SELECT status FROM economy_pack_versions WHERE id = $1 FOR SHARE', [versionId]),
+        ).rejects.toThrow(/statement timeout/i);
+        await blocked.query('ROLLBACK');
+      } finally {
+        blocked.release();
+      }
+
+      await canceller.query('COMMIT');
+    } finally {
+      canceller.release();
+    }
+
+    // Once the cancellation lands, the lock answers truthfully rather than
+    // letting a decision be recorded against a cancelled version.
+    expect(await lockEconomyRefForRecording(on.db, ref)).toMatchObject({ ok: false, reason: 'not_live' });
+  });
+
+  it('holds the row while a recording transaction is open, so a cancel must wait for it', async () => {
+    const packId = await newPack('bundle');
+    const versionId = await packVersion(packId, 1, 500, 1999);
+    await publish('economy_pack_versions', versionId, await inFuture('10 minutes'));
+
+    const recorder = await on.pool.connect();
+    try {
+      await recorder.query('BEGIN');
+      await recorder.query('SELECT status FROM economy_pack_versions WHERE id = $1 FOR SHARE', [versionId]);
+
+      const canceller = await on.pool.connect();
+      try {
+        await canceller.query('BEGIN');
+        await canceller.query("SET LOCAL statement_timeout = '400ms'");
+        await expect(
+          canceller.query(
+            `UPDATE economy_pack_versions SET status = 'cancelled', cancelled_by = $2, cancel_reason = 'test' WHERE id = $1`,
+            [versionId, ACTOR],
+          ),
+        ).rejects.toThrow(/statement timeout/i);
+        await canceller.query('ROLLBACK');
+      } finally {
+        canceller.release();
+      }
+
+      await recorder.query('COMMIT');
+    } finally {
+      recorder.release();
+    }
+
+    // The version is still live: the cancellation never landed.
+    const { rows } = await q<{ status: string }>('SELECT status FROM economy_pack_versions WHERE id = $1', [versionId]);
+    expect(rows[0]!.status).toBe('published');
   });
 });

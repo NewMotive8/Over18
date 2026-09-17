@@ -46,9 +46,13 @@ import {
  *    happened" is not repeatable: a version published a moment later can change
  *    the answer for that instant.
  *
- *    A resolved version cannot later become cancelled: the resolver only
+ *    A resolved version is practically uncancellable: the resolver only
  *    returns versions whose effective_from has passed, and migration 0029
  *    refuses any cancellation later than one minute before effective_from.
+ *    That margin is a TIME buffer measured on the database clock, not a lock,
+ *    so it cannot stop a cancelling transaction that was left uncommitted for
+ *    longer than a minute. The moment a decision is actually written,
+ *    `lockEconomyRefForRecording` closes that gap outright.
  *
  * NO HIDDEN DEFAULTS. When nothing valid is published the answer is an explicit
  * `{ ok: false, reason }`, never a fallback price, a zero cost or a default
@@ -118,6 +122,65 @@ export type EconomyRef =
   | { kind: 'plan_version'; id: string; code: string; version: number }
   | { kind: 'pack_version'; id: string; code: string; version: number }
   | { kind: 'ruleset'; id: string; version: number };
+
+/**
+ * THE RECORDING-TIME GUARANTEE.
+ *
+ * Call this inside the SAME transaction that writes a charge, a grant or a
+ * subscription, passing the `EconomyRef` that decision was made against. It
+ * takes a SHARE lock on that exact configuration row, and answers whether the
+ * row is still live.
+ *
+ * ── WHY A LOCK, WHEN 0029 ALREADY GUARDS CANCELLATION ────────────────────────
+ *
+ * 0029's one-minute margin is a TIME buffer, not a lock: it proves a cancelling
+ * statement RAN at least a minute before the version took effect, and cannot
+ * stop that transaction committing later still. A cancel left uncommitted for
+ * longer than the margin overlaps a resolution that already read the version as
+ * live -- rare, but the difference between "almost always right" and "right".
+ *
+ * A SHARE lock closes it, because an UPDATE cancelling the row needs an
+ * exclusive lock on it:
+ *
+ *   - if a cancel is in flight, this blocks until it commits or aborts, and
+ *     then reports the truth (`not_live` when it committed);
+ *   - if this runs first, the cancel blocks until the recording transaction
+ *     commits -- and 0029 then re-evaluates its guard at that later instant.
+ *
+ * Either way nothing is ever recorded against a version somebody is cancelling,
+ * and the lock is released by the caller's own commit or rollback.
+ *
+ * READ-ONLY, like the rest of this module: it writes nothing and only holds the
+ * row still long enough for the caller's write to be true.
+ */
+export type EconomyRecordingLock =
+  | { ok: true; ref: EconomyRef }
+  | { ok: false; reason: 'version_gone' | 'not_live'; status?: string };
+
+export async function lockEconomyRefForRecording(
+  tx: Pick<Db, 'execute'>,
+  ref: EconomyRef,
+): Promise<EconomyRecordingLock> {
+  // One statement per table rather than a dynamic identifier: the three tables
+  // are a closed set, and a composed identifier is how an injection gets in.
+  const locked =
+    ref.kind === 'plan_version'
+      ? await tx.execute(
+          sql`select status from ${economyPlanVersions} where ${economyPlanVersions.id} = ${ref.id} for share`,
+        )
+      : ref.kind === 'pack_version'
+        ? await tx.execute(
+            sql`select status from ${economyPackVersions} where ${economyPackVersions.id} = ${ref.id} for share`,
+          )
+        : await tx.execute(
+            sql`select status from ${economyRulesets} where ${economyRulesets.id} = ${ref.id} for share`,
+          );
+
+  const row = locked.rows[0] as { status?: string } | undefined;
+  if (!row) return { ok: false, reason: 'version_gone' };
+  if (row.status !== 'published') return { ok: false, reason: 'not_live', status: row.status };
+  return { ok: true, ref };
+}
 
 export type Resolution<T, Reason extends string> =
   | { ok: true; value: T; asOf: EconomyInstant }

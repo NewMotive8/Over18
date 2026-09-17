@@ -11,7 +11,7 @@
 --      effect. Both are now stamped with clock_timestamp(), so a version takes
 --      effect at the instant it is actually published.
 --
---   2. A RESOLVED VERSION CAN NEVER BECOME CANCELLED. 0028 compared a
+--   2. A RESOLVED VERSION IS PRACTICALLY UNCANCELLABLE. 0028 compared a
 --      cancellation with now(), so a transaction that began just before
 --      effective_from could cancel a version the resolver had ALREADY served
 --      live (demonstrated in review). A downstream record naming that version
@@ -19,9 +19,25 @@
 --      now judged by clock_timestamp() AND must happen at least one minute
 --      before effective_from. Inside that minute a version can no longer be
 --      withdrawn -- it is superseded by a newer version instead, exactly as an
---      effective one is. The margin covers transaction and commit latency, and
---      reasonable clock differences between the database and any host that
---      reads it.
+--      effective one is.
+--
+--      WHAT THE MARGIN IS AND IS NOT. Both sides of the comparison are the
+--      DATABASE's own clock: clock_timestamp() at the moment of the UPDATE,
+--      against an effective_from this same trigger stamped. It therefore says
+--      nothing about any other host's clock, and protects against nothing
+--      there -- the resolver reads its instant from this database for exactly
+--      that reason.
+--
+--      It is also a TIME buffer, not a lock. It guarantees that a cancelling
+--      statement ran at least a minute before the version took effect; it
+--      cannot stop that transaction COMMITTING later still. A cancel left
+--      uncommitted for longer than the margin therefore overlaps a resolution
+--      that read the version as live. The hard guarantee at the moment it
+--      matters belongs to the writer, not to this trigger: an operation that
+--      records a decision takes a SHARE lock on the version row inside its own
+--      transaction (`lockEconomyRefForRecording` in services/economy-resolver),
+--      which an in-flight cancel blocks on -- so nothing is ever recorded
+--      against a version somebody is cancelling.
 --
 --   3. STABLE IDENTITY. economy_plans.code and economy_packs.code are the keys
 --      the resolver resolves by, and the identity P0's planCode carries. They
