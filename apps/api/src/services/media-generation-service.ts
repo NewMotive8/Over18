@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { rm } from 'node:fs/promises';
+import { join, relative, resolve, sep } from 'node:path';
 import type { Db } from '../db/client.js';
 import type { CharacterVisualAssetRow } from '../db/schema.js';
 import { CostLedger } from '../media-pipeline/cost-ledger.js';
@@ -13,6 +14,7 @@ import {
 } from './visual-asset-service.js';
 import { getActiveVisualIdentity } from './visual-identity-service.js';
 import { GENERATED_ASSET_STATUS } from '../generation/config.js';
+import { checkGenerationBarrier } from '../generation/barrier.js';
 
 /**
  * Media generation job service (US-36 PoC).
@@ -33,6 +35,12 @@ import { GENERATED_ASSET_STATUS } from '../generation/config.js';
  *    failed paid attempt is never assumed free), a structured reason is
  *    returned, and the process never crashes. Exactly ONE provider attempt per
  *    request — retry is a new request, so there is no unbounded retry loop.
+ *  - THE CHARACTER LIFECYCLE BARRIER IS RE-ASKED AT COMMIT (P0.7). A provider
+ *    call takes minutes; the character that passed the gate when the job was
+ *    created can be gone by the time bytes come back. Committing then would
+ *    orphan the file or trip a foreign key inside the catch-all and be recorded
+ *    as an unknown provider error. Refused instead, by name, with the bytes
+ *    removed — see `commitGeneratedAsset`.
  */
 
 export interface MediaStorageConfig {
@@ -114,6 +122,66 @@ function outputPathFor(storageDir: string, characterId: string, jobId: string, e
   return join(storageDir, characterId, 'generated', `${jobId}.${ext}`);
 }
 
+/** True only when `candidate` sits inside `root` — no traversal, no siblings. */
+function isInside(root: string, candidate: string): boolean {
+  const r = resolve(root);
+  const c = resolve(candidate);
+  return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep);
+}
+
+/**
+ * Remove bytes that will never become an asset.
+ *
+ * Only inside MEDIA_STORAGE_DIR, and never fatal: a file that cannot be removed
+ * is a tidiness problem, while throwing here would turn a clean refusal into an
+ * unknown provider error.
+ */
+async function discardGeneratedFile(storage: MediaStorageConfig, outputPath: string): Promise<void> {
+  if (!isInside(storage.storageDir, outputPath)) return;
+  await rm(outputPath, { force: true }).catch(() => {});
+}
+
+/**
+ * THE COMMIT STEP, shared by both writers.
+ *
+ * Asks the lifecycle barrier again, writes the asset row, and — if either the
+ * barrier refuses or the insert fails — removes the file the provider just
+ * produced, so a refused commit leaves nothing behind.
+ */
+async function commitGeneratedAsset(
+  db: Db,
+  storage: MediaStorageConfig,
+  characterId: string,
+  outputPath: string,
+  write: () => Promise<CharacterVisualAssetRow>,
+): Promise<
+  { ok: true; asset: CharacterVisualAssetRow } | { ok: false; error: { kind: string; message: string } }
+> {
+  const barrier = await checkGenerationBarrier(db, characterId);
+  if (!barrier.ok) {
+    await discardGeneratedFile(storage, outputPath);
+    return {
+      ok: false,
+      error: {
+        kind: 'character_unavailable',
+        message: `generated output discarded: ${barrier.message}`,
+      },
+    };
+  }
+
+  try {
+    return { ok: true, asset: await write() };
+  } catch (err) {
+    // The row could not be written (a character removed between the check and
+    // the insert is the case this exists for). The bytes go with it.
+    await discardGeneratedFile(storage, outputPath);
+    return {
+      ok: false,
+      error: { kind: 'commit_failed', message: errorFrom(err).message },
+    };
+  }
+}
+
 function errorFrom(err: unknown): { kind: string; message: string } {
   if (err instanceof ProviderError) return { kind: err.kind, message: err.message };
   return { kind: 'unknown', message: err instanceof Error ? err.message : String(err) };
@@ -182,30 +250,43 @@ export async function generateImageJob(
     // The adapter may rename the file to its true format (e.g. .png); persist
     // whatever path it actually wrote.
     const storageKey = toStorageKey(deps.storage, result.outputPath);
-    const asset = await createVisualAsset(db, {
-      characterId: input.characterId,
-      visualIdentityId: identity.id,
-      kind: 'generated',
-      origin: 'generated',
-      status: input.status ?? GENERATED_ASSET_STATUS,
-      contentRating: input.contentRating ?? 'sfw',
-      requirementKey: input.requirementKey ?? null,
-      storageKey,
-      provenance: {
-        jobId,
-        mediaType: 'image',
-        prompt: input.prompt,
-        provider: result.provider,
-        model: result.model,
-        referenceAssetId: input.referenceAssetId ?? null,
-        width,
-        height,
-        estimatedCostUsd: result.estimatedCostUsd,
-        storagePath: result.outputPath,
-        generatedAt: new Date().toISOString(),
-      },
-    });
-    return { ok: true, jobId, asset, cost: { estimatedCostUsd: result.estimatedCostUsd, cumulativeUsd: entry.cumulativeUsd } };
+    const committed = await commitGeneratedAsset(
+      db,
+      deps.storage,
+      input.characterId,
+      result.outputPath,
+      () =>
+        createVisualAsset(db, {
+          characterId: input.characterId,
+          visualIdentityId: identity.id,
+          kind: 'generated',
+          origin: 'generated',
+          status: input.status ?? GENERATED_ASSET_STATUS,
+          contentRating: input.contentRating ?? 'sfw',
+          requirementKey: input.requirementKey ?? null,
+          storageKey,
+          provenance: {
+            jobId,
+            mediaType: 'image',
+            prompt: input.prompt,
+            provider: result.provider,
+            model: result.model,
+            referenceAssetId: input.referenceAssetId ?? null,
+            width,
+            height,
+            estimatedCostUsd: result.estimatedCostUsd,
+            storagePath: result.outputPath,
+            generatedAt: new Date().toISOString(),
+          },
+        }),
+    );
+    if (!committed.ok) return { ok: false, jobId, error: committed.error };
+    return {
+      ok: true,
+      jobId,
+      asset: committed.asset,
+      cost: { estimatedCostUsd: result.estimatedCostUsd, cumulativeUsd: entry.cumulativeUsd },
+    };
   } catch (err) {
     // A failed paid attempt still costs its estimate — record it, never crash.
     deps.ledger.record({
@@ -271,32 +352,45 @@ export async function generateVideoJob(
       estimatedCostUsd: result.estimatedCostUsd,
     });
     const storageKey = toStorageKey(deps.storage, result.outputPath);
-    // Link to the SOURCE asset's identity version so the clip stays with the
-    // still it was derived from.
-    const asset = await createVisualAsset(db, {
-      characterId: input.characterId,
-      visualIdentityId: source.visualIdentityId,
-      kind: 'generated',
-      origin: 'generated',
-      status: input.status ?? GENERATED_ASSET_STATUS,
-      contentRating: input.contentRating ?? (source.contentRating as ContentRating),
-      requirementKey: input.requirementKey ?? null,
-      storageKey,
-      provenance: {
-        jobId,
-        mediaType: 'video',
-        motionPrompt: input.motionPrompt,
-        provider: result.provider,
-        model: result.model,
-        sourceImageAssetId: input.sourceImageAssetId,
-        durationSeconds,
-        resolution,
-        estimatedCostUsd: result.estimatedCostUsd,
-        storagePath: result.outputPath,
-        generatedAt: new Date().toISOString(),
-      },
-    });
-    return { ok: true, jobId, asset, cost: { estimatedCostUsd: result.estimatedCostUsd, cumulativeUsd: entry.cumulativeUsd } };
+    const committed = await commitGeneratedAsset(
+      db,
+      deps.storage,
+      input.characterId,
+      result.outputPath,
+      () =>
+        // Link to the SOURCE asset's identity version so the clip stays with
+        // the still it was derived from.
+        createVisualAsset(db, {
+          characterId: input.characterId,
+          visualIdentityId: source.visualIdentityId,
+          kind: 'generated',
+          origin: 'generated',
+          status: input.status ?? GENERATED_ASSET_STATUS,
+          contentRating: input.contentRating ?? (source.contentRating as ContentRating),
+          requirementKey: input.requirementKey ?? null,
+          storageKey,
+          provenance: {
+            jobId,
+            mediaType: 'video',
+            motionPrompt: input.motionPrompt,
+            provider: result.provider,
+            model: result.model,
+            sourceImageAssetId: input.sourceImageAssetId,
+            durationSeconds,
+            resolution,
+            estimatedCostUsd: result.estimatedCostUsd,
+            storagePath: result.outputPath,
+            generatedAt: new Date().toISOString(),
+          },
+        }),
+    );
+    if (!committed.ok) return { ok: false, jobId, error: committed.error };
+    return {
+      ok: true,
+      jobId,
+      asset: committed.asset,
+      cost: { estimatedCostUsd: result.estimatedCostUsd, cumulativeUsd: entry.cumulativeUsd },
+    };
   } catch (err) {
     deps.ledger.record({
       runId: jobId,

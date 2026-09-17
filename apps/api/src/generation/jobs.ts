@@ -23,7 +23,7 @@ import {
   type GenerationResultRow,
 } from '../db/schema.js';
 import type { MediaJobDeps, MediaJobResult } from '../services/media-generation-service.js';
-import { getActiveVisualIdentity } from '../services/visual-identity-service.js';
+import { checkGenerationBarrier } from './barrier.js';
 import type {
   EffectiveGenerationConfiguration,
   GenerationConfigError,
@@ -72,22 +72,18 @@ export async function createGenerationJob(
     if (existing) return { ok: true, value: existing };
   }
 
-  const identity = await getActiveVisualIdentity(db, config.characterId);
-  if (!identity) {
+  // THE LIFECYCLE BARRIER (P0.7), asked before anything durable is written and
+  // long before anything is paid for.
+  const barrier = await checkGenerationBarrier(db, config.characterId);
+  if (!barrier.ok) {
     return {
       ok: false,
-      errors: [
-        {
-          code: 'character_required',
-          field: 'characterId',
-          message: 'character has no active visual identity to generate against',
-        },
-      ],
+      errors: [{ code: 'character_required', field: 'characterId', message: barrier.message }],
     };
   }
 
   const resolved = resolveGenerationConfiguration(config, {
-    visualIdentityId: identity.id,
+    visualIdentityId: barrier.identityId,
     defaultModelId: options.defaultModelId,
   });
   if (!resolved.ok) return { ok: false, errors: resolved.errors };
