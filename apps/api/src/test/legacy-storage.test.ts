@@ -109,7 +109,7 @@ describe('the bundled demo media tree holds only what is still consumed', () => 
   });
 });
 
-describe('characters.profile_image is legacy: read in places, written only by the seed', () => {
+describe('characters.profile_image is legacy: written only by the seed, read in one place', () => {
   it('no route or service writes it', () => {
     const writers: string[] = [];
     const walk = (dir: string) => {
@@ -121,10 +121,8 @@ describe('characters.profile_image is legacy: read in places, written only by th
         }
         if (!name.endsWith('.ts')) continue;
         const rel = relative(API_SRC, full).split('\\').join('/');
-        // The seed writes it; the schema declares it; character-service maps it
-        // out and accepts it on a generic update nothing calls with it.
+        // The seed writes it; the schema declares it.
         if (rel === 'db/seed.ts' || rel === 'db/seed-data.ts' || rel === 'db/schema.ts') continue;
-        if (rel === 'services/character-service.ts') continue;
         const code = readFileSync(full, 'utf8')
           .replace(/\/\*[\s\S]*?\*\//g, '')
           .replace(/(^|[^:])\/\/.*$/gm, '$1');
@@ -132,14 +130,34 @@ describe('characters.profile_image is legacy: read in places, written only by th
       }
     };
     walk(API_SRC);
-    // home-composition only SELECTS it into a card projection; a writer would
-    // be an assignment, which this pattern catches.
-    expect(writers.filter((rel) => rel !== 'services/home-composition-service.ts')).toEqual([]);
+    // P0.2 removed character-service's exemption: it no longer accepts the
+    // field on create/update, so no service assigns it at all. The two
+    // survivors only READ it — `character-portrait` as the deprecated fallback,
+    // and the two projections that name it as an OUTPUT field whose value comes
+    // from that resolver.
+    expect(writers.sort()).toEqual([
+      'services/character-portrait.ts',
+      'services/character-service.ts',
+      'services/home-composition-service.ts',
+    ]);
   });
 
-  it('is still part of the public character payload, so removing it is a deliberate change', () => {
-    const source = readFileSync(join(API_SRC, 'services', 'character-service.ts'), 'utf8');
-    expect(source).toContain('profileImage: row.profileImage');
+  /**
+   * P0.2 — THE INVARIANT FLIPPED, so this test did too.
+   *
+   * It used to assert `profileImage: row.profileImage` in character-service:
+   * the column reaching the public payload untouched. That line is now the
+   * defect, not the contract. The payload field survives (clients are
+   * unchanged) but its value is resolved from the canonical asset model, and
+   * the column is reachable from exactly one module.
+   */
+  it('reaches the public payload only through the canonical portrait resolver', () => {
+    const characterService = readFileSync(join(API_SRC, 'services', 'character-service.ts'), 'utf8');
+    expect(characterService).not.toContain('profileImage: row.profileImage');
+    expect(characterService).toContain('character-portrait.js');
+
+    const portrait = readFileSync(join(API_SRC, 'services', 'character-portrait.ts'), 'utf8');
+    expect(portrait).toContain('legacy-profile-image');
   });
 });
 

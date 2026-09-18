@@ -7,8 +7,13 @@ import { charactersApi } from '../lib/api';
  *
  * Results are cached per character id for the session so swiping back and forth
  * through the deck doesn't refetch. Visual identity is an ENHANCEMENT: any
- * failure resolves to `null` and the card falls back to `profileImage` — it
- * must never break discovery.
+ * failure resolves to `null` and the card falls back to the portrait the
+ * character payload already carries — it must never break discovery.
+ *
+ * P0.2: that fallback is no longer a legacy column read by the client. The
+ * server resolves `profileImage` from the same canonical reference this hook
+ * fetches, so a failed request costs the card its Visual DNA, never its
+ * picture.
  */
 const cache = new Map<string, CharacterVisualIdentityResponse | null>();
 

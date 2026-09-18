@@ -366,19 +366,32 @@ export async function listCanonicalReferences(
       ),
     );
 
-  // Deterministic canonical order: explicit position first (asc), then the
-  // unpositioned by creation time. Done in-memory to keep NULLS-LAST portable.
-  return rows.sort((a, b) => {
-    if (a.position !== null && b.position !== null) {
-      if (a.position !== b.position) return a.position - b.position;
-    } else if (a.position !== null) {
-      return -1;
-    } else if (b.position !== null) {
-      return 1;
-    }
-    const at = a.createdAt.getTime();
-    const bt = b.createdAt.getTime();
-    if (at !== bt) return at - bt;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  return rows.sort(canonicalReferenceOrder);
+}
+
+/**
+ * Deterministic canonical order: explicit position first (asc), then the
+ * unpositioned by creation time. Done in-memory to keep NULLS-LAST portable.
+ *
+ * EXPORTED so "the character's first canonical reference" means one thing.
+ * `character-portrait` (P0.2) answers that question for a whole page of
+ * characters in a single batched query rather than through this per-character
+ * function, and a second comparator written to match this one would have been
+ * free to drift from it.
+ */
+export function canonicalReferenceOrder(
+  a: CharacterVisualAssetRow,
+  b: CharacterVisualAssetRow,
+): number {
+  if (a.position !== null && b.position !== null) {
+    if (a.position !== b.position) return a.position - b.position;
+  } else if (a.position !== null) {
+    return -1;
+  } else if (b.position !== null) {
+    return 1;
+  }
+  const at = a.createdAt.getTime();
+  const bt = b.createdAt.getTime();
+  if (at !== bt) return at - bt;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }

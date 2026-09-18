@@ -41,6 +41,15 @@ import { API_URL } from './api';
  * endpoint exposes canonical still images. Video-first is therefore implemented
  * as a forward-compatible SEAM here rather than a backend change. See
  * DEMO_MEDIA_OVERRIDES and `characterVideoUrl` below.
+ *
+ * P0.2 — `profileImage` IS THE CANONICAL PORTRAIT NOW. It used to be the
+ * `characters.profile_image` column, sent raw, which is why the chains below
+ * consult the visual-identity response first and treat the field as a legacy
+ * last resort. The server now resolves that field from the same canonical
+ * reference `firstCanonicalImage` finds, so the two terms agree by
+ * construction; the fallback order is kept because it costs nothing and the
+ * identity response is the fresher of the two when a page has already fetched
+ * it. Neither term is a database column any more.
  */
 
 export type HeroMedia =
@@ -167,7 +176,7 @@ export function resolveRailMedia(character: Partial<MediaCharacter>): HeroMedia 
  * Resolves the hero media for a character, video-first:
  *  1. a valid video → video, using the best available still as its poster;
  *  2. otherwise the active Visual Identity's first canonical image, else the
- *     legacy `profileImage` → image;
+ *     server-resolved `profileImage` portrait → image;
  *  3. otherwise an initial-letter placeholder (never a broken image).
  *
  * VIDEO PRECEDENCE, and why the CMS sits above the manifest. A PoC override
@@ -302,8 +311,9 @@ export function characterHeaderItems(
   if (videos.length > 0) return videos;
 
   /**
-   * 2. Her IDENTITY still: the canonical reference, then `profileImage`, then
-   *    an initial-letter tile so the header can never be an empty frame.
+   * 2. Her IDENTITY still: the canonical reference, then the server-resolved
+   *    `profileImage` portrait, then an initial-letter tile so the header can
+   *    never be an empty frame.
    *
    * THE BUNDLED MANIFEST USED TO SIT ABOVE THIS, and it is removed. It served
    * demo files to any character whose slug matched one of four PoC names,

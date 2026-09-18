@@ -18,6 +18,7 @@ import {
 } from '../db/schema.js';
 import { homeRenderableConditions } from './app-merchandising-service.js';
 import { distributableWorkflowCondition } from './asset-distribution.js';
+import { resolveCharacterPortraits } from './character-portrait.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 import { mediaTypeOf, videoAssetCondition } from './content-review-service.js';
 import { renderValue } from './visual-read-service.js';
@@ -125,10 +126,16 @@ export interface PublicCharacterCardView {
   displayName: string;
   shortBio: string;
   /**
-   * The legacy display locator on `characters` — NOT a storage key. This column
-   * has always been an opaque locator chosen by an operator (a URL or a
-   * web-served path), never a filesystem path, so exposing it leaks nothing the
-   * media route protects. It is the card's last-resort image.
+   * The character's portrait — her active identity's first canonical reference,
+   * as an opaque id-keyed route. NOT a storage key and never a filesystem path.
+   * It is the card's last-resort image, used when she has no representative
+   * clip.
+   *
+   * P0.2 kept the field's NAME so this endpoint's contract is unchanged, and
+   * moved its SOURCE: it used to be `characters.profile_image` read straight
+   * off the row. That column now survives only as the deprecated fallback
+   * inside `resolveCharacterPortraits`, for characters whose references predate
+   * stored media.
    */
   profileImage: string | null;
   /**
@@ -497,16 +504,21 @@ async function characterCards(
   }>,
 ): Promise<PublicCharacterCardView[]> {
   const ids = rows.map((row) => row.id);
-  const [clips, categories] = await Promise.all([
+  const [clips, categories, portraits] = await Promise.all([
     representativeClips(db, ids),
     characterCategoryNames(db, ids),
+    // P0.2: the card's last-resort image is the character's CANONICAL portrait,
+    // resolved from her active identity's first reference. The legacy column is
+    // no longer read here — `resolveCharacterPortraits` owns the one remaining
+    // fallback to it.
+    resolveCharacterPortraits(db, rows),
   ]);
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
     displayName: row.displayName,
     shortBio: row.shortBio,
-    profileImage: row.profileImage,
+    profileImage: portraits.get(row.id)?.url ?? null,
     categories: categories.get(row.id) ?? [],
     clip: clips.get(row.id) ?? null,
   }));
@@ -1250,6 +1262,9 @@ export async function browsePublicCharacters(
       name: characters.name,
       displayName: characters.displayName,
       shortBio: characters.shortBio,
+      // NOT the card's image. It is the deprecated FALLBACK input
+      // `resolveCharacterPortraits` needs (P0.2); what reaches the card is
+      // whatever that resolver returns, canonical first.
       profileImage: characters.profileImage,
     })
     .from(characters)

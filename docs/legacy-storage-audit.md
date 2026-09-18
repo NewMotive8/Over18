@@ -6,6 +6,10 @@ where something is legacy — what it would take to remove it.
 Audited on the `epic-11-ops` branch after P0.8. Nothing in production was
 touched: no stored file was moved, no URL changed, no database column dropped.
 
+**Updated by P0.2** — §3 now records the character-portrait migration: the
+legacy column has been demoted from an independent source of truth to a single,
+deprecated fallback. Still no column dropped and no file moved.
+
 ---
 
 ## 1. The canonical model
@@ -77,32 +81,82 @@ production path. Production selects a real provider.
 
 ---
 
-## 3. `characters.profile_image` — legacy, still consumed
+## 3. `characters.profile_image` — demoted to a deprecated fallback (P0.2)
 
-**Not removable yet.** The column is a plain text locator predating first-class
-visual assets.
+**Still not removable, but no longer authoritative.** P0.2 left the column in
+place and took its authority away.
 
-- **Writers:** the seed only. `character-service`'s update input still accepts
-  the field, but no route passes it, and no admin screen offers it.
-- **Values that can exist:** three `placehold.co` URLs (Luna, Ember, Sage),
-  Maria's `/media/maria/portrait.png`, or null. Confirmed against every version
-  of `seed-data.ts` in git history.
-- **Readers:**
-  - `toPublicCharacter` → every public character payload carries it;
-  - `home-composition-service` character cards;
-  - web: `CharacterCard`, `resolveHeroMedia` and `characterHeaderItems` use it
-    as the fallback still **after** the canonical reference image.
+### What it was used for
 
-**What removal requires** (this is P0.2's deliverable, not P0.9's):
+A plain text display locator predating first-class visual assets: an opaque URL
+or web path naming a character's portrait. It was an INDEPENDENT source of
+truth — separately writable through the character API, carried on every public
+payload, and believed or disbelieved by each web surface on its own terms.
 
-1. give every seeded character a canonical reference asset holding her portrait,
-   so `firstCanonicalImage` answers before the fallback is reached;
-2. drop `profileImage` from `toPublicCharacter` and the Home card projection,
-   and remove the web fallbacks;
-3. only then drop the column, in its own additive-then-destructive migration.
+**Values that can exist:** three `placehold.co` URLs (Luna, Ember, Sage),
+Maria's `/media/maria/portrait.png`, or null. Confirmed against every version of
+`seed-data.ts` in git history.
 
-Until step 1 lands, deleting the column would leave Maria with no portrait on
-the cards that fall back to it.
+### The canonical source that replaces it
+
+`services/character-portrait.ts` — **the character's active identity version's
+first canonical reference**, ordered by the shared `canonicalReferenceOrder`,
+projected through `publicAssetUrl` as the opaque route
+`/api/media/assets/:id/file`. It borrows the `approved` rule from
+`asset-distribution` rather than restating it, so archived, rejected and pending
+references are excluded by construction.
+
+### Consumers, and where each one went
+
+| Consumer | Before | After |
+|---|---|---|
+| `POST /admin/characters`, `PATCH /admin/characters/:id` | accepted `profileImage` and wrote the column | field removed from `CharacterInput`; a body that still carries it is ignored |
+| `POST /admin/characters/quick` | already never wrote it | unchanged, and now re-reads the character so the response carries the portrait its upload created |
+| `toPublicCharacter` | `profileImage: row.profileImage` | takes a resolved portrait as a required argument |
+| `toAdminCharacter` | inherited the above | same |
+| `conversation-service` (chat header) | inherited the above | resolves the portrait |
+| `home-composition-service` character cards | selected the column | resolves portraits for the batch in one query |
+| web `CharacterCard` | per-card `/visual-identity` fetch, then the column | uses the payload's portrait; the duplicate identity lookup is gone |
+| web `resolveHeroMedia`, `characterHeaderItems` | canonical image, else the column | unchanged code — the second term is now the server-resolved portrait |
+| web `ChatPage`, `CharacterDetailPage` | rendered the column | unchanged code, canonical value |
+| seed (`seed.ts` / `seed-data.ts`) | writes the column | **still writes it** — see below |
+
+The wire field is still called `profileImage` on purpose: the contract did not
+change, only the source of its value. Nothing client-side had to be redesigned.
+
+### The legacy fallback that remains
+
+**One reader, clearly marked.** `character-portrait.ts` consults the column only
+when the canonical model cannot answer.
+
+It has to, and the seeded roster is the reason. Their canonical references carry
+web DISPLAY LOCATORS (`https://placehold.co/…`, `/media/maria/portrait.png`)
+rather than stored media, so `resolveMediaFile` refuses them as
+`outside_storage_root` and the media route cannot serve their bytes. Advertising
+`/api/media/assets/<id>/file` for one of those rows would hand every browser a
+404 and replace three live portraits with initial-letter tiles. For exactly
+those characters the column still holds the only locator a browser can fetch.
+
+No storage key is ever passed through: the resolver emits either the opaque
+route or the legacy column, so US-102.4's guarantee holds without qualification.
+
+### Is it safe to remove?
+
+**No — it must remain for now.** The removal sequence is unchanged, but only its
+first step is still outstanding:
+
+1. ~~migrate the consumers~~ — **done in P0.2**; no route writes it and one
+   function reads it.
+2. give every character whose portrait still comes from the column a canonical
+   reference holding **real stored media** (the seeded four, plus anything in
+   production the check in §7 turns up). `character-portrait` reports which
+   source answered — `legacy-profile-image` is the population to fix.
+3. when no character resolves to `legacy-profile-image`, drop the fallback, the
+   seed's writes and the field from `CharacterInput`'s neighbours, then drop the
+   column in its own migration.
+
+Deleting it today would leave Luna, Ember and Maria without a portrait on every
+card that falls back to it.
 
 ---
 

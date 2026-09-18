@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { PublicCharacter } from '@over18/shared';
-import { charactersApi } from '../lib/api';
 import { absoluteMediaUrl } from '../lib/media';
 
 /**
@@ -9,46 +8,29 @@ import { absoluteMediaUrl } from '../lib/media';
  * name + bio on top, and explicit selection affordances (hover/press states,
  * a "Meet <name>" pill, and full-card tap target).
  *
- * US-16B.1: prefer the active Visual Identity's first canonical reference
- * over the legacy profileImage. This lets the Discover surface consume the
- * same canonical asset that the character-detail page uses, while retaining
- * the existing profileImage/initial fallbacks.
+ * US-16B.1 had this card fetch `/api/characters/:id/visual-identity` per card,
+ * purely to prefer the first canonical reference over the legacy
+ * `profileImage` — the payload carried no canonical image, so the client had to
+ * go and get one.
+ *
+ * P0.2 REMOVED THE REASON FOR THAT REQUEST. `profileImage` is now the portrait
+ * the server resolved from exactly that canonical reference, so the card would
+ * have been fetching a second opinion about an answer it was already holding —
+ * a duplicate identity lookup, which is the thing P0.2 exists to end. Same
+ * image, same fallbacks, one request fewer per card.
  */
 export default function CharacterCard({ character }: { character: PublicCharacter }) {
   const navigate = useNavigate();
   const [imageFailed, setImageFailed] = useState(false);
-  const [visualImage, setVisualImage] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
     setImageFailed(false);
-    setVisualImage(null);
-
-    charactersApi
-      .visualIdentity(character.id)
-      .then((data) => {
-        if (cancelled) return;
-        const firstCanonical = data.canonicalAssets
-          .slice()
-          .sort(
-            (a, b) =>
-              (a.position ?? Number.MAX_SAFE_INTEGER) -
-              (b.position ?? Number.MAX_SAFE_INTEGER),
-          )[0];
-        // US-102.4: an API-relative opaque route, resolved against the API origin.
-        setVisualImage(absoluteMediaUrl(firstCanonical?.imageUrl) ?? null);
-      })
-      .catch(() => {
-        // Visual identity is an enhancement; retain the existing profile fallback.
-        if (!cancelled) setVisualImage(null);
-      });
-
-    return () => {
-      cancelled = true;
-    };
   }, [character.id]);
 
-  const imageUrl = visualImage ?? character.profileImage;
+  // API-relative opaque route → resolved against the API origin. An absolute
+  // URL (a character whose portrait still comes from the deprecated locator)
+  // passes through untouched.
+  const imageUrl = absoluteMediaUrl(character.profileImage);
   const showImage = imageUrl && !imageFailed;
 
   return (
@@ -64,14 +46,10 @@ export default function CharacterCard({ character }: { character: PublicCharacte
             src={imageUrl}
             alt={character.displayName}
             loading="lazy"
-            onError={() => {
-              if (visualImage) {
-                setVisualImage(null);
-                setImageFailed(false);
-              } else {
-                setImageFailed(true);
-              }
-            }}
+            // One portrait, so one outcome: a broken image becomes the
+            // initial-letter tile. There is no second locator to retry —
+            // the server already chose between them.
+            onError={() => setImageFailed(true)}
             className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
           />
         ) : (

@@ -197,7 +197,9 @@ export default async function adminCharacterRoutes(
    *   REFERENCE bound to that version.
    * The image is therefore represented by the existing identity/reference
    * system, stored once, with no second copy made to populate profile_image —
-   * which stays null, and which every existing surface already falls back from.
+   * which stays null. Since P0.2 that is not merely tidy, it is the only way a
+   * portrait can be set at all: the uploaded primary reference IS what
+   * `character-portrait` resolves and every surface renders.
    *
    * The file is fully validated BEFORE any row is written, so the common
    * failure (wrong file type) cannot leave a half-made character behind.
@@ -314,7 +316,12 @@ export default async function adminCharacterRoutes(
         uploadedBy: request.currentUser!.id,
       });
       return reply.code(201).send({
-        character,
+        // RE-READ, because the character is now a different thing than she was
+        // two statements ago: the upload gave her the canonical reference that
+        // IS her portrait (P0.2). The draft projection was built before that
+        // existed and would report her as having no image — which used to be
+        // true of the legacy column and is no longer true of her.
+        character: (await getCharacterForAdmin(opts.db, character.id)) ?? character,
         identity: identityView(active),
         primaryReference: referenceView(asset),
       });

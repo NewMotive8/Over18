@@ -847,7 +847,11 @@ export interface PublicCharacterCard {
   name: string;
   displayName: string;
   shortBio: string;
-  /** Legacy display locator on the character. Never a storage key or path. */
+  /**
+   * The character's portrait, resolved server-side from her active identity's
+   * first canonical reference (P0.2). An opaque locator — never a storage key,
+   * a path, or the `characters.profile_image` column read raw.
+   */
   profileImage: string | null;
   /** Real App Category membership; the card chips render these. */
   categories: Array<{ slug: string; name: string }>;
@@ -1302,6 +1306,12 @@ export interface AdminCharacterView {
   id: string;
   name: string;
   displayName: string;
+  /**
+   * The same resolved portrait the public payload carries (P0.2) — her active
+   * identity's first canonical reference. Read-only: it is not an editable
+   * character field, and a portrait is changed by managing her primary
+   * references, never by writing this.
+   */
   profileImage: string | null;
   shortBio: string;
   personality: string;
