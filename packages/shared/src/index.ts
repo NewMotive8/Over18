@@ -27,10 +27,16 @@ export {
   type AnalyticsEventName,
   type AuditEntryView,
   type CommercialAgeStatus,
+  type CommercialFactUnavailable,
   type CommercialState,
   type CommercialSubscription,
   type CommercialTier,
   type CommercialWallet,
+  type CustomerCommercialState,
+  type CustomerEconomyCatalog,
+  type CustomerPackOffer,
+  type CustomerPlanOffer,
+  type EconomyUnavailableResponse,
   type SubscriptionStatus,
 } from './commerce.js';
 

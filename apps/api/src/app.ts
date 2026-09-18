@@ -11,6 +11,7 @@ import adminEconomyRoutes from './routes/admin-economy.js';
 import authRoutes from './routes/auth.js';
 import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
+import customerEconomyRoutes from './routes/customer-economy.js';
 import favouriteRoutes from './routes/favourites.js';
 import messageRoutes from './routes/messages.js';
 import conversationMediaRoutes from './routes/conversation-media.js';
@@ -187,6 +188,10 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
    * deliberately account-free and must stay that way.
    */
   await app.register(favouriteRoutes, { db });
+  // The customer economy READ API: session-only, GET-only, and 503
+  // `economy_unavailable` while ECONOMY_ENABLED is off. Serves only what the
+  // P1.2 resolver says is published and in effect; writes nothing.
+  await app.register(customerEconomyRoutes, { db, commerce: env.commerce });
   // Character Media Messages (commit 2). The flag is a STRUCTURAL kill switch:
   // when it is off no selector object exists, so the eligibility query cannot
   // run and media_asset_id can never be written — rather than selecting an

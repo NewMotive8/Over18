@@ -59,6 +59,89 @@ export interface CommercialState {
 }
 
 /* ------------------------------------------------------------------ *
+ * The customer economy read API
+ * ------------------------------------------------------------------ */
+
+/**
+ * What every customer economy endpoint answers, with HTTP 503, while the
+ * economy is switched off. Clients render their pending/unavailable state and
+ * show nothing paid; the body carries no price, balance or plan.
+ */
+export interface EconomyUnavailableResponse {
+  error: 'economy_unavailable';
+  reason: 'economy_disabled';
+  message: string;
+}
+
+/**
+ * A published plan version in effect now, as a customer may see it.
+ * `code` is the plan's stable identity; `versionId` names the exact
+ * configuration row, which is what a later checkout must pin rather than
+ * re-resolving by time.
+ */
+export interface CustomerPlanOffer {
+  code: string;
+  version: number;
+  versionId: string;
+  displayName: string;
+  billingPeriodMonths: number;
+  priceMinor: number;
+  currency: string;
+  monthlyIncludedCredits: number;
+  features: Record<string, unknown>;
+  /** False for a retired plan: still in effect, but not offered. */
+  isPurchasable: boolean;
+  /** ISO 8601, microsecond precision, UTC. */
+  effectiveFrom: string;
+}
+
+/** A published Credit pack version in effect now, in ladder order. */
+export interface CustomerPackOffer {
+  code: string;
+  version: number;
+  versionId: string;
+  displayName: string;
+  credits: number;
+  priceMinor: number;
+  currency: string;
+  sortOrder: number;
+  isBestValue: boolean;
+  isPurchasable: boolean;
+  effectiveFrom: string;
+}
+
+/** GET /api/economy/catalog: the published, in-effect catalog. */
+export interface CustomerEconomyCatalog {
+  /** The database instant the catalog was resolved at. */
+  asOf: string;
+  plans: CustomerPlanOffer[];
+  packs: CustomerPackOffer[];
+}
+
+/**
+ * A commercial fact the backend cannot yet state with authority, because
+ * nothing persists it. Stated as absent, never as a placeholder value.
+ */
+export interface CommercialFactUnavailable {
+  available: false;
+  reason: 'subscriptions_not_supported' | 'wallet_not_supported' | 'age_verification_not_supported';
+}
+
+/**
+ * GET /api/me/commercial-state: the signed-in customer's commercial state, to
+ * the extent the backend holds authoritative data for it. Each fact is either
+ * `{ available: true, value }` or an explicit `CommercialFactUnavailable`.
+ */
+export interface CustomerCommercialState {
+  viewer: { userId: string };
+  economyEnabled: true;
+  tier: { available: true; value: CommercialTier } | CommercialFactUnavailable;
+  subscription: { available: true; value: CommercialSubscription | null } | CommercialFactUnavailable;
+  wallet: { available: true; value: CommercialWallet } | CommercialFactUnavailable;
+  age: { available: true; value: CommercialAgeStatus } | CommercialFactUnavailable;
+}
+
+/* ------------------------------------------------------------------ *
  * Analytics event catalogue (PRD §23)
  * ------------------------------------------------------------------ */
 
