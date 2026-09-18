@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -755,5 +756,207 @@ describe('locking the configuration a decision is recorded against', () => {
     // The version is still live: the cancellation never landed.
     const { rows } = await q<{ status: string }>('SELECT status FROM economy_pack_versions WHERE id = $1', [versionId]);
     expect(rows[0]!.status).toBe('published');
+  });
+});
+
+/* ================================================================== *
+ * P1.2 audit -- one boundary rule on every resolution path
+ * ================================================================== */
+
+/**
+ * The plan tests above pin the boundary for `resolvePlanVersion`, and the
+ * several-entities test pins it for rulesets. The two CATALOGS answer the same
+ * question through a different query (DISTINCT ON), and packs had no
+ * scheduling, boundary or cancellation coverage at all. One scenario, all five
+ * entry points, one rule: the published version with the greatest
+ * effective_from <= T, inclusive to the microsecond; a scheduled successor is
+ * invisible until T reaches it; a cancelled version never appears.
+ */
+describe('every resolution path applies the same boundary', () => {
+  type Reader = Parameters<typeof resolvePlanVersion>[0];
+
+  /** v1 live; v2 scheduled at one shared instant; v3 scheduled later, then cancelled. */
+  async function scheduleScenario(): Promise<string> {
+    const switchAt = await inFuture('2 days');
+    const cancelledAt = await inFuture('4 days');
+
+    const planId = await newPlan('premium_monthly');
+    await publish('economy_plan_versions', await planVersion(planId, 1, 1000));
+    const at = await publish('economy_plan_versions', await planVersion(planId, 2, 2000), switchAt);
+    const planV3 = await planVersion(planId, 3, 3000);
+    await publish('economy_plan_versions', planV3, cancelledAt);
+    await cancel('economy_plan_versions', planV3);
+
+    const packId = await newPack('starter');
+    await publish('economy_pack_versions', await packVersion(packId, 1, 100, 500));
+    await publish('economy_pack_versions', await packVersion(packId, 2, 200, 900), switchAt);
+    const packV3 = await packVersion(packId, 3, 300, 1300);
+    await publish('economy_pack_versions', packV3, cancelledAt);
+    await cancel('economy_pack_versions', packV3);
+
+    await publish('economy_rulesets', await rulesetWith(1, async (id) => cost(id, 'image', 'standard', null, 10).then(() => undefined)));
+    await publish('economy_rulesets', await rulesetWith(2, async (id) => cost(id, 'image', 'standard', null, 20).then(() => undefined)), switchAt);
+    const rulesetV3 = await rulesetWith(3);
+    await publish('economy_rulesets', rulesetV3, cancelledAt);
+    await cancel('economy_rulesets', rulesetV3);
+    return at;
+  }
+
+  async function versionsAt(reader: Reader, asOf: EconomyInstant) {
+    const plan = await resolvePlanVersion(reader, 'premium_monthly', asOf);
+    const pack = await resolvePackVersion(reader, 'starter', asOf);
+    const ruleset = await resolveRuleset(reader, asOf);
+    return {
+      plan: plan.ok ? plan.value.ref.version : plan.reason,
+      pack: pack.ok ? pack.value.ref.version : pack.reason,
+      ruleset: ruleset.ok ? ruleset.value.ref.version : ruleset.reason,
+      planCatalog: (await resolvePlanCatalog(reader, asOf)).plans.map((p) => p.ref.version),
+      packCatalog: (await resolvePackCatalog(reader, asOf)).packs.map((p) => p.ref.version),
+    };
+  }
+  const everywhere = (version: number) => ({
+    plan: version,
+    pack: version,
+    ruleset: version,
+    planCatalog: [version],
+    packCatalog: [version],
+  });
+
+  it('now, a microsecond before the switch, exactly at it, just after, and long after', async () => {
+    const at = await scheduleScenario();
+    expect(await versionsAt(on.db, await economyNow(on.db))).toEqual(everywhere(1));
+    expect(await versionsAt(on.db, await shift(at, '-1 microsecond'))).toEqual(everywhere(1));
+    expect(await versionsAt(on.db, economyInstantAt(at))).toEqual(everywhere(2));
+    expect(await versionsAt(on.db, await shift(at, '1 microsecond'))).toEqual(everywhere(2));
+    // Past the cancelled v3's instant: a cancelled version never surfaces anywhere.
+    expect(await versionsAt(on.db, await shift(at, '10 days'))).toEqual(everywhere(2));
+  });
+
+  it('reports the empty state explicitly on every path before anything takes effect', async () => {
+    const switchAt = await inFuture('1 day');
+    await publish('economy_plan_versions', await planVersion(await newPlan('premium_monthly'), 1, 1000), switchAt);
+    await publish('economy_pack_versions', await packVersion(await newPack('starter'), 1, 100, 500), switchAt);
+    await publish('economy_rulesets', await rulesetWith(1), switchAt);
+    expect(await versionsAt(on.db, await economyNow(on.db))).toEqual({
+      plan: 'no_effective_version',
+      pack: 'no_effective_version',
+      ruleset: 'no_effective_ruleset',
+      planCatalog: [],
+      packCatalog: [],
+    });
+  });
+
+  /**
+   * CRITERION 8. Instants travel as UTC ISO strings ending in Z, and effective
+   * times are rendered AT TIME ZONE 'UTC', so no answer may depend on the
+   * session's TimeZone setting. Pinned in the most distant zone there is.
+   */
+  it('gives identical answers whatever time zone the database session is in', async () => {
+    const at = await scheduleScenario();
+    const before = await shift(at, '-1 microsecond');
+    const exactly = economyInstantAt(at);
+    const inUtc = { before: await versionsAt(on.db, before), exactly: await versionsAt(on.db, exactly) };
+    const utcNow = Date.parse((await economyNow(on.db)).iso);
+
+    await on.db.transaction(async (tx) => {
+      await tx.execute(sql`SET LOCAL TIME ZONE 'Pacific/Kiritimati'`); // UTC+14
+      expect(await versionsAt(tx, before)).toEqual(inUtc.before);
+      expect(await versionsAt(tx, exactly)).toEqual(inUtc.exactly);
+
+      const plan = await resolvePlanVersion(tx, 'premium_monthly', exactly);
+      expect(plan.ok && plan.value.effectiveFrom).toBe(at);
+
+      const now = await economyNow(tx);
+      expect(now.iso).toMatch(/Z$/);
+      expect(Math.abs(Date.parse(now.iso) - utcNow)).toBeLessThan(60_000);
+    });
+  });
+});
+
+/* ================================================================== *
+ * P1.2 audit -- recording only against a version that has taken effect
+ * ================================================================== */
+
+/**
+ * THE GAP THIS CLOSES. A version resolved by the DATABASE clock has already
+ * taken effect, so 0029 guarantees it can never afterwards be cancelled. A
+ * version resolved at an explicit FUTURE instant -- a preview -- has not: it
+ * comes back with a real EconomyRef, and it can still be withdrawn. Nothing
+ * stopped a writer recording a decision against that ref, which would charge
+ * next week's price today and name a version that might never take effect --
+ * the very record 0029 exists to prevent.
+ *
+ * The recording lock is the one place every write passes through, so it is
+ * where "has this version taken effect?" is asked, on the same database clock.
+ */
+describe('a decision cannot be recorded against a version that has not taken effect', () => {
+  it('refuses a scheduled plan version handed out by a preview', async () => {
+    const planId = await newPlan('premium_monthly');
+    await publish('economy_plan_versions', await planVersion(planId, 1, 1000));
+    const v2 = await planVersion(planId, 2, 2000);
+    const at2 = await publish('economy_plan_versions', v2, await inFuture('10 minutes'));
+
+    const preview = await resolvePlanVersion(on.db, 'premium_monthly', economyInstantAt(at2));
+    if (!preview.ok) throw new Error('expected the scheduled version in a preview');
+    expect(preview.value.ref.id).toBe(v2);
+
+    expect(await lockEconomyRefForRecording(on.db, preview.value.ref)).toEqual({
+      ok: false,
+      reason: 'not_yet_effective',
+      status: 'published',
+    });
+
+    // Why it matters: that version can still be withdrawn.
+    await cancel('economy_plan_versions', v2);
+    expect(await lockEconomyRefForRecording(on.db, preview.value.ref)).toMatchObject({
+      ok: false,
+      reason: 'not_live',
+      status: 'cancelled',
+    });
+  });
+
+  it('refuses scheduled pack versions and rulesets the same way', async () => {
+    const packId = await newPack('starter');
+    const pack = await packVersion(packId, 1, 100, 500);
+    await publish('economy_pack_versions', pack, await inFuture('10 minutes'));
+    expect(
+      await lockEconomyRefForRecording(on.db, { kind: 'pack_version', id: pack, code: 'starter', version: 1 }),
+    ).toMatchObject({ ok: false, reason: 'not_yet_effective' });
+
+    const ruleset = await rulesetWith(1);
+    await publish('economy_rulesets', ruleset, await inFuture('10 minutes'));
+    expect(await lockEconomyRefForRecording(on.db, { kind: 'ruleset', id: ruleset, version: 1 })).toMatchObject({
+      ok: false,
+      reason: 'not_yet_effective',
+    });
+  });
+
+  it('accepts the version the moment it takes effect, by the database clock', async () => {
+    const planId = await newPlan('premium_monthly');
+    const v1 = await planVersion(planId, 1, 1000);
+    await publish('economy_plan_versions', v1, await inFuture('1200 milliseconds'));
+    const ref = { kind: 'plan_version', id: v1, code: 'premium_monthly', version: 1 } as const;
+
+    expect(await lockEconomyRefForRecording(on.db, ref)).toMatchObject({ ok: false, reason: 'not_yet_effective' });
+    await sleep(1600);
+    expect(await lockEconomyRefForRecording(on.db, ref)).toEqual({ ok: true, ref });
+  });
+
+  /**
+   * CRITERION 6, UNWEAKENED. A slow operation that resolved v1 must still be
+   * able to record against v1 after v2 takes over -- the exact version its
+   * decision used. Refusing SUPERSEDED versions would force it to re-resolve,
+   * which is what the EconomyRef exists to avoid.
+   */
+  it('still records against a superseded version -- the exact one a decision used', async () => {
+    const planId = await newPlan('premium_monthly');
+    await publish('economy_plan_versions', await planVersion(planId, 1, 1000));
+    const resolved = await resolvePlanVersion(on.db, 'premium_monthly', await economyNow(on.db));
+    if (!resolved.ok) throw new Error('expected a live version');
+    await publish('economy_plan_versions', await planVersion(planId, 2, 2000));
+
+    const live = await resolvePlanVersion(on.db, 'premium_monthly', await economyNow(on.db));
+    expect(live.ok && live.value.ref.version).toBe(2);
+    expect(await lockEconomyRefForRecording(on.db, resolved.value.ref)).toEqual({ ok: true, ref: resolved.value.ref });
   });
 });
