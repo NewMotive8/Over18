@@ -60,7 +60,8 @@ import {
  * `{ ok: false, reason }`, never a fallback price, a zero cost or a default
  * allowance. A missing value must stop an entitlement or a charge, not guess it.
  *
- * READ-ONLY. This module never writes. Publishing is P1.3.
+ * READ-ONLY. This module never writes. Publishing belongs to the admin
+ * workflow (P1.4); the P1.3 preview reads drafts through `loadEconomyDrafts`.
  */
 
 type Reader = Pick<Db, 'select' | 'selectDistinctOn' | 'execute'>;
@@ -601,6 +602,64 @@ export async function loadRuleset(db: Reader, rulesetId: string): Promise<Loaded
 }
 
 /* ------------------------------------------------------------------ *
+ * Drafts -- for the P1.3 economy preview, and nothing else
+ * ------------------------------------------------------------------ */
+
+/**
+ * A draft version, projected through the SAME columns and mapper as a live
+ * one, so a preview of "the economy as drafted" reads plans, packs and costs
+ * exactly as the resolver will once the draft is published. Only the timing
+ * fields differ: a draft has not been published, and may not be scheduled.
+ *
+ * A DRAFT IS NEVER ACTIVE. Nothing here is returned by any `resolve*` function,
+ * `load*` still refuses drafts, and `lockEconomyRefForRecording` answers
+ * `not_live` for a draft's ref -- so a decision can never be recorded against
+ * one. This exists only so the preview has the same semantics as runtime.
+ */
+export type Draft<V extends { status: unknown; effectiveFrom: unknown; publishedAt: unknown }> = Omit<
+  V,
+  'status' | 'effectiveFrom' | 'publishedAt'
+> & { status: 'draft'; effectiveFrom: string | null; publishedAt: null };
+
+export interface EconomyDrafts {
+  plans: Draft<PlanVersionView>[];
+  packs: Draft<PackVersionView>[];
+  /** At most one: the ruleset stream allows a single open draft. */
+  ruleset: Draft<RulesetSnapshot> | null;
+}
+
+function asDraft<V extends { status: unknown; effectiveFrom: unknown; publishedAt: unknown }>(
+  view: V,
+  effectiveFrom: string | null,
+): Draft<V> {
+  return { ...view, status: 'draft', effectiveFrom, publishedAt: null };
+}
+
+/** Every open draft. READ-ONLY: loading a draft does not publish or schedule it. */
+export async function loadEconomyDrafts(db: Reader): Promise<EconomyDrafts> {
+  const [plans, packs, [ruleset]] = await Promise.all([
+    db
+      .select(planColumns)
+      .from(economyPlanVersions)
+      .innerJoin(economyPlans, eq(economyPlans.id, economyPlanVersions.planId))
+      .where(eq(economyPlanVersions.status, 'draft'))
+      .orderBy(asc(economyPlans.code)),
+    db
+      .select(packColumns)
+      .from(economyPackVersions)
+      .innerJoin(economyPacks, eq(economyPacks.id, economyPackVersions.packId))
+      .where(eq(economyPackVersions.status, 'draft'))
+      .orderBy(asc(economyPacks.code)),
+    db.select(rulesetColumns).from(economyRulesets).where(eq(economyRulesets.status, 'draft')).limit(1),
+  ]);
+  return {
+    plans: plans.map((row) => asDraft(toPlanView(row), row.effectiveFrom ?? null)),
+    packs: packs.map((row) => asDraft(toPackView(row), row.effectiveFrom ?? null)),
+    ruleset: ruleset ? asDraft(await snapshotFor(db, ruleset), ruleset.effectiveFrom ?? null) : null,
+  };
+}
+
+/* ------------------------------------------------------------------ *
  * Lookups on a resolved ruleset -- pure, no queries
  * ------------------------------------------------------------------ */
 
@@ -636,7 +695,9 @@ export type ActionCostLookup =
  * (`action_disabled`) rather than falling back to another tier.
  */
 export function actionCostFor(
-  ruleset: RulesetSnapshot,
+  // Only the identity and the cost rows are read, so the P1.3 preview can ask
+  // the SAME question of a drafted ruleset that runtime asks of a live one.
+  ruleset: Pick<RulesetSnapshot, 'ref' | 'actionCosts'>,
   actionType: string,
   options: { qualityTier?: string; durationSeconds?: number } = {},
 ): ActionCostLookup {
