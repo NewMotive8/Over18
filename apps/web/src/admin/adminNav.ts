@@ -11,6 +11,8 @@
  * presenting dead links as working features.
  */
 
+import type { AdminAccessView, AdminPermission } from '@over18/shared';
+
 export type AdminDestinationKey =
   | 'review'
   | 'library'
@@ -95,14 +97,74 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
   },
 ];
 
+/* ------------------------------------------------------------------ *
+ * Gated destinations (PRD v1.2 §30, §34)
+ *
+ * Sections that exist only for some operators, or only once a switch is on.
+ * They are a SEPARATE list rather than entries in ADMIN_DESTINATIONS, so the
+ * six content-operations areas -- and every screen that lists them, like the
+ * admin home -- are untouched until the server says otherwise.
+ *
+ * VISIBILITY IS A CONVENIENCE, NEVER THE LOCK. Hiding a section only spares an
+ * operator a screen they cannot use; every route behind it is enforced by the
+ * server regardless of what this list renders.
+ * ------------------------------------------------------------------ */
+
+export type GatedAdminDestinationKey = 'audit';
+
+export interface GatedAdminDestination extends Omit<AdminDestination, 'key'> {
+  key: GatedAdminDestinationKey;
+  requires: {
+    permission: AdminPermission;
+    /** A server switch that must be on, e.g. the audit hook. */
+    feature?: keyof AdminAccessView['features'];
+  };
+}
+
+export const GATED_ADMIN_DESTINATIONS: readonly GatedAdminDestination[] = [
+  {
+    key: 'audit',
+    label: 'Audit',
+    path: '/admin/audit',
+    matchPrefixes: ['/admin/audit'],
+    description: 'Who changed what, when, and why',
+    status: 'available',
+    owner: 'PRD v1.2 §34 — admin roles and audit',
+    requires: { permission: 'audit.read', feature: 'auditLog' },
+  },
+];
+
+export type AnyAdminDestination = AdminDestination | GatedAdminDestination;
+export type AnyAdminDestinationKey = AdminDestinationKey | GatedAdminDestinationKey;
+
+/**
+ * What the navigation shows for this operator.
+ *
+ * With no access information -- still loading, or the request failed -- it is
+ * exactly the six ungated areas, which is what the admin always showed. A
+ * gated section appears only when the server positively reports both its
+ * permission and its switch.
+ */
+export function visibleAdminDestinations(
+  access: AdminAccessView | null,
+): readonly AnyAdminDestination[] {
+  if (!access) return ADMIN_DESTINATIONS;
+  const gated = GATED_ADMIN_DESTINATIONS.filter(
+    (dest) =>
+      access.permissions.includes(dest.requires.permission) &&
+      (!dest.requires.feature || access.features[dest.requires.feature]),
+  );
+  return [...ADMIN_DESTINATIONS, ...gated];
+}
+
 /**
  * Which destination should appear active for a path. Longest matching prefix
  * wins, so `/admin/content/review` selects Review rather than Content Library.
  * Returns null on the admin home, which is not itself a destination.
  */
-export function activeAdminDestination(pathname: string): AdminDestinationKey | null {
-  let best: { key: AdminDestinationKey; length: number } | null = null;
-  for (const dest of ADMIN_DESTINATIONS) {
+export function activeAdminDestination(pathname: string): AnyAdminDestinationKey | null {
+  let best: { key: AnyAdminDestinationKey; length: number } | null = null;
+  for (const dest of [...ADMIN_DESTINATIONS, ...GATED_ADMIN_DESTINATIONS]) {
     for (const prefix of dest.matchPrefixes) {
       if (pathname === prefix || pathname.startsWith(`${prefix}/`)) {
         if (!best || prefix.length > best.length) best = { key: dest.key, length: prefix.length };

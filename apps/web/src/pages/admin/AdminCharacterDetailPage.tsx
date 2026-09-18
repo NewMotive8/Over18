@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
+import CharacterEligibilityPanel from '../../admin/CharacterEligibilityPanel';
 import {
   addKeywords,
   keywordsDiffer,
   removeKeyword,
   characterReadiness,
-  placementLabel,
+  distributionLabel,
+  identityLabel as identityVersionLabel,
+  identityLineageSummary,
+  identityUsageSummary,
   statusLabel,
+  originLabel,
   groupBySection,
   sectionSummary,
   assetDeletable,
@@ -16,9 +21,14 @@ import {
   SECTION_RATING,
   SECTION_FILE_ACCEPT,
   type ContentSection,
-  assetActions,
-  isPublished,
+  LIFECYCLE_ACTION_LABEL,
+  orderedActions,
+  needsConfirmation,
+  archiveConsequence,
+  unarchiveConsequence,
+  lifecycleNotice,
 } from '../../admin/characterContent';
+import { REJECT_CONFIRM_BODY } from '../../admin/reviewDecisions';
 import {
   API_URL,
   ApiRequestError,
@@ -28,6 +38,8 @@ import {
   type AdminCharacterDetail,
   type VisualIdentityView,
   type CharacterContentAsset,
+  type AssetAction,
+  type IdentityLineage,
   contentReviewApi,
 } from '../../lib/api';
 
@@ -41,7 +53,9 @@ import {
  * Exactly one version is active, and the screen says so in words rather than
  * relying on a highlight: the active version is the one generation will use.
  *
- * Identity only. Nothing here approves or rejects generated content.
+ * Identity, plus this character's own content shelves. Since P0.4 the shelves
+ * carry the moderation actions the server offers for each item (approve,
+ * reject, release, archive, unarchive).
  */
 
 /** Identity attributes the form edits. Presentation (pose, lighting, clothing)
@@ -56,13 +70,26 @@ const DNA_FIELDS: ReadonlyArray<{ key: string; label: string; required?: boolean
   { key: 'distinctiveFeatures', label: 'Distinctive features' },
 ];
 
-/** What an operator is told after a successful upload, per shelf. */
+/**
+ * What an operator is told after a successful upload, per shelf. Since P0.4 no
+ * upload is approved on arrival, so every notice says what happens next.
+ */
 const NOTICE: Record<ContentSection, string> = {
   regular:
-    'Uploaded to Regular. Approved — no review needed. Place it in a category or the Hero to show it publicly.',
+    'Uploaded to Regular and waiting for review. Approve it below, then release it; nothing is public until then.',
   explicit:
-    'Uploaded to Explicit. Approved — no review needed. Place it in a category or the Hero to show it publicly.',
-  chat: 'Uploaded to Chat Content. She can send it in a conversation. It will never appear anywhere public.',
+    'Uploaded to Explicit and waiting for review. Approve it below, then release it; nothing is public until then.',
+  chat: 'Uploaded to Chat Content and waiting for review. Once approved she can send it in a conversation. It will never appear anywhere public.',
+};
+
+/** Calls the server action behind each lifecycle button. */
+const LIFECYCLE_CALL: Record<AssetAction, (assetId: string) => Promise<unknown>> = {
+  approve: contentReviewApi.approve,
+  reject: contentReviewApi.reject,
+  publish: contentReviewApi.publish,
+  unpublish: contentReviewApi.unpublish,
+  archive: contentReviewApi.archive,
+  unarchive: contentReviewApi.unarchive,
 };
 
 function dnaToForm(dna: Record<string, unknown> | undefined): Record<string, string> {
@@ -98,6 +125,8 @@ export default function AdminCharacterDetailPage() {
 
   /** Her whole content shelf, loaded alongside the detail. */
   const [content, setContent] = useState<CharacterContentAsset[] | null>(null);
+  /** P0.6 -- what each identity version carries, from the same read. */
+  const [lineage, setLineage] = useState<IdentityLineage | null>(null);
 
   /* ---------------- acting on her content, from here ----------------
    *
@@ -141,40 +170,38 @@ export default function AdminCharacterDetailPage() {
   const [deleteError, setDeleteError] = useState<{ assetId: string; message: string } | null>(null);
 
   /**
-   * Releasing a clip to her Posts tab, and taking it back.
+   * The item's lifecycle actions (P0.4): approve, reject, release, take off
+   * Posts, archive, unarchive.
    *
-   * THIS SCREEN IS THE RIGHT OWNER. Approve/Reject and Home placement were
-   * deliberately removed from this page — those belong to Review and to
-   * Merchandise. Publishing to POSTS is neither: it is a decision about HER
-   * page, which is exactly what this shelf already owns. Uploading to Regular
-   * or Explicit here already publishes; this is the same axis, made reversible
-   * and visible.
+   * WHICH ONES A TILE OFFERS IS THE SERVER'S ANSWER -- `asset.actions` -- so
+   * this page holds no moderation rule. Before P0.4 a shelf upload approved
+   * itself and this page offered only the Posts toggle; with uploads now
+   * waiting for review, the character's own page is where Chat Content (which
+   * Review's board does not list) gets decided.
    *
-   * Per-asset id rather than a boolean, for the same reason Delete is: the
+   * Per-asset state rather than a boolean, for the same reason Delete is: the
    * shelves render many tiles and a shared flag would spin all of them.
    */
-  const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [lifecycleBusyId, setLifecycleBusyId] = useState<string | null>(null);
+  const [lifecycleConfirm, setLifecycleConfirm] = useState<{
+    assetId: string;
+    action: AssetAction;
+  } | null>(null);
 
-  async function handleTogglePublished(asset: CharacterContentAsset) {
-    setPublishingId(asset.assetId);
+  async function handleLifecycle(asset: CharacterContentAsset, action: AssetAction) {
+    setLifecycleBusyId(asset.assetId);
     setContentNotice(null);
     try {
-      const live = isPublished(asset);
-      await (live
-        ? contentReviewApi.unpublish(asset.assetId)
-        : contentReviewApi.publish(asset.assetId));
-      setContentNotice(
-        live
-          ? 'Taken off her Posts tab. It is still approved — nothing was rejected or deleted.'
-          : 'Published to her Posts tab.',
-      );
+      await LIFECYCLE_CALL[action](asset.assetId);
+      setLifecycleConfirm(null);
+      setContentNotice(lifecycleNotice(action, asset));
       await reloadContent();
     } catch (err) {
       setContentNotice(
-        err instanceof ApiRequestError ? err.message : 'Could not change publication.',
+        err instanceof ApiRequestError ? err.message : 'That change could not be saved.',
       );
     } finally {
-      setPublishingId(null);
+      setLifecycleBusyId(null);
     }
   }
 
@@ -211,7 +238,10 @@ export default function AdminCharacterDetailPage() {
         setAutofilled(false);
       })
       .then(() => adminCharactersApi.content(characterId))
-      .then((res) => setContent(res.assets))
+      .then((res) => {
+        setContent(res.assets);
+        setLineage(res.identityLineage);
+      })
       .catch((err) => {
         if (err instanceof ApiRequestError && err.status === 404) setNotFound(true);
         else setError("Couldn't load this character.");
@@ -220,11 +250,23 @@ export default function AdminCharacterDetailPage() {
 
   useEffect(load, [load]);
 
-  /** Reloads only the shelf — used after an action that changes one item. */
+  /**
+   * Reloads the shelf after an action that changes one item -- and refreshes
+   * Readiness and Publishability with it, because adding, deleting or releasing
+   * content can change either. Only those two fields are replaced, so an open
+   * persona or identity editor is not disturbed.
+   */
   const reloadContent = useCallback(async () => {
     if (!characterId) return;
-    const res = await adminCharactersApi.content(characterId);
+    const [res, next] = await Promise.all([
+      adminCharactersApi.content(characterId),
+      adminCharactersApi.get(characterId),
+    ]);
     setContent(res.assets);
+    setLineage(res.identityLineage);
+    setDetail((prev) =>
+      prev ? { ...prev, readiness: next.readiness, publishability: next.publishability } : prev,
+    );
   }, [characterId]);
 
   /**
@@ -293,7 +335,8 @@ export default function AdminCharacterDetailPage() {
     setContentNotice(null);
     try {
       /**
-       * Character content skips Review and lands approved.
+       * Character content lands WAITING FOR REVIEW (P0.4) -- the tile then
+       * offers Approve and Reject.
        *
        * `SECTION_RATING` is the single place the section-to-rating mapping
        * lives, and `section` is the single thing that tells the server which
@@ -301,7 +344,7 @@ export default function AdminCharacterDetailPage() {
        * Chat, and the reverse is equally impossible.
        *
        * The Content Library's upload calls this same function WITHOUT a
-       * section and still queues for Review, unchanged.
+       * section and queues for Review the same way.
        */
       await contentLibraryApi.upload(file, characterId, {
         contentRating: SECTION_RATING[section],
@@ -517,6 +560,11 @@ export default function AdminCharacterDetailPage() {
         </div>
       )}
 
+      <CharacterEligibilityPanel
+        readiness={detail.readiness}
+        publishability={detail.publishability}
+      />
+
       {actionError && (
         <p role="alert" className="mb-4 rounded-lg border border-red-900 bg-red-950/60 px-3 py-2 text-sm text-red-300">
           {actionError}
@@ -665,6 +713,16 @@ export default function AdminCharacterDetailPage() {
           Editing never overwrites history: a change creates a new version.
         </p>
 
+        {/* P0.6 -- IDENTITY LINEAGE. Activating a version changes no content:
+            approved and released items keep the version they were made
+            against, and keep appearing wherever they already appear. This says
+            how much of her content that is, which no screen could answer. */}
+        {lineage && (
+          <p className="mb-3 text-xs text-zinc-400" data-testid="identity-lineage">
+            {identityLineageSummary(lineage)}
+          </p>
+        )}
+
         {identityOpen && (
           <div className="mb-4 space-y-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
             <h3 className="text-sm font-medium text-zinc-200">
@@ -752,6 +810,27 @@ export default function AdminCharacterDetailPage() {
                         ? 'Draft — not used yet'
                         : 'Retired — kept for history'}
                   </p>
+                  {/* What this version actually carries (P0.6). */}
+                  <p className="text-xs text-zinc-500" data-testid="identity-usage">
+                    {identityUsageSummary(
+                      lineage?.versions.find((version) => version.id === identity.id) ?? {
+                        id: identity.id,
+                        version: identity.version,
+                        status: identity.status,
+                        label: identity.label,
+                        active: identity.isActive,
+                        counts: {
+                          total: 0,
+                          pendingReview: 0,
+                          approved: 0,
+                          rejected: 0,
+                          archived: 0,
+                          live: 0,
+                          references: 0,
+                        },
+                      },
+                    )}
+                  </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {identity.isActive ? (
@@ -793,10 +872,10 @@ export default function AdminCharacterDetailPage() {
           carried: `sfw` is Regular, `explicit` is Explicit. Nothing new is
           stored for this and no migration was needed.
 
-          UPLOADS HERE SKIP REVIEW and land approved, because an operator
-          uploading a clip to a character has already made the editorial call. A
-          second queue to re-make it was ceremony. Review itself is untouched
-          and still serves everything that reaches it by any other path.
+          UPLOADS HERE WAIT FOR REVIEW (P0.4). They used to land approved -- and
+          released to Posts -- on the reasoning that uploading was itself the
+          editorial call; now each tile offers the server's actions (Approve /
+          Reject, then Release / Archive, then Unarchive) like any other content.
 
           NO "ADD TO CATEGORY" AND NO "ADD TO HERO" on these shelves. Placement
           belongs to Merchandise and the Home composer; offering it here as well
@@ -853,8 +932,8 @@ export default function AdminCharacterDetailPage() {
             <p className="mb-3 text-xs leading-relaxed text-zinc-500">
               {blurb}{' '}
               {mode === 'chat'
-                ? 'Images and videos, approved the moment they upload — no review step. Chat Content is private: it is never shown in Search, Posts, Play with me, categories or the Hero, and it is the only media she can send in a chat.'
-                : 'Video only, and approved the moment it uploads — no review step. Approved is not the same as public: each item below says where it appears.'}
+                ? 'Images and videos. Each upload waits for your review before she can send it. Chat Content is private: it is never shown in Search, Posts, Play with me, categories or the Hero, and it is the only media she can send in a chat.'
+                : 'Video only. Each upload waits for your review; approving does not put it on her Posts tab — releasing does. Each item below says where it appears.'}
             </p>
 
             {content !== null && items.length === 0 && (
@@ -907,19 +986,30 @@ export default function AdminCharacterDetailPage() {
                       <p className="truncate text-[11px] font-medium text-zinc-300">
                         {statusLabel(asset)}
                       </p>
-                      <p className="truncate text-[11px] text-zinc-500">
-                        {placementLabel(asset)}
+                      <p className="truncate text-[11px] text-zinc-500" data-testid="asset-origin">
+                        {originLabel(asset)}
                       </p>
-                      {/* Approved and live are different questions now. */}
-                      {asset.status === 'approved' && asset.kind === 'generated' && (
-                        <p
-                          className={`truncate text-[11px] ${
-                            isPublished(asset) ? 'text-emerald-400' : 'text-amber-400'
-                          }`}
-                        >
-                          {isPublished(asset) ? 'On her Posts tab' : 'Not on her Posts tab'}
-                        </p>
-                      )}
+                      {/* Which identity version this was made against (P0.6). */}
+                      <p
+                        className={`truncate text-[11px] ${
+                          asset.visualIdentity.active ? 'text-zinc-500' : 'text-amber-400/80'
+                        }`}
+                        data-testid="asset-identity"
+                      >
+                        {identityVersionLabel(asset)}
+                      </p>
+                      {/* WHERE IT IS, in the server's own distribution model:
+                          Posts, Hero, Categories and Discovery, with what is
+                          merely placed kept separate from what is live. */}
+                      <p
+                        className={`truncate text-[11px] ${
+                          asset.distribution.liveAnywhere ? 'text-emerald-400' : 'text-zinc-500'
+                        }`}
+                        title={distributionLabel(asset)}
+                        data-testid="asset-distribution"
+                      >
+                        {distributionLabel(asset)}
+                      </p>
                       <div className="flex flex-wrap gap-1 pt-1">
                         <button
                           type="button"
@@ -930,27 +1020,41 @@ export default function AdminCharacterDetailPage() {
                         >
                           {keywordsFor === asset.assetId ? 'Close keywords' : 'Keywords'}
                         </button>
-                        {/* LIVE ON HER PAGE, or not. Approving no longer
-                            publishes, so the shelf has to say which. */}
-                        {(assetActions(asset).canPublish || assetActions(asset).canUnpublish) && (
+                        {/* LIFECYCLE -- exactly the actions the server
+                            offers for this item, in a fixed order. The ones
+                            that take something out of use, or can put it
+                            back on public surfaces, ask first. */}
+                        {orderedActions(asset.actions).map((action) => (
                           <button
+                            key={action}
                             type="button"
-                            onClick={() => void handleTogglePublished(asset)}
-                            disabled={busy || publishingId !== null}
-                            aria-pressed={isPublished(asset)}
+                            data-testid={`asset-action-${action}`}
+                            onClick={() =>
+                              needsConfirmation(action)
+                                ? setLifecycleConfirm({ assetId: asset.assetId, action })
+                                : void handleLifecycle(asset, action)
+                            }
+                            disabled={busy || lifecycleBusyId !== null}
+                            aria-expanded={
+                              needsConfirmation(action)
+                                ? lifecycleConfirm?.assetId === asset.assetId &&
+                                  lifecycleConfirm.action === action
+                                : undefined
+                            }
                             className={`rounded border px-2 py-0.5 text-[11px] disabled:opacity-50 ${
-                              isPublished(asset)
-                                ? 'border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10'
-                                : 'border-zinc-700 text-zinc-200 hover:border-zinc-600'
+                              action === 'reject' || action === 'archive'
+                                ? 'border-amber-500/40 text-amber-300 hover:bg-amber-500/10'
+                                : action === 'approve'
+                                  ? 'border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10'
+                                  : 'border-zinc-700 text-zinc-200 hover:border-zinc-600'
                             }`}
                           >
-                            {publishingId === asset.assetId
+                            {lifecycleBusyId === asset.assetId &&
+                            !needsConfirmation(action)
                               ? '…'
-                              : isPublished(asset)
-                                ? 'Unpublish'
-                                : 'Publish to Posts'}
+                              : LIFECYCLE_ACTION_LABEL[action]}
                           </button>
-                        )}
+                        ))}
                         {assetDeletable(asset).deletable && (
                           <button
                             type="button"
@@ -966,6 +1070,41 @@ export default function AdminCharacterDetailPage() {
                           </button>
                         )}
                       </div>
+
+                      {/* Lifecycle confirmation, in the tile: reject, archive
+                          and unarchive say what they will do first. */}
+                      {lifecycleConfirm?.assetId === asset.assetId && (
+                        <div className="mt-1.5 rounded border border-amber-500/30 bg-amber-500/5 p-2">
+                          <p className="text-[11px] leading-relaxed text-zinc-300">
+                            {lifecycleConfirm.action === 'reject'
+                              ? REJECT_CONFIRM_BODY
+                              : lifecycleConfirm.action === 'archive'
+                                ? archiveConsequence(asset)
+                                : unarchiveConsequence(asset)}
+                          </p>
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setLifecycleConfirm(null)}
+                              disabled={lifecycleBusyId === asset.assetId}
+                              className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600 disabled:opacity-50"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="asset-action-confirm"
+                              onClick={() => void handleLifecycle(asset, lifecycleConfirm.action)}
+                              disabled={lifecycleBusyId === asset.assetId}
+                              className="rounded border border-amber-500/40 px-2 py-0.5 text-[11px] text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+                            >
+                              {lifecycleBusyId === asset.assetId
+                                ? '…'
+                                : `Confirm ${LIFECYCLE_ACTION_LABEL[lifecycleConfirm.action].toLowerCase()}`}
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Confirmation, in the tile. It names the consequences
                           that are NOT visible from the tile — the stored file,

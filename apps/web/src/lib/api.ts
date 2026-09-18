@@ -1,5 +1,7 @@
 import type {
+  AdminAccessView,
   ApiError,
+  AuditEntryView,
   AuthCredentials,
   AuthUser,
   BannerAudience,
@@ -152,13 +154,44 @@ export const authApi = {
   },
 };
 
+/**
+ * P0.3 -- an asset's three independent facts, as the SERVER reads them.
+ *
+ *   role      what it is for          (the stored `kind` 'generated' is CONTENT)
+ *   origin    where it came from      (never inferred from role or workflow)
+ *   workflow  where it is in review   (`generated` and `under_review` are both pending)
+ *
+ * Distribution (Posts, Home, categories, Discovery) is reported separately and
+ * is never implied by any of these.
+ */
+export interface AssetLifecycle {
+  role: 'reference' | 'content' | 'chat';
+  origin: 'generated' | 'manual' | 'imported' | 'legacy';
+  workflow: 'pending_review' | 'approved' | 'rejected' | 'archived';
+  /**
+   * P0.4 -- what an operator may do next, decided by the SERVER from the same
+   * rules it enforces. The admin screens draw a button per action here and
+   * hold no lifecycle rule of their own.
+   */
+  actions: AssetAction[];
+}
+
+/** `publish` / `unpublish` are the Posts release; the UI says Release. */
+export type AssetAction =
+  | 'approve'
+  | 'reject'
+  | 'publish'
+  | 'unpublish'
+  | 'archive'
+  | 'unarchive';
+
 /** US-106 — admin content review. Uses the same session-cookie request helper. */
-export interface ReviewAssetView {
+export interface ReviewAssetView extends AssetLifecycle {
   assetId: string;
   characterId: string;
   characterName: string;
   mediaType: 'image' | 'video';
-  status: 'generated' | 'under_review' | 'approved' | 'rejected';
+  status: 'generated' | 'under_review' | 'approved' | 'rejected' | 'archived';
   contentRating: 'sfw' | 'explicit';
   /** The configured content requirement this item is filed under, if any. */
   requirementKey: string | null;
@@ -171,6 +204,10 @@ export interface ReviewAssetView {
   previewUrl: string | null;
   createdAt: string;
   approvedAt: string | null;
+  /** Released to her Posts tab, or null. */
+  publishedAt: string | null;
+  /** Archived (P0.4), or null. */
+  archivedAt: string | null;
   provenance: {
     jobId: string | null;
     provider: string | null;
@@ -202,7 +239,7 @@ export const contentLibraryApi = {
        * from it. Passing the status is how a caller asks for the items that are
        * still waiting, using the filter the route has always accepted.
        */
-      status?: 'generated' | 'under_review' | 'approved' | 'rejected';
+      status?: 'generated' | 'under_review' | 'approved' | 'rejected' | 'archived';
     } = {},
   ) => {
     const q = new URLSearchParams();
@@ -810,7 +847,11 @@ export interface PublicCharacterCard {
   name: string;
   displayName: string;
   shortBio: string;
-  /** Legacy display locator on the character. Never a storage key or path. */
+  /**
+   * The character's portrait, resolved server-side from her active identity's
+   * first canonical reference (P0.2). An opaque locator — never a storage key,
+   * a path, or the `characters.profile_image` column read raw.
+   */
   profileImage: string | null;
   /** Real App Category membership; the card chips render these. */
   categories: Array<{ slug: string; name: string }>;
@@ -1111,6 +1152,35 @@ export interface TaggableAssetView {
   keywords: KeywordView[];
 }
 
+/** PRD v1.2 §34 -- operator access and the audit log. */
+export interface AuditPage {
+  entries: AuditEntryView[];
+  nextCursor: number | null;
+}
+
+export interface AuditFilters {
+  objectType?: string;
+  actorUserId?: string;
+}
+
+function auditQuery(filters: AuditFilters & { before?: number; limit?: number }): string {
+  const params = new URLSearchParams();
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  if (filters.before !== undefined) params.set('before', String(filters.before));
+  if (filters.objectType) params.set('objectType', filters.objectType);
+  if (filters.actorUserId) params.set('actorUserId', filters.actorUserId);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
+export const adminAccessApi = {
+  me: () => request<AdminAccessView>('/admin/me/access'),
+  audit: (filters: AuditFilters & { before?: number; limit?: number } = {}) =>
+    request<AuditPage>(`/admin/audit${auditQuery(filters)}`),
+  /** A plain URL: the browser downloads it with the session cookie. */
+  exportUrl: (filters: AuditFilters = {}) => `${API_URL}/admin/audit/export.csv${auditQuery(filters)}`,
+};
+
 export const adminDiscoveryApi = {
   categories: () => request<{ categories: DiscoveryCategoryView[] }>('/admin/discovery/categories'),
   keywords: () => request<{ keywords: KeywordView[] }>('/admin/discovery/keywords'),
@@ -1216,6 +1286,16 @@ export const contentReviewApi = {
     request<ReviewAssetView>(`/admin/content/assets/${assetId}/publish`, { method: 'POST' }),
   unpublish: (assetId: string) =>
     request<ReviewAssetView>(`/admin/content/assets/${assetId}/unpublish`, { method: 'POST' }),
+  /**
+   * P0.4. Archive hides an approved item everywhere without removing anything.
+   * Unarchive returns it to Approved ONLY -- its release and placements are
+   * cleared, so nothing goes back in front of customers by itself. Approve
+   * never releases either.
+   */
+  archive: (assetId: string) =>
+    request<ReviewAssetView>(`/admin/content/assets/${assetId}/archive`, { method: 'POST' }),
+  unarchive: (assetId: string) =>
+    request<ReviewAssetView>(`/admin/content/assets/${assetId}/unarchive`, { method: 'POST' }),
 };
 
 /* ------------------------------------------------------------------ *
@@ -1226,6 +1306,12 @@ export interface AdminCharacterView {
   id: string;
   name: string;
   displayName: string;
+  /**
+   * The same resolved portrait the public payload carries (P0.2) — her active
+   * identity's first canonical reference. Read-only: it is not an editable
+   * character field, and a portrait is changed by managing her primary
+   * references, never by writing this.
+   */
   profileImage: string | null;
   shortBio: string;
   personality: string;
@@ -1259,7 +1345,7 @@ export interface VisualIdentityView {
   updatedAt: string;
 }
 
-export interface PrimaryReferenceView {
+export interface PrimaryReferenceView extends AssetLifecycle {
   assetId: string;
   characterId: string;
   visualIdentityId: string;
@@ -1273,11 +1359,35 @@ export interface PrimaryReferenceView {
   createdAt: string;
 }
 
+/**
+ * The server's verdicts (API character-readiness-service). Rendered as given:
+ * the browser never re-derives either. Blockers carry the server's own message;
+ * the extra fields are for context, not for re-evaluating anything.
+ */
+export interface EligibilityBlocker {
+  code: string;
+  message: string;
+  [detail: string]: unknown;
+}
+
+export interface CharacterReadiness {
+  ready: boolean;
+  blockers: EligibilityBlocker[];
+  requirements: { required: number; approved: number; pending: number; missing: number; complete: boolean };
+}
+
+export interface CharacterPublishability {
+  publishable: boolean;
+  blockers: EligibilityBlocker[];
+}
+
 export interface AdminCharacterDetail {
   character: AdminCharacterView;
   identities: VisualIdentityView[];
   activeIdentity: VisualIdentityView | null;
   primaryReferences: PrimaryReferenceView[];
+  readiness: CharacterReadiness;
+  publishability: CharacterPublishability;
 }
 
 /** Fields an operator may set. Exactly the columns the schema already has. */
@@ -1335,12 +1445,80 @@ async function postMultipart<T>(path: string, form: FormData, failure: string): 
   return (await res.json()) as T;
 }
 
+/**
+ * WHERE AN ASSET IS EXPOSED TO CUSTOMERS (P0.5), exactly as the server reports
+ * it. Each channel says whether a record EXISTS (placed) and whether it is
+ * actually showing (live); `blocker` is the asset-level reason nothing of it
+ * can be live -- the browser works none of this out for itself.
+ */
+export type DistributionBlocker =
+  | 'pending_review'
+  | 'rejected'
+  | 'archived'
+  | 'not_content'
+  | 'no_media'
+  | 'character_inactive';
+
+export interface AssetDistribution {
+  blocker: DistributionBlocker | null;
+  liveAnywhere: boolean;
+  placedAnywhere: boolean;
+  posts: { released: boolean; releasedAt: string | null; live: boolean };
+  hero: { placed: boolean; position: number | null; live: boolean };
+  categories: Array<{
+    id: string;
+    slug: string;
+    name: string;
+    position: number;
+    live: boolean;
+    reason: 'category_disabled' | 'category_unpublished' | null;
+  }>;
+  discovery: Array<{ keyword: string; categories: string[]; live: boolean }>;
+}
+
+/**
+ * WHICH IDENTITY VERSION AN ASSET BELONGS TO (P0.6), and what each version
+ * carries. Read straight from the canonical identity rows -- the browser
+ * neither derives nor stores a second answer.
+ */
+export interface IdentityVersionRef {
+  id: string;
+  version: number;
+  status: 'draft' | 'active' | 'retired';
+  label: string | null;
+  active: boolean;
+}
+
+export interface IdentityUsageCounts {
+  total: number;
+  pendingReview: number;
+  approved: number;
+  rejected: number;
+  archived: number;
+  live: number;
+  references: number;
+}
+
+export interface IdentityVersionUsage extends IdentityVersionRef {
+  counts: IdentityUsageCounts;
+}
+
+export interface IdentityLineage {
+  activeVersion: number | null;
+  versions: IdentityVersionUsage[];
+  /** Approved content made against a version that is no longer the active one. */
+  staleApproved: number;
+  /** How much of that is reaching customers right now. */
+  staleLive: number;
+  staleVersions: number[];
+}
+
 /** One item on a character's content shelf. */
-export interface CharacterContentAsset {
+export interface CharacterContentAsset extends AssetLifecycle {
   assetId: string;
   characterId: string;
   kind: string;
-  status: 'generated' | 'under_review' | 'approved' | 'rejected';
+  status: 'generated' | 'under_review' | 'approved' | 'rejected' | 'archived';
   mediaType: 'image' | 'video';
   contentRating: 'sfw' | 'explicit';
   requirementKey: string | null;
@@ -1348,10 +1526,10 @@ export interface CharacterContentAsset {
   position: number | null;
   /** Opaque id-keyed admin locator. Never a storage key or path. */
   previewUrl: string | null;
-  placement: {
-    categories: Array<{ id: string; slug: string; name: string; position: number }>;
-    heroPosition: number | null;
-  };
+  /** P0.5 -- Posts, Hero, Categories and Discovery in one model. */
+  distribution: AssetDistribution;
+  /** P0.6 -- the identity version this asset was made against. */
+  visualIdentity: IdentityVersionRef;
   createdAt: string;
   approvedAt: string | null;
   /**
@@ -1360,6 +1538,8 @@ export interface CharacterContentAsset {
    * releasing is what puts it on her page.
    */
   publishedAt: string | null;
+  /** When it was archived (P0.4), or null. Its release time is kept. */
+  archivedAt: string | null;
 }
 
 export const adminCharactersApi = {
@@ -1388,7 +1568,7 @@ export const adminCharactersApi = {
    * its Hero position. Saves a trip to Review just to find out what exists.
    */
   content: (characterId: string) =>
-    request<{ assets: CharacterContentAsset[] }>(
+    request<{ assets: CharacterContentAsset[]; identityLineage: IdentityLineage }>(
       `/admin/characters/${encodeURIComponent(characterId)}/content`,
     ),
   /** What this character still needs, derived from the configuration. */

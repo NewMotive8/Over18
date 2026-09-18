@@ -11,7 +11,7 @@
  * the character_visual_assets row it produced. No duplicate asset concept.
  */
 
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, lt } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
   generationResults,
@@ -53,7 +53,10 @@ export interface ResultOutcome {
   estimatedCostUsd: number;
   /** Terminal for the whole run — later attempts would be refused too. */
   budgetRefused: boolean;
-  /** False when another process already held this result; nothing was run. */
+  /**
+   * False when nothing was run: another process already held this result, or
+   * it has spent its attempts. Either way no provider was called.
+   */
   claimed: boolean;
 }
 
@@ -81,6 +84,11 @@ export async function executeResult(
       and(
         eq(generationResults.id, result.id),
         inArray(generationResults.status, ['pending', 'failed']),
+        // THE ATTEMPT BOUND IS PART OF THE CLAIM (P0.7). It used to live only
+        // in the callers -- the job runner's filter and the retry route -- so a
+        // new wrapper that called this directly could spend forever on one
+        // cursed output. Here, an exhausted result simply cannot be claimed.
+        lt(generationResults.attempts, MAX_RESULT_ATTEMPTS),
       ),
     )
     .returning();

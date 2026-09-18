@@ -27,6 +27,9 @@ const CLIENT_ERROR_KINDS = new Set([
   'source_not_found',
   'source_file_missing',
   'budget_refused',
+  // P0.7: the character stopped being able to own content while the provider
+  // was working. The caller's state, not a provider fault.
+  'character_unavailable',
 ]);
 
 const imageBodySchema = {

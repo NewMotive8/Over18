@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   addKeywords,
   approveConsequence,
+  archiveConsequence,
   assetActions,
+  lifecycleNotice,
+  LIFECYCLE_ACTION_LABEL,
+  needsConfirmation,
+  orderedActions,
+  unarchiveConsequence,
   assetDeletable,
   categoryChoices,
   characterReadiness,
@@ -11,8 +19,14 @@ import {
   deletionConsequence,
   groupBySection,
   groupCharacterContent,
-  isUnplaced,
-  placementLabel,
+  isUndistributed,
+  distributionLabel,
+  liveChannels,
+  dormantChannels,
+  distributionBlockerLabel,
+  identityLabel,
+  identityLineageSummary,
+  identityUsageSummary,
   sectionSummary,
   SECTION_ACCEPTS,
   SECTION_FILE_ACCEPT,
@@ -23,7 +37,51 @@ import {
   removeKeyword,
   statusLabel,
 } from './characterContent';
-import type { CharacterContentAsset } from '../lib/api';
+import type {
+  AssetDistribution,
+  CharacterContentAsset,
+  IdentityLineage,
+  IdentityVersionUsage,
+} from '../lib/api';
+
+/**
+ * The server's distribution model for one asset (P0.5). Tests build it exactly
+ * as the API reports it -- including whether each channel is LIVE -- because
+ * the browser is not allowed to work that out for itself.
+ */
+function dist(over: Partial<AssetDistribution> = {}): AssetDistribution {
+  const base: AssetDistribution = {
+    blocker: null,
+    liveAnywhere: false,
+    placedAnywhere: false,
+    posts: { released: false, releasedAt: null, live: false },
+    hero: { placed: false, position: null, live: false },
+    categories: [],
+    discovery: [],
+    ...over,
+  };
+  return {
+    ...base,
+    placedAnywhere:
+      over.placedAnywhere ??
+      (base.posts.released || base.hero.placed || base.categories.length > 0 || base.discovery.length > 0),
+    liveAnywhere:
+      over.liveAnywhere ??
+      (base.posts.live ||
+        base.hero.live ||
+        base.categories.some((c) => c.live) ||
+        base.discovery.some((d) => d.live)),
+  };
+}
+
+/** A live Hero slot, the shorthand these tests use most. */
+const heroAt = (position: number, live = true) => dist({ hero: { placed: true, position, live } });
+const inCategories = (
+  categories: Array<{ id: string; slug: string; name: string; position: number; live?: boolean; reason?: AssetDistribution['categories'][number]['reason'] }>,
+) =>
+  dist({
+    categories: categories.map((c) => ({ ...c, live: c.live ?? true, reason: c.reason ?? null })),
+  });
 
 /**
  * The character content shelf.
@@ -36,22 +94,51 @@ import type { CharacterContentAsset } from '../lib/api';
  * reachable by anyone.
  */
 
+/**
+ * What the SERVER sends for each stored status (P0.4's contract, which the API
+ * suite asserts). The fixture fills `workflow` and `actions` from it so a test
+ * that only sets `status` still describes a row the server could have sent. A
+ * test ABOUT actions sets `actions` itself -- the page must follow that list,
+ * not these defaults.
+ */
+const SERVER_WORKFLOW = {
+  generated: 'pending_review',
+  under_review: 'pending_review',
+  approved: 'approved',
+  rejected: 'rejected',
+  archived: 'archived',
+} as const;
+const SERVER_ACTIONS: Record<CharacterContentAsset['workflow'], CharacterContentAsset['actions']> = {
+  pending_review: ['approve', 'reject'],
+  approved: ['publish', 'archive'],
+  rejected: [],
+  archived: ['unarchive'],
+};
+
 function asset(over: Partial<CharacterContentAsset> = {}): CharacterContentAsset {
+  const status = over.status ?? 'approved';
+  const workflow = over.workflow ?? SERVER_WORKFLOW[status];
   return {
     assetId: 'a1',
     characterId: 'c1',
     kind: 'generated',
-    status: 'approved',
+    status,
+    role: 'content',
+    origin: 'manual',
+    workflow,
+    actions: SERVER_ACTIONS[workflow],
     mediaType: 'video',
     contentRating: 'sfw',
     requirementKey: null,
     // Not released by default: approving no longer publishes, so the fixture
     // must not quietly assume it does.
     publishedAt: null,
+    archivedAt: null,
     isPrimary: false,
     position: null,
     previewUrl: '/admin/content/assets/a1/file',
-    placement: { categories: [], heroPosition: null },
+    distribution: dist(),
+    visualIdentity: { id: 'identity-2', version: 2, status: 'active', label: null, active: true },
     createdAt: '2026-08-01T00:00:00.000Z',
     approvedAt: '2026-08-02T00:00:00.000Z',
     ...over,
@@ -99,12 +186,17 @@ describe('the shelf splits content the way an operator reads it', () => {
       asset({ assetId: '3', status: 'under_review' }),
       asset({ assetId: '4', status: 'rejected' }),
       asset({ assetId: '5', status: 'generated' }),
+      asset({ assetId: '6', status: 'archived' }),
     ];
     const shelf = groupCharacterContent(assets);
-    const seen = [...shelf.primary, ...shelf.approved, ...shelf.pending, ...shelf.rejected].map(
-      (x) => x.assetId,
-    );
-    expect(seen.sort()).toEqual(['1', '2', '3', '4', '5']);
+    const seen = [
+      ...shelf.primary,
+      ...shelf.approved,
+      ...shelf.pending,
+      ...shelf.rejected,
+      ...shelf.archived,
+    ].map((x) => x.assetId);
+    expect(seen.sort()).toEqual(['1', '2', '3', '4', '5', '6']);
     expect(new Set(seen).size).toBe(assets.length);
   });
 
@@ -114,64 +206,134 @@ describe('the shelf splits content the way an operator reads it', () => {
       approved: [],
       pending: [],
       rejected: [],
+      archived: [],
     });
+  });
+
+  it('keeps ARCHIVED items in their own bucket, never among the approved (P0.4)', () => {
+    const shelf = groupCharacterContent([
+      asset({ assetId: 'a' }),
+      asset({ assetId: 'z', status: 'archived', publishedAt: '2026-08-03T00:00:00.000Z' }),
+    ]);
+    expect(shelf.archived.map((x) => x.assetId)).toEqual(['z']);
+    expect(shelf.approved.map((x) => x.assetId)).toEqual(['a']);
+  });
+
+  it('groups by the server workflow, so both legacy pending statuses stay one queue', () => {
+    const shelf = groupCharacterContent([
+      asset({ assetId: 'g', status: 'generated' }),
+      asset({ assetId: 'u', status: 'under_review' }),
+    ]);
+    expect(shelf.pending.map((x) => x.assetId)).toEqual(['g', 'u']);
   });
 });
 
-describe('placement says whether anyone can actually see it', () => {
+describe('distribution says where an item actually is (P0.5)', () => {
   it('names the Hero slot, one-based', () => {
-    expect(placementLabel(asset({ placement: { categories: [], heroPosition: 0 } }))).toBe(
-      'Hero #1',
-    );
+    expect(distributionLabel(asset({ distribution: heroAt(0) }))).toBe('Live: Hero #1');
   });
 
   it('names every category with the position inside it', () => {
     const placed = asset({
-      placement: {
-        heroPosition: null,
-        categories: [
-          { id: 'c', slug: 'sexy', name: 'Sexy', position: 0 },
-          { id: 'd', slug: 'new', name: 'New', position: 2 },
-        ],
-      },
+      distribution: inCategories([
+        { id: 'c', slug: 'sexy', name: 'Sexy', position: 0 },
+        { id: 'd', slug: 'new', name: 'New', position: 2 },
+      ]),
     });
-    expect(placementLabel(placed)).toBe('Sexy #1 · New #3');
+    expect(distributionLabel(placed)).toBe('Live: Sexy #1 · New #3');
   });
 
-  it('combines Hero and category membership', () => {
-    const placed = asset({
-      placement: {
-        heroPosition: 1,
-        categories: [{ id: 'c', slug: 'sexy', name: 'Sexy', position: 0 }],
-      },
+  it('combines Posts, Hero, categories and Discovery in one line', () => {
+    const everywhere = asset({
+      publishedAt: '2026-08-03T00:00:00.000Z',
+      distribution: dist({
+        posts: { released: true, releasedAt: '2026-08-03T00:00:00.000Z', live: true },
+        hero: { placed: true, position: 1, live: true },
+        categories: [{ id: 'c', slug: 'sexy', name: 'Sexy', position: 0, live: true, reason: null }],
+        discovery: [{ keyword: 'beach', categories: ['Summer'], live: true }],
+      }),
     });
-    expect(placementLabel(placed)).toBe('Hero #2 · Sexy #1');
+    expect(distributionLabel(everywhere)).toBe('Live: Posts · Hero #2 · Sexy #1 · Discovery: beach');
   });
 
-  it('says APPROVED BUT NOT PLACED rather than leaving it blank', () => {
-    // This is the sentence the UAT was missing: approval is not publication.
-    expect(placementLabel(asset())).toBe('Approved, not placed anywhere yet');
+  /**
+   * THE BUG THIS CLOSES. A clip released to her Posts tab used to read
+   * "Approved, not placed anywhere yet", because the shelf knew only about the
+   * Hero and categories. Posts is distribution, and it says so.
+   */
+  it('never calls a released clip unplaced', () => {
+    const released = asset({
+      publishedAt: '2026-08-03T00:00:00.000Z',
+      distribution: dist({ posts: { released: true, releasedAt: '2026-08-03T00:00:00.000Z', live: true } }),
+    });
+    expect(distributionLabel(released)).toBe('Live: Posts');
+    expect(isUndistributed(released)).toBe(false);
   });
 
-  it('does not claim an unapproved item is merely unplaced', () => {
-    expect(placementLabel(asset({ status: 'under_review' }))).toBe('Not placed');
+  it('says APPROVED BUT NOWHERE rather than leaving it blank', () => {
+    expect(distributionLabel(asset())).toBe('Approved, not distributed anywhere yet');
+    expect(isUndistributed(asset())).toBe(true);
   });
 
-  it('flags approved-but-unreachable, and only that', () => {
-    expect(isUnplaced(asset())).toBe(true);
-    expect(isUnplaced(asset({ status: 'under_review' }))).toBe(false);
-    expect(isUnplaced(asset({ kind: 'reference', isPrimary: true }))).toBe(false);
-    expect(isUnplaced(asset({ placement: { categories: [], heroPosition: 0 } }))).toBe(false);
+  it('separates PLACED from LIVE, and gives the reason it is not live', () => {
+    // Placed on Hero and in a category, but she is not published.
+    const hidden = asset({
+      distribution: dist({
+        blocker: 'character_inactive',
+        hero: { placed: true, position: 0, live: false },
+        categories: [{ id: 'c', slug: 'sexy', name: 'Sexy', position: 0, live: false, reason: null }],
+      }),
+    });
+    expect(distributionLabel(hidden)).toBe('Not live (she is not published) — kept: Home Hero · Sexy');
+    expect(isUndistributed(hidden)).toBe(false);
+
+    // Live-able asset, but the category itself is not on Home.
+    const unpublishedCategory = asset({
+      distribution: inCategories([
+        { id: 'c', slug: 'sexy', name: 'Sexy', position: 0, live: false, reason: 'category_unpublished' },
+      ]),
+    });
+    expect(distributionLabel(unpublishedCategory)).toBe(
+      'Not live — kept: Sexy (category not on Home)',
+    );
+  });
+
+  it('says why an unapproved or archived item is not distributed', () => {
+    expect(distributionLabel(asset({ status: 'under_review', distribution: dist({ blocker: 'pending_review' }) }))).toBe(
+      'Not distributed (waiting for review)',
+    );
     expect(
-      isUnplaced(
+      distributionLabel(
         asset({
-          placement: {
-            heroPosition: null,
-            categories: [{ id: 'c', slug: 's', name: 'S', position: 0 }],
-          },
+          status: 'archived',
+          distribution: dist({ blocker: 'archived', hero: { placed: true, position: 0, live: false } }),
         }),
       ),
-    ).toBe(false);
+    ).toBe('Not live (archived) — kept: Home Hero');
+    expect(isUndistributed(asset({ status: 'archived', distribution: dist({ blocker: 'archived' }) }))).toBe(false);
+  });
+
+  it('reports a keyword no Discovery category queries as kept, not live', () => {
+    const tagged = asset({ distribution: dist({ discovery: [{ keyword: 'internal', categories: [], live: false }] }) });
+    expect(distributionLabel(tagged)).toBe(
+      'Not live — kept: keyword "internal" (no Discovery category uses it)',
+    );
+  });
+
+  it('exposes the channel lists the label is built from', () => {
+    const mixed = dist({
+      posts: { released: true, releasedAt: 'x', live: true },
+      hero: { placed: true, position: 0, live: false },
+      discovery: [{ keyword: 'beach', categories: ['Summer'], live: true }],
+    });
+    expect(liveChannels(mixed)).toEqual(['Posts', 'Discovery: beach']);
+    expect(dormantChannels(mixed)).toEqual(['Home Hero']);
+    expect(distributionBlockerLabel('no_media')).toBe('it has no file');
+    expect(distributionBlockerLabel(null)).toBeNull();
+  });
+
+  it('never calls a primary reference undistributed -- identity is not a channel', () => {
+    expect(isUndistributed(asset({ kind: 'reference', isPrimary: true }))).toBe(false);
   });
 });
 
@@ -185,6 +347,7 @@ describe('status wording', () => {
     expect(statusLabel(asset({ kind: 'reference', isPrimary: true }))).toBe('Primary reference');
     expect(statusLabel(asset())).toBe('Approved');
     expect(statusLabel(asset({ status: 'rejected' }))).toBe('Rejected');
+    expect(statusLabel(asset({ status: 'archived' }))).toBe('Archived');
   });
 });
 
@@ -197,6 +360,11 @@ describe('the one-line summary', () => {
       asset({ assetId: '4', status: 'rejected' }),
     ]);
     expect(shelfSummary(shelf)).toBe('4 items · 2 approved · 1 in review · 1 rejected');
+  });
+
+  it('counts archived items too', () => {
+    const shelf = groupCharacterContent([asset({ assetId: '1' }), asset({ assetId: '2', status: 'archived' })]);
+    expect(shelfSummary(shelf)).toBe('2 items · 1 approved · 1 archived');
   });
 
   it('omits empty buckets and singularises', () => {
@@ -273,6 +441,8 @@ describe('the controls an item offers', () => {
     expect(assetActions(asset({ status: 'rejected' }))).toEqual({
       canApprove: false,
       canReject: false,
+      canArchive: false,
+      canUnarchive: false,
       canAddToCategory: false,
       canAddToHero: false,
       inHero: false,
@@ -284,7 +454,7 @@ describe('the controls an item offers', () => {
   });
 
   it('stops offering the Hero to something already in it', () => {
-    const actions = assetActions(asset({ placement: { categories: [], heroPosition: 0 } }));
+    const actions = assetActions(asset({ distribution: heroAt(0) }));
     expect(actions.inHero).toBe(true);
     expect(actions.canAddToHero).toBe(false);
     // Categories are unaffected: an item can be in the Hero AND a category.
@@ -308,23 +478,17 @@ describe('the category choices offered for an item', () => {
 
   it('drops the ones it is already in, rather than offering a no-op', () => {
     const already = asset({
-      placement: {
-        categories: [{ id: 'c-a', slug: 'trending', name: 'Trending', position: 0 }],
-        heroPosition: null,
-      },
+      distribution: inCategories([{ id: 'c-a', slug: 'trending', name: 'Trending', position: 0 }]),
     });
     expect(categoryChoices(already, categories).map((c) => c.id)).toEqual(['c-b']);
   });
 
   it('offers nothing when it is in all of them', () => {
     const all = asset({
-      placement: {
-        categories: [
-          { id: 'c-a', slug: 'trending', name: 'Trending', position: 0 },
-          { id: 'c-b', slug: 'new', name: 'New', position: 1 },
-        ],
-        heroPosition: null,
-      },
+      distribution: inCategories([
+        { id: 'c-a', slug: 'trending', name: 'Trending', position: 0 },
+        { id: 'c-b', slug: 'new', name: 'New', position: 1 },
+      ]),
     });
     expect(categoryChoices(all, categories)).toEqual([]);
   });
@@ -752,16 +916,11 @@ describe('protected assets keep their existing protection', () => {
     expect(assetDeletable(asset({ mediaType: 'image' })).deletable).toBe(true);
     expect(assetDeletable(asset({ kind: 'chat' })).deletable).toBe(true);
     expect(
-      assetDeletable(asset({ placement: { categories: [], heroPosition: 0 } })).deletable,
+      assetDeletable(asset({ distribution: heroAt(0) })).deletable,
     ).toBe(true);
     expect(
       assetDeletable(
-        asset({
-          placement: {
-            categories: [{ id: 'k1', slug: 'sexy', name: 'Sexy', position: 2 }],
-            heroPosition: null,
-          },
-        }),
+        asset({ distribution: inCategories([{ id: 'k1', slug: 'sexy', name: 'Sexy', position: 2 }]) }),
       ).deletable,
     ).toBe(true);
   });
@@ -777,18 +936,24 @@ describe('the confirmation names what the tile cannot show', () => {
   it('names each place the item is published, rather than counting them', () => {
     const message = deletionConsequence(
       asset({
-        placement: {
+        distribution: dist({
+          posts: { released: true, releasedAt: 'x', live: true },
+          hero: { placed: true, position: 0, live: true },
           categories: [
-            { id: 'k1', slug: 'sexy', name: 'Sexy', position: 0 },
-            { id: 'k2', slug: 'new', name: 'New', position: 1 },
+            { id: 'k1', slug: 'sexy', name: 'Sexy', position: 0, live: true, reason: null },
+            { id: 'k2', slug: 'new', name: 'New', position: 1, live: true, reason: null },
           ],
-          heroPosition: 0,
-        },
+          discovery: [{ keyword: 'beach', categories: ['Summer'], live: true }],
+        }),
       }),
     );
+    // Every channel it is in, named -- Posts and Discovery included, which the
+    // old placement-only message never mentioned.
+    expect(message).toContain('her Posts tab');
     expect(message).toContain('Home Hero');
     expect(message).toContain('Sexy');
     expect(message).toContain('New');
+    expect(message).toContain('Discovery ("beach")');
     expect(message).toContain('will be removed from there');
   });
 
@@ -806,5 +971,246 @@ describe('the confirmation names what the tile cannot show', () => {
 
   it('does not give the chat warning to a Regular or Explicit clip', () => {
     expect(deletionConsequence(asset({ kind: 'generated' }))).not.toContain('attachment');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * P0.4 -- lifecycle actions come from the server, and are said plainly
+ * ------------------------------------------------------------------ */
+
+describe('lifecycle controls follow the server, never a status name', () => {
+  it('Pending review -> Approve / Reject', () => {
+    const actions = assetActions(asset({ status: 'under_review' }));
+    expect([actions.canApprove, actions.canReject]).toEqual([true, true]);
+    expect([actions.canPublish, actions.canArchive, actions.canUnarchive]).toEqual([false, false, false]);
+  });
+
+  it('Approved -> Release / Archive', () => {
+    const actions = assetActions(asset());
+    expect([actions.canPublish, actions.canArchive]).toEqual([true, true]);
+    expect([actions.canApprove, actions.canReject, actions.canUnarchive]).toEqual([false, false, false]);
+  });
+
+  it('Released -> Archive (and the existing Take off Posts)', () => {
+    const actions = assetActions(
+      asset({ publishedAt: '2026-08-03T00:00:00.000Z', actions: ['unpublish', 'archive'] }),
+    );
+    expect([actions.canArchive, actions.canUnpublish, actions.canPublish]).toEqual([true, true, false]);
+  });
+
+  it('Archived -> Unarchive only', () => {
+    expect(assetActions(asset({ status: 'archived' }))).toMatchObject({
+      canUnarchive: true,
+      canApprove: false,
+      canReject: false,
+      canPublish: false,
+      canUnpublish: false,
+      canArchive: false,
+      canAddToCategory: false,
+      canAddToHero: false,
+    });
+  });
+
+  it('infers NOTHING from status: an empty server list offers nothing, whatever the status', () => {
+    for (const status of ['generated', 'under_review', 'approved', 'archived'] as const) {
+      const actions = assetActions(asset({ status, actions: [] }));
+      expect({
+        status,
+        offered: [
+          actions.canApprove,
+          actions.canReject,
+          actions.canPublish,
+          actions.canUnpublish,
+          actions.canArchive,
+          actions.canUnarchive,
+        ],
+      }).toEqual({ status, offered: [false, false, false, false, false, false] });
+    }
+  });
+
+  it('draws buttons in a fixed order whatever order the server listed them', () => {
+    expect(orderedActions(['unarchive', 'archive', 'publish', 'reject', 'approve'])).toEqual([
+      'approve',
+      'reject',
+      'publish',
+      'archive',
+      'unarchive',
+    ]);
+    expect(LIFECYCLE_ACTION_LABEL.publish).toBe('Release to Posts');
+  });
+
+  it('asks before reject, archive and unarchive -- and only those', () => {
+    expect(orderedActions(['approve', 'reject', 'publish', 'unpublish', 'archive', 'unarchive']).filter(needsConfirmation)).toEqual([
+      'reject',
+      'archive',
+      'unarchive',
+    ]);
+  });
+});
+
+describe('lifecycle wording', () => {
+  it('says archiving deletes nothing, and that chat keeps already-sent messages', () => {
+    expect(archiveConsequence({ role: 'content' })).toContain('Nothing is deleted');
+    expect(archiveConsequence({ role: 'content' })).toContain('Posts tab');
+    expect(archiveConsequence({ role: 'chat' })).toContain('messages that already carried it keep it');
+    expect(archiveConsequence({ role: 'chat' })).not.toContain('Posts tab');
+  });
+
+  it('says unarchiving does NOT put it back in front of customers, and names what it clears', () => {
+    const wasLive = unarchiveConsequence(
+      asset({
+        status: 'archived',
+        publishedAt: '2026-08-03T00:00:00.000Z',
+        distribution: dist({
+          hero: { placed: true, position: 0, live: true },
+          categories: [{ id: 'c', slug: 's', name: 'Sexy', position: 0, live: true, reason: null }],
+        }),
+      }),
+    );
+    expect(wasLive).toContain('returns to Approved');
+    expect(wasLive).toContain('stays hidden from customers');
+    expect(wasLive).toContain('will NOT go back on her Posts tab, the Home Hero, Sexy');
+    expect(wasLive).toContain('Discovery keywords');
+
+    // Nothing to lose: it still says releasing is a separate decision.
+    expect(unarchiveConsequence(asset({ status: 'archived' }))).toContain('separate decisions afterwards');
+    expect(unarchiveConsequence({ role: 'chat', publishedAt: null })).toContain('never appears anywhere public');
+  });
+
+  it('the unarchive notice never claims it went live again', () => {
+    expect(lifecycleNotice('unarchive', { role: 'content' })).toBe(
+      'Unarchived. It is approved again, and not released or placed — release it when you want it live.',
+    );
+    expect(lifecycleNotice('unarchive', { role: 'chat' })).toBe('Unarchived. She can send it in chats again.');
+  });
+
+  it('never tells an operator that approving released anything', () => {
+    expect(lifecycleNotice('approve', { role: 'content' })).toBe(
+      'Approved. It is not on her Posts tab until you release it.',
+    );
+    expect(lifecycleNotice('reject', { role: 'content' })).toContain('delete it separately');
+  });
+});
+
+/**
+ * NO LIFECYCLE RULES IN THE BROWSER. The screens that show asset actions may
+ * render `asset.actions`, but may not decide an action from a status name. Only
+ * asset status comparisons are forbidden -- a character's or an identity's own
+ * status is a different thing. Comments are stripped first.
+ */
+describe('the admin screens hold no transition logic', () => {
+  const source = (relative: string) =>
+    readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+  const ASSET_STATUS_TEST =
+    /\.status\s*[!=]==?\s*'(generated|under_review|approved|rejected|archived)'/;
+
+  for (const file of [
+    './characterContent.ts',
+    '../pages/admin/AdminCharacterDetailPage.tsx',
+    '../pages/admin/ContentReviewPage.tsx',
+  ]) {
+    it(`${file} decides nothing from an asset status`, () => {
+      const code = source(file);
+      expect({ file, match: code.match(ASSET_STATUS_TEST)?.[0] ?? null }).toEqual({ file, match: null });
+      expect({ file, pendingSet: code.includes('PENDING_STATUSES') }).toEqual({ file, pendingSet: false });
+    });
+  }
+
+  it('the guard itself catches a planted rule', () => {
+    expect(ASSET_STATUS_TEST.test("if (asset.status === 'approved') offer();")).toBe(true);
+    expect(ASSET_STATUS_TEST.test("character.status === 'active'")).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * P0.6 -- identity lineage, reported and never acted upon
+ * ------------------------------------------------------------------ */
+
+const usage = (over: Partial<IdentityVersionUsage> = {}): IdentityVersionUsage => ({
+  id: 'v2',
+  version: 2,
+  status: 'active',
+  label: null,
+  active: true,
+  counts: { total: 0, pendingReview: 0, approved: 0, rejected: 0, archived: 0, live: 0, references: 0 },
+  ...over,
+});
+
+describe('which identity version an asset was made against', () => {
+  it('names the version, and says when it is no longer the active one', () => {
+    expect(identityLabel(asset())).toBe('Identity v2');
+    expect(
+      identityLabel(
+        asset({ visualIdentity: { id: 'v1', version: 1, status: 'retired', label: null, active: false } }),
+      ),
+    ).toBe('Identity v1 · retired');
+    expect(
+      identityLabel(
+        asset({ visualIdentity: { id: 'v3', version: 3, status: 'draft', label: 'Next', active: false } }),
+      ),
+    ).toBe('Identity v3 · draft');
+  });
+
+  it('summarises what one version carries, by workflow', () => {
+    expect(identityUsageSummary(usage())).toBe('No content on this version');
+    expect(
+      identityUsageSummary(
+        usage({
+          counts: { total: 7, pendingReview: 1, approved: 4, rejected: 1, archived: 1, live: 2, references: 1 },
+        }),
+      ),
+    ).toBe('7 items · 1 reference · 4 approved (2 live) · 1 in review · 1 archived · 1 rejected');
+    expect(
+      identityUsageSummary(
+        usage({ counts: { total: 2, pendingReview: 0, approved: 2, rejected: 0, archived: 0, live: 0, references: 0 } }),
+      ),
+    ).toBe('2 items · 2 approved');
+  });
+});
+
+describe('how much content is still on an older identity version', () => {
+  const lineage = (over: Partial<IdentityLineage> = {}): IdentityLineage => ({
+    activeVersion: 2,
+    versions: [usage(), usage({ id: 'v1', version: 1, status: 'retired', active: false })],
+    staleApproved: 0,
+    staleLive: 0,
+    staleVersions: [],
+    ...over,
+  });
+
+  it('says plainly when everything is on the active version', () => {
+    expect(identityLineageSummary(lineage())).toBe(
+      'All approved content was made against the active identity (v2).',
+    );
+  });
+
+  it('names how much, which versions, and how much of it customers can see', () => {
+    expect(
+      identityLineageSummary(lineage({ staleApproved: 3, staleLive: 1, staleVersions: [1] })),
+    ).toBe(
+      '3 approved items still use v1, not the active v2, 1 of them live. Nothing was changed by activating it — this is for your judgement.',
+    );
+    expect(
+      identityLineageSummary(lineage({ staleApproved: 1, staleLive: 0, staleVersions: [1] })),
+    ).toContain('1 approved item still use');
+    expect(
+      identityLineageSummary(lineage({ staleApproved: 2, staleLive: 0, staleVersions: [1] })),
+    ).toContain('none of them live');
+  });
+
+  it('never suggests the content is wrong -- only that it predates the active version', () => {
+    const message = identityLineageSummary(lineage({ staleApproved: 3, staleLive: 1, staleVersions: [1] }));
+    for (const word of ['regenerate', 'invalid', 'stale', 'outdated', 'must']) {
+      expect({ word, present: message.toLowerCase().includes(word) }).toEqual({ word, present: false });
+    }
+  });
+
+  it('handles a character with no active version, and one with none at all', () => {
+    expect(identityLineageSummary(lineage({ activeVersion: null }))).toContain('No version is active');
+    expect(identityLineageSummary(lineage({ activeVersion: null, versions: [] }))).toBe(
+      'No identity version yet.',
+    );
   });
 });

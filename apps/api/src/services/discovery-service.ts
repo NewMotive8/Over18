@@ -8,7 +8,8 @@ import {
   discoveryCategories,
   discoveryCategoryKeywords,
 } from '../db/schema.js';
-import { PUBLISHABLE_STATUS, assetPreviewUrl } from './app-merchandising-service.js';
+import { assetPreviewUrl } from './app-merchandising-service.js';
+import { distributableWorkflowCondition } from './asset-distribution.js';
 import { mediaTypeOf } from './content-review-service.js';
 import { publicAssetUrl, publiclyReachableCondition } from './public-media-service.js';
 
@@ -290,7 +291,7 @@ async function matchCounts(db: Db, categoryIds: string[]) {
         inArray(discoveryCategoryKeywords.discoveryCategoryId, categoryIds),
         // Counted exactly as listDiscoveryClips filters, so the number an
         // operator sees is the number the app returns.
-        eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
+        distributableWorkflowCondition(),
         eq(characters.status, 'active'),
       ),
     )
@@ -656,7 +657,7 @@ export async function listTaggableAssets(db: Db, limit = 100) {
     })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
-    .where(eq(characterVisualAssets.status, PUBLISHABLE_STATUS))
+    .where(distributableWorkflowCondition())
     .orderBy(desc(characterVisualAssets.approvedAt), asc(characterVisualAssets.id))
     .limit(limit);
 

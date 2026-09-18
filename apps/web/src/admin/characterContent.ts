@@ -1,4 +1,10 @@
-import type { CharacterContentAsset } from '../lib/api';
+import type {
+  AssetAction,
+  AssetDistribution,
+  CharacterContentAsset,
+  IdentityLineage,
+  IdentityVersionUsage,
+} from '../lib/api';
 
 /**
  * A character's content shelf — presentation logic, React-free.
@@ -25,9 +31,9 @@ export interface ContentShelf {
   pending: CharacterContentAsset[];
   /** Rejected. Shown rather than hidden, so nothing appears to have vanished. */
   rejected: CharacterContentAsset[];
+  /** Archived (P0.4): hidden everywhere, kept intact, restorable. */
+  archived: CharacterContentAsset[];
 }
-
-const PENDING_STATUSES = new Set(['generated', 'under_review']);
 
 /**
  * Splits the shelf.
@@ -39,68 +45,173 @@ const PENDING_STATUSES = new Set(['generated', 'under_review']);
 export function groupCharacterContent(
   assets: readonly CharacterContentAsset[],
 ): ContentShelf {
-  const shelf: ContentShelf = { primary: [], approved: [], pending: [], rejected: [] };
+  const shelf: ContentShelf = { primary: [], approved: [], pending: [], rejected: [], archived: [] };
+  // By the SERVER's workflow, not by status names: both pending statuses are
+  // already one state there, and a new status cannot fall through here.
   for (const asset of assets) {
-    if (asset.status === 'rejected') shelf.rejected.push(asset);
-    else if (PENDING_STATUSES.has(asset.status)) shelf.pending.push(asset);
-    else if (asset.isPrimary) shelf.primary.push(asset);
-    else shelf.approved.push(asset);
+    switch (asset.workflow) {
+      case 'rejected':
+        shelf.rejected.push(asset);
+        break;
+      case 'pending_review':
+        shelf.pending.push(asset);
+        break;
+      case 'archived':
+        shelf.archived.push(asset);
+        break;
+      case 'approved':
+        (asset.isPrimary ? shelf.primary : shelf.approved).push(asset);
+        break;
+    }
   }
   return shelf;
 }
 
 /** Operator-facing status wording. Never an upstream term like "generated". */
-export function statusLabel(asset: CharacterContentAsset): string {
-  switch (asset.status) {
+/**
+ * How an asset's ORIGIN reads on screen (P0.3). A label for the value the server
+ * sent -- nothing is inferred here from kind, status or provenance.
+ */
+export function originLabel(asset: Pick<CharacterContentAsset, 'origin'>): string {
+  switch (asset.origin) {
+    case 'generated':
+      return 'Generated';
+    case 'manual':
+      return 'Manual upload';
+    case 'imported':
+      return 'Imported';
+    case 'legacy':
+      return 'Origin not recorded';
+  }
+}
+
+/** Operator-facing workflow wording (P0.4 reads the server's `workflow`). */
+export function statusLabel(asset: Pick<CharacterContentAsset, 'workflow' | 'isPrimary'>): string {
+  switch (asset.workflow) {
     case 'approved':
       return asset.isPrimary ? 'Primary reference' : 'Approved';
     case 'rejected':
       return 'Rejected';
-    default:
+    case 'archived':
+      return 'Archived';
+    case 'pending_review':
       return 'In review';
   }
 }
 
-/**
- * Where this item currently appears, in one line.
+/* ------------------------------------------------------------------ *
+ * Distribution, as one line on a tile (P0.5)
  *
- * States placement plainly because approved is NOT the same as visible: an
- * approved clip reaches the public app only through the Hero, a published
- * category, or a discovery keyword. An operator who cannot see that difference
- * assumes approval was the last step.
- */
-export function placementLabel(asset: CharacterContentAsset): string {
-  const parts: string[] = [];
-  if (asset.placement.heroPosition !== null) {
-    parts.push(`Hero #${asset.placement.heroPosition + 1}`);
+ * The shelf used to describe placement only -- the Hero and categories -- so a
+ * clip released to her Posts tab read as "Approved, not placed anywhere yet",
+ * which was simply false. Posts, Hero, Categories and Discovery are now one
+ * model from the server, and this says what it says.
+ * ------------------------------------------------------------------ */
+
+/** Each LIVE channel, named the way an operator would say it. */
+export function liveChannels(distribution: AssetDistribution): string[] {
+  const live: string[] = [];
+  if (distribution.posts.live) live.push('Posts');
+  if (distribution.hero.live) live.push(`Hero #${(distribution.hero.position ?? 0) + 1}`);
+  for (const category of distribution.categories) {
+    if (category.live) live.push(`${category.name} #${category.position + 1}`);
   }
-  for (const category of asset.placement.categories) {
-    parts.push(`${category.name} #${category.position + 1}`);
-  }
-  if (parts.length > 0) return parts.join(' · ');
-  return asset.status === 'approved' ? 'Approved, not placed anywhere yet' : 'Not placed';
+  const discovery = distribution.discovery.filter((entry) => entry.live);
+  if (discovery.length > 0) live.push(`Discovery: ${discovery.map((d) => d.keyword).join(', ')}`);
+  return live;
 }
 
-/** True when this item is approved but reaches no public surface. */
-export function isUnplaced(asset: CharacterContentAsset): boolean {
+/** Channels that hold a record but show nothing, each with the reason. */
+export function dormantChannels(distribution: AssetDistribution): string[] {
+  const dormant: string[] = [];
+  if (distribution.posts.released && !distribution.posts.live) dormant.push('Posts');
+  if (distribution.hero.placed && !distribution.hero.live) dormant.push('Home Hero');
+  for (const category of distribution.categories) {
+    if (category.live) continue;
+    dormant.push(
+      category.reason === 'category_disabled'
+        ? `${category.name} (category disabled)`
+        : category.reason === 'category_unpublished'
+          ? `${category.name} (category not on Home)`
+          : category.name,
+    );
+  }
+  for (const entry of distribution.discovery) {
+    if (!entry.live) {
+      dormant.push(
+        entry.categories.length === 0
+          ? `keyword "${entry.keyword}" (no Discovery category uses it)`
+          : `keyword "${entry.keyword}"`,
+      );
+    }
+  }
+  return dormant;
+}
+
+/** Why nothing of this asset can be live, said plainly. */
+export function distributionBlockerLabel(blocker: AssetDistribution['blocker']): string | null {
+  switch (blocker) {
+    case 'pending_review':
+      return 'waiting for review';
+    case 'rejected':
+      return 'rejected';
+    case 'archived':
+      return 'archived';
+    case 'not_content':
+      return 'not content — identity and chat media are never distributed';
+    case 'no_media':
+      return 'it has no file';
+    case 'character_inactive':
+      return 'she is not published';
+    case null:
+      return null;
+  }
+}
+
+/**
+ * Where this item currently appears, in one line -- and when it appears
+ * nowhere, why.
+ */
+export function distributionLabel(asset: CharacterContentAsset): string {
+  const live = liveChannels(asset.distribution);
+  if (live.length > 0) return `Live: ${live.join(' · ')}`;
+
+  const dormant = dormantChannels(asset.distribution);
+  const blocker = distributionBlockerLabel(asset.distribution.blocker);
+  if (dormant.length > 0) {
+    return blocker
+      ? `Not live (${blocker}) — kept: ${dormant.join(' · ')}`
+      : `Not live — kept: ${dormant.join(' · ')}`;
+  }
+  if (blocker) return `Not distributed (${blocker})`;
+  return 'Approved, not distributed anywhere yet';
+}
+
+/** True when this item could be distributed but reaches nobody. */
+export function isUndistributed(asset: CharacterContentAsset): boolean {
   return (
-    asset.status === 'approved' &&
+    asset.workflow === 'approved' &&
     !asset.isPrimary &&
-    asset.placement.heroPosition === null &&
-    asset.placement.categories.length === 0
+    asset.distribution.blocker === null &&
+    !asset.distribution.liveAnywhere
   );
 }
 
 /** "12 items · 8 approved · 3 in review · 1 rejected" — the shelf in one line. */
 export function shelfSummary(shelf: ContentShelf): string {
   const total =
-    shelf.primary.length + shelf.approved.length + shelf.pending.length + shelf.rejected.length;
+    shelf.primary.length +
+    shelf.approved.length +
+    shelf.pending.length +
+    shelf.rejected.length +
+    shelf.archived.length;
   if (total === 0) return 'No content yet';
   const parts = [`${total} item${total === 1 ? '' : 's'}`];
   const approved = shelf.primary.length + shelf.approved.length;
   if (approved > 0) parts.push(`${approved} approved`);
   if (shelf.pending.length > 0) parts.push(`${shelf.pending.length} in review`);
   if (shelf.rejected.length > 0) parts.push(`${shelf.rejected.length} rejected`);
+  if (shelf.archived.length > 0) parts.push(`${shelf.archived.length} archived`);
   return parts.join(' · ');
 }
 
@@ -122,6 +233,10 @@ export interface AssetActions {
   /** Awaiting a decision: Approve and Reject apply. */
   canApprove: boolean;
   canReject: boolean;
+  /** Approved, released or not: it may be archived. */
+  canArchive: boolean;
+  /** Archived: it may be restored. */
+  canUnarchive: boolean;
   /** Approved: it may be placed on a public surface. */
   canAddToCategory: boolean;
   canAddToHero: boolean;
@@ -140,28 +255,183 @@ export interface AssetActions {
 /**
  * The controls one item offers.
  *
- * Mirrors the SERVER'S rules rather than inventing gentler ones: Review accepts
- * approve/reject only on an undecided item, and both the category picker and
- * the Hero accept approved content only. A rejected item offers nothing here —
- * re-approving is a Review decision, and this page is not a second Review.
+ * THE LIFECYCLE CONTROLS ARE THE SERVER'S LIST (P0.4). `asset.actions` comes
+ * from the same rules the server enforces on every transition, so this reads
+ * it and decides nothing: an item offers Approve because the server said it
+ * may be approved, not because this file recognised a status name.
+ *
+ * Placement (category, Hero) is merchandising rather than moderation; it stays
+ * "approved only", which the server's write-side rule for both also requires.
  */
 export function assetActions(asset: CharacterContentAsset): AssetActions {
-  const pending = PENDING_STATUSES.has(asset.status);
-  const approved = asset.status === 'approved';
-  const inHero = asset.placement.heroPosition !== null;
-  // Content only. The server refuses to publish a reference or chat asset, so
-  // offering the control for one would promise something it would reject.
-  const isContent = asset.kind === 'generated';
-  const live = asset.publishedAt !== null;
+  const offered = new Set<AssetAction>(asset.actions);
+  const approved = asset.workflow === 'approved';
+  const inHero = asset.distribution.hero.placed;
   return {
-    canApprove: pending,
-    canReject: pending,
+    canApprove: offered.has('approve'),
+    canReject: offered.has('reject'),
+    canArchive: offered.has('archive'),
+    canUnarchive: offered.has('unarchive'),
     canAddToCategory: approved,
     canAddToHero: approved && !inHero,
     inHero,
-    canPublish: approved && isContent && !live,
-    canUnpublish: approved && isContent && live,
+    canPublish: offered.has('publish'),
+    canUnpublish: offered.has('unpublish'),
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * Identity lineage (P0.6)
+ *
+ * Which version a piece of content was made against, and how much of her
+ * content still sits on an older one. Reporting only: a retired version is not
+ * a defect, and nothing here suggests content should be redone.
+ * ------------------------------------------------------------------ */
+
+/** "Identity v2" -- with the version's state when it is not the active one. */
+export function identityLabel(asset: Pick<CharacterContentAsset, 'visualIdentity'>): string {
+  const identity = asset.visualIdentity;
+  if (identity.active) return `Identity v${identity.version}`;
+  return `Identity v${identity.version} · ${identity.status === 'draft' ? 'draft' : 'retired'}`;
+}
+
+/** One version's line in the identity list: what it carries, plainly. */
+export function identityUsageSummary(version: IdentityVersionUsage): string {
+  const counts = version.counts;
+  if (counts.total === 0) return 'No content on this version';
+  const parts = [`${counts.total} item${counts.total === 1 ? '' : 's'}`];
+  if (counts.references > 0) parts.push(`${counts.references} reference${counts.references === 1 ? '' : 's'}`);
+  if (counts.approved > 0) {
+    parts.push(counts.live > 0 ? `${counts.approved} approved (${counts.live} live)` : `${counts.approved} approved`);
+  }
+  if (counts.pendingReview > 0) parts.push(`${counts.pendingReview} in review`);
+  if (counts.archived > 0) parts.push(`${counts.archived} archived`);
+  if (counts.rejected > 0) parts.push(`${counts.rejected} rejected`);
+  return parts.join(' · ');
+}
+
+/**
+ * How much approved content predates the active version, said once, at the top
+ * of Visual identity -- the question an operator cannot otherwise answer.
+ */
+export function identityLineageSummary(lineage: IdentityLineage): string {
+  if (lineage.activeVersion === null) {
+    return lineage.versions.length === 0
+      ? 'No identity version yet.'
+      : 'No version is active, so nothing says which identity new content would use.';
+  }
+  if (lineage.staleApproved === 0) {
+    return `All approved content was made against the active identity (v${lineage.activeVersion}).`;
+  }
+  const items = `${lineage.staleApproved} approved item${lineage.staleApproved === 1 ? '' : 's'}`;
+  const versions = lineage.staleVersions
+    .sort((a, b) => a - b)
+    .map((version) => `v${version}`)
+    .join(', ');
+  const live =
+    lineage.staleLive > 0
+      ? `, ${lineage.staleLive} of them live`
+      : ', none of them live';
+  return `${items} still use ${versions}, not the active v${lineage.activeVersion}${live}. Nothing was changed by activating it — this is for your judgement.`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Lifecycle actions, as the operator reads them (P0.4)
+ * ------------------------------------------------------------------ */
+
+/** The button for each server action. The API says publish; the product says release. */
+export const LIFECYCLE_ACTION_LABEL: Record<AssetAction, string> = {
+  approve: 'Approve',
+  reject: 'Reject',
+  publish: 'Release to Posts',
+  unpublish: 'Take off Posts',
+  archive: 'Archive',
+  unarchive: 'Unarchive',
+};
+
+/** The order buttons appear in, whatever order the server listed them. */
+const ACTION_ORDER: readonly AssetAction[] = [
+  'approve',
+  'reject',
+  'publish',
+  'unpublish',
+  'archive',
+  'unarchive',
+];
+
+export function orderedActions(actions: readonly AssetAction[]): AssetAction[] {
+  return ACTION_ORDER.filter((action) => actions.includes(action));
+}
+
+/**
+ * Actions that ask first. Reject and archive take something out of use, and
+ * unarchive can put something back on public surfaces -- each says what will
+ * happen before it does. Approve and the release toggle are single explicit
+ * clicks whose label already says what they do.
+ */
+export function needsConfirmation(action: AssetAction): boolean {
+  return action === 'reject' || action === 'archive' || action === 'unarchive';
+}
+
+/** What archiving does and does NOT do, said before the operator confirms. */
+export function archiveConsequence(asset: Pick<CharacterContentAsset, 'role'>): string {
+  const surfaces =
+    asset.role === 'chat'
+      ? 'She stops sending it in new chats; messages that already carried it keep it.'
+      : 'It disappears from her Posts tab, Home, categories and Discovery.';
+  return `${surfaces} Nothing is deleted: the file, its history, its approval, its release and its placements are all kept, and Unarchive restores them.`;
+}
+
+/**
+ * What unarchiving does -- and what it will NOT put back.
+ *
+ * Unarchiving returns an item to Approved and nothing more: its release and
+ * placements are cleared, so nothing reappears in front of customers without
+ * someone choosing it. Where it USED to be is named, because that is what the
+ * operator is giving up and will have to redo.
+ *
+ * `distribution` is optional because Review's view does not carry it.
+ */
+export function unarchiveConsequence(
+  asset: Pick<CharacterContentAsset, 'role' | 'publishedAt'> &
+    Partial<Pick<CharacterContentAsset, 'distribution'>>,
+): string {
+  if (asset.role === 'chat') {
+    return 'It returns to Approved, and she can send it in chats again. It never appears anywhere public.';
+  }
+  const cleared: string[] = [];
+  if (asset.publishedAt) cleared.push('her Posts tab');
+  if (asset.distribution?.hero.placed) cleared.push('the Home Hero');
+  for (const category of asset.distribution?.categories ?? []) cleared.push(category.name);
+  const base = 'It returns to Approved, and stays hidden from customers: releasing it to her Posts tab and placing it are separate decisions afterwards.';
+  if (cleared.length > 0) {
+    return `${base} It will NOT go back on ${cleared.join(', ')} — those are cleared, along with any Discovery keywords, and you would add them again.`;
+  }
+  return asset.distribution
+    ? base
+    : `${base} Any release, placement or Discovery keyword it had is cleared.`;
+}
+
+/** The notice after an action succeeds. */
+export function lifecycleNotice(action: AssetAction, asset: Pick<CharacterContentAsset, 'role'>): string {
+  switch (action) {
+    case 'approve':
+      return asset.role === 'chat'
+        ? 'Approved. She can now send it in chats.'
+        : 'Approved. It is not on her Posts tab until you release it.';
+    case 'reject':
+      return 'Rejected. It stays on record; delete it separately if you want it gone.';
+    case 'publish':
+      return 'Released to her Posts tab.';
+    case 'unpublish':
+      return 'Taken off her Posts tab. It is still approved — nothing was rejected or deleted.';
+    case 'archive':
+      return 'Archived. It is hidden everywhere, and nothing was deleted.';
+    case 'unarchive':
+      return asset.role === 'chat'
+        ? 'Unarchived. She can send it in chats again.'
+        : 'Unarchived. It is approved again, and not released or placed — release it when you want it live.';
+  }
 }
 
 /**
@@ -179,7 +449,7 @@ export function categoryChoices(
   asset: CharacterContentAsset,
   categories: readonly { id: string; name: string }[],
 ): { id: string; name: string }[] {
-  const already = new Set(asset.placement.categories.map((c) => c.id));
+  const already = new Set(asset.distribution.categories.map((c) => c.id));
   return categories.filter((category) => !already.has(category.id));
 }
 
@@ -474,8 +744,10 @@ export function deletionConsequence(asset: CharacterContentAsset): string {
   const parts = ['This permanently deletes the item and its stored file. It cannot be undone.'];
 
   const placements: string[] = [];
-  if (asset.placement.heroPosition !== null) placements.push('the Home Hero');
-  for (const category of asset.placement.categories) placements.push(category.name);
+  if (asset.distribution.posts.released) placements.push('her Posts tab');
+  if (asset.distribution.hero.placed) placements.push('the Home Hero');
+  for (const category of asset.distribution.categories) placements.push(category.name);
+  for (const entry of asset.distribution.discovery) placements.push(`Discovery ("${entry.keyword}")`);
   if (placements.length > 0) {
     parts.push(`It is currently in ${placements.join(', ')} and will be removed from there.`);
   }

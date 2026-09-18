@@ -2,6 +2,7 @@ import { readdir } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import {
+  characters,
   characterVisualAssets,
   characterVisualIdentities,
   contentRequirements,
@@ -610,13 +611,26 @@ describe('quick create', () => {
   it('does NOT duplicate the image into profile_image — one file, one asset row', async () => {
     const cookies = await adminCookies();
     const { character } = (await quickCreate(cookies)).json();
-    expect(character.profileImage).toBeNull();
+
+    // THE COLUMN, not the payload field. P0.2 made `profileImage` on the wire
+    // the RESOLVED portrait, so asserting the payload would now assert the
+    // opposite of what this test is about: the uploaded image is represented
+    // once, as a canonical reference, and the legacy column is never written.
+    const [row] = await ctx.db
+      .select({ profileImage: characters.profileImage })
+      .from(characters)
+      .where(eq(characters.id, character.id));
+    expect(row!.profileImage).toBeNull();
 
     const assets = await ctx.db
       .select()
       .from(characterVisualAssets)
       .where(eq(characterVisualAssets.characterId, character.id));
     expect(assets).toHaveLength(1);
+
+    // ...and the portrait the payload carries IS that one asset, served by the
+    // opaque media route rather than copied into a second column.
+    expect(character.profileImage).toBe(`/api/media/assets/${assets[0]!.id}/file`);
   });
 
   it('stays OFF the public API until she is explicitly published', async () => {

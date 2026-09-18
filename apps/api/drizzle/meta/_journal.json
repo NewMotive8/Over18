@@ -176,6 +176,62 @@
       "when": 1788630811324,
       "tag": "0024_daily_the_anarchist",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789595522913,
+      "tag": "0025_petite_roland_deschain",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789595538506,
+      "tag": "0026_audit_log_append_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1789602217013,
+      "tag": "0027_steady_pyro",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1789602255711,
+      "tag": "0028_economy_config_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1789637010759,
+      "tag": "0029_economy_runtime_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1789659039409,
+      "tag": "0030_mushy_puppet_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1789661972155,
+      "tag": "0031_purple_viper",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1789678938193,
+      "tag": "0032_chief_ser_duncan",
+      "breakpoints": true
     }
   ]
 }

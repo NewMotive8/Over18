@@ -1,6 +1,7 @@
 import {
   bigserial,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -279,11 +280,78 @@ export const visualIdentityStatus = pgEnum('visual_identity_status', [
  * browser can name a shelf, never an enum value.
  */
 export const visualAssetKind = pgEnum('visual_asset_kind', ['reference', 'generated', 'chat']);
+/**
+ * WHERE AN ASSET CAME FROM -- its ORIGIN, recorded once, at creation (P0.3).
+ *
+ * The asset model separates concerns that used to be implicit:
+ *
+ *   role          `kind`          reference | generated (= CONTENT) | chat
+ *   origin        `origin`        generated | manual | imported | legacy
+ *   workflow      `status`        moderation state (see visual_asset_status)
+ *   requirement   `requirement_key`
+ *   distribution  `published_at` (Posts) plus the placement tables
+ *                 (Hero, categories, keywords) -- never a column here
+ *   commercial    reserved for the economy work; nothing here
+ *
+ * WHY ORIGIN NEEDED ITS OWN COLUMN. It was never recorded as a fact, only
+ * implied: a manual upload wrote `provenance.source = 'manual-upload'`, a
+ * generation wrote a `jobId` and no source at all, and `kind = 'generated'` --
+ * whose name reads like an origin -- is written by BOTH, because `kind` is the
+ * asset's ROLE. So "was this generated or uploaded?" had no reliable answer.
+ *
+ * `provenance` REMAINS THE DETAIL (provider, model, prompt, paths, file name).
+ * `origin` is the coarse classification every writer states explicitly; it does
+ * not replace or duplicate that detail.
+ *
+ *   generated  produced by this system's generation pipeline
+ *   manual     uploaded by an operator (Character page shelves, Content
+ *              Library, and the Content Inbox, which is manual intake staged
+ *              before a character is chosen)
+ *   imported   brought in from an existing outside source without a per-file
+ *              operator upload (e.g. the supplied site portrait)
+ *   legacy     origin was never recorded and cannot be established -- never a
+ *              guess dressed up as a fact
+ */
+export const visualAssetOrigin = pgEnum('visual_asset_origin', [
+  'generated',
+  'manual',
+  'imported',
+  'legacy',
+]);
+/**
+ * WORKFLOW -- where an asset stands in moderation (P0.4). Read through
+ * `services/asset-lifecycle.ts`, never compared ad hoc:
+ *
+ *   generated, under_review  PENDING REVIEW. Two historical names for one
+ *                            queue; both stay valid and neither is rewritten.
+ *   approved                 passed moderation. Exposes nothing by itself --
+ *                            release (`published_at`) and placement do that.
+ *   rejected                 failed moderation. The row, file and provenance
+ *                            stay; only deletion removes them.
+ *   archived                 was approved, now retired from every surface.
+ *                            Media, provenance, lineage and the original
+ *                            approval are kept, so nothing is lost; the
+ *                            release time and placements are kept too, and
+ *                            unarchiving CLEARS them -- it returns the asset to
+ *                            Approved, never straight back in front of
+ *                            customers.
+ *
+ * WHY ARCHIVED IS A STATUS AND NOT A FLAG. Every public reader already requires
+ * `status = 'approved'` (Posts, Home, categories, Hero, discovery, search, the
+ * media route, the chat selector, requirement counts). An archived row fails
+ * that one test, so it is hidden from all of them by the rule they already
+ * apply -- a separate `archived` flag would have needed every one of those
+ * readers edited, and the one that was missed would leak.
+ *
+ * Appended LAST: Postgres enum order is creation order, and nothing here sorts
+ * by it.
+ */
 export const visualAssetStatus = pgEnum('visual_asset_status', [
   'generated',
   'under_review',
   'approved',
   'rejected',
+  'archived',
 ]);
 /** 18+ readiness plug-point ONLY. US-16A carries the classification; it does
  * NOT implement adult generation, policy, moderation, or access control. */
@@ -351,6 +419,13 @@ export const characterVisualAssets = pgTable(
       .notNull()
       .references(() => characterVisualIdentities.id, { onDelete: 'cascade' }),
     kind: visualAssetKind('kind').notNull(),
+    /**
+     * See `visual_asset_origin`. The DEFAULT exists only for backward safety: a
+     * process still running the previous code during a deploy keeps inserting
+     * successfully, and an unstated origin honestly reads as `legacy`. Every
+     * current writer states its origin explicitly.
+     */
+    origin: visualAssetOrigin('origin').notNull().default('legacy'),
     status: visualAssetStatus('status').notNull(),
     isCanonical: boolean('is_canonical').notNull().default(false),
     position: integer('position'),
@@ -416,10 +491,28 @@ export const characterVisualAssets = pgTable(
      * change meaning.
      */
     publishedAt: timestamp('published_at', { withTimezone: true }),
+    /**
+     * When, and by whom, this asset was ARCHIVED (P0.4). Set exactly while
+     * `status = 'archived'` -- the check below holds the two together -- and
+     * cleared on unarchive. Archiving writes nothing else: `approved_*`,
+     * `published_at`, provenance and placements are left as they were.
+     */
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    archivedBy: uuid('archived_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    /**
+     * Archived exactly when an archive time is recorded. Compared as TEXT on
+     * purpose: the migration that adds the `archived` enum value runs in the
+     * same transaction as this constraint, and Postgres refuses a new enum
+     * value as a literal until that transaction commits.
+     */
+    check(
+      'character_visual_assets_archived_consistent',
+      sql`(${table.status}::text = 'archived') = (${table.archivedAt} is not null)`,
+    ),
     index('character_visual_assets_character_idx').on(table.characterId),
     index('character_visual_assets_identity_kind_status_idx').on(
       table.visualIdentityId,
@@ -1461,6 +1554,605 @@ export const promptDriveOauthStates = pgTable(
   (table) => [index('prompt_drive_oauth_states_expires_idx').on(table.expiresAt)],
 );
 
+/* ------------------------------------------------------------------ *
+ * Admin roles and the audit log (PRD v1.2 §34, build step 0c)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The six operator roles of PRD §34.1.
+ *
+ * `users.role` IS UNCHANGED AND STILL DECIDES WHO IS STAFF. `requireAdmin`
+ * reads it exactly as before, so nothing here can lock an operator out of the
+ * admin. A grant refines what a staff member may do; it never makes an ordinary
+ * user staff.
+ *
+ * ALL SIX EXIST AS DATA even if the team decides to run with three (D-9):
+ * collapsing is simply not granting the other three, which needs no migration.
+ */
+export const adminRole = pgEnum('admin_role', [
+  'administrator',
+  'economy_editor',
+  'content_editor',
+  'marketing',
+  'support',
+  'analyst',
+]);
+
+/**
+ * admin_role_grants -- which roles a staff member holds.
+ *
+ * One row per (user, role). The migration that creates this table grants
+ * `administrator` to every existing `users.role = 'admin'`, so the day
+ * permission enforcement is switched on, every current operator can still do
+ * exactly what they can do today.
+ *
+ * THERE IS NO IMPLICIT FALLBACK. An admin with no grant has no permissions once
+ * enforcement is on. The alternative -- "no grants means administrator" -- makes
+ * revoking someone's last narrow role silently promote them to administrator.
+ */
+export const adminRoleGrants = pgTable(
+  'admin_role_grants',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: adminRole('role').notNull(),
+    grantedBy: uuid('granted_by').references(() => users.id, { onDelete: 'set null' }),
+    grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.role] })],
+);
+
+/**
+ * audit_log -- every attributed admin write, append-only.
+ *
+ * APPEND-ONLY IS ENFORCED BY THE DATABASE, not merely by convention: migration
+ * 0026 installs a trigger that rejects UPDATE and DELETE on this table. The
+ * service layer exposes no update or delete either, but a lock that only the
+ * application honours is not a lock (PRD §5).
+ *
+ * THE ACTOR IS DELIBERATELY NOT A FOREIGN KEY. An `ON DELETE SET NULL` would be
+ * an UPDATE, which the trigger refuses -- so deleting a user would fail -- and
+ * an audit trail must outlive the account that wrote it anyway. The email is
+ * snapshotted for the same reason: the log has to read correctly after the
+ * user row is gone.
+ *
+ * `before` / `after` are null when the writer cannot know them. The generic
+ * request hook records WHICH route was called on WHICH ids but never a request
+ * body, because bodies carry credentials (the Drive OAuth flow) and free text;
+ * services that own a change record the real before and after explicitly.
+ */
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    actorUserId: uuid('actor_user_id'),
+    actorEmail: text('actor_email'),
+    /** e.g. `admin.roles.grant`, or `PATCH /admin/home/categories/:categoryId`. */
+    action: text('action').notNull(),
+    objectType: text('object_type').notNull(),
+    objectId: text('object_id'),
+    before: jsonb('before').$type<unknown>(),
+    after: jsonb('after').$type<unknown>(),
+    /** Required by the service for anything that affects money or access. */
+    reason: text('reason'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (table) => [
+    index('audit_log_occurred_idx').on(table.occurredAt),
+    index('audit_log_object_idx').on(table.objectType, table.objectId),
+    index('audit_log_actor_idx').on(table.actorUserId),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * Economy configuration (PRD v1.2 §8, §9, §17, §20, §31) -- P1.1
+ *
+ * CONFIGURATION IS DATA. Every plan price, pack ladder rung, action cost,
+ * allowance and reward lives in these tables, versioned, and nothing in
+ * application code may hold an economy value.
+ *
+ * THREE INDEPENDENT VERSION STREAMS, ONE LIFECYCLE:
+ *
+ *   economy_plans     -> economy_plan_versions      what a subscription costs
+ *   economy_packs     -> economy_pack_versions      what a Credit pack costs
+ *   (global)             economy_rulesets           action costs, allowances,
+ *                          + action costs / allowances / rewards    rewards
+ *
+ * Every version row is `draft`, `published` or `cancelled`:
+ *
+ *   draft      freely editable and deletable; NEVER resolvable. At most one
+ *              open draft per parent, so two operators cannot silently
+ *              prepare competing changes to the same plan.
+ *   published  immutable forever. Carries `effective_from`, the instant it
+ *              starts to apply, which may be in the future (scheduled).
+ *   cancelled  a published version withdrawn BEFORE it took effect. Kept,
+ *              immutable, and never resolvable.
+ *
+ * THERE IS NO "ACTIVE" FLAG, deliberately. A stored flag would need a job to
+ * flip it at the scheduled instant, and between the instant and the job the
+ * database would be wrong. Instead the live version at time T is DERIVED:
+ *
+ *   the `published` version with the greatest `effective_from` <= T
+ *
+ * which is exactly the banner schedule's read-time rule. For that answer to be
+ * unambiguous, two published versions of one parent may never share an
+ * `effective_from` (a partial unique index), and version numbers must order
+ * the same way as effective instants (enforced when publishing, by migration
+ * 0028's trigger). History is therefore linear: a later version always takes
+ * effect after an earlier one, and every superseded version stays intact and
+ * queryable -- which is what lets an existing subscriber keep the version they
+ * bought (§31) by referencing its row.
+ *
+ * THE LIFECYCLE IS ENFORCED BY THE DATABASE (migration 0028), not merely by the
+ * service that will write these rows in P1.3:
+ *   - a row is created as `draft`; publishing is an explicit transition;
+ *   - publishing stamps `published_at` from the database clock and, if no
+ *     `effective_from` was given, makes it effective immediately;
+ *   - `effective_from` can never precede `published_at` -- forward-only (§30.1);
+ *   - a published row cannot be edited or deleted, only cancelled, and only
+ *     while its `effective_from` is still in the future;
+ *   - a published ruleset's cost, allowance and reward rows are frozen with it.
+ *
+ * ACTORS ARE NOT FOREIGN KEYS, the same rule as `audit_log` (P0): an
+ * `ON DELETE SET NULL` would be an UPDATE the immutability trigger refuses,
+ * and who published a price must outlive their account.
+ *
+ * MONEY IS INTEGER MINOR UNITS with an explicit ISO 4217 currency. Credits are
+ * integers. There is no floating-point column anywhere in this model.
+ * ------------------------------------------------------------------ */
+
+export const economyVersionStatus = pgEnum('economy_version_status', [
+  'draft',
+  'published',
+  'cancelled',
+]);
+
+/** The unit an action cost is charged in (§8: most per action, voice calls per minute). */
+export const economyCostUnit = pgEnum('economy_cost_unit', ['per_action', 'per_minute']);
+
+/**
+ * The lifecycle columns every version table shares, and the CHECKs that make a
+ * row's state self-consistent. The trigger in 0028 enforces the TRANSITIONS
+ * between states; these enforce what each state must carry.
+ */
+const versionLifecycle = () => ({
+  status: economyVersionStatus('status').notNull().default('draft'),
+  /** When this version starts to apply. Null only while a draft has no schedule yet. */
+  effectiveFrom: timestamp('effective_from', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdBy: uuid('created_by'),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  publishedBy: uuid('published_by'),
+  /** Why the change was made. Required to publish: every one of these affects money (§30.1). */
+  publishReason: text('publish_reason'),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+  cancelledBy: uuid('cancelled_by'),
+  cancelReason: text('cancel_reason'),
+});
+
+function lifecycleChecks(
+  prefix: string,
+  t: {
+    status: unknown;
+    effectiveFrom: unknown;
+    publishedAt: unknown;
+    publishedBy: unknown;
+    publishReason: unknown;
+    cancelledAt: unknown;
+    cancelledBy: unknown;
+    cancelReason: unknown;
+  },
+) {
+  return [
+    // Published or cancelled: it was published, by someone, for a reason, at
+    // an instant, taking effect no earlier than that instant.
+    check(
+      `${prefix}_published_complete`,
+      sql`${t.status} = 'draft' OR (
+        ${t.effectiveFrom} IS NOT NULL AND ${t.publishedAt} IS NOT NULL
+        AND ${t.publishedBy} IS NOT NULL
+        AND ${t.publishReason} IS NOT NULL AND length(btrim(${t.publishReason})) > 0
+        AND ${t.effectiveFrom} >= ${t.publishedAt}
+      )`,
+    ),
+    // A draft carries no publication or cancellation facts.
+    check(
+      `${prefix}_draft_unpublished`,
+      sql`${t.status} <> 'draft' OR (
+        ${t.publishedAt} IS NULL AND ${t.publishedBy} IS NULL AND ${t.cancelledAt} IS NULL
+      )`,
+    ),
+    // Cancellation facts exist exactly when the row is cancelled, and a
+    // cancellation always precedes the instant it prevented.
+    check(
+      `${prefix}_cancellation_complete`,
+      sql`(${t.status} = 'cancelled') = (
+        ${t.cancelledAt} IS NOT NULL AND ${t.cancelledBy} IS NOT NULL
+        AND ${t.cancelReason} IS NOT NULL AND length(btrim(${t.cancelReason})) > 0
+      )`,
+    ),
+    check(
+      `${prefix}_cancelled_before_effective`,
+      sql`${t.cancelledAt} IS NULL OR ${t.cancelledAt} < ${t.effectiveFrom}`,
+    ),
+  ];
+}
+
+/** Stable, human-typable identifiers: `premium_monthly`, `starter`. */
+const CODE_PATTERN = sql.raw(`'^[a-z][a-z0-9_]{1,63}$'`);
+const CURRENCY_PATTERN = sql.raw(`'^[A-Z]{3}$'`);
+
+/**
+ * economy_plans -- a subscription plan's STABLE identity.
+ *
+ * Holds nothing that can change: the price, term and grant live on versions.
+ * `code` is what P0's `CommercialSubscription.planCode` carries. A plan cannot
+ * be deleted while it has any version (versions RESTRICT), so no version is
+ * ever orphaned and no history can be removed by deleting its parent.
+ */
+export const economyPlans = pgTable(
+  'economy_plans',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull().unique(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdBy: uuid('created_by'),
+  },
+  (t) => [check('economy_plans_code_format', sql`${t.code} ~ ${CODE_PATTERN}`)],
+);
+
+/**
+ * economy_plan_versions -- what a plan costs and includes, from an instant on.
+ *
+ * `price_minor` is the amount charged per billing period, in minor units of
+ * `currency`. `billing_period_months` is the term (§9: 1, 3 or 12 today).
+ * `monthly_included_credits` is the §8 grant expressed per month; whether a
+ * quarterly or annual plan grants it monthly or up front is decision P-10 and
+ * belongs to the grant logic, not to this row.
+ *
+ * `is_purchasable` = false is how a plan is RETIRED (§31): publish a version
+ * that cannot be bought, effective from the retirement instant. Existing
+ * subscribers are untouched because they reference the version they bought.
+ */
+export const economyPlanVersions = pgTable(
+  'economy_plan_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => economyPlans.id, { onDelete: 'restrict' }),
+    version: integer('version').notNull(),
+    displayName: text('display_name').notNull(),
+    billingPeriodMonths: integer('billing_period_months').notNull(),
+    priceMinor: integer('price_minor').notNull(),
+    currency: text('currency').notNull(),
+    monthlyIncludedCredits: integer('monthly_included_credits').notNull(),
+    /** Feature flags the plan grants (§31). Keys are validated by the service. */
+    features: jsonb('features').$type<Record<string, unknown>>().notNull().default({}),
+    isPurchasable: boolean('is_purchasable').notNull().default(true),
+    ...versionLifecycle(),
+  },
+  (t) => [
+    uniqueIndex('economy_plan_versions_version_idx').on(t.planId, t.version),
+    // Unambiguous resolution: one published version per plan per instant.
+    uniqueIndex('economy_plan_versions_effective_idx')
+      .on(t.planId, t.effectiveFrom)
+      .where(sql`status = 'published'`),
+    // At most one open draft per plan.
+    uniqueIndex('economy_plan_versions_one_draft_idx').on(t.planId).where(sql`status = 'draft'`),
+    check('economy_plan_versions_version_positive', sql`${t.version} >= 1`),
+    check('economy_plan_versions_display_name', sql`length(btrim(${t.displayName})) > 0`),
+    check(
+      'economy_plan_versions_billing_period',
+      sql`${t.billingPeriodMonths} BETWEEN 1 AND 36`,
+    ),
+    check('economy_plan_versions_price_positive', sql`${t.priceMinor} > 0`),
+    check('economy_plan_versions_currency', sql`${t.currency} ~ ${CURRENCY_PATTERN}`),
+    check('economy_plan_versions_credits', sql`${t.monthlyIncludedCredits} >= 0`),
+    check('economy_plan_versions_features_object', sql`jsonb_typeof(${t.features}) = 'object'`),
+    ...lifecycleChecks('economy_plan_versions', t),
+  ],
+);
+
+/** economy_packs -- a purchasable Credit pack's STABLE identity (§17). */
+export const economyPacks = pgTable(
+  'economy_packs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull().unique(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    createdBy: uuid('created_by'),
+  },
+  (t) => [check('economy_packs_code_format', sql`${t.code} ~ ${CODE_PATTERN}`)],
+);
+
+/**
+ * economy_pack_versions -- one rung of the §17 ladder, from an instant on.
+ *
+ * The per-Credit rate is DERIVED (`price_minor / credits`), never stored, so it
+ * cannot disagree with the two numbers it comes from. `sort_order` and
+ * `is_best_value` are presentation, versioned with the price they describe.
+ * `is_purchasable` = false retires a pack, as for plans.
+ */
+export const economyPackVersions = pgTable(
+  'economy_pack_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    packId: uuid('pack_id')
+      .notNull()
+      .references(() => economyPacks.id, { onDelete: 'restrict' }),
+    version: integer('version').notNull(),
+    displayName: text('display_name').notNull(),
+    credits: integer('credits').notNull(),
+    priceMinor: integer('price_minor').notNull(),
+    currency: text('currency').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    isBestValue: boolean('is_best_value').notNull().default(false),
+    isPurchasable: boolean('is_purchasable').notNull().default(true),
+    ...versionLifecycle(),
+  },
+  (t) => [
+    uniqueIndex('economy_pack_versions_version_idx').on(t.packId, t.version),
+    uniqueIndex('economy_pack_versions_effective_idx')
+      .on(t.packId, t.effectiveFrom)
+      .where(sql`status = 'published'`),
+    uniqueIndex('economy_pack_versions_one_draft_idx').on(t.packId).where(sql`status = 'draft'`),
+    check('economy_pack_versions_version_positive', sql`${t.version} >= 1`),
+    check('economy_pack_versions_display_name', sql`length(btrim(${t.displayName})) > 0`),
+    check('economy_pack_versions_credits_positive', sql`${t.credits} > 0`),
+    check('economy_pack_versions_price_positive', sql`${t.priceMinor} > 0`),
+    check('economy_pack_versions_currency', sql`${t.currency} ~ ${CURRENCY_PATTERN}`),
+    check('economy_pack_versions_sort_order', sql`${t.sortOrder} >= 0`),
+    ...lifecycleChecks('economy_pack_versions', t),
+  ],
+);
+
+/**
+ * economy_rulesets -- one global, versioned snapshot of action costs,
+ * allowances and rewards (§8, §31).
+ *
+ * A SNAPSHOT, NOT PER-ROW VERSIONING. Costs, allowances and rewards change
+ * together and are previewed together (§31's economy preview: "how many
+ * images the monthly grant buys" needs the grant AND the image cost at the
+ * same instant). So they are published as one unit and resolved as one unit;
+ * there is never a moment where half an economy change is live.
+ *
+ * Global rather than per-parent, so `version` is unique across the table and
+ * there is at most one open draft in total.
+ */
+export const economyRulesets = pgTable(
+  'economy_rulesets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    version: integer('version').notNull(),
+    ...versionLifecycle(),
+  },
+  (t) => [
+    uniqueIndex('economy_rulesets_version_idx').on(t.version),
+    uniqueIndex('economy_rulesets_effective_idx')
+      .on(t.effectiveFrom)
+      .where(sql`status = 'published'`),
+    uniqueIndex('economy_rulesets_one_draft_idx')
+      .on(t.status)
+      .where(sql`status = 'draft'`),
+    check('economy_rulesets_version_positive', sql`${t.version} >= 1`),
+    ...lifecycleChecks('economy_rulesets', t),
+  ],
+);
+
+/**
+ * economy_ruleset_action_costs -- the §8 table as rows.
+ *
+ * `action_type` and `quality_tier` are validated keys (e.g. `image`,
+ * `standard` / `high`), deliberately text rather than enums: adding an action
+ * is configuration, and an enum would make it a migration. The service
+ * validates them against a catalogue.
+ *
+ * `max_duration_seconds` is the upper bound of a duration tier (§8 video: up to
+ * 5s, 6-15s, 16-30s), null for actions with no duration tiers. The resolver
+ * picks the smallest tier that covers a requested duration.
+ *
+ * `credit_cost` is strictly positive. A free action is expressed by disabling
+ * the row, never by a zero price that could make metered work silently free.
+ */
+export const economyRulesetActionCosts = pgTable(
+  'economy_ruleset_action_costs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    rulesetId: uuid('ruleset_id')
+      .notNull()
+      .references(() => economyRulesets.id, { onDelete: 'cascade' }),
+    actionType: text('action_type').notNull(),
+    qualityTier: text('quality_tier').notNull().default('standard'),
+    maxDurationSeconds: integer('max_duration_seconds'),
+    unit: economyCostUnit('unit').notNull().default('per_action'),
+    creditCost: integer('credit_cost').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+  },
+  (t) => [
+    // NULL is a real tier ("no duration tiers"), so it must collide with
+    // itself: COALESCE rather than NULLS NOT DISTINCT, which needs Postgres 15.
+    uniqueIndex('economy_ruleset_action_costs_tier_idx').on(
+      t.rulesetId,
+      t.actionType,
+      t.qualityTier,
+      sql`coalesce(${t.maxDurationSeconds}, -1)`,
+    ),
+    check('economy_ruleset_action_costs_action_key', sql`${t.actionType} ~ ${CODE_PATTERN}`),
+    check('economy_ruleset_action_costs_tier_key', sql`${t.qualityTier} ~ ${CODE_PATTERN}`),
+    check('economy_ruleset_action_costs_cost_positive', sql`${t.creditCost} > 0`),
+    check(
+      'economy_ruleset_action_costs_duration',
+      sql`${t.maxDurationSeconds} IS NULL OR ${t.maxDurationSeconds} > 0`,
+    ),
+  ],
+);
+
+/**
+ * economy_ruleset_allowances -- scalar allowances and limits (§8, §31):
+ * free first-conversation and daily messages, the signup grant, grace-period
+ * length, the global monthly reward cap.
+ *
+ * Key/value rather than one column per allowance, for the same reason action
+ * types are text: several of these (the reset hour, the grace window, the
+ * reward cap) are still open decisions, and each would otherwise be a
+ * migration. The value is an integer >= 0; a zero allowance is legitimate
+ * ("no free daily messages"). Completeness -- that a ruleset defines every key
+ * the resolver needs -- is a publish-time validation for P1.3.
+ */
+export const economyRulesetAllowances = pgTable(
+  'economy_ruleset_allowances',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    rulesetId: uuid('ruleset_id')
+      .notNull()
+      .references(() => economyRulesets.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    value: integer('value').notNull(),
+  },
+  (t) => [
+    uniqueIndex('economy_ruleset_allowances_key_idx').on(t.rulesetId, t.key),
+    check('economy_ruleset_allowances_key_format', sql`${t.key} ~ ${CODE_PATTERN}`),
+    check('economy_ruleset_allowances_value', sql`${t.value} >= 0`),
+  ],
+);
+
+/**
+ * economy_ruleset_rewards -- milestone and referral reward amounts (§8.2, §31).
+ *
+ * `per_user_cap` limits how often one user can earn this reward; null means
+ * once. The GLOBAL monthly cap that stops a reward bug minting unlimited
+ * balance (§31) is an allowance, so it applies across every reward.
+ */
+export const economyRulesetRewards = pgTable(
+  'economy_ruleset_rewards',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    rulesetId: uuid('ruleset_id')
+      .notNull()
+      .references(() => economyRulesets.id, { onDelete: 'cascade' }),
+    rewardKey: text('reward_key').notNull(),
+    credits: integer('credits').notNull(),
+    perUserCap: integer('per_user_cap'),
+    enabled: boolean('enabled').notNull().default(true),
+  },
+  (t) => [
+    uniqueIndex('economy_ruleset_rewards_key_idx').on(t.rulesetId, t.rewardKey),
+    check('economy_ruleset_rewards_key_format', sql`${t.rewardKey} ~ ${CODE_PATTERN}`),
+    check('economy_ruleset_rewards_credits_positive', sql`${t.credits} > 0`),
+    check(
+      'economy_ruleset_rewards_cap',
+      sql`${t.perUserCap} IS NULL OR ${t.perUserCap} > 0`,
+    ),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * THE COMMERCIAL BOUNDARY (P0.8)
+ *
+ * Where content meets the future economy -- and the only place it does.
+ *
+ *   Asset -> OFFER (commercial state) -> [future] Entitlement -> user access
+ *
+ * NOT `asset.status = 'purchased'`. Moderation (P0.4), distribution (P0.5) and
+ * commercial state are three independent axes, and collapsing any two of them
+ * is the mistake this table exists to make impossible: an asset does not stop
+ * being approved because nobody bought it, and does not become public because
+ * somebody did.
+ *
+ * NOTHING READS THIS YET. No route, no public surface and no admin screen
+ * consults an offer; the economy is dark (ECONOMY_ENABLED, off by default) and
+ * P1/P8 switch it on. What exists here is the shape those phases attach to.
+ * ------------------------------------------------------------------ */
+
+/**
+ * What an offer says about its content:
+ *
+ *   free      no commercial condition -- today's entire library, implicitly
+ *   locked    visible, but access is conditional (subscription, unlock, grant)
+ *   paid      access is bought outright
+ *   retired   no longer offered. History, never deletion: entitlements already
+ *             granted stay valid, which is why this is a state and not a
+ *             removed row.
+ */
+export const commercialState = pgEnum('commercial_state', ['free', 'locked', 'paid', 'retired']);
+
+/**
+ * content_offers -- one asset's commercial standing, and the durable identity a
+ * future entitlement points at.
+ *
+ * ── WHY THE LINKS ARE NULLABLE ───────────────────────────────────────────────
+ *
+ * `asset_id` and `character_id` are ON DELETE SET NULL, not CASCADE, and that
+ * is the whole point of the table. A purchase must outlive the thing that was
+ * purchased: P9.4 deletes characters permanently, and a customer's entitlement,
+ * receipt and download window have to remain answerable afterwards. Cascading
+ * would erase the commercial history along with the media -- exactly the
+ * outcome the retention rules forbid.
+ *
+ * `snapshot` is what makes the surviving row mean something: what was sold, as
+ * it was at the time. A future "your purchases" list reads it and does not have
+ * to join to content that may be gone.
+ *
+ * ── WHAT IS NOT HERE ─────────────────────────────────────────────────────────
+ *
+ * No price, no credit amount, no currency. Those are economy CONFIGURATION
+ * (P1.1) resolved at a point in time (P1.2); an offer names the configuration
+ * it uses through `economy_ref` and never carries a copy of it, so a price
+ * change is a configuration decision and not an edit to every asset.
+ *
+ * No entitlement, wallet, purchase or ledger table. Those are P2/P3/P8. When
+ * they arrive, an entitlement references `content_offers.id` -- never an asset
+ * id -- which is what lets it survive everything above.
+ */
+export const contentOffers = pgTable(
+  'content_offers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** The content this offer is for. NULL once that content is gone. */
+    assetId: uuid('asset_id').references(() => characterVisualAssets.id, {
+      onDelete: 'set null',
+    }),
+    /** Denormalised owner, for the same reason and with the same nullability. */
+    characterId: uuid('character_id').references(() => characters.id, { onDelete: 'set null' }),
+    state: commercialState('state').notNull().default('free'),
+    /**
+     * What was offered, recorded when the offer was written: character name,
+     * asset kind and media type. Never authoritative for live content -- read
+     * the asset for that -- and the only description left after a deletion.
+     */
+    snapshot: jsonb('snapshot').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * How the economy resolves this offer's price or cost: plan/pack codes and
+     * nothing else (see economy_* tables). Null while the economy is dark.
+     */
+    economyRef: jsonb('economy_ref').$type<Record<string, unknown>>(),
+    /** Set exactly while `state = 'retired'`; the check below holds them together. */
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * At most ONE live offer per asset, so "what is this asset's commercial
+     * state?" has exactly one answer. Retired offers stay for history, which is
+     * why the index is partial rather than a plain unique constraint.
+     */
+    uniqueIndex('content_offers_live_asset_idx')
+      .on(t.assetId)
+      .where(sql`${t.retiredAt} is null and ${t.assetId} is not null`),
+    index('content_offers_character_idx').on(t.characterId),
+    check(
+      'content_offers_retired_consistent',
+      sql`(${t.state} = 'retired') = (${t.retiredAt} is not null)`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -1491,3 +2183,14 @@ export type PromptJobRow = typeof promptJobs.$inferSelect;
 export type PromptJobOutputRow = typeof promptJobOutputs.$inferSelect;
 export type PromptDriveFolderRow = typeof promptDriveFolders.$inferSelect;
 export type PromptDriveConnectionRow = typeof promptDriveConnections.$inferSelect;
+export type AdminRoleGrantRow = typeof adminRoleGrants.$inferSelect;
+export type AuditLogRow = typeof auditLog.$inferSelect;
+export type EconomyPlanRow = typeof economyPlans.$inferSelect;
+export type EconomyPlanVersionRow = typeof economyPlanVersions.$inferSelect;
+export type EconomyPackRow = typeof economyPacks.$inferSelect;
+export type EconomyPackVersionRow = typeof economyPackVersions.$inferSelect;
+export type EconomyRulesetRow = typeof economyRulesets.$inferSelect;
+export type EconomyRulesetActionCostRow = typeof economyRulesetActionCosts.$inferSelect;
+export type EconomyRulesetAllowanceRow = typeof economyRulesetAllowances.$inferSelect;
+export type EconomyRulesetRewardRow = typeof economyRulesetRewards.$inferSelect;
+export type ContentOfferRow = typeof contentOffers.$inferSelect;

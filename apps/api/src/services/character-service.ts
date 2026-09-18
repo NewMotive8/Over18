@@ -2,6 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import type { PublicCharacter } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { characters, type CharacterRow } from '../db/schema.js';
+import { resolveCharacterPortrait, resolveCharacterPortraits } from './character-portrait.js';
 
 /**
  * Framework-agnostic character service, following the auth-service pattern:
@@ -9,15 +10,29 @@ import { characters, type CharacterRow } from '../db/schema.js';
  * internal columns can never leak through the API. The wire shape lives in
  * @over18/shared (PublicCharacter) so web — and a future React Native app —
  * consume exactly what the API produces.
+ *
+ * P0.2 — THE PORTRAIT IS NOT A COLUMN ON THIS TABLE. `profileImage` on the wire
+ * is resolved from the canonical asset/identity model by `character-portrait`,
+ * which is the only code that may consult the deprecated `profile_image`
+ * column, and only as a fallback. Every function here that produces a
+ * projection resolves through it, so there is no path by which a payload can be
+ * built from the legacy column alone.
  */
 
-/** Explicit allow-list — system_prompt and status stay internal. */
-export function toPublicCharacter(row: CharacterRow): PublicCharacter {
+/**
+ * Explicit allow-list — system_prompt and status stay internal.
+ *
+ * The portrait is a REQUIRED ARGUMENT rather than a field read off the row: it
+ * is not derivable from `characters` alone, and making the caller supply it is
+ * what makes "somebody quietly reintroduced the legacy column" a compile error
+ * rather than a silent regression.
+ */
+export function toPublicCharacter(row: CharacterRow, portrait: string | null): PublicCharacter {
   return {
     id: row.id,
     name: row.name,
     displayName: row.displayName,
-    profileImage: row.profileImage,
+    profileImage: portrait,
     shortBio: row.shortBio,
     personality: row.personality,
     interests: row.interests,
@@ -32,7 +47,9 @@ export async function listActiveCharacters(db: Db): Promise<PublicCharacter[]> {
     .from(characters)
     .where(eq(characters.status, 'active'))
     .orderBy(asc(characters.displayName), asc(characters.id));
-  return rows.map(toPublicCharacter);
+  // One query for the whole page, not one per character.
+  const portraits = await resolveCharacterPortraits(db, rows);
+  return rows.map((row) => toPublicCharacter(row, portraits.get(row.id)?.url ?? null));
 }
 
 /** A single active character by id, or null (unknown id and inactive both read as "not found"). */
@@ -40,7 +57,8 @@ export async function getActiveCharacterById(db: Db, id: string): Promise<Public
   const row = await db.query.characters.findFirst({
     where: and(eq(characters.id, id), eq(characters.status, 'active')),
   });
-  return row ? toPublicCharacter(row) : null;
+  if (!row) return null;
+  return toPublicCharacter(row, (await resolveCharacterPortrait(db, row)).url);
 }
 
 /* ------------------------------------------------------------------ *
@@ -92,10 +110,10 @@ export function missingProfileFields(row: CharacterRow): ProfileField[] {
   return PROFILE_FIELDS.filter((field) => row[field].trim().length === 0);
 }
 
-export function toAdminCharacter(row: CharacterRow): AdminCharacter {
+export function toAdminCharacter(row: CharacterRow, portrait: string | null): AdminCharacter {
   const missing = missingProfileFields(row);
   return {
-    ...toPublicCharacter(row),
+    ...toPublicCharacter(row, portrait),
     systemPrompt: row.systemPrompt,
     status: row.status,
     createdAt: row.createdAt.toISOString(),
@@ -132,6 +150,15 @@ const NAME_RE = /^[a-z0-9][a-z0-9-]{1,49}$/;
 /**
  * Exactly the columns the existing schema already has. No new character
  * attributes are invented here: every field below is a column on `characters`.
+ *
+ * P0.2 — `profileImage` IS DELIBERATELY ABSENT. It used to be accepted here, so
+ * `POST /admin/characters` and `PATCH /admin/characters/:id` could establish the
+ * legacy column as a character's authoritative portrait, in parallel with — and
+ * capable of contradicting — her identity references. A portrait is now changed
+ * the one way the P0 model defines: upload or re-order the canonical references
+ * of her active identity version. A request body that still carries the field is
+ * ignored rather than rejected, so an older admin client keeps working; it
+ * simply no longer decides anything.
  */
 export interface CharacterInput {
   name: string;
@@ -141,7 +168,6 @@ export interface CharacterInput {
   conversationStyle: string;
   systemPrompt: string;
   interests?: string[];
-  profileImage?: string | null;
   status?: 'active' | 'inactive';
 }
 
@@ -198,10 +224,6 @@ function normalise(
   if (input.interests !== undefined) {
     out.interests = input.interests.map((i) => i.trim()).filter((i) => i.length > 0);
   }
-  if (input.profileImage !== undefined) {
-    const trimmed = input.profileImage?.trim() ?? '';
-    out.profileImage = trimmed.length > 0 ? trimmed : null;
-  }
   if (input.status !== undefined) out.status = input.status;
 
   return out;
@@ -213,13 +235,15 @@ export async function listAllCharacters(db: Db): Promise<AdminCharacter[]> {
     .select()
     .from(characters)
     .orderBy(asc(characters.displayName), asc(characters.id));
-  return rows.map(toAdminCharacter);
+  const portraits = await resolveCharacterPortraits(db, rows);
+  return rows.map((row) => toAdminCharacter(row, portraits.get(row.id)?.url ?? null));
 }
 
 /** Any character by id regardless of status. Null when unknown. */
 export async function getCharacterForAdmin(db: Db, id: string): Promise<AdminCharacter | null> {
   const row = await db.query.characters.findFirst({ where: eq(characters.id, id) });
-  return row ? toAdminCharacter(row) : null;
+  if (!row) return null;
+  return toAdminCharacter(row, (await resolveCharacterPortrait(db, row)).url);
 }
 
 /**
@@ -286,7 +310,11 @@ export async function createCharacter(
       .insert(characters)
       .values(values as typeof characters.$inferInsert)
       .returning();
-    return toAdminCharacter(row!);
+    // A character created this instant has no identity version and no
+    // references, so her portrait is legitimately null. It becomes real the
+    // moment her first primary reference is uploaded — which is the only way it
+    // can now be set.
+    return toAdminCharacter(row!, (await resolveCharacterPortrait(db, row!)).url);
   } catch (error) {
     // The DB unique index is the real guard; catching it here turns a 500 into
     // a clear 409 without a check-then-insert race.
@@ -310,7 +338,8 @@ export async function updateCharacter(
       .set({ ...values, updatedAt: new Date() })
       .where(eq(characters.id, id))
       .returning();
-    return row ? toAdminCharacter(row) : null;
+    if (!row) return null;
+    return toAdminCharacter(row, (await resolveCharacterPortrait(db, row)).url);
   } catch (error) {
     if (isUniqueViolation(error)) throw new CharacterNameTakenError(String(values.name));
     throw error;

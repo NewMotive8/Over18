@@ -15,6 +15,25 @@ export {
   type MediaRequestType,
 } from './mediaRequest.js';
 
+export {
+  ADMIN_PERMISSIONS,
+  ADMIN_ROLE_PERMISSIONS,
+  ADMIN_ROLES,
+  ANALYTICS_EVENT_NAMES,
+  isAnalyticsEventName,
+  type AdminAccessView,
+  type AdminPermission,
+  type AdminRoleName,
+  type AnalyticsEventName,
+  type AuditEntryView,
+  type CommercialAgeStatus,
+  type CommercialState,
+  type CommercialSubscription,
+  type CommercialTier,
+  type CommercialWallet,
+  type SubscriptionStatus,
+} from './commerce.js';
+
 /** Response shape of GET /health on the API. */
 export interface HealthResponse {
   status: 'ok';
@@ -109,6 +128,17 @@ export interface PublicCharacter {
   id: string;
   name: string;
   displayName: string;
+  /**
+   * The character's portrait locator, or null when she has none.
+   *
+   * P0.2 — THIS IS NOT `characters.profile_image`. The server resolves it from
+   * the canonical asset/identity model (her active identity version's first
+   * canonical reference) and hands back an opaque, id-keyed media route. The
+   * legacy column survives only as a deprecated server-side fallback for
+   * characters whose references predate stored media, and it is consulted in
+   * exactly one place. A client must treat this as an opaque locator and must
+   * not assume it is a column, a path or a storage key.
+   */
   profileImage: string | null;
   shortBio: string;
   personality: string;

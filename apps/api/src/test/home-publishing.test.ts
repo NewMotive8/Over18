@@ -2173,7 +2173,7 @@ describe('a character’s content shelf', () => {
   const shelf = (characterId: string, cookies = adminCookies) =>
     on.app.inject({ method: 'GET', url: `/admin/characters/${characterId}/content`, cookies });
 
-  it('lists everything the character has, with previews and placement', async () => {
+  it('lists everything the character has, with previews and distribution', async () => {
     const asset = await makeApprovedAsset();
     const category = await makeCategory('Shelf');
     await assign(category.id, [asset.id]);
@@ -2186,12 +2186,19 @@ describe('a character’s content shelf', () => {
     ) as unknown as {
       previewUrl: string;
       status: string;
-      placement: { heroPosition: number | null; categories: Array<{ slug: string }> };
+      distribution: {
+        hero: { placed: boolean; position: number | null; live: boolean };
+        categories: Array<{ slug: string; live: boolean }>;
+        liveAnywhere: boolean;
+      };
     };
     expect(found.status).toBe('approved');
     expect(found.previewUrl).toBe(`/admin/content/assets/${asset.id}/file`);
-    expect(found.placement.heroPosition).toBe(0);
-    expect(found.placement.categories.map((c) => c.slug)).toEqual([category.slug]);
+    // P0.5: the shelf reports the distribution model, which also says whether
+    // each placement is actually showing.
+    expect(found.distribution.hero).toMatchObject({ placed: true, position: 0 });
+    expect(found.distribution.categories.map((c) => c.slug)).toEqual([category.slug]);
+    expect(found.distribution.liveAnywhere).toBe(true);
   });
 
   it('includes content still in review, so nothing looks lost after upload', async () => {

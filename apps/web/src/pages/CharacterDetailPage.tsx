@@ -3,7 +3,12 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import { API_URL, ApiRequestError, charactersApi, conversationsApi, type PublicClip } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
-import { apparentAge, characterHeaderItems, type CharacterMediaItem } from '../lib/media';
+import {
+  absoluteMediaUrl,
+  apparentAge,
+  characterHeaderItems,
+  type CharacterMediaItem,
+} from '../lib/media';
 import { adultAgeFromBand } from '../lib/lobbyContent';
 import { mockRelationship } from '../lib/relationship';
 import ProfileHero from '../components/profile/ProfileHero';
@@ -221,7 +226,11 @@ export default function CharacterDetailPage() {
   const age = adultAgeFromBand(apparentAge(visualData));
   const first = heroItems[0]!.media;
   const avatarPoster =
-    first.kind === 'video' ? first.poster : first.kind === 'image' ? first.src : character.profileImage ?? undefined;
+    first.kind === 'video'
+      ? first.poster
+      : first.kind === 'image'
+        ? first.src
+        : absoluteMediaUrl(character.profileImage);
   const relationship = mockRelationship(character);
 
   return (

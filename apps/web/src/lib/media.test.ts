@@ -3,7 +3,6 @@ import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/s
 import {
   apparentAge,
   characterHeaderItems,
-  characterMediaList,
   firstCanonicalImage,
   resolveHeroMedia,
   resolveRailMedia,
@@ -49,8 +48,13 @@ describe('resolveHeroMedia', () => {
     }
   });
 
-  it('uses the visual identity poster for video when available', () => {
-    const withVideo = { ...character(), videoUrl: 'https://cdn.example/nova.mp4' } as PublicCharacter;
+  it('uses the visual identity poster for video when the payload has no portrait', () => {
+    // P0.2: the server portrait comes first, so the identity image is only
+    // reached when the payload carries none.
+    const withVideo = {
+      ...character({ profileImage: null }),
+      videoUrl: 'https://cdn.example/nova.mp4',
+    } as PublicCharacter;
     const media = resolveHeroMedia(
       withVideo,
       visual([{ id: 'a1', position: 0, imageUrl: 'https://img.example/canon.png' }]),
@@ -58,9 +62,9 @@ describe('resolveHeroMedia', () => {
     expect(media.kind === 'video' && media.poster).toBe('https://img.example/canon.png');
   });
 
-  it('falls back to the first canonical image when there is no video', () => {
+  it('falls back to the first canonical image when there is no video and no portrait', () => {
     const media = resolveHeroMedia(
-      character(),
+      character({ profileImage: null }),
       visual([
         { id: 'a2', position: 1, imageUrl: 'https://img.example/second.png' },
         { id: 'a1', position: 0, imageUrl: 'https://img.example/first.png' },
@@ -92,36 +96,6 @@ describe('firstCanonicalImage', () => {
     ).toBe('https://img.example/zero.png');
     expect(firstCanonicalImage(visual([{ id: 'a1', position: 0, imageUrl: '   ' }]))).toBeUndefined();
     expect(firstCanonicalImage(null)).toBeUndefined();
-  });
-});
-
-describe('characterMediaList', () => {
-  it('opens with a free hero and gates the rest behind Premium (mock-filled) by default', () => {
-    const items = characterMediaList(character(), null);
-    expect(items).toHaveLength(6); // default minItems
-    expect(items[0]?.premium).toBe(false); // hero is free
-    expect(items[0]?.media).toEqual({ kind: 'image', src: 'https://img.example/nova.png' });
-    expect(items.filter((i) => i.premium).length).toBe(5);
-    expect(items.slice(1).every((i) => i.premium && i.mock)).toBe(true); // padded tiles are flagged mock
-  });
-
-  it('treats additional REAL canonical stills as free, viewable media', () => {
-    const items = characterMediaList(
-      character(),
-      visual([
-        { id: 'a1', position: 0, imageUrl: 'https://img.example/one.png' },
-        { id: 'a2', position: 1, imageUrl: 'https://img.example/two.png' },
-        { id: 'a3', position: 2, imageUrl: 'https://img.example/three.png' },
-      ]),
-    );
-    const free = items.filter((i) => !i.premium);
-    expect(free.length).toBe(3); // hero + 2 additional canonical
-    expect(free[1]?.media).toEqual({ kind: 'image', src: 'https://img.example/two.png' });
-    expect(items.filter((i) => i.premium).length).toBe(3); // padded to minItems 6
-  });
-
-  it('respects a custom minItems', () => {
-    expect(characterMediaList(character(), null, { minItems: 3 })).toHaveLength(3);
   });
 });
 
@@ -165,15 +139,19 @@ describe('a character’s CMS clip can be her card video', () => {
     expect(media.kind).toBe('image');
   });
 
-  it('posters the CMS video with the canonical still, then profileImage', () => {
-    const withCanonical = resolveHeroMedia(
+  it('posters the CMS video with the server portrait, then the identity still', () => {
+    // P0.2 order: the resolved portrait first, even when an identity list is to hand.
+    const withProfile = resolveHeroMedia(
       character({ name: 'nova-cms', clip: clip('video') } as never),
       visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
     );
-    expect(withCanonical.kind === 'video' && withCanonical.poster).toContain('/assets/i1/file');
-
-    const withProfile = resolveHeroMedia(character({ name: 'nova-cms', clip: clip('video') } as never));
     expect(withProfile.kind === 'video' && withProfile.poster).toBe('https://img.example/nova.png');
+
+    const withCanonicalOnly = resolveHeroMedia(
+      character({ name: 'nova-cms', profileImage: null, clip: clip('video') } as never),
+      visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
+    );
+    expect(withCanonicalOnly.kind === 'video' && withCanonicalOnly.poster).toContain('/assets/i1/file');
   });
 
   it('leaves a character with no clip exactly as she was', () => {
@@ -304,12 +282,18 @@ describe('the OTHER surfaces keep their image behaviour', () => {
     expect(media.kind === 'image' && media.src).toBe('https://img.example/nova.png');
   });
 
-  it('resolveHeroMedia still prefers the canonical image over profileImage', () => {
+  /**
+   * INVERTED BY P0.2. This used to pin "the visual-identity image beats
+   * profileImage", from when `profileImage` was a raw legacy column. It is now
+   * the server's canonical portrait, chosen by the only resolver that knows
+   * which references can be served, so it wins.
+   */
+  it('resolveHeroMedia prefers the server portrait over the visual-identity image', () => {
     const media = resolveHeroMedia(
       character({ name: 'not-in-manifest' }),
       visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
     );
-    expect(media.kind === 'image' && media.src).toContain('/assets/i1/file');
+    expect(media.kind === 'image' && media.src).toBe('https://img.example/nova.png');
   });
 
   it('resolveHeroMedia no longer serves the seeded manifest videos', () => {
@@ -370,8 +354,9 @@ describe('the Character header plays her own videos', () => {
   });
 
   it('falls back to the EXISTING still when she has no video at all', () => {
+    // No payload portrait, so the identity still is what remains (P0.2 order).
     const items = characterHeaderItems(
-      cms(),
+      character({ name: 'not-in-manifest', profileImage: null }),
       [headerClip('img', 'image')],
       visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
     );
@@ -460,7 +445,7 @@ describe('a real CMS video beats the bundled manifest', () => {
 
   it('keeps the still fallback for a character with neither', () => {
     const items = characterHeaderItems(
-      character({ name: 'not-in-manifest' }),
+      character({ name: 'not-in-manifest', profileImage: null }),
       [],
       visual([{ id: 'i1', position: 0, imageUrl: '/api/media/assets/i1/file' }]),
     );

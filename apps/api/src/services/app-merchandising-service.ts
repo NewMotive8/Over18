@@ -8,7 +8,12 @@ import {
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
 import { mediaTypeOf } from './content-review-service.js';
-import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
+import {
+  DISTRIBUTABLE_STATUS,
+  distributableAssetConditions,
+  distributableConditions,
+  distributionBlockerOf,
+} from './asset-distribution.js';
 
 /**
  * Content distribution & category merchandising (US-102.2).
@@ -42,7 +47,11 @@ import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
  */
 
 /** The one rule that decides whether an asset may be publicly associated. */
-export const PUBLISHABLE_STATUS = 'approved' as const;
+/**
+  * Re-exported from the P0.5 distribution model, which owns it. Kept under this
+  * name because every merchandising caller already reads it here.
+  */
+export const PUBLISHABLE_STATUS = DISTRIBUTABLE_STATUS;
 
 /**
  * WHAT A HOME RAIL ACTUALLY RENDERS, WRITTEN DOWN ONCE.
@@ -76,7 +85,7 @@ export const PUBLISHABLE_STATUS = 'approved' as const;
  * derivable from the other.
  */
 export function homeRenderableConditions() {
-  return [...assignableConditions(), eq(characters.status, 'active')];
+  return distributableConditions();
 }
 
 /**
@@ -99,11 +108,7 @@ export function homeRenderableConditions() {
  * they stay refusals.
  */
 export function assignableConditions() {
-  return [
-    eq(characterVisualAssets.status, PUBLISHABLE_STATUS),
-    inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
-    sql`${characterVisualAssets.storageKey} is not null and ${characterVisualAssets.storageKey} <> ''`,
-  ];
+  return distributableAssetConditions();
 }
 
 /** Why one asset cannot appear on Home. `null` means it can. */
@@ -128,11 +133,14 @@ export function homeIneligibilityOf(row: {
   storageKey: string | null;
   characterStatus: string;
 }): HomeIneligibility | null {
-  if (row.status !== PUBLISHABLE_STATUS) return 'not_approved';
-  if (!(PUBLIC_CONTENT_KINDS as readonly string[]).includes(row.kind)) return 'not_content';
-  if (row.storageKey === null || row.storageKey === '') return 'no_media';
-  if (row.characterStatus !== 'active') return 'character_inactive';
-  return null;
+  // The P0.5 gate, reported in Home's coarser vocabulary: pending, rejected and
+  // archived are all simply "not approved" to a merchandising screen, which
+  // shows the exact status beside it.
+  const blocker = distributionBlockerOf(row);
+  if (blocker === null) return null;
+  return blocker === 'pending_review' || blocker === 'rejected' || blocker === 'archived'
+    ? 'not_approved'
+    : blocker;
 }
 
 /**

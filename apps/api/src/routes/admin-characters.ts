@@ -52,6 +52,9 @@ import {
   getRequirementStatus,
   planMissingContentFor,
 } from '../services/requirement-status-service.js';
+import { assessCharacter } from '../services/character-readiness-service.js';
+import { summariseIdentityLineage } from '../services/identity-lineage-service.js';
+import { assetLifecycleOf } from '../services/asset-lifecycle.js';
 import type { CharacterVisualAssetRow, CharacterVisualIdentityRow } from '../db/schema.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -105,6 +108,7 @@ function referenceView(row: CharacterVisualAssetRow) {
     visualIdentityId: row.visualIdentityId,
     kind: row.kind,
     status: row.status,
+    ...assetLifecycleOf(row),
     isPrimary: row.isCanonical,
     position: row.position,
     contentRating: row.contentRating,
@@ -193,7 +197,9 @@ export default async function adminCharacterRoutes(
    *   REFERENCE bound to that version.
    * The image is therefore represented by the existing identity/reference
    * system, stored once, with no second copy made to populate profile_image —
-   * which stays null, and which every existing surface already falls back from.
+   * which stays null. Since P0.2 that is not merely tidy, it is the only way a
+   * portrait can be set at all: the uploaded primary reference IS what
+   * `character-portrait` resolves and every surface renders.
    *
    * The file is fully validated BEFORE any row is written, so the common
    * failure (wrong file type) cannot leave a half-made character behind.
@@ -300,6 +306,9 @@ export default async function adminCharacterRoutes(
         characterId: character.id,
         visualIdentityId: active.id,
         kind: 'reference',
+        // Identity, not content: choosing her portrait IS the approval, and it
+        // is what makes it her primary reference. Stated, never defaulted.
+        approve: true,
         requirementKey,
         mimeType: file.mimeType,
         bytes: file.bytes,
@@ -307,7 +316,12 @@ export default async function adminCharacterRoutes(
         uploadedBy: request.currentUser!.id,
       });
       return reply.code(201).send({
-        character,
+        // RE-READ, because the character is now a different thing than she was
+        // two statements ago: the upload gave her the canonical reference that
+        // IS her portrait (P0.2). The draft projection was built before that
+        // existed and would report her as having no image — which used to be
+        // true of the legacy column and is no longer true of her.
+        character: (await getCharacterForAdmin(opts.db, character.id)) ?? character,
         identity: identityView(active),
         primaryReference: referenceView(asset),
       });
@@ -373,7 +387,24 @@ export default async function adminCharacterRoutes(
       const { characterId } = request.params;
       if (!UUID_RE.test(characterId)) return notFound(reply);
       if (!(await getCharacterForAdmin(opts.db, characterId))) return notFound(reply);
-      return { assets: await listCharacterContent(opts.db, characterId) };
+      const { assets, identities } = await listCharacterContent(opts.db, characterId);
+      /**
+       * P0.6 -- the same assets, plus what their identity VERSIONS carry.
+       *
+       * Derived here from what the read already loaded, so the page cannot
+       * disagree with the shelf it is looking at, and nothing about identity
+       * or content lifecycle changes by being counted.
+       */
+      const identityLineage = summariseIdentityLineage(
+        identities,
+        assets.map((asset) => ({
+          visualIdentityId: asset.visualIdentity.id,
+          workflow: asset.workflow,
+          role: asset.role,
+          live: asset.distribution.liveAnywhere,
+        })),
+      );
+      return { assets, identityLineage };
     },
   );
 
@@ -448,12 +479,23 @@ export default async function adminCharacterRoutes(
         ? await listCanonicalReferences(opts.db, characterId, active.id)
         : [];
 
+      // The two authoritative answers, computed on the server from the same
+      // state this response already loaded. The page renders them; it never
+      // re-derives them.
+      const { readiness, publishability } = await assessCharacter(opts.db, characterId, {
+        character,
+        activeIdentity: active ? { id: active.id, version: active.version } : null,
+        approvedPrimaryReferenceCount: primaryReferences.length,
+      });
+
       return {
         character,
         // Newest version first — the operator works at the head of the list.
         identities: [...versions].sort((a, b) => b.version - a.version).map(identityView),
         activeIdentity: active ? identityView(active) : null,
         primaryReferences: primaryReferences.map(referenceView),
+        readiness,
+        publishability,
       };
     },
   );
@@ -614,14 +656,16 @@ export default async function adminCharacterRoutes(
             characterId: identity.characterId,
             visualIdentityId: identityId,
             kind: 'reference',
+            // Identity, not content (see quick-create above): explicit.
+            approve: true,
             mimeType: file.mimetype,
             bytes,
             originalName: file.filename,
             uploadedBy: request.currentUser!.id,
           },
         );
-        // uploadLibraryAsset approves it, and approveVisualAsset promotes ONLY
-        // references to canonical — so this is already a primary reference.
+        // approveVisualAsset promotes ONLY references to canonical — so this
+        // is already a primary reference.
         return reply.code(201).send(referenceView(asset));
       } catch (error) {
         if (error instanceof LibraryUploadError) {

@@ -420,9 +420,10 @@ describe('US-100 content library', () => {
     const res = await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } });
     const item = res.json().assets[0];
     expect(item.status).toBe('approved');
-    // No publishing concept exists yet — US-102 owns it.
+    // Release now exists (published_at), and the view reports it since P0.4 --
+    // so the pin is that approving released NOTHING, not that the field is absent.
+    expect(item.publishedAt).toBeNull();
     expect(item).not.toHaveProperty('published');
-    expect(item).not.toHaveProperty('publishedAt');
     expect(item).not.toHaveProperty('categories');
   });
 

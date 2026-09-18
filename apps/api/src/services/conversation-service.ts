@@ -3,6 +3,7 @@ import type { ConversationSummary } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { characters, conversations } from '../db/schema.js';
 import { getActiveCharacterById, toPublicCharacter } from './character-service.js';
+import { resolveCharacterPortrait } from './character-portrait.js';
 
 /**
  * Conversation service — transport-agnostic, following the established
@@ -71,9 +72,12 @@ export async function getConversationForUser(
     .limit(1);
   const row = rows[0];
   if (!row) return null;
+  // P0.2: the chat header's avatar is the same canonical portrait every other
+  // surface shows — resolved here rather than read off the legacy column.
+  const portrait = await resolveCharacterPortrait(db, row.character);
   return {
     id: row.conversation.id,
-    character: toPublicCharacter(row.character),
+    character: toPublicCharacter(row.character, portrait.url),
     createdAt: row.conversation.createdAt.toISOString(),
   };
 }

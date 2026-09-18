@@ -1,12 +1,10 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import {
-  appCategories,
-  appCategoryAssets,
   characters,
   characterVisualAssets,
-  homeHeroClips,
   type CharacterVisualAssetRow,
+  type CharacterVisualIdentityRow,
 } from '../db/schema.js';
 import {
   VisualAssetNotFoundError,
@@ -14,13 +12,18 @@ import {
   type ContentRating,
   type VisualAssetStatus,
 } from './visual-asset-service.js';
+import { assetLifecycleOf, checkTransition, type AssetLifecycleView } from './asset-lifecycle.js';
+import { describeAssetDistribution, type AssetDistribution } from './asset-distribution.js';
+import { identityRefOf, type IdentityVersionRef } from './identity-lineage-service.js';
+import { listVisualIdentityVersions } from './visual-identity-service.js';
 
 /**
  * US-106 — read model for the content-review workflow.
  *
  * Deliberately a THIN read layer over the existing tables. It introduces no new
  * lifecycle: approve/reject remain `visual-asset-service`'s job, and the
- * statuses are EPIC 7's (`generated | under_review | approved | rejected`).
+ * statuses are EPIC 7's (`generated | under_review | approved | rejected`)
+ * plus P0.4's `archived`, all read through `asset-lifecycle.ts`.
  *
  * `listVisualAssets` in visual-asset-service is scoped to one character AND one
  * identity version, which is right for identity work but too narrow for a
@@ -325,15 +328,7 @@ export async function listRecentLibrary(db: Db, limit = 12): Promise<LibraryAsse
  * lifecycle, no new state and no new permission.
  * ------------------------------------------------------------------ */
 
-/** Where one asset currently appears, editorially. */
-export interface AssetPlacement {
-  /** App Categories this asset is in, with its operator-chosen position. */
-  categories: Array<{ id: string; slug: string; name: string; position: number }>;
-  /** Its position in the Hero, or null when it is not assigned there. */
-  heroPosition: number | null;
-}
-
-export interface CharacterContentAsset {
+export interface CharacterContentAsset extends AssetLifecycleView {
   assetId: string;
   characterId: string;
   kind: string;
@@ -351,7 +346,24 @@ export interface CharacterContentAsset {
    * every other admin surface.
    */
   previewUrl: string | null;
-  placement: AssetPlacement;
+  /**
+   * WHICH IDENTITY VERSION THIS ASSET WAS MADE AGAINST (P0.6).
+   *
+   * The binding is the asset's own NOT NULL column, written when it was
+   * created; this reports the version NUMBER and status behind that id, which
+   * no admin surface showed. A retired version here is not a problem with the
+   * asset -- content is never invalidated by a redesign -- it is a fact an
+   * operator could not previously see.
+   */
+  visualIdentity: IdentityVersionRef;
+  /**
+   * WHERE IT IS EXPOSED TO CUSTOMERS (P0.5) -- Posts, Hero, Categories and
+   * Discovery in one model, each saying whether it is merely placed or actually
+   * live, and why not when it is not. It replaced a `placement` field that knew
+   * only about the Hero and categories, so a clip released to Posts read as
+   * "not placed anywhere".
+   */
+  distribution: AssetDistribution;
   createdAt: string;
   approvedAt: string | null;
   /**
@@ -363,59 +375,70 @@ export interface CharacterContentAsset {
    * distinction the screen previously had no way to show.
    */
   publishedAt: string | null;
+  /** When it was archived (P0.4), or null. Its release time above is kept. */
+  archivedAt: string | null;
 }
 
 /**
- * Every asset belonging to one character, newest first, whatever its status.
+ * Every asset belonging to one character, newest first, whatever its status --
+ * and the identity VERSIONS they belong to, returned together.
  *
  * Rejected rows are included deliberately: an operator looking at a character
  * needs to see that something was rejected rather than wonder where it went.
  * The caller decides how to group them.
+ *
+ * The versions come back with the assets (P0.6) because the lineage summary
+ * needs both and this read already has to load them to name each asset's
+ * version. One pass, no second query, and no second source for either fact.
  */
+export interface CharacterContentPage {
+  assets: CharacterContentAsset[];
+  /** The canonical version rows, newest first, exactly as identity owns them. */
+  identities: CharacterVisualIdentityRow[];
+}
+
 export async function listCharacterContent(
   db: Db,
   characterId: string,
-): Promise<CharacterContentAsset[]> {
-  const rows = await db
-    .select()
-    .from(characterVisualAssets)
-    .where(eq(characterVisualAssets.characterId, characterId))
-    .orderBy(desc(characterVisualAssets.createdAt), desc(characterVisualAssets.id));
-  if (rows.length === 0) return [];
-
-  const ids = rows.map((row) => row.id);
-
-  const [categoryRows, heroRows] = await Promise.all([
+): Promise<CharacterContentPage> {
+  // The character's own status comes with the rows: whether she is published is
+  // part of the distribution gate, and asking per asset would be N+1.
+  const [joined, identities] = await Promise.all([
     db
-      .select({
-        assetId: appCategoryAssets.assetId,
-        position: appCategoryAssets.position,
-        id: appCategories.id,
-        slug: appCategories.slug,
-        name: appCategories.name,
-      })
-      .from(appCategoryAssets)
-      .innerJoin(appCategories, eq(appCategories.id, appCategoryAssets.categoryId))
-      .where(inArray(appCategoryAssets.assetId, ids)),
-    db
-      .select({ assetId: homeHeroClips.assetId, position: homeHeroClips.position })
-      .from(homeHeroClips)
-      .where(inArray(homeHeroClips.assetId, ids)),
+      .select({ asset: characterVisualAssets, characterStatus: characters.status })
+      .from(characterVisualAssets)
+      .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+      .where(eq(characterVisualAssets.characterId, characterId))
+      .orderBy(desc(characterVisualAssets.createdAt), desc(characterVisualAssets.id)),
+    // The canonical identity rows, from the service that owns them.
+    listVisualIdentityVersions(db, characterId),
   ]);
+  if (joined.length === 0) return { assets: [], identities };
+  const identityById = new Map(identities.map((row) => [row.id, identityRefOf(row)]));
 
-  const byAsset = new Map<string, AssetPlacement['categories']>();
-  for (const row of categoryRows) {
-    const list = byAsset.get(row.assetId) ?? [];
-    list.push({ id: row.id, slug: row.slug, name: row.name, position: row.position });
-    byAsset.set(row.assetId, list);
-  }
-  const heroAt = new Map(heroRows.map((row) => [row.assetId, row.position]));
+  const rows = joined.map((row) => row.asset);
+  const characterStatus = joined[0]!.characterStatus;
 
-  return rows.map((row) => ({
+  // ONE distribution model, built by the module that owns it (P0.5). This read
+  // states no rule about what is live; it asks.
+  const distribution = await describeAssetDistribution(
+    db,
+    rows.map((row) => ({
+      id: row.id,
+      status: row.status,
+      kind: row.kind,
+      storageKey: row.storageKey,
+      publishedAt: row.publishedAt,
+      characterStatus,
+    })),
+  );
+
+  const assets = rows.map((row) => ({
     assetId: row.id,
     characterId: row.characterId,
     kind: row.kind,
     status: row.status,
+    ...assetLifecycleOf(row),
     mediaType: mediaTypeOf(row.storageKey, row.provenance),
     contentRating: row.contentRating,
     requirementKey: row.requirementKey,
@@ -426,14 +449,17 @@ export async function listCharacterContent(
     // generated asset's from the key) and refuses anything escaping
     // MEDIA_STORAGE_DIR, so the caller never needs to know which it holds.
     previewUrl: row.storageKey ? `/admin/content/assets/${row.id}/file` : null,
-    placement: {
-      categories: (byAsset.get(row.id) ?? []).sort((a, b) => a.position - b.position),
-      heroPosition: heroAt.get(row.id) ?? null,
-    },
+    distribution: distribution.get(row.id)!,
+    // Non-null by construction: the column is NOT NULL with a foreign key, and
+    // every version of this character was just loaded.
+    visualIdentity: identityById.get(row.visualIdentityId)!,
     createdAt: row.createdAt.toISOString(),
     approvedAt: row.approvedAt ? row.approvedAt.toISOString() : null,
     publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
   }));
+
+  return { assets, identities };
 }
 
 /* ------------------------------------------------------------------ *
@@ -460,37 +486,35 @@ export async function listCharacterContent(
  *
  * IDEMPOTENT: publishing an already-published asset keeps its ORIGINAL release
  * time rather than moving it, so "when did this go out?" stays answerable.
+ *
+ * The rules above live in `asset-lifecycle.ts` (P0.4), which also refuses to
+ * release an ARCHIVED asset -- the same table the admin UI's buttons come from.
  */
 export async function setAssetPublished(
   db: Db,
   assetId: string,
   published: boolean,
 ): Promise<CharacterVisualAssetRow> {
-  const [row] = await db
-    .select()
-    .from(characterVisualAssets)
-    .where(eq(characterVisualAssets.id, assetId))
-    .limit(1);
-  if (!row) throw new VisualAssetNotFoundError(assetId);
+  // Locked, so a release cannot land on a row an archive committed meanwhile.
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(characterVisualAssets)
+      .where(eq(characterVisualAssets.id, assetId))
+      .limit(1)
+      .for('update');
+    if (!row) throw new VisualAssetNotFoundError(assetId);
 
-  if (published) {
-    if (row.status !== 'approved') {
-      throw new VisualAssetTransitionError(
-        'Only approved content can be published. Approve it in Review first.',
-      );
-    }
-    if (row.kind !== 'generated') {
-      throw new VisualAssetTransitionError(
-        'Only character content can be published to Posts. References are identity, and chat media is private.',
-      );
-    }
-    if (row.publishedAt) return row; // already live — keep the original time
-  }
+    const check = checkTransition(row, published ? 'publish' : 'unpublish');
+    if (!check.allowed) throw new VisualAssetTransitionError(check.reason);
+    // Already live keeps the original time; already down has nothing to clear.
+    if (check.noop) return row;
 
-  const [updated] = await db
-    .update(characterVisualAssets)
-    .set({ publishedAt: published ? new Date() : null, updatedAt: new Date() })
-    .where(eq(characterVisualAssets.id, assetId))
-    .returning();
-  return updated!;
+    const [updated] = await tx
+      .update(characterVisualAssets)
+      .set({ publishedAt: published ? new Date() : null, updatedAt: new Date() })
+      .where(eq(characterVisualAssets.id, assetId))
+      .returning();
+    return updated!;
+  });
 }

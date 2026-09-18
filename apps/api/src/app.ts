@@ -5,6 +5,8 @@ import type { HealthResponse } from '@over18/shared';
 import type { Env } from './env.js';
 import type { Db } from './db/client.js';
 import authPlugin from './plugins/auth.js';
+import adminAuditPlugin from './plugins/admin-audit.js';
+import adminAccessRoutes from './routes/admin-access.js';
 import authRoutes from './routes/auth.js';
 import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
@@ -96,7 +98,10 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     credentials: true,
   });
   await app.register(cookie);
-  await app.register(authPlugin, { db });
+  await app.register(authPlugin, { db, permissionsEnforced: env.admin.permissionsEnforced });
+  // PRD §34.2: the generic admin-write audit hook. Registered BEFORE any route
+  // so it covers every admin route; inert unless ADMIN_AUDIT_ENABLED.
+  await app.register(adminAuditPlugin, { db, enabled: env.admin.auditEnabled });
 
   app.get('/health', async (): Promise<HealthResponse> => {
     return {
@@ -151,6 +156,12 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // other's tables.
   await app.register(adminHomeRoutes, { db, mediaStorageDir: env.media.storageDir });
   await app.register(adminDiscoveryRoutes, { db });
+  // PRD §34: operator access, role grants and the audit log.
+  await app.register(adminAccessRoutes, {
+    db,
+    permissionsEnforced: env.admin.permissionsEnforced,
+    auditEnabled: env.admin.auditEnabled,
+  });
   // US-102.4 the PUBLIC app surface: Home, Discovery and public media. No auth
   // by design, which is why every projection it serves is narrow and every read
   // is approval-gated.

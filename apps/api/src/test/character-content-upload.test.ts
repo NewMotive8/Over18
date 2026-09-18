@@ -15,11 +15,15 @@ import {
 } from './helpers.js';
 
 /**
- * PHASE 1 — Character content uploads skip Review.
+ * PHASE 1 — Character content uploads, by shelf.
  *
  * WHAT CHANGED, IN ONE SENTENCE: the upload route learned an opt-in `section`
  * field naming a Character-page shelf, and the server derives the asset's
- * kind, its approval and its accepted media types from that shelf.
+ * kind and its accepted media types from that shelf.
+ *
+ * P0.4 REVERSED ONE DECISION PINNED HERE: shelf uploads used to be approved on
+ * arrival (and Regular/Explicit released to Posts). They now land in Review
+ * like every other upload, and the tests below say so.
  *
  * WHAT DID NOT CHANGE, AND IS PINNED HERE: Review still exists, still queues
  * everything that reaches it by any other path, and still approves. The
@@ -127,6 +131,17 @@ async function uploadFromLibrary(
   });
 }
 
+/** The real approve route -- since P0.4 an upload is only usable after this. */
+async function approve(cookie: string, assetId: string) {
+  const res = await ctx.app.inject({
+    method: 'POST',
+    url: `/admin/content/assets/${assetId}/approve`,
+    headers: { cookie },
+  });
+  expect(res.statusCode).toBe(200);
+  return res.json();
+}
+
 async function reviewQueue(cookie: string): Promise<string[]> {
   const res = await ctx.app.inject({
     method: 'GET',
@@ -149,14 +164,15 @@ beforeEach(async () => {
   identityId = (await getActiveVisualIdentity(ctx.db, LUNA.id))!.id;
 });
 
-describe('a video uploaded from a character shelf is usable immediately', () => {
-  it('lands APPROVED, with an approval timestamp, and never enters Review', async () => {
+describe('a video uploaded from a character shelf waits for review (P0.4)', () => {
+  it('lands UNDER REVIEW -- unapproved, unreleased -- and is in the Review queue', async () => {
     const cookie = await adminCookie();
     const res = await uploadFromShelf(cookie, 'regular');
 
     expect(res.statusCode).toBe(201);
     const asset = res.json();
-    expect(asset.status).toBe('approved');
+    expect(asset.status).toBe('under_review');
+    expect(asset.workflow).toBe('pending_review');
     expect(asset.mediaType).toBe('video');
 
     // The stored row, not just the response projection.
@@ -164,31 +180,32 @@ describe('a video uploaded from a character shelf is usable immediately', () => 
       .select()
       .from(characterVisualAssets)
       .where(eq(characterVisualAssets.id, asset.assetId));
-    expect(row!.status).toBe('approved');
-    expect(row!.approvedAt).not.toBeNull();
+    expect(row!.status).toBe('under_review');
+    expect(row!.approvedAt).toBeNull();
+    expect(row!.publishedAt).toBeNull();
 
-    // The queue an operator actually looks at is untouched by this upload.
-    expect(await reviewQueue(cookie)).not.toContain(asset.assetId);
+    expect(await reviewQueue(cookie)).toContain(asset.assetId);
   });
 
-  it('is in the Library straight away, without a second decision', async () => {
+  it('reaches the Library only once an operator approves it', async () => {
     const cookie = await adminCookie();
     const asset = (await uploadFromShelf(cookie, 'regular')).json();
-    const library = await ctx.app.inject({
-      method: 'GET',
-      url: '/admin/content/library',
-      headers: { cookie },
-    });
-    expect(library.json().assets.map((a: { assetId: string }) => a.assetId)).toContain(
-      asset.assetId,
-    );
+    const library = async () =>
+      (
+        await ctx.app.inject({ method: 'GET', url: '/admin/content/library', headers: { cookie } })
+      )
+        .json()
+        .assets.map((a: { assetId: string }) => a.assetId);
+    expect(await library()).not.toContain(asset.assetId);
+    await approve(cookie, asset.assetId);
+    expect(await library()).toContain(asset.assetId);
   });
 
   it('is NEVER promoted to a primary reference by being approved', async () => {
-    // Approval and identity are separate decisions; auto-approval must not
-    // quietly make an uploaded clip the character's canonical portrait.
+    // Approval and identity are separate decisions; approving must not quietly
+    // make an uploaded clip the character's canonical portrait.
     const cookie = await adminCookie();
-    const asset = (await uploadFromShelf(cookie, 'regular')).json();
+    const asset = await approve(cookie, (await uploadFromShelf(cookie, 'regular')).json().assetId);
     expect(asset.isPrimary).toBe(false);
     const [row] = await ctx.db
       .select()
@@ -359,8 +376,8 @@ describe('Review is untouched', () => {
   });
 
   it('still queues a Library VIDEO upload — it is the flag, not the media type', async () => {
-    // Guards against the video-only rule leaking out of the auto-approve
-    // branch and quietly approving every video anyone uploads.
+    // Guards against any upload branch quietly approving every video anyone
+    // uploads. (Since P0.4 no upload branch approves at all.)
     const cookie = await adminCookie();
     const asset = (
       await uploadFromLibrary(cookie, {
@@ -462,10 +479,14 @@ describe('the merchandising picker offers content, not identity', () => {
     expect((await candidates(cookie)).map((a) => a.assetId)).not.toContain(reference.id);
   });
 
-  it('DOES offer Regular and Explicit videos uploaded from the character page', async () => {
+  it('DOES offer Regular and Explicit videos uploaded from the character page, once approved', async () => {
     const cookie = await adminCookie();
     const regular = (await uploadFromShelf(cookie, 'regular')).json();
     const explicit = (await uploadFromShelf(cookie, 'explicit')).json();
+    // Not before: an upload waiting for review is not merchandisable.
+    expect((await candidates(cookie)).map((a) => a.assetId)).not.toContain(regular.assetId);
+    await approve(cookie, regular.assetId);
+    await approve(cookie, explicit.assetId);
     const ids = (await candidates(cookie)).map((a) => a.assetId);
     expect(ids).toContain(regular.assetId);
     expect(ids).toContain(explicit.assetId);
@@ -498,7 +519,7 @@ describe('the merchandising picker offers content, not identity', () => {
       url: `/admin/content/assets/${image.assetId}/approve`,
       headers: { cookie },
     });
-    await uploadFromShelf(cookie, 'regular');
+    await approve(cookie, (await uploadFromShelf(cookie, 'regular')).json().assetId);
 
     const offered = await candidates(cookie);
     expect(offered.length).toBeGreaterThan(0);
@@ -545,7 +566,7 @@ describe('the merchandising picker offers content, not identity', () => {
  * ------------------------------------------------------------------ */
 
 describe('keywords still work on a shelf upload', () => {
-  it('saves and reads back a keyword set for an auto-approved clip', async () => {
+  it('saves and reads back a keyword set for a shelf clip', async () => {
     const cookie = await adminCookie();
     const asset = (await uploadFromShelf(cookie, 'regular')).json();
 
@@ -581,7 +602,8 @@ describe('keywords still work on a shelf upload', () => {
       .select()
       .from(characterVisualAssets)
       .where(eq(characterVisualAssets.id, asset.assetId));
-    expect(row!.status).toBe('approved');
+    // Still waiting for review: tagging decided nothing.
+    expect(row!.status).toBe('under_review');
     expect(row!.contentRating).toBe('explicit');
   });
 });

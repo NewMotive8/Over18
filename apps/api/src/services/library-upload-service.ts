@@ -23,7 +23,8 @@ import {
  * no provider, no model, no cost ledger, no job, no prompt. The operator picks
  * a file that already exists; the server validates it, writes the bytes, and
  * records the asset through the SAME services generation uses — createVisualAsset
- * then approveVisualAsset — so no second lifecycle is introduced.
+ * (and, for an identity reference only, approveVisualAsset) — so no second
+ * lifecycle is introduced.
  *
  * Deliberate constraints, all inherited rather than invented:
  *  - character_id / visual_identity_id are NOT NULL on character_visual_assets,
@@ -33,9 +34,10 @@ import {
  *    approveVisualAsset promotes only kind='reference' — an upload is
  *    kind='generated', so it can never enter the public canonical gallery,
  *    whose filter is kind='reference' AND status='approved' AND is_canonical.
- *  - kind='generated' + status='approved' is exactly what the Library selects
- *    (LIBRARY_STATUSES in content-review-service). 'approved' here means "an
- *    admin chose this file", which is the same trust level the queue confers.
+ *  - an upload is NOT approved on arrival (P0.4). It lands in `under_review`,
+ *    the same queue generated content arrives in, and reaches the Library only
+ *    when an operator approves it. The one exception is an identity reference,
+ *    whose caller asks for approval explicitly (see `approve` below).
  *
  * STORAGE DURABILITY: bytes are written under MEDIA_STORAGE_DIR. On Railway
  * that must point at a mounted volume or uploads are lost on the next deploy —
@@ -109,6 +111,13 @@ export interface LibraryUploadInput {
    */
   kind?: 'reference' | 'generated' | 'chat';
   /**
+   * Origin (P0.3). An operator's upload is `manual`, including Content Inbox
+   * assignment -- the inbox is manual intake staged before a character is
+   * chosen. `imported` is for bringing in existing outside content. An upload
+   * is never `generated` or `legacy`.
+   */
+  origin?: 'manual' | 'imported';
+  /**
    * Which identity VERSION this asset belongs to. Defaults to the character's
    * active identity (the pre-existing behaviour). Naming it explicitly is what
    * lets a reference be attached to a draft version before it is activated.
@@ -122,36 +131,24 @@ export interface LibraryUploadInput {
    */
   requirementKey?: string | null;
   /**
-   * Whether this upload is approved on arrival.
+   * Whether this upload is approved on arrival. DEFAULTS TO FALSE (P0.4).
    *
-   * FALSE is the content path: the asset lands in `under_review` and an
-   * operator decides in Review, which is what "manual upload and generated
-   * content share one workflow" actually requires.
+   * FALSE is every content path -- the Content Library, the Content Inbox and
+   * the Character page's Regular, Explicit and Chat shelves. The asset lands in
+   * `under_review` and waits for an operator's Approve or Reject like
+   * everything else. It used to default to TRUE, and the shelves passed
+   * TRUE as well, so a shelf upload skipped moderation and -- on Regular and
+   * Explicit -- went straight onto her Posts tab with nobody deciding either.
    *
-   * TRUE — the default, and every pre-existing caller — is the IDENTITY path:
-   * a primary reference an admin chose deliberately, where approval is the act
-   * of choosing it and canonical promotion is the point. Defaulting to true
-   * keeps that behaviour byte-for-byte unchanged.
+   * TRUE is only for an IDENTITY REFERENCE (character quick-create and the
+   * Visual identity reference upload), where choosing the file IS the approval
+   * and canonical promotion is the point. Those callers say so explicitly;
+   * nothing gets it by omission any more.
+   *
+   * There is deliberately no "release on upload" option: releasing is its own
+   * decision, taken after approval, from Review or the Character page.
    */
   approve?: boolean;
-  /**
-   * Whether this upload is RELEASED to the character's public Posts tab.
-   *
-   * FALSE is the default and every pre-existing caller: the Content Library and
-   * the inbox both land content that an operator has not yet chosen to put on
-   * anyone's page, so nothing this path creates becomes public by itself.
-   *
-   * TRUE is the Character page's Regular and Explicit shelves. That upload
-   * already approves on arrival because "uploading to a character IS the
-   * editorial decision" — this simply RECORDS the other half of that decision
-   * instead of leaving it implied. It is the same operator action at the same
-   * moment, not a second publishing mechanism.
-   *
-   * Publishing without approving is refused below rather than silently
-   * corrected: content that has not passed moderation must never carry a
-   * release time, or a later approval would put it live retroactively.
-   */
-  publish?: boolean;
 }
 
 export interface LibraryUploadStorage {
@@ -244,6 +241,15 @@ export async function uploadLibraryAsset(
   storage: LibraryUploadStorage,
   input: LibraryUploadInput,
 ): Promise<CharacterVisualAssetRow> {
+  // Enforced, not just documented: CONTENT can never be approved by uploading
+  // it. Refused before anything is written, so a mistaken caller fails loudly
+  // in development rather than quietly skipping moderation in production.
+  if (input.approve && (input.kind ?? 'generated') !== 'reference') {
+    throw new Error(
+      'uploadLibraryAsset: only an identity reference may be approved on upload; content goes through Review.',
+    );
+  }
+
   const accepted = ACCEPTED[input.mimeType];
   if (!accepted) {
     throw new LibraryUploadError(
@@ -289,13 +295,14 @@ export async function uploadLibraryAsset(
     visualIdentityId = identity.id;
   }
 
-  const approve = input.approve ?? true;
+  const approve = input.approve ?? false;
   const created = await createVisualAsset(db, {
     characterId: input.characterId,
     visualIdentityId,
     // createVisualAsset enforces that the version belongs to this character,
     // so a mismatched pair is rejected rather than silently cross-linked.
     kind: input.kind ?? 'generated',
+    origin: input.origin ?? 'manual',
     // An unapproved upload joins the review queue in the SAME state generated
     // content arrives in, so one queue serves both origins.
     status: approve ? undefined : 'under_review',
@@ -327,21 +334,6 @@ export async function uploadLibraryAsset(
       updatedAt: new Date(),
     })
     .where(eq(characterVisualAssets.id, created.id));
-
-  /**
-   * RELEASE, recorded at the moment the operator made the decision.
-   *
-   * Guarded on `approve` as well as `publish`: an unapproved row must never
-   * carry a release time, because approving it later would then put it live
-   * without anyone choosing to. The two flags travel together from the shelf,
-   * so this only ever refuses a caller that asked for something incoherent.
-   */
-  if (approve && input.publish) {
-    await db
-      .update(characterVisualAssets)
-      .set({ publishedAt: new Date(), updatedAt: new Date() })
-      .where(eq(characterVisualAssets.id, created.id));
-  }
 
   // Reuse the existing approval transition rather than inventing one: it records
   // approvedBy/approvedAt and leaves is_canonical false for a generated asset.

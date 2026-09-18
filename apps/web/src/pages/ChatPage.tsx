@@ -9,6 +9,7 @@ import {
   type SendMessageResult,
 } from '@over18/shared';
 import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
+import { absoluteMediaUrl } from '../lib/media';
 import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
 import { createPacedSend } from '../lib/chatPacing';
 import { createScrollFollower } from '../lib/chatScroll';
@@ -254,7 +255,11 @@ export default function ChatPage() {
   }
 
   const { character } = state.conversation;
-  const showImage = character.profileImage && !imageFailed;
+  // P0.2: the portrait is a canonical `/api/...` route on the API origin, or a
+  // legacy locator on the web origin. `absoluteMediaUrl` sends each to the
+  // right server; used raw, a canonical route was requested from the web host.
+  const avatar = absoluteMediaUrl(character.profileImage);
+  const showImage = avatar && !imageFailed;
 
   return (
     <section className="flex h-full min-h-[60vh] flex-col">
@@ -266,7 +271,7 @@ export default function ChatPage() {
         >
           {showImage ? (
             <img
-              src={character.profileImage!}
+              src={avatar}
               alt=""
               onError={() => setImageFailed(true)}
               className="h-12 w-12 rounded-full border border-zinc-700 object-cover"
