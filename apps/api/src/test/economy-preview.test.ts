@@ -309,6 +309,35 @@ describe('the preview composes the economy exactly as the resolver does', () => 
     expect(r.configuration.packs).toEqual([{ code: 'starter', version: 1, source: 'live', isPurchasable: true }]);
   });
 
+  /**
+   * The preview lists every row, but runtime prices through `actionCostFor`,
+   * which REFUSES an action whose tier set is ambiguous (both duration-tiered
+   * and untiered rows). The preview must say so rather than show prices the
+   * runtime would never charge.
+   */
+  it('flags any row the runtime would refuse to price, using the runtime lookup itself', async () => {
+    await plan('premium_monthly', 1, 300);
+    await pack('starter', 1, 150, 999, 0);
+    await ruleset(1, [
+      ['image', 'standard', null, 'per_action', 10],
+      ['video', 'standard', 5, 'per_action', 40],
+      ['video', 'standard', null, 'per_action', 60], // ambiguous with the tiered row
+    ]);
+    const r = await run(await account('admin'));
+    expect(action(r, IMAGE).runtime).toBe('priced');
+    expect(r.configurationIssues).toEqual([
+      { action: VIDEO, reason: 'ambiguous_configuration' },
+      { action: 'video/standard/any', reason: 'ambiguous_configuration' },
+    ]);
+  });
+
+  it('a sound ruleset has no configuration issues, and every row is priced as runtime would', async () => {
+    await appendixBDraft();
+    const r = await run(await account('admin'));
+    expect(r.configurationIssues).toEqual([]);
+    expect(r.actions.map((a) => a.runtime)).toEqual(['priced', 'priced', 'priced']);
+  });
+
   it('previewing never activates anything', async () => {
     await appendixBDraft();
     await run(await account('admin'), { providerCosts: [imageAt4c], marginGuard: { minGrossMarginPercent: 50 } });

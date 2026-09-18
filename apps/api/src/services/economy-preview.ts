@@ -1,5 +1,6 @@
 import type { Db } from '../db/client.js';
 import {
+  actionCostFor,
   economyNow,
   loadEconomyDrafts,
   resolvePackCatalog,
@@ -334,8 +335,15 @@ export interface EconomyPreview {
     /** Provider cost per Credit: the §8.1 parity quantity. Lower is safer. */
     providerCostPerCredit: Money | null;
     guard: 'ok' | 'below_threshold' | 'not_evaluated';
+    /**
+     * What RUNTIME would do when asked to price this row, answered by the
+     * resolver's own `actionCostFor`: `priced`, or the reason it would refuse.
+     */
+    runtime: 'priced' | string;
   }>;
   disabledActions: string[];
+  /** Rows the runtime would refuse to price, e.g. an ambiguous tier set. */
+  configurationIssues: Array<{ action: string; reason: string }>;
   inputs: {
     missingProviderCosts: string[];
     unmatchedProviderCosts: string[];
@@ -457,6 +465,7 @@ export function computeEconomics(economy: ComposedEconomy, inputs: PreviewInputs
   const guardWarnings: EconomyPreview['marginGuard']['warnings'] = [];
   const guardNotEvaluated: EconomyPreview['marginGuard']['notEvaluated'] = [];
   const perCreditCosts: Array<{ action: string; num: bigint; den: bigint; currency: string }> = [];
+  const configurationIssues: EconomyPreview['configurationIssues'] = [];
 
   const actions: EconomyPreview['actions'] = enabled.map((c) => {
     const key = keyOf(c);
@@ -513,6 +522,18 @@ export function computeEconomics(economy: ComposedEconomy, inputs: PreviewInputs
       guard = 'ok';
     }
 
+    // Ask the runtime's own lookup what it would charge for exactly this row.
+    // A tiered row is asked at its own upper bound, which the smallest-covering
+    // rule answers with the row itself when the configuration is sound.
+    const lookup = rules
+      ? actionCostFor(rules, c.actionType, {
+          qualityTier: c.qualityTier,
+          ...(c.maxDurationSeconds === null ? {} : { durationSeconds: c.maxDurationSeconds }),
+        })
+      : null;
+    const runtime = !lookup ? 'no_ruleset' : lookup.ok ? 'priced' : lookup.reason;
+    if (runtime !== 'priced') configurationIssues.push({ action: key, reason: runtime });
+
     return {
       action: key,
       actionType: c.actionType,
@@ -520,6 +541,7 @@ export function computeEconomics(economy: ComposedEconomy, inputs: PreviewInputs
       maxDurationSeconds: c.maxDurationSeconds,
       unit: c.unit,
       creditCost: c.creditCost,
+      runtime,
       cashPrice,
       providerCost: cost
         ? {
@@ -624,6 +646,7 @@ export function computeEconomics(economy: ComposedEconomy, inputs: PreviewInputs
     grants,
     actions,
     disabledActions: all.filter((c) => !c.enabled).map(keyOf),
+    configurationIssues,
     inputs: inputsReport,
     marginGuard: {
       status: thresholdBps === null ? 'not_configured' : 'evaluated',

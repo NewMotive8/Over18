@@ -695,7 +695,9 @@ export type ActionCostLookup =
  * (`action_disabled`) rather than falling back to another tier.
  */
 export function actionCostFor(
-  ruleset: RulesetSnapshot,
+  // Only the identity and the cost rows are read, so the P1.3 preview can ask
+  // the SAME question of a drafted ruleset that runtime asks of a live one.
+  ruleset: Pick<RulesetSnapshot, 'ref' | 'actionCosts'>,
   actionType: string,
   options: { qualityTier?: string; durationSeconds?: number } = {},
 ): ActionCostLookup {
