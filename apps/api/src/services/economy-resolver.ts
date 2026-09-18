@@ -46,13 +46,15 @@ import {
  *    happened" is not repeatable: a version published a moment later can change
  *    the answer for that instant.
  *
- *    A resolved version is practically uncancellable: the resolver only
- *    returns versions whose effective_from has passed, and migration 0029
- *    refuses any cancellation later than one minute before effective_from.
- *    That margin is a TIME buffer measured on the database clock, not a lock,
- *    so it cannot stop a cancelling transaction that was left uncommitted for
- *    longer than a minute. The moment a decision is actually written,
- *    `lockEconomyRefForRecording` closes that gap outright.
+ *    A version resolved by the DATABASE clock is practically uncancellable:
+ *    its effective_from has already passed, and migration 0029 refuses any
+ *    cancellation later than one minute before effective_from. That margin is
+ *    a TIME buffer measured on the database clock, not a lock, so it cannot
+ *    stop a cancelling transaction that was left uncommitted for longer than a
+ *    minute. The moment a decision is actually written,
+ *    `lockEconomyRefForRecording` closes that gap outright -- and also refuses
+ *    a version that has not yet taken effect, which is what a resolution at an
+ *    explicit future instant (a preview) can return.
  *
  * NO HIDDEN DEFAULTS. When nothing valid is published the answer is an explicit
  * `{ ok: false, reason }`, never a fallback price, a zero cost or a default
@@ -101,7 +103,9 @@ export async function economyNow(db: Pick<Db, 'execute'>): Promise<EconomyInstan
 /**
  * A caller-chosen instant: "what will be live next Tuesday", or an audit view
  * of a past moment. NOT a way to reconstruct what a past operation used -- that
- * is what its recorded `EconomyRef` is for.
+ * is what its recorded `EconomyRef` is for -- and NOT a basis for a decision:
+ * a future instant can resolve a version that has not taken effect, and
+ * `lockEconomyRefForRecording` refuses to record against one.
  */
 export function economyInstantAt(iso: string): EconomyInstant {
   if (!ISO_UTC.test(iso) || Number.isNaN(Date.parse(iso))) {
@@ -150,12 +154,28 @@ export type EconomyRef =
  * Either way nothing is ever recorded against a version somebody is cancelling,
  * and the lock is released by the caller's own commit or rollback.
  *
+ * ── AND ONLY AGAINST A VERSION THAT HAS TAKEN EFFECT (P1.2 audit) ────────────
+ *
+ * Everything above assumed the ref came from a resolution by the DATABASE
+ * clock, whose versions have always already taken effect. A resolution at an
+ * explicit FUTURE instant -- a preview -- hands out a real ref for a version
+ * that has not, and 0029 still lets that version be cancelled. Recording
+ * against it would charge a scheduled price before it applies, and could leave
+ * a record naming a version that never takes effect at all. So a published
+ * version whose `effective_from` is still ahead of the database clock is
+ * refused (`not_yet_effective`), judged in the same statement that takes the
+ * lock, on the same `clock_timestamp()` the resolver and the 0029 triggers use.
+ *
+ * A SUPERSEDED version is still accepted, deliberately: a decision resolved
+ * against v1 must be recordable against v1 after v2 takes over. That is what
+ * recording the exact ref, instead of re-resolving, is for.
+ *
  * READ-ONLY, like the rest of this module: it writes nothing and only holds the
  * row still long enough for the caller's write to be true.
  */
 export type EconomyRecordingLock =
   | { ok: true; ref: EconomyRef }
-  | { ok: false; reason: 'version_gone' | 'not_live'; status?: string };
+  | { ok: false; reason: 'version_gone' | 'not_live' | 'not_yet_effective'; status?: string };
 
 export async function lockEconomyRefForRecording(
   tx: Pick<Db, 'execute'>,
@@ -166,19 +186,23 @@ export async function lockEconomyRefForRecording(
   const locked =
     ref.kind === 'plan_version'
       ? await tx.execute(
-          sql`select status from ${economyPlanVersions} where ${economyPlanVersions.id} = ${ref.id} for share`,
+          sql`select status, ${economyPlanVersions.effectiveFrom} <= clock_timestamp() as effective
+                from ${economyPlanVersions} where ${economyPlanVersions.id} = ${ref.id} for share`,
         )
       : ref.kind === 'pack_version'
         ? await tx.execute(
-            sql`select status from ${economyPackVersions} where ${economyPackVersions.id} = ${ref.id} for share`,
+            sql`select status, ${economyPackVersions.effectiveFrom} <= clock_timestamp() as effective
+                  from ${economyPackVersions} where ${economyPackVersions.id} = ${ref.id} for share`,
           )
         : await tx.execute(
-            sql`select status from ${economyRulesets} where ${economyRulesets.id} = ${ref.id} for share`,
+            sql`select status, ${economyRulesets.effectiveFrom} <= clock_timestamp() as effective
+                  from ${economyRulesets} where ${economyRulesets.id} = ${ref.id} for share`,
           );
 
-  const row = locked.rows[0] as { status?: string } | undefined;
+  const row = locked.rows[0] as { status?: string; effective?: boolean | null } | undefined;
   if (!row) return { ok: false, reason: 'version_gone' };
   if (row.status !== 'published') return { ok: false, reason: 'not_live', status: row.status };
+  if (row.effective !== true) return { ok: false, reason: 'not_yet_effective', status: row.status };
   return { ok: true, ref };
 }
 
