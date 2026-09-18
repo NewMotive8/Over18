@@ -42,14 +42,16 @@ import { API_URL } from './api';
  * as a forward-compatible SEAM here rather than a backend change. See
  * DEMO_MEDIA_OVERRIDES and `characterVideoUrl` below.
  *
- * P0.2 — `profileImage` IS THE CANONICAL PORTRAIT NOW. It used to be the
- * `characters.profile_image` column, sent raw, which is why the chains below
- * consult the visual-identity response first and treat the field as a legacy
- * last resort. The server now resolves that field from the same canonical
- * reference `firstCanonicalImage` finds, so the two terms agree by
- * construction; the fallback order is kept because it costs nothing and the
- * identity response is the fresher of the two when a page has already fetched
- * it. Neither term is a database column any more.
+ * P0.2 — `profileImage` IS THE CANONICAL PORTRAIT NOW, AND IT COMES FIRST. It
+ * used to be the `characters.profile_image` column sent raw, which is why the
+ * still-image chain below once consulted the visual-identity response first
+ * and treated the field as a legacy last resort. The server now resolves the
+ * field from the canonical reference model, and it knows something this client
+ * cannot: which references can actually be SERVED. The visual-identity list
+ * includes scaffolding references whose bytes do not exist, so trusting its
+ * first entry put a 404 ahead of a working portrait, and kept it there even
+ * after an operator uploaded a real one. The identity response is now only a
+ * fallback for a payload that carries no portrait at all.
  */
 
 export type HeroMedia =
@@ -84,14 +86,23 @@ function characterVideoUrl(character: MediaCharacter): string | undefined {
  * US-102.4 replaced the public `imageUrl` with an API-relative opaque route
  * (`/api/media/assets/:id/file`) — it used to be the server's raw storage path.
  * A root-relative path resolves against the WEB origin, which is not where the
- * API lives in any deployed configuration, so it has to be prefixed. Absolute
- * URLs (a PoC override, a future CDN) are passed through untouched.
+ * API lives in any deployed configuration, so an API route has to be prefixed.
+ * Absolute URLs (a PoC override, a future CDN, a placeholder) pass through.
+ *
+ * P0.2 — ONLY `/api/` IS THE API'S. A character's portrait can now arrive in two
+ * shapes: the canonical `/api/media/assets/:id/file`, or a deprecated legacy
+ * locator such as `/media/maria/portrait.png`, which is a file in the WEB
+ * bundle and exists nowhere on the API. Prefixing every root-relative path sent
+ * the second kind to the wrong server; leaving every one alone sent the first
+ * kind to a static host that answers any unknown path with `index.html`. The
+ * API serves its public media under `/api/` and nowhere else, so that prefix —
+ * and only that prefix — decides which origin a path belongs to.
  */
 export function absoluteMediaUrl(raw: string | null | undefined): string | undefined {
   const url = raw?.trim();
   if (!url) return undefined;
   if (/^(https?:|data:|blob:)/i.test(url)) return url;
-  return url.startsWith('/') ? `${API_URL}${url}` : url;
+  return url.startsWith('/api/') ? `${API_URL}${url}` : url;
 }
 
 /** First canonical reference image (by position) from a visual-identity response. */
@@ -175,8 +186,8 @@ export function resolveRailMedia(character: Partial<MediaCharacter>): HeroMedia 
 /**
  * Resolves the hero media for a character, video-first:
  *  1. a valid video → video, using the best available still as its poster;
- *  2. otherwise the active Visual Identity's first canonical image, else the
- *     server-resolved `profileImage` portrait → image;
+ *  2. otherwise the server-resolved `profileImage` portrait, else the active
+ *     Visual Identity's first canonical image → image;
  *  3. otherwise an initial-letter placeholder (never a broken image).
  *
  * VIDEO PRECEDENCE, and why the CMS sits above the manifest. A PoC override
@@ -207,7 +218,10 @@ export function resolveHeroMedia(
    */
   const videoUrl =
     override?.videoUrl ?? characterVideoUrl(character) ?? cmsVideoUrl(character);
-  const stillImage = firstCanonicalImage(visual) ?? character.profileImage ?? undefined;
+  // P0.2: the server's portrait first — it already IS the canonical reference,
+  // chosen by the one resolver that knows which references can be served. The
+  // client-side identity lookup is consulted only when the payload has none.
+  const stillImage = absoluteMediaUrl(character.profileImage) ?? firstCanonicalImage(visual);
 
   if (videoUrl) {
     const poster = override?.poster ?? stillImage;
@@ -311,9 +325,9 @@ export function characterHeaderItems(
   if (videos.length > 0) return videos;
 
   /**
-   * 2. Her IDENTITY still: the canonical reference, then the server-resolved
-   *    `profileImage` portrait, then an initial-letter tile so the header can
-   *    never be an empty frame.
+   * 2. Her IDENTITY still: the server-resolved `profileImage` portrait, then
+   *    the visual-identity reference, then an initial-letter tile so the header
+   *    can never be an empty frame.
    *
    * THE BUNDLED MANIFEST USED TO SIT ABOVE THIS, and it is removed. It served
    * demo files to any character whose slug matched one of four PoC names,

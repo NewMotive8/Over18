@@ -27,9 +27,9 @@ export default function CharacterCard({ character }: { character: PublicCharacte
     setImageFailed(false);
   }, [character.id]);
 
-  // API-relative opaque route → resolved against the API origin. An absolute
-  // URL (a character whose portrait still comes from the deprecated locator)
-  // passes through untouched.
+  // A canonical `/api/...` route → the API origin. A deprecated legacy locator
+  // stays where it lives: an absolute URL untouched, a `/media/...` path on the
+  // web origin that ships the file.
   const imageUrl = absoluteMediaUrl(character.profileImage);
   const showImage = imageUrl && !imageFailed;
 
