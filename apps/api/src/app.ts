@@ -7,6 +7,7 @@ import type { Db } from './db/client.js';
 import authPlugin from './plugins/auth.js';
 import adminAuditPlugin from './plugins/admin-audit.js';
 import adminAccessRoutes from './routes/admin-access.js';
+import adminEconomyRoutes from './routes/admin-economy.js';
 import authRoutes from './routes/auth.js';
 import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
@@ -162,6 +163,9 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     permissionsEnforced: env.admin.permissionsEnforced,
     auditEnabled: env.admin.auditEnabled,
   });
+  // PRD §31 / P1.3: the read-only economy preview and margin guard. Admin-only
+  // (`economy.manage`), writes nothing, activates nothing.
+  await app.register(adminEconomyRoutes, { db });
   // US-102.4 the PUBLIC app surface: Home, Discovery and public media. No auth
   // by design, which is why every projection it serves is narrow and every read
   // is approval-gated.
