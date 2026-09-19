@@ -534,7 +534,8 @@ describe('isolation', () => {
  * checks that nothing in the application calls it yet.
  */
 describe('no application path touches a wallet yet', () => {
-  const ALLOWED = new Set(['db/schema.ts', 'services/wallet-service.ts']);
+  // P2.3: the read-only rebuild and reconciliation is the other reviewed reader.
+  const ALLOWED = new Set(['db/schema.ts', 'services/wallet-service.ts', 'services/wallet-reconciliation.ts']);
   const WALLET_TABLES = /\b(walletCurrencies|wallets|walletTransactions|wallet_currencies|wallet_transactions)\b/;
 
   function sourceFiles(dir: string): string[] {

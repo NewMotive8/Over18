@@ -34,6 +34,20 @@ import { wallets, walletTransactions, type WalletTransactionRow } from '../db/sc
  * with `idempotency_conflict`. A reason, request id, actor or metadata that
  * differs on a retry is not material.
  *
+ * THE IDEMPOTENCY BOUNDARY (P2.3), the same for all five operations:
+ *   - A key names ONE operation in ONE wallet (user and currency), and one
+ *     operation is exactly one ledger transaction. The same key in another
+ *     currency's wallet is another operation.
+ *   - The stable result of a key is the transaction it recorded, exactly as it
+ *     was recorded -- including the balance it left then, whatever has
+ *     happened to the wallet since.
+ *   - A REFUSED operation records nothing, so it leaves no result and does not
+ *     use up its key: a retry is evaluated afresh. There is one financial
+ *     effect per key, never two.
+ *
+ * `wallet-reconciliation.ts` proves the other half of §19.2 from the outside:
+ * that every wallet still equals its ledger.
+ *
  * CREDIT CLASSES (PRD §18: included -> earned -> purchased, expiring before
  * permanent). A capture, release, refund or reversal moves Credits of the class
  * of the transaction it names -- Credits go back to, or leave, the class they
