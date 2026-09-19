@@ -22,10 +22,11 @@ import { adminEconomyApi, type EconomyPreviewResponse, type PreviewAiProviderCos
  * Admin -> Economy (PRD v1.2 §31, P1.4).
  *
  * The preview & margin guard runs against the server's read-only preview
- * (`economy.manage`). Plans, packs, action costs, allowances, rewards and
- * versions have no admin endpoint yet, so each says "Backend support pending"
- * and what is missing -- no sample data, no dead form, no hard-coded value.
- * All logic lives in `admin/economy.ts`.
+ * (`economy.manage`). The server also supports drafts, review, publishing and
+ * cancellation for plans, packs and the ruleset; the screens that will use it
+ * are not built yet, so each says so and lists what the server already
+ * supports -- no sample data, no dead form, no hard-coded value. All logic
+ * lives in `admin/economy.ts`.
  */
 
 export function EconomyTabs({ active }: { active: EconomySection['key'] | null }) {
@@ -40,23 +41,23 @@ export function EconomyTabs({ active }: { active: EconomySection['key'] | null }
           className={`rounded-md px-3 py-1.5 text-sm ${section.key === active ? 'bg-zinc-900 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
         >
           {section.label}
-          {section.backend.status === 'pending' && <span className="ml-1.5 text-[10px] uppercase tracking-wide text-zinc-600">pending</span>}
+          {section.screen === 'pending' && <span className="ml-1.5 text-[10px] uppercase tracking-wide text-zinc-600">soon</span>}
         </NavLink>
       ))}
     </nav>
   );
 }
 
-/** A screen whose server support does not exist yet: it says so, and shows nothing else. */
-export function BackendPendingPanel({ section }: { section: EconomySection }) {
-  const missing = section.backend.status === 'pending' ? section.backend.missing : [];
+/** A screen not built yet: it says so, lists what the server already supports, and shows nothing else. */
+export function ScreenPendingPanel({ section }: { section: EconomySection }) {
   return (
     <div className="rounded-lg border border-dashed border-zinc-800 bg-zinc-900/40 px-6 py-8">
       <h2 className="text-lg font-semibold text-white">{section.label}</h2>
       <p className="mt-1 text-sm text-zinc-400">{section.manages}</p>
-      <p className="mt-6 text-sm font-medium text-zinc-200">Backend support pending</p>
+      <p className="mt-6 text-sm font-medium text-zinc-200">Screen not built yet</p>
+      <p className="mt-2 text-sm text-zinc-500">The server already supports:</p>
       <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-zinc-500">
-        {missing.map((item) => <li key={item}>{item}</li>)}
+        {section.server.map((item) => <li key={item}>{item}</li>)}
       </ul>
       <p className="mt-6 text-sm text-zinc-400">
         The live and drafted configuration can be inspected, read-only, in the{' '}
@@ -319,8 +320,8 @@ export default function EconomyPage() {
         <p className="text-sm text-zinc-400">
           There is no such economy section. <Link to="/admin/economy" className="text-rose-400">Back to the preview</Link>
         </p>
-      ) : section.backend.status === 'pending' ? (
-        <BackendPendingPanel section={section} />
+      ) : section.screen === 'pending' ? (
+        <ScreenPendingPanel section={section} />
       ) : (
         <PreviewWorkspace />
       )}

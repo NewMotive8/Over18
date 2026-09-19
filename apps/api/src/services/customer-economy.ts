@@ -46,7 +46,8 @@ function toPlanOffer(plan: PlanVersionView): CustomerPlanOffer {
     priceMinor: plan.priceMinor,
     currency: plan.currency,
     monthlyIncludedCredits: plan.monthlyIncludedCredits,
-    features: plan.features,
+    // `features` are machine rules for server-side entitlement decisions, not
+    // customer-facing benefits: deliberately never projected here.
     isPurchasable: plan.isPurchasable,
     effectiveFrom: plan.effectiveFrom,
   };

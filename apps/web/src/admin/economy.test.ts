@@ -26,8 +26,8 @@ import { previewResponse } from './economyTestData';
 const form = (over: Partial<typeof EMPTY_PREVIEW_FORM> = {}) => ({ ...EMPTY_PREVIEW_FORM, ...over });
 
 describe('economy sections', () => {
-  it('only the preview has server support; every other screen is pending, and says what is missing', () => {
-    expect(ECONOMY_SECTIONS.map((s) => [s.key, s.backend.status])).toEqual([
+  it('only the preview screen is built; every other screen is pending and lists what the server already supports', () => {
+    expect(ECONOMY_SECTIONS.map((s) => [s.key, s.screen])).toEqual([
       ['preview', 'available'],
       ['plans', 'pending'],
       ['packs', 'pending'],
@@ -36,10 +36,15 @@ describe('economy sections', () => {
       ['rewards', 'pending'],
       ['versions', 'pending'],
     ]);
-    for (const section of ECONOMY_SECTIONS) {
-      if (section.backend.status === 'pending') expect(section.backend.missing.length, section.key).toBeGreaterThan(0);
-    }
+    for (const section of ECONOMY_SECTIONS) expect(section.server.length, section.key).toBeGreaterThan(0);
     expect(new Set(ECONOMY_SECTIONS.map((s) => s.path)).size).toBe(ECONOMY_SECTIONS.length);
+  });
+
+  it('never claims the server lacks what it now has (P1 configuration backend)', () => {
+    const copy = JSON.stringify(ECONOMY_SECTIONS);
+    expect(copy).not.toMatch(/No admin endpoint|do not exist on the server|Backend support pending/i);
+    const versions = ECONOMY_SECTIONS.find((s) => s.key === 'versions')!;
+    expect(versions.server.join(' ')).toMatch(/Publish all open drafts together/);
   });
 
   it('resolves a route parameter to a section; an unknown one to null', () => {

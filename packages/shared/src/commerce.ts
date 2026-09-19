@@ -77,7 +77,8 @@ export interface EconomyUnavailableResponse {
  * A published plan version in effect now, as a customer may see it.
  * `code` is the plan's stable identity; `versionId` names the exact
  * configuration row, which is what a later checkout must pin rather than
- * re-resolving by time.
+ * re-resolving by time. Plan `features` are machine rules for the server's
+ * entitlement decisions and are deliberately not part of this view.
  */
 export interface CustomerPlanOffer {
   code: string;
@@ -88,7 +89,6 @@ export interface CustomerPlanOffer {
   priceMinor: number;
   currency: string;
   monthlyIncludedCredits: number;
-  features: Record<string, unknown>;
   /** False for a retired plan: still in effect, but not offered. */
   isPurchasable: boolean;
   /** ISO 8601, microsecond precision, UTC. */

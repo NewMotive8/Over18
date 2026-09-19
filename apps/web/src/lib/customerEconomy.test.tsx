@@ -54,7 +54,6 @@ const plan = (code: string, over: Partial<CustomerPlanOffer> = {}): CustomerPlan
   priceMinor: 1299,
   currency: 'USD',
   monthlyIncludedCredits: 300,
-  features: {},
   isPurchasable: true,
   effectiveFrom: '2026-09-01T00:00:00.000000Z',
   ...over,

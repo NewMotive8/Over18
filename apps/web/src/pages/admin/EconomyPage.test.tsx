@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { ECONOMY_SECTIONS } from '../../admin/economy';
 import { previewResponse } from '../../admin/economyTestData';
-import EconomyPage, { BackendPendingPanel, PreviewReport } from './EconomyPage';
+import EconomyPage, { PreviewReport, ScreenPendingPanel } from './EconomyPage';
 
 /**
  * P1.4 -- the Economy admin screens, rendered statically (the suite runs no
@@ -34,23 +34,25 @@ describe('the economy console', () => {
     expect(html).not.toMatch(AMOUNT);
   });
 
-  it('shows "Backend support pending" -- and nothing else -- for every screen without a server', () => {
-    for (const section of ECONOMY_SECTIONS.filter((s) => s.backend.status === 'pending')) {
+  it('says "Screen not built yet" -- and shows nothing else -- for every unbuilt screen', () => {
+    for (const section of ECONOMY_SECTIONS.filter((s) => s.screen === 'pending')) {
       const html = renderAt(section.path);
-      expect(html, section.key).toContain('Backend support pending');
+      expect(html, section.key).toContain('Screen not built yet');
+      expect(html, section.key).not.toContain('Backend support pending');
       expect(html, section.key).not.toMatch(/<input|<textarea|<select|type="submit"/);
       expect(html, section.key).not.toMatch(AMOUNT);
     }
   });
 
-  it('lists what is missing on a pending screen and points to the preview', () => {
+  it('lists what the server already supports on a pending screen, and points to the preview', () => {
     const plans = ECONOMY_SECTIONS.find((s) => s.key === 'plans')!;
     const html = renderToStaticMarkup(
       <MemoryRouter>
-        <BackendPendingPanel section={plans} />
+        <ScreenPendingPanel section={plans} />
       </MemoryRouter>,
     );
-    expect(html).toContain('No admin endpoint lists, creates or edits plan versions.');
+    expect(html).toContain('The server already supports:');
+    expect(html).toContain('List every plan version with its state and timestamps.');
     expect(html).toContain('href="/admin/economy"');
   });
 

@@ -30,12 +30,18 @@ export interface EconomySection {
   path: string;
   /** What the screen manages, per PRD §31 and the P1.4 scope. */
   manages: string;
-  backend: { status: 'available' } | { status: 'pending'; missing: string[] };
+  /** Whether this screen exists yet. */
+  screen: 'available' | 'pending';
+  /**
+   * What the server already supports for this section -- stated, so a pending
+   * screen never implies the server is missing something it has.
+   */
+  server: string[];
 }
 
-/** What every editing screen still needs from the server. */
-const NO_WRITE_WORKFLOW =
-  'Draft versions cannot be scheduled, published or cancelled from the admin: that workflow, its validation and its audit record do not exist on the server yet.';
+const RULESET_DRAFT =
+  'Save or discard the ruleset draft: action costs, allowances and rewards together, replaced whole and checked against the catalogue.';
+const LIVE_THROUGH_PUBLISHING = 'A draft goes live only through Versions & publishing.';
 
 export const ECONOMY_SECTIONS: readonly EconomySection[] = [
   {
@@ -43,61 +49,70 @@ export const ECONOMY_SECTIONS: readonly EconomySection[] = [
     label: 'Preview & margin guard',
     path: '/admin/economy',
     manages: 'What the drafted or live economy buys, costs and earns, and the margin guard.',
-    backend: { status: 'available' },
+    screen: 'available',
+    server: ['Preview the drafted or live economy, read-only.'],
   },
   {
     key: 'plans',
     label: 'Plans',
     path: '/admin/economy/plans',
     manages: 'Plan code, name, term, price, currency, monthly Credit grant, feature flags and purchasability -- versioned.',
-    backend: { status: 'pending', missing: ['No admin endpoint lists, creates or edits plan versions.', NO_WRITE_WORKFLOW] },
+    screen: 'pending',
+    server: [
+      'List every plan version with its state and timestamps.',
+      "Save or discard a plan's draft, including its four feature flags; retiring a plan is a draft that is no longer purchasable.",
+      LIVE_THROUGH_PUBLISHING,
+    ],
   },
   {
     key: 'packs',
     label: 'Credit packs',
     path: '/admin/economy/packs',
     manages: 'The Credit pack ladder: Credits, price, order, best-value flag and purchasability -- versioned.',
-    backend: { status: 'pending', missing: ['No admin endpoint lists, creates or edits pack versions.', NO_WRITE_WORKFLOW] },
+    screen: 'pending',
+    server: ['List every pack version with its state and timestamps.', "Save or discard a pack's draft.", LIVE_THROUGH_PUBLISHING],
   },
   {
     key: 'action-costs',
     label: 'Action costs',
     path: '/admin/economy/action-costs',
     manages: 'Credit cost per action, quality tier and duration tier, in the ruleset.',
-    backend: { status: 'pending', missing: ['No admin endpoint lists, creates or edits a ruleset or its action costs.', NO_WRITE_WORKFLOW] },
+    screen: 'pending',
+    server: ['List every ruleset version with its action costs.', RULESET_DRAFT, LIVE_THROUGH_PUBLISHING],
   },
   {
     key: 'allowances',
     label: 'Allowances',
     path: '/admin/economy/allowances',
     manages: 'Free message counts, the signup grant, the grace period and the reward cap, in the ruleset.',
-    backend: {
-      status: 'pending',
-      missing: ['No admin endpoint lists, creates or edits ruleset allowances, and the preview does not report them.', NO_WRITE_WORKFLOW],
-    },
+    screen: 'pending',
+    server: [
+      'List every ruleset version with its allowances.',
+      RULESET_DRAFT,
+      'Publishing requires every catalogue allowance to be set.',
+      LIVE_THROUGH_PUBLISHING,
+    ],
   },
   {
     key: 'rewards',
     label: 'Rewards',
     path: '/admin/economy/rewards',
     manages: 'Milestone and referral reward amounts and per-user caps, in the ruleset.',
-    backend: {
-      status: 'pending',
-      missing: ['No admin endpoint lists, creates or edits ruleset rewards, and the preview does not report them.', NO_WRITE_WORKFLOW],
-    },
+    screen: 'pending',
+    server: ['List every ruleset version with its rewards.', RULESET_DRAFT, LIVE_THROUGH_PUBLISHING],
   },
   {
     key: 'versions',
     label: 'Versions & publishing',
     path: '/admin/economy/versions',
     manages: 'Every configuration version by state -- draft, scheduled, active, superseded -- with its timestamps, and explicit scheduling and publishing.',
-    backend: {
-      status: 'pending',
-      missing: [
-        'No admin endpoint lists versions by state or returns their effective and publication timestamps.',
-        'No admin endpoint validates, schedules, publishes or cancels a version.',
-      ],
-    },
+    screen: 'pending',
+    server: [
+      'List every plan, pack and ruleset version with its state, effective and publication timestamps, and who published it and why.',
+      'Review every open draft: an old -> new comparison with what is live, blocking errors and warnings.',
+      'Publish all open drafts together, now or at a scheduled time, with a reason -- refused if a draft changed after the review.',
+      'Cancel a scheduled version before it takes effect, with a reason.',
+    ],
   },
 ];
 

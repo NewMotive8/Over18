@@ -200,7 +200,6 @@ describe('GET /api/economy/catalog', () => {
         priceMinor: p.priceMinor,
         currency: p.currency,
         monthlyIncludedCredits: p.monthlyIncludedCredits,
-        features: p.features,
         isPurchasable: p.isPurchasable,
         effectiveFrom: p.effectiveFrom,
       })),
@@ -211,7 +210,9 @@ describe('GET /api/economy/catalog', () => {
       ['max', 4500, 17999, 4, true],
     ]);
     expect(catalog.packs.map((p) => p.versionId)).toEqual(packs.map((p) => p.ref.id));
-    expect(catalog.plans[0]).toMatchObject({ code: 'premium_monthly', priceMinor: 1299, monthlyIncludedCredits: 300, features: { unlimited_text: true } });
+    expect(catalog.plans[0]).toMatchObject({ code: 'premium_monthly', priceMinor: 1299, monthlyIncludedCredits: 300 });
+    // Stored plan features are machine rules for the server, never customer-facing.
+    expect(catalog.plans[0]).not.toHaveProperty('features');
     expect(Date.parse(catalog.asOf)).not.toBeNaN();
   });
 
@@ -220,12 +221,12 @@ describe('GET /api/economy/catalog', () => {
     const catalog = (await get(on, CATALOG, (await signIn()).cookies)).json() as CustomerEconomyCatalog;
     expect(Object.keys(catalog).sort()).toEqual(['asOf', 'packs', 'plans']);
     expect(Object.keys(catalog.plans[0]!).sort()).toEqual(
-      ['billingPeriodMonths', 'code', 'currency', 'displayName', 'effectiveFrom', 'features', 'isPurchasable', 'monthlyIncludedCredits', 'priceMinor', 'version', 'versionId'],
+      ['billingPeriodMonths', 'code', 'currency', 'displayName', 'effectiveFrom', 'isPurchasable', 'monthlyIncludedCredits', 'priceMinor', 'version', 'versionId'],
     );
     expect(Object.keys(catalog.packs[0]!).sort()).toEqual(
       ['code', 'credits', 'currency', 'displayName', 'effectiveFrom', 'isBestValue', 'isPurchasable', 'priceMinor', 'sortOrder', 'version', 'versionId'],
     );
-    expect(JSON.stringify(catalog)).not.toMatch(/publish_reason|publishedBy|published_by|status|draft|creditCost/);
+    expect(JSON.stringify(catalog)).not.toMatch(/publish_reason|publishedBy|published_by|status|draft|creditCost|features|unlimited_text/);
   });
 
   it('never exposes a draft or a future-scheduled version -- though the admin preview can see them', async () => {

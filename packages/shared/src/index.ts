@@ -40,6 +40,34 @@ export {
   type SubscriptionStatus,
 } from './commerce.js';
 
+export {
+  ECONOMY_ACTION_CATALOGUE,
+  ECONOMY_ACTION_TYPES,
+  ECONOMY_ALLOWANCE_KEYS,
+  ECONOMY_QUALITY_TIERS,
+  PLAN_FEATURE_KEYS,
+  type ActionCostInput,
+  type AdminPackVersion,
+  type AdminPlanVersion,
+  type AdminRulesetVersion,
+  type EconomyActionType,
+  type EconomyAllowanceKey,
+  type EconomyConfigurationView,
+  type EconomyDraftDiff,
+  type EconomyFieldChange,
+  type EconomyPublishResult,
+  type EconomyPublishReview,
+  type EconomyQualityTier,
+  type EconomyVersionMeta,
+  type EconomyVersionState,
+  type PackDraftInput,
+  type PlanDraftInput,
+  type PlanFeatureKey,
+  type PlanFeatures,
+  type RewardInput,
+  type RulesetDraftInput,
+} from './economy.js';
+
 /** Response shape of GET /health on the API. */
 export interface HealthResponse {
   status: 'ok';
