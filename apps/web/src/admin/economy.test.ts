@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ECONOMY_ACTION_CATALOGUE, ECONOMY_ALLOWANCE_KEYS, ECONOMY_QUALITY_TIERS, PLAN_FEATURE_KEYS } from '@over18/shared';
 import { describe, expect, it } from 'vitest';
 import { ApiRequestError } from '../lib/api';
 import {
@@ -26,25 +27,10 @@ import { previewResponse } from './economyTestData';
 const form = (over: Partial<typeof EMPTY_PREVIEW_FORM> = {}) => ({ ...EMPTY_PREVIEW_FORM, ...over });
 
 describe('economy sections', () => {
-  it('only the preview screen is built; every other screen is pending and lists what the server already supports', () => {
-    expect(ECONOMY_SECTIONS.map((s) => [s.key, s.screen])).toEqual([
-      ['preview', 'available'],
-      ['plans', 'pending'],
-      ['packs', 'pending'],
-      ['action-costs', 'pending'],
-      ['allowances', 'pending'],
-      ['rewards', 'pending'],
-      ['versions', 'pending'],
-    ]);
-    for (const section of ECONOMY_SECTIONS) expect(section.server.length, section.key).toBeGreaterThan(0);
+  it('has a screen for the preview and every configuration area, each at its own path', () => {
+    expect(ECONOMY_SECTIONS.map((s) => s.key)).toEqual(['preview', 'plans', 'packs', 'action-costs', 'allowances', 'rewards', 'versions']);
     expect(new Set(ECONOMY_SECTIONS.map((s) => s.path)).size).toBe(ECONOMY_SECTIONS.length);
-  });
-
-  it('never claims the server lacks what it now has (P1 configuration backend)', () => {
-    const copy = JSON.stringify(ECONOMY_SECTIONS);
-    expect(copy).not.toMatch(/No admin endpoint|do not exist on the server|Backend support pending/i);
-    const versions = ECONOMY_SECTIONS.find((s) => s.key === 'versions')!;
-    expect(versions.server.join(' ')).toMatch(/Publish all open drafts together/);
+    expect(JSON.stringify(ECONOMY_SECTIONS)).not.toMatch(/Backend support pending|not built yet/i);
   });
 
   it('resolves a route parameter to a section; an unknown one to null', () => {
@@ -162,8 +148,18 @@ describe('the economy admin carries no economy values and no customer fixture', 
       return /\.(ts|tsx)$/.test(name) && !/\.test\.(ts|tsx)$/.test(name) ? [relative(src, path).split('\\').join('/')] : [];
     });
 
+  /** Every economy admin module: the preview, the editors and their logic. */
+  const economyAdminSources = () =>
+    applicationSources().filter((rel) => /^admin\/economy(Config)?\.ts$|^pages\/admin\/EconomyPage\.tsx$|^pages\/admin\/economy\//.test(rel));
+
+  it('covers the preview and every editor module', () => {
+    expect(economyAdminSources()).toEqual(
+      expect.arrayContaining(['admin/economy.ts', 'admin/economyConfig.ts', 'pages/admin/EconomyPage.tsx', 'pages/admin/economy/RulesetScreen.tsx']),
+    );
+  });
+
   it('never imports the customer economy module or its fixture', () => {
-    for (const rel of ['admin/economy.ts', 'pages/admin/EconomyPage.tsx']) {
+    for (const rel of economyAdminSources()) {
       expect(read(rel), rel).not.toMatch(/customerEconomy/);
     }
   });
@@ -176,10 +172,26 @@ describe('the economy admin carries no economy values and no customer fixture', 
   });
 
   it('writes no money amount or Credit figure into the admin code', () => {
-    for (const rel of ['admin/economy.ts', 'pages/admin/EconomyPage.tsx']) {
+    for (const rel of economyAdminSources()) {
       // Money amounts (e.g. 9.99, 0.04) and micros-scale integers (e.g. 2_000_000);
       // CSS values such as tracking-[0.18em] are not amounts.
       expect(read(rel), rel).not.toMatch(/(?<![[\w.])\d+\.\d{2,}(?!\w)|\b\d{1,3}(?:_\d{3})+\b/);
+    }
+  });
+
+  it("the editors take actions, tiers, units, features and allowances from the server's catalogue", () => {
+    const vocabulary = [
+      ...PLAN_FEATURE_KEYS,
+      ...ECONOMY_QUALITY_TIERS,
+      ...ECONOMY_ALLOWANCE_KEYS,
+      ...Object.keys(ECONOMY_ACTION_CATALOGUE),
+      ...Object.values(ECONOMY_ACTION_CATALOGUE).map((entry) => entry.unit),
+    ];
+    const literal = new RegExp(`['"\`](${[...new Set(vocabulary)].join('|')})['"\`]`);
+    const editors = economyAdminSources().filter((rel) => rel === 'admin/economyConfig.ts' || rel.startsWith('pages/admin/economy/'));
+    for (const rel of editors) {
+      expect(read(rel), rel).not.toMatch(literal);
+      expect(read(rel), rel).not.toMatch(/PLAN_FEATURE_KEYS|ECONOMY_(ACTION_CATALOGUE|ACTION_TYPES|ALLOWANCE_KEYS|QUALITY_TIERS)/);
     }
   });
 });

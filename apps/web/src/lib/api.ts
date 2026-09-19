@@ -15,6 +15,15 @@ import type {
   ConversationSummary,
   CustomerCommercialState,
   CustomerEconomyCatalog,
+  AdminPackVersion,
+  AdminPlanVersion,
+  AdminRulesetVersion,
+  EconomyConfigurationView,
+  EconomyPublishResult,
+  EconomyPublishReview,
+  PackDraftInput,
+  PlanDraftInput,
+  RulesetDraftInput,
   HealthResponse,
   PublicCharacter,
   SendMessageResult,
@@ -62,6 +71,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiRequestError(res.status, code, message, details);
   }
+  // 204 No Content (a discard, a cancellation) has no body to parse.
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -1357,6 +1368,30 @@ export interface EconomyPreviewRequest {
 export const adminEconomyApi = {
   preview: (body: EconomyPreviewRequest) =>
     request<EconomyPreviewResponse>('/admin/economy/preview', { method: 'POST', body: JSON.stringify(body) }),
+  /** Every plan, pack and ruleset version with its state, and the key catalogue. */
+  configuration: () => request<EconomyConfigurationView>('/admin/economy/configuration'),
+  savePlanDraft: (code: string, body: PlanDraftInput & { reason?: string | null }) =>
+    request<AdminPlanVersion>(`/admin/economy/plans/${encodeURIComponent(code)}/draft`, { method: 'PUT', body: JSON.stringify(body) }),
+  discardPlanDraft: (code: string) =>
+    request<void>(`/admin/economy/plans/${encodeURIComponent(code)}/draft`, { method: 'DELETE' }),
+  savePackDraft: (code: string, body: PackDraftInput & { reason?: string | null }) =>
+    request<AdminPackVersion>(`/admin/economy/packs/${encodeURIComponent(code)}/draft`, { method: 'PUT', body: JSON.stringify(body) }),
+  discardPackDraft: (code: string) =>
+    request<void>(`/admin/economy/packs/${encodeURIComponent(code)}/draft`, { method: 'DELETE' }),
+  /** Action costs, allowances and rewards are one draft, always saved whole. */
+  saveRulesetDraft: (body: RulesetDraftInput & { reason?: string | null }) =>
+    request<AdminRulesetVersion>('/admin/economy/ruleset/draft', { method: 'PUT', body: JSON.stringify(body) }),
+  discardRulesetDraft: () => request<void>('/admin/economy/ruleset/draft', { method: 'DELETE' }),
+  /** The old -> new comparison of every open draft, with blocking errors and warnings. */
+  review: () => request<EconomyPublishReview>('/admin/economy/publish/review'),
+  /** Publishes every open draft together -- exactly the drafts the review token names. */
+  publish: (body: { reason: string; effectiveFrom: string | null; draftSetToken: string }) =>
+    request<EconomyPublishResult>('/admin/economy/publish', { method: 'POST', body: JSON.stringify(body) }),
+  cancelVersion: (kind: 'plan' | 'pack' | 'ruleset', versionId: string, reason: string) =>
+    request<void>(`/admin/economy/versions/${kind}/${encodeURIComponent(versionId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
 };
 
 export const adminDiscoveryApi = {

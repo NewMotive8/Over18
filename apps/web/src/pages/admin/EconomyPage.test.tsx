@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { ECONOMY_SECTIONS } from '../../admin/economy';
 import { previewResponse } from '../../admin/economyTestData';
-import EconomyPage, { PreviewReport, ScreenPendingPanel } from './EconomyPage';
+import EconomyPage, { PreviewReport } from './EconomyPage';
 
 /**
  * P1.4 -- the Economy admin screens, rendered statically (the suite runs no
@@ -34,26 +34,14 @@ describe('the economy console', () => {
     expect(html).not.toMatch(AMOUNT);
   });
 
-  it('says "Screen not built yet" -- and shows nothing else -- for every unbuilt screen', () => {
-    for (const section of ECONOMY_SECTIONS.filter((s) => s.screen === 'pending')) {
+  it('opens every editing screen by loading the server configuration -- no sample data, no placeholder', () => {
+    for (const section of ECONOMY_SECTIONS.filter((s) => s.key !== 'preview')) {
       const html = renderAt(section.path);
-      expect(html, section.key).toContain('Screen not built yet');
-      expect(html, section.key).not.toContain('Backend support pending');
-      expect(html, section.key).not.toMatch(/<input|<textarea|<select|type="submit"/);
+      expect(html, section.key).toContain('Loading the economy configuration');
+      expect(html, section.key).not.toMatch(/Backend support pending|Screen not built yet/);
+      expect(html, section.key).not.toMatch(/<input|<textarea|<select/);
       expect(html, section.key).not.toMatch(AMOUNT);
     }
-  });
-
-  it('lists what the server already supports on a pending screen, and points to the preview', () => {
-    const plans = ECONOMY_SECTIONS.find((s) => s.key === 'plans')!;
-    const html = renderToStaticMarkup(
-      <MemoryRouter>
-        <ScreenPendingPanel section={plans} />
-      </MemoryRouter>,
-    );
-    expect(html).toContain('The server already supports:');
-    expect(html).toContain('List every plan version with its state and timestamps.');
-    expect(html).toContain('href="/admin/economy"');
   });
 
   it('says so for an unknown section', () => {

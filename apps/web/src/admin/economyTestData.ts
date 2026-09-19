@@ -1,3 +1,4 @@
+import type { EconomyConfigurationView, EconomyPublishReview } from '@over18/shared';
 import type { EconomyPreviewResponse } from '../lib/api';
 
 /**
@@ -96,6 +97,101 @@ export function previewResponse(over: Partial<EconomyPreviewResponse> = {}): Eco
     parity: null,
     caveats: ['Test caveat from the server.'],
     precision: { price: 2, perCredit: 3, actionCost: 4, meterLine: 6, perSubscriberMonth: 2, percent: 0, costMultiple: 1 },
+    ...over,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * The P1 configuration and review, server-shaped -- test data only
+ * ------------------------------------------------------------------ */
+
+const meta = (id: string, version: number, state: 'draft' | 'scheduled' | 'active' | 'superseded' | 'cancelled', effectiveFrom: string | null) => ({
+  id,
+  version,
+  state,
+  effectiveFrom,
+  createdAt: '2026-09-01T00:00:00.000000Z',
+  updatedAt: `2026-09-0${version}T00:00:00.000000Z`,
+  createdBy: 'test-admin',
+  publishedAt: state === 'draft' ? null : '2026-09-01T00:00:00.000000Z',
+  publishedBy: state === 'draft' ? null : 'test-admin',
+  publishReason: state === 'draft' ? null : `test reason v${version}`,
+  cancelledAt: state === 'cancelled' ? '2026-09-02T00:00:00.000000Z' : null,
+  cancelledBy: state === 'cancelled' ? 'test-admin' : null,
+  cancelReason: state === 'cancelled' ? 'test cancel' : null,
+});
+
+/** The catalogue as the server sends it. */
+export const testCatalogue: EconomyConfigurationView['catalogue'] = {
+  planFeatures: ['unlimited_text', 'full_character_access', 'advanced_media_access', 'voice_access'],
+  qualityTiers: ['standard', 'high'],
+  actions: {
+    image: { unit: 'per_action', durationTiers: 'forbidden' },
+    voice_message: { unit: 'per_action', durationTiers: 'forbidden' },
+    voice_call: { unit: 'per_minute', durationTiers: 'forbidden' },
+    video: { unit: 'per_action', durationTiers: 'required' },
+  },
+  allowances: ['free_first_conversation_messages', 'free_daily_messages', 'signup_grant_credits', 'grace_period_days', 'reward_monthly_cap_credits'],
+};
+
+const testFeatures = { unlimited_text: true, full_character_access: true, advanced_media_access: false, voice_access: false };
+
+export function configurationView(over: Partial<EconomyConfigurationView> = {}): EconomyConfigurationView {
+  return {
+    asOf: '2026-09-19T12:00:00.000000Z',
+    plans: [
+      {
+        code: 'test_monthly',
+        versions: [
+          { ...meta('plan-v1', 1, 'active', '2026-09-01T00:00:00.000000Z'), displayName: 'Test plan', billingPeriodMonths: 1, priceMinor: 111, currency: 'USD', monthlyIncludedCredits: 11, features: testFeatures, isPurchasable: true },
+          { ...meta('plan-v2', 2, 'draft', null), displayName: 'Test plan', billingPeriodMonths: 1, priceMinor: 222, currency: 'USD', monthlyIncludedCredits: 11, features: { ...testFeatures, voice_access: true }, isPurchasable: true },
+        ],
+      },
+    ],
+    packs: [
+      {
+        code: 'test_small',
+        versions: [
+          { ...meta('pack-v1', 1, 'superseded', '2026-09-01T00:00:00.000000Z'), displayName: 'Test pack', credits: 10, priceMinor: 33, currency: 'USD', sortOrder: 0, isBestValue: false, isPurchasable: true },
+          { ...meta('pack-v2', 2, 'active', '2026-09-02T00:00:00.000000Z'), displayName: 'Test pack', credits: 12, priceMinor: 33, currency: 'USD', sortOrder: 0, isBestValue: false, isPurchasable: true },
+          { ...meta('pack-v3', 3, 'scheduled', '2030-01-01T00:00:00.000000Z'), displayName: 'Test pack', credits: 14, priceMinor: 33, currency: 'USD', sortOrder: 0, isBestValue: true, isPurchasable: true },
+        ],
+      },
+    ],
+    rulesets: [
+      {
+        ...meta('ruleset-v1', 1, 'active', '2026-09-01T00:00:00.000000Z'),
+        actionCosts: [
+          { actionType: 'image', qualityTier: 'standard', maxDurationSeconds: null, unit: 'per_action', creditCost: 7, enabled: true },
+          { actionType: 'video', qualityTier: 'standard', maxDurationSeconds: 5, unit: 'per_action', creditCost: 21, enabled: true },
+        ],
+        allowances: { free_daily_messages: 4 },
+        rewards: [{ rewardKey: 'test_referral', credits: 3, perUserCap: null, enabled: true }],
+      },
+    ],
+    catalogue: testCatalogue,
+    ...over,
+  };
+}
+
+export function publishReview(over: Partial<EconomyPublishReview> = {}): EconomyPublishReview {
+  return {
+    asOf: '2026-09-19T12:00:00.000000Z',
+    draftSetToken: 'a'.repeat(64),
+    diff: [
+      {
+        kind: 'plan',
+        code: 'test_monthly',
+        draftVersion: 2,
+        liveVersion: 1,
+        changes: [
+          { field: 'priceMinor', before: 111, after: 222 },
+          { field: 'features.voice_access', before: false, after: true },
+        ],
+      },
+    ],
+    errors: [],
+    warnings: [],
     ...over,
   };
 }

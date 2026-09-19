@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Link, NavLink, useParams } from 'react-router-dom';
 import {
   ECONOMY_SECTIONS,
@@ -16,17 +16,24 @@ import {
   type EconomySection,
   type PreviewForm,
 } from '../../admin/economy';
+import type { EconomyConfigurationView } from '@over18/shared';
+import { draftOf, serverMessages } from '../../admin/economyConfig';
 import { adminEconomyApi, type EconomyPreviewResponse, type PreviewAiProviderCost } from '../../lib/api';
+import { MessageList, secondaryButtonClass } from './economy/EconomyUi';
+import PacksScreen from './economy/PacksScreen';
+import PlansScreen from './economy/PlansScreen';
+import RulesetScreen from './economy/RulesetScreen';
+import VersionsScreen from './economy/VersionsScreen';
 
 /**
  * Admin -> Economy (PRD v1.2 §31, P1.4).
  *
- * The preview & margin guard runs against the server's read-only preview
- * (`economy.manage`). The server also supports drafts, review, publishing and
- * cancellation for plans, packs and the ruleset; the screens that will use it
- * are not built yet, so each says so and lists what the server already
- * supports -- no sample data, no dead form, no hard-coded value. All logic
- * lives in `admin/economy.ts`.
+ * Every screen works against the server's economy endpoints (`economy.manage`):
+ * the read-only preview & margin guard; plans, packs, action costs, allowances
+ * and rewards as drafts; and Versions & publishing, where the server reviews
+ * every open draft and publishes them together. The server validates and
+ * decides; these screens show what it says. No value is written in here.
+ * The logic lives in `admin/economy.ts` and `admin/economyConfig.ts`.
  */
 
 export function EconomyTabs({ active }: { active: EconomySection['key'] | null }) {
@@ -41,29 +48,9 @@ export function EconomyTabs({ active }: { active: EconomySection['key'] | null }
           className={`rounded-md px-3 py-1.5 text-sm ${section.key === active ? 'bg-zinc-900 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
         >
           {section.label}
-          {section.screen === 'pending' && <span className="ml-1.5 text-[10px] uppercase tracking-wide text-zinc-600">soon</span>}
         </NavLink>
       ))}
     </nav>
-  );
-}
-
-/** A screen not built yet: it says so, lists what the server already supports, and shows nothing else. */
-export function ScreenPendingPanel({ section }: { section: EconomySection }) {
-  return (
-    <div className="rounded-lg border border-dashed border-zinc-800 bg-zinc-900/40 px-6 py-8">
-      <h2 className="text-lg font-semibold text-white">{section.label}</h2>
-      <p className="mt-1 text-sm text-zinc-400">{section.manages}</p>
-      <p className="mt-6 text-sm font-medium text-zinc-200">Screen not built yet</p>
-      <p className="mt-2 text-sm text-zinc-500">The server already supports:</p>
-      <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-zinc-500">
-        {section.server.map((item) => <li key={item}>{item}</li>)}
-      </ul>
-      <p className="mt-6 text-sm text-zinc-400">
-        The live and drafted configuration can be inspected, read-only, in the{' '}
-        <Link to="/admin/economy" className="text-rose-400 hover:text-rose-300">preview</Link>.
-      </p>
-    </div>
   );
 }
 
@@ -306,6 +293,70 @@ function PreviewWorkspace() {
   );
 }
 
+type ConfigState =
+  | { status: 'loading' }
+  | { status: 'error'; messages: string[] }
+  | { status: 'ready'; config: EconomyConfigurationView };
+
+/** Names the server's ruleset draft, so the ruleset workspace starts afresh when it changes. */
+function rulesetDraftKey(config: EconomyConfigurationView): string {
+  const draft = draftOf(config.rulesets);
+  return draft ? `${draft.id}:${draft.updatedAt}` : 'none';
+}
+
+/**
+ * The editing screens, over one read of the server's configuration. Moving
+ * between them keeps it; any write reloads it.
+ */
+function EditorWorkspace({ section }: { section: EconomySection }) {
+  const [state, setState] = useState<ConfigState>({ status: 'loading' });
+  const [rulesetNotice, setRulesetNotice] = useState<string[]>([]);
+  const reload = useCallback(async () => {
+    try {
+      setState({ status: 'ready', config: await adminEconomyApi.configuration() });
+    } catch (error) {
+      setState({ status: 'error', messages: serverMessages(error) });
+    }
+  }, []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  if (state.status === 'loading') return <p className="text-sm text-zinc-400">Loading the economy configuration…</p>;
+  if (state.status === 'error') {
+    return (
+      <div className="flex flex-col gap-3">
+        <MessageList messages={state.messages} />
+        <button type="button" onClick={() => void reload()} className={`${secondaryButtonClass} self-start`}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+  const { config } = state;
+  switch (section.key) {
+    case 'plans':
+      return <PlansScreen config={config} reload={reload} />;
+    case 'packs':
+      return <PacksScreen config={config} reload={reload} />;
+    case 'versions':
+      return <VersionsScreen config={config} reload={reload} />;
+    default:
+      return (
+        <div className="flex flex-col gap-4">
+          <MessageList messages={rulesetNotice} tone="success" />
+          <RulesetScreen
+            key={rulesetDraftKey(config)}
+            config={config}
+            part={section.key as 'action-costs' | 'allowances' | 'rewards'}
+            reload={reload}
+            onNotice={setRulesetNotice}
+          />
+        </div>
+      );
+  }
+}
+
 export default function EconomyPage() {
   const { section: param } = useParams();
   const section = economySection(param);
@@ -320,10 +371,10 @@ export default function EconomyPage() {
         <p className="text-sm text-zinc-400">
           There is no such economy section. <Link to="/admin/economy" className="text-rose-400">Back to the preview</Link>
         </p>
-      ) : section.screen === 'pending' ? (
-        <ScreenPendingPanel section={section} />
-      ) : (
+      ) : section.key === 'preview' ? (
         <PreviewWorkspace />
+      ) : (
+        <EditorWorkspace section={section} />
       )}
     </div>
   );
