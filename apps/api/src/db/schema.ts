@@ -33,11 +33,22 @@ import type { VisualDna } from '@over18/shared';
  */
 export const userRole = pgEnum('user_role', ['user', 'admin']);
 
+/**
+ * P2.5.2: whether the account may be used at all. AUTHORITATIVE and separate
+ * from everything commercial -- a suspension touches no subscription, wallet,
+ * entitlement or content, only sign-in and sessions (services/auth-service).
+ * Reversible both ways; closing or deleting an account is not a status here.
+ * Defaults to 'active', so every existing and new account is active.
+ */
+export const accountStatus = pgEnum('account_status', ['active', 'suspended']);
+
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   role: userRole('role').notNull().default('user'),
+  /** Changed only by services/account-status-service.ts, with an audit record. */
+  status: accountStatus('status').notNull().default('active'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

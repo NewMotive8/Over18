@@ -1,8 +1,9 @@
 import { and, asc, desc, eq, sql, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
-import type { AdminRoleName, AdminUserDetail, AdminUserList, AdminUserListItem, AdminUserWallet } from '@over18/shared';
+import type { AccountStatus, AdminRoleName, AdminUserDetail, AdminUserList, AdminUserListItem, AdminUserWallet } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { adminRoleGrants, conversations, sessions, users } from '../db/schema.js';
+import { ACCOUNT_STATUS_AUDIT_OBJECT_TYPE } from './account-status-service.js';
 import { WALLET_AUDIT_OBJECT_TYPE, walletAuditObjectId } from './admin-wallet-service.js';
 import { listAuditEntriesConcerning } from './audit-service.js';
 import { readCustomerCommercialState } from './customer-economy.js';
@@ -12,11 +13,12 @@ import { readWalletSummaries } from './wallet-service.js';
  * THE ADMIN USERS READ MODEL (P2.5.1): the list of users and the consolidated,
  * read-only detail of one -- the operational shell of User Management.
  *
- * IT OWNS NO STATE AND DERIVES NO FACT. Identity, role and activity are read
- * straight from their tables; the commercial state is the P3.1 resolver's
- * answer (the same one the customer is given); the wallets are the P2.4 wallet
+ * IT OWNS NO STATE AND DERIVES NO FACT. Identity, role, account status (P2.5.2)
+ * and activity are read straight from their tables; the commercial state is the
+ * P3.1 resolver's answer (the same one the customer is given); the wallets are the P2.4 wallet
  * read model; the audit entries come from the audit service. Nothing here
- * computes a balance, a tier or a subscription state, and nothing here writes.
+ * computes a balance, a tier or a subscription state, and nothing here writes:
+ * the status is changed by services/account-status-service.ts.
  *
  * MINIMUM DATA (P2.5 Security). The list and detail carry identity, role,
  * timestamps and aggregates -- never a password hash, a session token, an
@@ -65,6 +67,7 @@ export type UserRoleFilter = 'customer' | 'staff';
 export interface UserListQuery {
   search?: string;
   role?: UserRoleFilter;
+  status?: AccountStatus;
   /** Inclusive start of the first UTC day. */
   createdFrom?: Date;
   /** Exclusive: the start of the UTC day after the last one asked for. */
@@ -110,6 +113,10 @@ export function parseUserListQuery(raw: Record<string, unknown>): UserListQuery 
     if (raw.role !== 'customer' && raw.role !== 'staff') invalid('role must be "customer", "staff" or "all".');
     query.role = raw.role;
   }
+  if (raw.status !== undefined && raw.status !== '' && raw.status !== 'all') {
+    if (raw.status !== 'active' && raw.status !== 'suspended') invalid('status must be "active", "suspended" or "all".');
+    query.status = raw.status;
+  }
   const from = utcDay(raw.createdFrom, 'createdFrom');
   const to = utcDay(raw.createdTo, 'createdTo');
   if (from) query.createdFrom = from;
@@ -146,6 +153,7 @@ export async function listUsers(db: Pick<Db, 'select'>, raw: Record<string, unkn
     );
   }
   if (query.role) conditions.push(eq(users.role, query.role === 'staff' ? 'admin' : 'user'));
+  if (query.status) conditions.push(eq(users.status, query.status));
   if (query.createdFrom) conditions.push(sql`${users.createdAt} >= ${query.createdFrom.toISOString()}::timestamptz`);
   if (query.createdBefore) conditions.push(sql`${users.createdAt} < ${query.createdBefore.toISOString()}::timestamptz`);
   if (query.cursor) {
@@ -160,6 +168,7 @@ export async function listUsers(db: Pick<Db, 'select'>, raw: Record<string, unkn
       id: users.id,
       email: users.email,
       role: users.role,
+      status: users.status,
       createdAt: isoUs(users.createdAt),
       lastSignInAt: sql<string | null>`(select ${isoUs(sql`max(s.created_at)`)} from sessions s where s.user_id = "users"."id")`,
       staffRoles: sql<AdminRoleName[]>`(select coalesce(json_agg(g.role order by g.role), '[]'::json) from admin_role_grants g where g.user_id = "users"."id")`,
@@ -181,16 +190,25 @@ export async function listUsers(db: Pick<Db, 'select'>, raw: Record<string, unkn
 /**
  * One user, consolidated and read-only. `auditVisible` is the caller's
  * permission to read the audit log (`audit.read`); without it the audit panel
- * says so rather than showing anything.
+ * says so rather than showing anything. `operator` is who is looking and
+ * whether they hold `users.status.manage`: the detail says whether THEY may
+ * change this account's status, by the rules account-status-service enforces.
  */
 export async function readUserDetail(
   db: Db,
   userId: string,
-  options: { economyEnabled: boolean; auditVisible: boolean },
+  options: { economyEnabled: boolean; auditVisible: boolean; operator: { userId: string; canManageStatus: boolean } },
 ): Promise<AdminUserDetail> {
   if (typeof userId !== 'string' || !UUID.test(userId)) invalid('The User ID must be a user id.');
   const [user] = await db
-    .select({ id: users.id, email: users.email, role: users.role, createdAt: isoUs(users.createdAt), updatedAt: isoUs(users.updatedAt) })
+    .select({
+      id: users.id,
+      email: users.email,
+      role: users.role,
+      status: users.status,
+      createdAt: isoUs(users.createdAt),
+      updatedAt: isoUs(users.updatedAt),
+    })
     .from(users)
     .where(eq(users.id, userId));
   if (!user) throw new AdminUserError('user_not_found', `No user has the ID ${userId}.`);
@@ -230,16 +248,34 @@ export async function readUserDetail(
           objects: [
             { objectType: ROLE_GRANT_AUDIT_OBJECT_TYPE, objectId: userId },
             { objectType: ADMIN_ROUTE_AUDIT_OBJECT_TYPE, objectId: userId },
+            { objectType: ACCOUNT_STATUS_AUDIT_OBJECT_TYPE, objectId: userId },
             ...summaries.map((w) => ({ objectType: WALLET_AUDIT_OBJECT_TYPE, objectId: walletAuditObjectId(userId, w.currency) })),
           ],
         }),
       }
     : { available: false, reason: 'audit_read_required' };
 
+  // The same rules, in the same order, as account-status-service refuses them.
+  const statusChange: AdminUserDetail['account']['statusChange'] =
+    user.id === options.operator.userId
+      ? { allowed: false, reason: 'own_account' }
+      : user.role !== 'user'
+        ? { allowed: false, reason: 'staff_account' }
+        : !options.operator.canManageStatus
+          ? { allowed: false, reason: 'permission_required' }
+          : { allowed: true };
+
   const facts = activity.rows[0]!;
   return {
     identity: { id: user.id, email: user.email },
-    account: { role: user.role, staffRoles: grants, createdAt: user.createdAt, updatedAt: user.updatedAt },
+    account: {
+      role: user.role,
+      staffRoles: grants,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      status: user.status,
+      statusChange,
+    },
     activity: {
       lastSignInAt: facts.last_sign_in_at,
       activeSessions: facts.active_sessions,

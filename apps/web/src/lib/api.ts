@@ -1,5 +1,7 @@
 import type {
   AdminAccessView,
+  AdminAccountStatusChangeRequest,
+  AdminAccountStatusChangeResult,
   AdminUserDetail,
   AdminUserList,
   AdminUserWallets,
@@ -1405,6 +1407,12 @@ export const adminUsersApi = {
   /** `query` is the list's query string without the leading "?" (see admin/userManagement). */
   list: (query: string) => request<AdminUserList>(`/admin/users${query ? `?${query}` : ''}`),
   detail: (userId: string) => request<AdminUserDetail>(`/admin/users/${encodeURIComponent(userId)}`),
+  /** P2.5.2 -- suspend or reactivate. The server enforces the permission, the rules and the conflict check. */
+  changeStatus: (userId: string, body: AdminAccountStatusChangeRequest) =>
+    request<AdminAccountStatusChangeResult>(`/admin/users/${encodeURIComponent(userId)}/status`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 /** P2.4 -- admin wallet support. The server enforces every permission, rule and cap. */

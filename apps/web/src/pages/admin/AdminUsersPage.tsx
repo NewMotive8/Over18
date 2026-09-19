@@ -4,6 +4,7 @@ import type { AdminUserList, AdminUserListItem } from '@over18/shared';
 import {
   EMPTY_FILTERS,
   ROLE_LABEL,
+  STATUS_LABEL,
   filtersFromParams,
   filtersToParams,
   hasFilters,
@@ -11,6 +12,7 @@ import {
   pageError,
   when,
   type RoleFilter,
+  type StatusFilter,
   type UserFilters,
 } from '../../admin/userManagement';
 import { adminUsersApi } from '../../lib/api';
@@ -18,7 +20,8 @@ import { Field, MessageList, buttonClass, inputClass, secondaryButtonClass } fro
 
 /**
  * Admin -> Users (P2.5.1): search, filter and page through users, newest
- * first, and open one. Read-only. The server searches, filters, pages and
+ * first, and open one. Read-only: an account's status (P2.5.2) is shown here
+ * and changed on the user's own page. The server searches, filters, pages and
  * enforces the permission; the filters live in the URL so a view can be shared.
  */
 
@@ -30,6 +33,7 @@ export function UsersTable({ users }: { users: readonly AdminUserListItem[] }) {
           <tr>
             <th className="py-1">Email</th>
             <th>Type</th>
+            <th>Status</th>
             <th>Staff roles</th>
             <th>Created</th>
             <th>Last sign-in</th>
@@ -44,6 +48,7 @@ export function UsersTable({ users }: { users: readonly AdminUserListItem[] }) {
                 </Link>
               </td>
               <td>{ROLE_LABEL[u.role]}</td>
+              <td className={u.status === 'suspended' ? 'font-semibold text-amber-300' : undefined}>{STATUS_LABEL[u.status]}</td>
               <td className="text-xs text-zinc-400">{u.staffRoles.length > 0 ? u.staffRoles.join(', ') : '—'}</td>
               <td className="text-xs text-zinc-400">{when(u.createdAt)}</td>
               <td className="text-xs text-zinc-400">{when(u.lastSignInAt)}</td>
@@ -60,7 +65,7 @@ export function UserFiltersForm({ value, onApply }: { value: UserFilters; onAppl
   const [draft, setDraft] = useState<UserFilters>(value);
   return (
     <form
-      className="grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 sm:grid-cols-[2fr_1fr_1fr_1fr_auto]"
+      className="grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 sm:grid-cols-[2fr_1fr_1fr_1fr_1fr_auto]"
       onSubmit={(event) => {
         event.preventDefault();
         onApply(draft);
@@ -74,6 +79,13 @@ export function UserFiltersForm({ value, onApply }: { value: UserFilters; onAppl
           <option value="all">All</option>
           <option value="customer">Customers</option>
           <option value="staff">Staff</option>
+        </select>
+      </Field>
+      <Field label="Status">
+        <select value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value as StatusFilter })} className={inputClass}>
+          <option value="all">All</option>
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
         </select>
       </Field>
       <Field label="Created from">

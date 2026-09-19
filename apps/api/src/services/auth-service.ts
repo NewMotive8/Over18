@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { sessions, users, type UserRow } from '../db/schema.js';
 
@@ -56,17 +56,28 @@ export async function registerUser(db: Db, email: string, password: string): Pro
   }
 }
 
-export async function verifyCredentials(db: Db, email: string, password: string): Promise<SafeUser | null> {
+export type CredentialsResult =
+  | { ok: true; user: SafeUser }
+  | { ok: false; error: 'invalid_credentials' | 'account_suspended' };
+
+/**
+ * Checks an email and password. A SUSPENDED account (P2.5.2) is refused, but
+ * only once the password is proven right: to anyone without it, a suspended
+ * account looks exactly like any other failed sign-in.
+ */
+export async function verifyCredentials(db: Db, email: string, password: string): Promise<CredentialsResult> {
   const normalized = normalizeEmail(email);
   const row = await db.query.users.findFirst({ where: eq(users.email, normalized) });
   if (!row) {
     // Burn comparable time so response timing does not reveal whether the
     // email exists (bcrypt hash of an unused dummy password).
     await bcrypt.compare(password, '$2b$12$TxuoP8yfuRLg0kyzsYst4uBkuoF0347VYFVErOc1ZOdzBNnisauL.');
-    return null;
+    return { ok: false, error: 'invalid_credentials' };
   }
   const valid = await bcrypt.compare(password, row.passwordHash);
-  return valid ? toSafeUser(row) : null;
+  if (!valid) return { ok: false, error: 'invalid_credentials' };
+  if (row.status !== 'active') return { ok: false, error: 'account_suspended' };
+  return { ok: true, user: toSafeUser(row) };
 }
 
 export async function createSession(
@@ -84,13 +95,28 @@ export async function createSession(
   return { rawToken, expiresAt };
 }
 
-/** Returns the user for a valid, unexpired session token, or null. */
+/**
+ * Returns the user for a valid, unexpired session token, or null.
+ *
+ * Only an ACTIVE account's session is valid (P2.5.2). Suspending an account
+ * also ends its sessions; this check is what makes the suspension hold
+ * regardless -- including for a session that a concurrent sign-in created
+ * just as the suspension committed.
+ *
+ * Expiry is judged by the DATABASE's clock, the same clock that ends a
+ * session (services/account-status-service). Judged by this server's clock, a
+ * session ended at the database's "now" would still look valid to a server
+ * whose clock runs even a millisecond behind -- so an immediate reactivation
+ * could revive it.
+ */
 export async function getUserForToken(db: Db, rawToken: string): Promise<SafeUser | null> {
   const row = await db
     .select({ id: users.id, email: users.email, role: users.role })
     .from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
-    .where(and(eq(sessions.tokenHash, hashToken(rawToken)), gt(sessions.expiresAt, new Date())))
+    .where(
+      and(eq(sessions.tokenHash, hashToken(rawToken)), gt(sessions.expiresAt, sql`now()`), eq(users.status, 'active')),
+    )
     .limit(1);
   return row[0] ? toSafeUser(row[0]) : null;
 }

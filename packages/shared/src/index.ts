@@ -16,6 +16,7 @@ export {
 } from './mediaRequest.js';
 
 export {
+  ACCOUNT_STATUSES,
   ADMIN_PERMISSIONS,
   ADMIN_ROLE_PERMISSIONS,
   ADMIN_ROLES,
@@ -26,6 +27,10 @@ export {
   type AdminAdjustmentLimit,
   type AdminPermission,
   type AdminRoleName,
+  type AccountStatus,
+  type AdminAccountStatusChange,
+  type AdminAccountStatusChangeRequest,
+  type AdminAccountStatusChangeResult,
   type AdminUserAccountRole,
   type AdminUserDetail,
   type AdminUserList,

@@ -4,12 +4,12 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { AdminUserDetail, AdminUserListItem } from '@over18/shared';
 import { EMPTY_FILTERS } from '../../admin/userManagement';
-import AdminUserDetailPage, { UserDetailView } from './AdminUserDetailPage';
+import AdminUserDetailPage, { AccountStatusPanel, UserDetailView } from './AdminUserDetailPage';
 import AdminUsersPage, { UserFiltersForm, UsersListBody, UsersTable } from './AdminUsersPage';
 
 /**
- * P2.5.1 -- the admin Users list and detail, rendered statically (the suite
- * runs no effects). Everything shown is server-shaped test data passed in.
+ * P2.5.1 / P2.5.2 -- the admin Users list and detail, rendered statically (the
+ * suite runs no effects). Everything shown is server-shaped test data passed in.
  */
 
 const render = (node: ReactNode) => renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
@@ -19,6 +19,7 @@ const row = (over: Partial<AdminUserListItem> = {}): AdminUserListItem => ({
   id: ID,
   email: 'customer@example.com',
   role: 'user',
+  status: 'active',
   staffRoles: [],
   createdAt: '2026-09-01T08:00:00.000000Z',
   lastSignInAt: '2026-09-19T10:15:00.000000Z',
@@ -27,7 +28,14 @@ const row = (over: Partial<AdminUserListItem> = {}): AdminUserListItem => ({
 
 const detail = (over: Partial<AdminUserDetail> = {}): AdminUserDetail => ({
   identity: { id: ID, email: 'customer@example.com' },
-  account: { role: 'user', staffRoles: [], createdAt: '2026-09-01T08:00:00.000000Z', updatedAt: '2026-09-02T08:00:00.000000Z' },
+  account: {
+    role: 'user',
+    staffRoles: [],
+    createdAt: '2026-09-01T08:00:00.000000Z',
+    updatedAt: '2026-09-02T08:00:00.000000Z',
+    status: 'active',
+    statusChange: { allowed: true },
+  },
   activity: { lastSignInAt: '2026-09-19T10:15:00.000000Z', activeSessions: 2, conversations: 3, lastConversationAt: '2026-09-18T20:00:00.000000Z' },
   commercial: {
     economyEnabled: false,
@@ -59,20 +67,27 @@ const detail = (over: Partial<AdminUserDetail> = {}): AdminUserDetail => ({
 });
 
 describe('the Users list', () => {
-  it('shows each user: email linking to their detail, type, staff roles, created and last sign-in', () => {
-    const html = render(<UsersTable users={[row(), row({ id: 'staff-1', email: 'op@example.com', role: 'admin', staffRoles: ['support', 'analyst'], lastSignInAt: null })]} />);
+  it('shows each user: email linking to their detail, type, status, staff roles, created and last sign-in', () => {
+    const html = render(
+      <UsersTable
+        users={[row({ status: 'suspended' }), row({ id: 'staff-1', email: 'op@example.com', role: 'admin', staffRoles: ['support', 'analyst'], lastSignInAt: null })]}
+      />,
+    );
     expect(html.match(/data-testid="user-row"/g)).toHaveLength(2);
     expect(html).toContain(`href="/admin/users/${ID}"`);
     expect(html).toContain('Customer');
     expect(html).toContain('Staff');
+    expect(html).toContain('>Suspended</td>');
+    expect(html).toContain('>Active</td>');
     expect(html).toContain('support, analyst');
     expect(html).toContain('2026-09-19 10:15 UTC');
   });
 
-  it('has a search, a type filter and a created-date range', () => {
-    const html = render(<UserFiltersForm value={{ ...EMPTY_FILTERS, search: 'alice', role: 'staff' }} onApply={() => {}} />);
+  it('has a search, a type filter, a status filter and a created-date range', () => {
+    const html = render(<UserFiltersForm value={{ ...EMPTY_FILTERS, search: 'alice', role: 'staff', status: 'suspended' }} onApply={() => {}} />);
     expect(html).toContain('value="alice"');
     expect(html).toContain('<option value="staff" selected="">Staff</option>');
+    expect(html).toContain('<option value="suspended" selected="">Suspended</option>');
     expect(html.match(/type="date"/g)).toHaveLength(2);
     expect(html).toContain('Part of an email, or a whole User ID');
   });
@@ -93,7 +108,7 @@ describe('the Users list', () => {
 });
 
 describe('the User detail', () => {
-  it('shows identity, account, commercial state, wallet, activity and audit -- read-only', () => {
+  it('shows identity, account (with its status), commercial state, wallet, activity and audit', () => {
     const html = render(<UserDetailView detail={detail()} />);
     for (const section of ['Identity', 'Account', 'Commercial / subscription', 'Wallet', 'Activity', 'Audit']) expect(html).toContain(section);
     expect(html).toContain(ID);
@@ -104,8 +119,12 @@ describe('the User detail', () => {
     expect(html).toContain('66');
     expect(html).toContain('wallet.adjust.credit');
     expect(html).toContain('operator@example.com');
-    expect(html).toContain('Not tracked yet — account status arrives with P2.5.2');
-    expect(html).not.toMatch(/<form|<input|<button[^>]*type="submit"/);
+    expect(html).toContain('Account status');
+    expect(html).toContain('>Active</dd>');
+    expect(html).not.toContain('Not tracked yet — account status');
+    // The view alone changes nothing: the status control is the page's, passed in.
+    expect(html).not.toMatch(/<form|<input|<textarea|<button[^>]*type="submit"/);
+    expect(render(<UserDetailView detail={detail({ account: { ...detail().account, status: 'suspended' } })} />)).toContain('>Suspended</dd>');
   });
 
   it('links to the existing wallet support screen', () => {
@@ -125,6 +144,12 @@ describe('the User detail', () => {
     expect(html).toContain('Audit entries need the audit.read permission.');
   });
 
+  it('places the status control inside the Account section', () => {
+    const html = render(<UserDetailView detail={detail()} statusControl={<p data-testid="probe">control</p>} />);
+    const account = html.slice(html.indexOf('Account'), html.indexOf('Commercial / subscription'));
+    expect(account).toContain('data-testid="probe"');
+  });
+
   it('loads the user from the server by permanent User ID', () => {
     const html = renderToStaticMarkup(
       <MemoryRouter initialEntries={[`/admin/users/${ID}`]}>
@@ -135,5 +160,50 @@ describe('the User detail', () => {
     );
     expect(html).toContain('Loading the user');
     expect(html).toContain('href="/admin/users"');
+  });
+});
+
+describe('the account status control (P2.5.2)', () => {
+  const panel = (over: Partial<Parameters<typeof AccountStatusPanel>[0]> = {}) =>
+    render(
+      <AccountStatusPanel status="active" change={{ allowed: true }} reason="" onReason={() => {}} onReview={() => {}} busy={false} messages={[]} {...over} />,
+    );
+
+  it('offers Suspend on an active customer, with a required reason, and says what it leaves alone', () => {
+    const html = panel();
+    expect(html).toContain('data-testid="status-change-form"');
+    expect(html).toContain('Reason (required)');
+    expect(html).toContain('<textarea');
+    expect(html).toContain('Suspend account…');
+    expect(html).not.toContain('Reactivate');
+    expect(html).toContain('Subscription, wallet, entitlements and content are not changed.');
+    // No reason yet: nothing to review.
+    expect(html).toMatch(/<button type="submit" disabled=""/);
+  });
+
+  it('offers Reactivate on a suspended customer, enabled once a reason is given', () => {
+    const html = panel({ status: 'suspended', reason: 'Resolved with the customer' });
+    expect(html).toContain('Reactivate account…');
+    expect(html).not.toContain('Suspend account');
+    expect(html).not.toMatch(/<button type="submit" disabled=""/);
+  });
+
+  it("offers nothing to submit when the server says no -- and says why", () => {
+    for (const [reason, words] of [
+      ['own_account', 'your own account'],
+      ['staff_account', 'Staff accounts cannot be suspended'],
+      ['permission_required', 'users.status.manage'],
+    ] as const) {
+      const html = panel({ change: { allowed: false, reason } });
+      expect(html).toContain('data-testid="status-change-blocked"');
+      expect(html).toContain(words);
+      expect(html).not.toMatch(/<form|<textarea|<button/);
+    }
+  });
+
+  it("shows the server's refusal, e.g. a conflict", () => {
+    const html = panel({ reason: 'x', messages: ['This account is suspended now, not active: it changed since you loaded it. Nothing was changed.'] });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('it changed since you loaded it');
   });
 });

@@ -142,8 +142,8 @@ describe('the user list', () => {
     const { users: rows, nextCursor } = await list(dark, staff);
     expect(nextCursor).toBeNull();
     expect(rows.map((u) => u.id)).toEqual([staff.id, older]);
-    expect(Object.keys(rows[0]!).sort()).toEqual(['createdAt', 'email', 'id', 'lastSignInAt', 'role', 'staffRoles']);
-    expect(rows[0]).toMatchObject({ email: staff.email, role: 'admin', staffRoles: ['support', 'analyst'] }); // the §34.1 order
+    expect(Object.keys(rows[0]!).sort()).toEqual(['createdAt', 'email', 'id', 'lastSignInAt', 'role', 'staffRoles', 'status']);
+    expect(rows[0]).toMatchObject({ email: staff.email, role: 'admin', status: 'active', staffRoles: ['support', 'analyst'] }); // the §34.1 order
     expect(rows[0]!.lastSignInAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/);
     expect(rows[1]).toMatchObject({ email: 'older@example.com', role: 'user', staffRoles: [], lastSignInAt: null, createdAt: '2026-01-01T00:00:00.000000Z' });
   });
@@ -228,6 +228,7 @@ describe('the user list', () => {
     const staff = await account([]);
     for (const query of [
       '?role=owner',
+      '?status=closed',
       '?limit=0',
       '?limit=abc',
       '?limit=2.5',

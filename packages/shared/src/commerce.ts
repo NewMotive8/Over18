@@ -211,6 +211,11 @@ export const ADMIN_PERMISSIONS = [
   'users.commercial.read',
   /** §34.1 support: a capped goodwill Credit adjustment, with a reason. */
   'users.credits.adjust',
+  /**
+   * P2.5.2: suspend or reactivate a customer account, with a reason.
+   * Administrator only: no other role lists it.
+   */
+  'users.status.manage',
   /** §34.1 analyst: read and export everything in §23. */
   'analytics.read',
   'analytics.export',
@@ -377,11 +382,50 @@ export interface AdminWalletAdjustmentResult {
 /** `users.role`: authorization, never a commercial tier. `admin` is staff. */
 export type AdminUserAccountRole = 'user' | 'admin';
 
+/**
+ * `users.status` (P2.5.2): whether the account may sign in and use its
+ * sessions. Nothing commercial -- a suspended customer keeps their
+ * subscription, wallet and entitlements untouched.
+ */
+export const ACCOUNT_STATUSES = ['active', 'suspended'] as const;
+export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
+
+/**
+ * Whether THIS operator may change this account's status, decided by the
+ * server: only a customer account, never one's own, and only with
+ * `users.status.manage`.
+ */
+export type AdminAccountStatusChange =
+  | { allowed: true }
+  | { allowed: false; reason: 'own_account' | 'staff_account' | 'permission_required' };
+
+/**
+ * POST /admin/users/:userId/status. A compare-and-set: `expectedStatus` is the
+ * status the operator saw, and the change is refused (409 `status_conflict`)
+ * if the account is no longer in it.
+ */
+export interface AdminAccountStatusChangeRequest {
+  status: AccountStatus;
+  expectedStatus: AccountStatus;
+  reason: string;
+}
+
+export interface AdminAccountStatusChangeResult {
+  userId: string;
+  previousStatus: AccountStatus;
+  status: AccountStatus;
+  /** ISO 8601, microsecond precision, UTC -- the account's new `updatedAt`. */
+  changedAt: string;
+  /** Sessions ended by a suspension; 0 for a reactivation. */
+  revokedSessions: number;
+}
+
 /** One row of GET /admin/users. */
 export interface AdminUserListItem {
   id: string;
   email: string;
   role: AdminUserAccountRole;
+  status: AccountStatus;
   /** Staff roles granted, in the §34.1 order of `ADMIN_ROLES`; empty for a customer. */
   staffRoles: AdminRoleName[];
   /** ISO 8601, microsecond precision, UTC. */
@@ -419,6 +463,8 @@ export interface AdminUserDetail {
     staffRoles: Array<{ role: AdminRoleName; grantedAt: string; grantedBy: string | null }>;
     createdAt: string;
     updatedAt: string;
+    status: AccountStatus;
+    statusChange: AdminAccountStatusChange;
   };
   activity: {
     lastSignInAt: string | null;
