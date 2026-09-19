@@ -601,3 +601,43 @@ export interface AdminSubscriptionChangeRequest {
  */
 export const CONTENT_ACCESS_STATES = ['free', 'premium', 'credit', 'unavailable'] as const;
 export type ContentAccessState = (typeof CONTENT_ACCESS_STATES)[number];
+
+/**
+ * What the signed-in customer may do with one piece of content right now
+ * (P4.2). The server decides this; a client never derives it.
+ *
+ *   open                 it opens: free content, Premium content for a
+ *                        subscriber, or content they already have access to
+ *   premium_required     Premium content, and this customer is not Premium
+ *   credits_required     Credit content: it can be unlocked for `creditPrice`
+ *   insufficient_credits Credit content, and their balance is below the price
+ *   age_restricted       the content has an age floor this customer has not met
+ *   unavailable          withdrawn, unknown, or not resolvable -- fails closed
+ *
+ * `owned` and `pending` arrive with unlocking (P8); until then a Credit unlock
+ * cannot be bought, so no content is ever owned.
+ */
+export type CustomerAccessDecision =
+  | 'open'
+  | 'premium_required'
+  | 'credits_required'
+  | 'insufficient_credits'
+  | 'age_restricted'
+  | 'unavailable';
+
+/** One piece of content's access terms and this customer's decision. */
+export interface CustomerContentAccess {
+  assetId: string;
+  /** The content's own access state (P4.1). */
+  state: ContentAccessState;
+  /** Whole Credits to unlock: only for `credit` content. */
+  creditPrice: number | null;
+  /** The minimum age the content requires, or null. */
+  ageFloor: number | null;
+  decision: CustomerAccessDecision;
+}
+
+/** GET /api/content/access -- one entry per asset asked about, in the order asked. */
+export interface CustomerContentAccessResponse {
+  items: CustomerContentAccess[];
+}

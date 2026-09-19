@@ -2,6 +2,7 @@ import type { EconomyUnavailableResponse } from '@over18/shared';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/client.js';
 import type { CommerceEnv } from '../env.js';
+import { ContentAccessError, parseAssetIds, readContentAccess } from '../services/content-access.js';
 import { readCustomerCatalog, readCustomerCommercialState } from '../services/customer-economy.js';
 
 const ECONOMY_UNAVAILABLE: EconomyUnavailableResponse = {
@@ -12,7 +13,8 @@ const ECONOMY_UNAVAILABLE: EconomyUnavailableResponse = {
 
 /**
  * The customer economy read API -- a thin HTTP boundary over the P1.2
- * resolver (`services/customer-economy.ts`).
+ * resolver (`services/customer-economy.ts`) and the P4.2 content access
+ * resolver (`services/content-access.ts`).
  *
  * EVERY ROUTE REQUIRES A SESSION (401 otherwise), and the user is taken only
  * from `request.currentUser`: nothing in a path, query or body can name
@@ -42,5 +44,21 @@ export default async function customerEconomyRoutes(
     reply.header('cache-control', 'private, no-store');
     if (!opts.commerce.enabled) return reply.code(503).send(ECONOMY_UNAVAILABLE);
     return readCustomerCommercialState(opts.db, request.currentUser!);
+  });
+
+  /**
+   * What this customer may do with the content they are looking at (P4.2):
+   * one decision per asset, made by the server from the content's own terms
+   * and this customer's commercial state. Nothing is charged or unlocked.
+   */
+  app.get<{ Querystring: { assetIds?: unknown } }>('/api/content/access', { preHandler: app.requireAuth }, async (request, reply) => {
+    reply.header('cache-control', 'private, no-store');
+    if (!opts.commerce.enabled) return reply.code(503).send(ECONOMY_UNAVAILABLE);
+    try {
+      return await readContentAccess(opts.db, request.currentUser!, parseAssetIds(request.query?.assetIds));
+    } catch (error) {
+      if (error instanceof ContentAccessError) return reply.code(400).send({ error: error.code, message: error.message });
+      throw error;
+    }
   });
 }

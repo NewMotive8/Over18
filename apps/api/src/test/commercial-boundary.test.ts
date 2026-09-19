@@ -121,10 +121,15 @@ describe('the economy stays dark', () => {
     expect(state.wallet).toEqual({ included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 });
   });
 
-  /** Nothing customer-facing, and nothing admin-facing, reads an offer yet. */
-  it('is read by no route and no customer-facing service', () => {
+  /**
+   * The offers table stays behind the boundary. P4.2's content access resolver
+   * reads offers through this service -- the reviewed way in -- and nothing
+   * names the table for itself.
+   */
+  it('is reached only through the boundary service, by the P4.2 resolver alone', () => {
     const srcRoot = fileURLToPath(new URL('..', import.meta.url));
-    const readers: string[] = [];
+    const tableReaders: string[] = [];
+    const serviceReaders: string[] = [];
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
         const full = join(dir, name);
@@ -134,12 +139,14 @@ describe('the economy stays dark', () => {
           const rel = relative(srcRoot, full).split('\\').join('/');
           if (rel === 'db/schema.ts' || rel === 'services/commercial-boundary.ts') continue;
           const code = readFileSync(full, 'utf8');
-          if (/contentOffers|content_offers/.test(code)) readers.push(rel);
+          if (/contentOffers|content_offers/.test(code)) tableReaders.push(rel);
+          if (/['/]commercial-boundary\.js'/.test(code)) serviceReaders.push(rel);
         }
       }
     };
     walk(srcRoot);
-    expect(readers).toEqual([]);
+    expect(tableReaders).toEqual([]);
+    expect(serviceReaders.sort()).toEqual(['services/content-access.ts']);
   });
 });
 
