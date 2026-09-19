@@ -2,6 +2,7 @@ import {
   bigserial,
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -10,8 +11,10 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { VisualDna } from '@over18/shared';
@@ -2153,6 +2156,265 @@ export const contentOffers = pgTable(
   ],
 );
 
+/* ------------------------------------------------------------------ *
+ * Wallets and the append-only ledger (PRD v1.2 §18, §19.2, §30.1, §34.2) -- P2.1
+ *
+ *   user -> wallet (one per user and currency: a cached balance)
+ *        -> wallet_transactions (append-only: the authoritative history)
+ *
+ * THE LEDGER IS THE RECORD; THE WALLET IS A CACHE OF IT (§19.2). Every
+ * transaction states the balance it left behind, and a wallet's balance is
+ * always its latest transaction's `balance_after`.
+ *
+ * A BALANCE IS NEVER WRITTEN DIRECTLY -- for anyone, ever (§30.1, §34.2). This
+ * is enforced by the database (migration 0034), not merely avoided by the code:
+ *   - a wallet is created empty, and no statement may update it;
+ *   - appending a transaction is the ONLY thing that moves a balance: the
+ *     database locks the wallet, checks the movement, stamps the resulting
+ *     balance and the wallet's next sequence number, and updates the cache;
+ *   - a transaction can never be updated or deleted. A correction or a refund
+ *     is a new, compensating transaction that names the one it compensates.
+ * An operator's adjustment is a transaction like any other, carrying the
+ * operator and a reason. There is no "set balance" anywhere.
+ *
+ * WHAT IS NOT HERE, deliberately. No function moves Credits yet: granting,
+ * spending, holds and refunds are P2.2's services, built on these rules. No
+ * payment data either: a purchase's money lives in its own payment records
+ * (P8), and a transaction only REFERENCES the thing that caused it
+ * (`source_type` / `source_id`), never an amount of money, a processor or a
+ * payment instrument.
+ *
+ * NO BUSINESS RULE IS DECIDED HERE: the order Credit classes are spent in,
+ * expiry (D-7), caps on operator adjustments (§34.3) and which sources each
+ * kind of transaction must cite are the services' to apply. What the database
+ * guarantees is that whatever they write is internally consistent.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Stable virtual-currency codes: `credits`. Lower case, so an ISO 4217 money
+ * code (`USD`) can never be mistaken for a wallet currency, or vice versa.
+ */
+const WALLET_CURRENCY_PATTERN = sql.raw(`'^[a-z][a-z0-9_]{1,31}$'`);
+const SOURCE_TYPE_PATTERN = sql.raw(`'^[a-z][a-z0-9_]{1,63}$'`);
+
+/**
+ * wallet_currencies -- the virtual currencies a wallet can hold.
+ *
+ * `credits` is the only one, inserted by migration 0034. A future currency is a
+ * new row: the wallet and ledger are per currency throughout and need no
+ * redesign. Nothing else is stored here yet -- how a currency is named, sold or
+ * earned is configuration for the phase that introduces it.
+ */
+export const walletCurrencies = pgTable(
+  'wallet_currencies',
+  {
+    code: text('code').primaryKey(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('wallet_currencies_code_format', sql`${t.code} ~ ${WALLET_CURRENCY_PATTERN}`)],
+);
+
+/**
+ * wallets -- one per user and currency: the CURRENT balance, cached.
+ *
+ * `balance` is what the user can spend now. `held` is reserved for in-flight
+ * paid actions and is NOT spendable (the P0 `CommercialWallet` contract): a
+ * hold moves Credits from `balance` to `held`, a capture consumes them, a
+ * release returns them. Neither can go below zero, in any currency.
+ *
+ * `version` counts the transactions applied, so it always equals the latest
+ * transaction's `sequence`. Only the ledger's trigger ever changes these three
+ * columns; a direct UPDATE is refused.
+ *
+ * The owner is a real foreign key, RESTRICT: a user with a wallet cannot be
+ * deleted, because a Credit history must not disappear with its account.
+ * Deleting or anonymising an account with a wallet is a retention decision
+ * (P9), not something a cascade should settle silently.
+ */
+export const wallets = pgTable(
+  'wallets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    currency: text('currency')
+      .notNull()
+      .references(() => walletCurrencies.code, { onDelete: 'restrict' }),
+    balance: integer('balance').notNull().default(0),
+    held: integer('held').notNull().default(0),
+    version: integer('version').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /** The wallet lookup, and what a transaction's (user, currency) references. */
+    unique('wallets_user_currency_unique').on(t.userId, t.currency),
+    check('wallets_balance_non_negative', sql`${t.balance} >= 0`),
+    check('wallets_held_non_negative', sql`${t.held} >= 0`),
+    check('wallets_version_non_negative', sql`${t.version} >= 0`),
+  ],
+);
+
+/** A transaction adds to or takes from the balance it moves. */
+export const walletEntryDirection = pgEnum('wallet_entry_direction', ['credit', 'debit']);
+
+/**
+ * What caused a transaction. Its direction follows from the type where the type
+ * decides it (a purchase only ever adds; a paid action only ever takes); a
+ * reversal and an operator adjustment may go either way.
+ *
+ *   grant, reward, purchase    credit    Credits given, earned or bought
+ *   paid_action                debit     an action paid for outright
+ *   hold                       debit     balance -> held, for an action in flight
+ *   capture                    debit     held Credits consumed (names its hold)
+ *   release                    credit    held -> balance (names its hold)
+ *   refund                     credit    Credits returned for a paid action or
+ *                                        capture (names it)
+ *   reversal                   either    undoes part or all of an earlier
+ *                                        transaction, opposite to it (names it)
+ *   admin_adjustment           either    an operator's adjustment: actor and
+ *                                        reason required
+ */
+export const walletEntryType = pgEnum('wallet_entry_type', [
+  'grant',
+  'reward',
+  'purchase',
+  'paid_action',
+  'refund',
+  'reversal',
+  'admin_adjustment',
+  'hold',
+  'capture',
+  'release',
+]);
+
+/**
+ * The class of the Credits a transaction moves (§18). The classes must stay
+ * distinguishable in the ledger because they may carry different expiry and
+ * refund treatment (§6.3). Which class is spent first is the spending
+ * service's rule, not the schema's.
+ */
+export const creditClass = pgEnum('credit_class', ['included', 'earned', 'purchased']);
+
+/** Transaction types that settle or compensate an earlier transaction, and must name it. */
+const RELATED_TYPES = sql.raw(`('capture', 'release', 'refund', 'reversal')`);
+
+/**
+ * wallet_transactions -- every movement of every wallet, append-only.
+ *
+ * STAMPED BY THE DATABASE, not the writer (migration 0034): `sequence` (1, 2, 3
+ * ... per wallet, gapless), `balance_after` and `held_after` (the wallet after
+ * this transaction) and `created_at` (the transaction's database time). Values
+ * a writer supplies for them are overwritten.
+ *
+ * `idempotency_key` is unique per wallet (§19.2): a retried or replayed write
+ * with the same key cannot apply twice. An `INSERT ... ON CONFLICT DO NOTHING`
+ * replay inserts nothing and moves nothing.
+ *
+ * `related_transaction_id` names what a capture, release, refund or reversal
+ * settles or compensates. It must be in the same wallet, and the database
+ * refuses to settle more of a hold, or compensate more of a transaction, than
+ * it was for.
+ *
+ * `source_type` / `source_id` name what caused the transaction -- a payment
+ * event, a purchase, an action, a reward -- so reconciliation can trace every
+ * grant and every spend (§19.2). Free text: those tables arrive in later
+ * phases.
+ *
+ * `actor_user_id` is who acted, when a person did: required for an operator
+ * adjustment. Not a foreign key, the same rule as `audit_log`: who changed a
+ * balance must outlive their account. `metadata` is context for audit; never a
+ * credential or payment instrument.
+ */
+export const walletTransactions = pgTable(
+  'wallet_transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull(),
+    currency: text('currency').notNull(),
+    /** Stamped: this wallet's next number, from 1, without gaps. */
+    sequence: integer('sequence').notNull().default(0),
+    entryType: walletEntryType('entry_type').notNull(),
+    direction: walletEntryDirection('direction').notNull(),
+    /** Always positive; `direction` says which way it moves. */
+    amount: integer('amount').notNull(),
+    creditClass: creditClass('credit_class').notNull(),
+    /** Stamped: the wallet's spendable balance after this transaction. */
+    balanceAfter: integer('balance_after').notNull().default(0),
+    /** Stamped: the wallet's held Credits after this transaction. */
+    heldAfter: integer('held_after').notNull().default(0),
+    idempotencyKey: text('idempotency_key').notNull(),
+    relatedTransactionId: uuid('related_transaction_id').references(
+      (): AnyPgColumn => walletTransactions.id,
+      { onDelete: 'restrict' },
+    ),
+    sourceType: text('source_type'),
+    sourceId: text('source_id'),
+    reason: text('reason'),
+    actorUserId: uuid('actor_user_id'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    /** Stamped: the database time of the writing transaction. */
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /** A transaction belongs to its user's wallet in that currency -- never another's. */
+    foreignKey({
+      name: 'wallet_transactions_wallet_fk',
+      columns: [t.userId, t.currency],
+      foreignColumns: [wallets.userId, wallets.currency],
+    }).onDelete('restrict'),
+    /** A wallet's history in order, and its latest transaction. */
+    uniqueIndex('wallet_transactions_sequence_idx').on(t.userId, t.currency, t.sequence),
+    uniqueIndex('wallet_transactions_idempotency_idx').on(t.userId, t.currency, t.idempotencyKey),
+    /** What settled or compensated a transaction; the database sums these on every settlement. */
+    index('wallet_transactions_related_idx')
+      .on(t.relatedTransactionId)
+      .where(sql`${t.relatedTransactionId} is not null`),
+    /** Reconciliation: which transactions a payment event, purchase or action produced. */
+    index('wallet_transactions_source_idx')
+      .on(t.sourceType, t.sourceId)
+      .where(sql`${t.sourceType} is not null`),
+    check('wallet_transactions_amount_positive', sql`${t.amount} > 0`),
+    check('wallet_transactions_sequence_positive', sql`${t.sequence} > 0`),
+    check(
+      'wallet_transactions_after_non_negative',
+      sql`${t.balanceAfter} >= 0 and ${t.heldAfter} >= 0`,
+    ),
+    check(
+      'wallet_transactions_direction_by_type',
+      sql`(${t.entryType} in ('grant', 'reward', 'purchase', 'refund', 'release') and ${t.direction} = 'credit')
+        or (${t.entryType} in ('paid_action', 'hold', 'capture') and ${t.direction} = 'debit')
+        or ${t.entryType} in ('reversal', 'admin_adjustment')`,
+    ),
+    check(
+      'wallet_transactions_related_by_type',
+      sql`(${t.relatedTransactionId} is not null) = (${t.entryType} in ${RELATED_TYPES})`,
+    ),
+    check(
+      'wallet_transactions_not_self_related',
+      sql`${t.relatedTransactionId} is null or ${t.relatedTransactionId} <> ${t.id}`,
+    ),
+    check(
+      'wallet_transactions_admin_attributed',
+      sql`${t.entryType} <> 'admin_adjustment' or (
+        ${t.actorUserId} is not null and ${t.reason} is not null and length(btrim(${t.reason})) > 0
+      )`,
+    ),
+    check(
+      'wallet_transactions_idempotency_key_format',
+      sql`length(btrim(${t.idempotencyKey})) > 0 and length(${t.idempotencyKey}) <= 200`,
+    ),
+    check(
+      'wallet_transactions_source_complete',
+      sql`(${t.sourceType} is null and ${t.sourceId} is null) or (
+        ${t.sourceType} ~ ${SOURCE_TYPE_PATTERN} and ${t.sourceId} is not null and length(btrim(${t.sourceId})) > 0
+      )`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -2194,3 +2456,6 @@ export type EconomyRulesetActionCostRow = typeof economyRulesetActionCosts.$infe
 export type EconomyRulesetAllowanceRow = typeof economyRulesetAllowances.$inferSelect;
 export type EconomyRulesetRewardRow = typeof economyRulesetRewards.$inferSelect;
 export type ContentOfferRow = typeof contentOffers.$inferSelect;
+export type WalletCurrencyRow = typeof walletCurrencies.$inferSelect;
+export type WalletRow = typeof wallets.$inferSelect;
+export type WalletTransactionRow = typeof walletTransactions.$inferSelect;

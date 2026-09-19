@@ -232,6 +232,20 @@
       "when": 1789678938193,
       "tag": "0032_chief_ser_duncan",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1789794286628,
+      "tag": "0033_true_solo",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789794300268,
+      "tag": "0034_wallet_ledger_integrity",
+      "breakpoints": true
     }
   ]
 }
