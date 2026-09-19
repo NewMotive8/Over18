@@ -584,3 +584,20 @@ export interface AdminSubscriptionChangeRequest {
   reason: string;
   reference?: string | null;
 }
+
+/* ------------------------------------------------------------------ *
+ * Content access (P4.1, PRD §10, §32.1)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A piece of content's access state, held on its offer (the P0.8 commercial
+ * boundary). Content with no offer is `free`.
+ *   free         no condition
+ *   premium      included with a subscription (Premium)
+ *   credit       unlocked with Credits, at the offer's whole-Credit price
+ *   unavailable  cannot be accessed
+ * Whether a particular user may access it -- a subscription, an unlock, an
+ * age check -- is decided later (P4/P5/P8), never by a client.
+ */
+export const CONTENT_ACCESS_STATES = ['free', 'premium', 'credit', 'unavailable'] as const;
+export type ContentAccessState = (typeof CONTENT_ACCESS_STATES)[number];

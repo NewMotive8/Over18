@@ -2084,16 +2084,21 @@ export const economyRulesetRewards = pgTable(
  * ------------------------------------------------------------------ */
 
 /**
- * What an offer says about its content:
+ * THE ACCESS STATE of a piece of content (P4.1, PRD §10, §32.1) -- what an
+ * offer says about it:
  *
- *   free      no commercial condition -- today's entire library, implicitly
- *   locked    visible, but access is conditional (subscription, unlock, grant)
- *   paid      access is bought outright
- *   retired   no longer offered. History, never deletion: entitlements already
- *             granted stay valid, which is why this is a state and not a
- *             removed row.
+ *   free         no condition -- today's entire library, implicitly
+ *   premium      included with a subscription (Premium)
+ *   credit       unlocked with Credits, at the offer's `credit_price`
+ *   unavailable  cannot be accessed
+ *
+ * P0.8 named these free / locked / paid / retired; migration 0040 maps them
+ * (locked -> premium; a paid or retired offer, which has no price to become
+ * `credit` with, -> unavailable -- failing closed). Whether an offer is still
+ * live is `retired_at`, not a state: a retired offer keeps the state, price
+ * and age floor it had, as the history an entitlement needs.
  */
-export const commercialState = pgEnum('commercial_state', ['free', 'locked', 'paid', 'retired']);
+export const commercialState = pgEnum('commercial_state', ['free', 'premium', 'credit', 'unavailable']);
 
 /**
  * content_offers -- one asset's commercial standing, and the durable identity a
@@ -2112,12 +2117,18 @@ export const commercialState = pgEnum('commercial_state', ['free', 'locked', 'pa
  * it was at the time. A future "your purchases" list reads it and does not have
  * to join to content that may be gone.
  *
- * ── WHAT IS NOT HERE ─────────────────────────────────────────────────────────
+ * ── THE ACCESS TERMS (P4.1) ──────────────────────────────────────────────────
  *
- * No price, no credit amount, no currency. Those are economy CONFIGURATION
- * (P1.1) resolved at a point in time (P1.2); an offer names the configuration
- * it uses through `economy_ref` and never carries a copy of it, so a price
- * change is a configuration decision and not an edit to every asset.
+ * `state`, `credit_price` and `age_floor` are the content's access terms.
+ * A `credit` offer's price is a whole number of Credits, held HERE: locked
+ * photos and videos are priced per asset, not in the economy configuration's
+ * action costs (P1, `ECONOMY_ACTION_CATALOGUE`). No money, currency or plan
+ * price is ever stored here; `economy_ref` still names any configuration an
+ * offer relies on. `age_floor` is an optional minimum age, in years, for the
+ * content -- a requirement recorded now and enforced by the age-verification
+ * phase (P5), not here.
+ *
+ * ── WHAT IS NOT HERE ─────────────────────────────────────────────────────────
  *
  * No entitlement, wallet, purchase or ledger table. Those are P2/P3/P8. When
  * they arrive, an entitlement references `content_offers.id` -- never an asset
@@ -2134,6 +2145,10 @@ export const contentOffers = pgTable(
     /** Denormalised owner, for the same reason and with the same nullability. */
     characterId: uuid('character_id').references(() => characters.id, { onDelete: 'set null' }),
     state: commercialState('state').notNull().default('free'),
+    /** Whole Credits to unlock: set exactly when `state = 'credit'` (checked below). */
+    creditPrice: integer('credit_price'),
+    /** Optional minimum age, in years, to access the content. Null: no age floor. */
+    ageFloor: integer('age_floor'),
     /**
      * What was offered, recorded when the offer was written: character name,
      * asset kind and media type. Never authoritative for live content -- read
@@ -2145,7 +2160,7 @@ export const contentOffers = pgTable(
      * nothing else (see economy_* tables). Null while the economy is dark.
      */
     economyRef: jsonb('economy_ref').$type<Record<string, unknown>>(),
-    /** Set exactly while `state = 'retired'`; the check below holds them together. */
+    /** Set once the offer is no longer live. It keeps its terms, as history. */
     retiredAt: timestamp('retired_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -2160,10 +2175,11 @@ export const contentOffers = pgTable(
       .on(t.assetId)
       .where(sql`${t.retiredAt} is null and ${t.assetId} is not null`),
     index('content_offers_character_idx').on(t.characterId),
-    check(
-      'content_offers_retired_consistent',
-      sql`(${t.state} = 'retired') = (${t.retiredAt} is not null)`,
-    ),
+    // A Credit price exactly for Credit content, and always a positive whole number.
+    check('content_offers_credit_price', sql`(${t.state} = 'credit') = (${t.creditPrice} is not null)`),
+    check('content_offers_credit_price_positive', sql`${t.creditPrice} is null or ${t.creditPrice} > 0`),
+    // The platform is adults-only: a floor below 18 would say nothing.
+    check('content_offers_age_floor', sql`${t.ageFloor} is null or ${t.ageFloor} between 18 and 99`),
   ],
 );
 

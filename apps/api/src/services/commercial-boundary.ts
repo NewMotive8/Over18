@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { CONTENT_ACCESS_STATES, type ContentAccessState } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import {
   characters,
@@ -52,20 +53,36 @@ import { mediaTypeOf } from './content-review-service.js';
  * so "what did this customer buy, and may they still download it?" stays
  * answerable when the media is gone.
  *
- * Prices live in economy configuration (P1.1) and are resolved at an instant
- * (P1.2). An offer names the configuration through `economyRef` and never keeps
- * a copy, so changing a price is a configuration decision, not an edit to every
- * asset that used it.
+ * ── THE ACCESS TERMS (P4.1, PRD §10, §32.1) ─────────────────────────────────
+ *
+ * An offer's terms are its access STATE -- free, premium, credit or
+ * unavailable -- a whole-Credit PRICE for credit content, and an optional AGE
+ * FLOOR. Locked photos and videos are priced per asset, here, not in the
+ * economy configuration's action costs (P1, `ECONOMY_ACTION_CATALOGUE`); plan
+ * prices and money never are. `economyRef` still names any configuration an
+ * offer relies on. The age floor is recorded here and enforced by P5.
+ *
+ * These are TERMS, not access decisions: whether a particular user may open a
+ * piece of content (their subscription, an unlock, their verified age) is the
+ * later access phases' to decide (P4/P5/P8), and nothing here charges,
+ * unlocks or checks anyone.
  */
 
-/** Mirrors the `commercial_state` enum. */
-export type ContentCommercialState = ContentOfferRow['state'];
+/** The `commercial_state` enum: the P4.1 access states. */
+export type ContentCommercialState = ContentAccessState;
 
 /**
- * Content nobody has priced is FREE. There is no backfill and no migration of
- * existing content: absence of an offer is the answer, not missing data.
+ * Content nobody has priced is FREE, with no age floor. There is no backfill
+ * and no migration of existing content: absence of an offer is the answer, not
+ * missing data.
  */
 export const DEFAULT_COMMERCIAL_STATE: ContentCommercialState = 'free';
+
+/** The age-floor bounds, in years, the database also holds (`content_offers_age_floor`). */
+export const AGE_FLOOR_MIN = 18;
+export const AGE_FLOOR_MAX = 99;
+/** The largest price the column holds (a Postgres integer). */
+const CREDIT_PRICE_MAX = 2 ** 31 - 1;
 
 /** Thrown when a write would break the boundary's rules. */
 export class CommercialBoundaryError extends Error {
@@ -74,7 +91,9 @@ export class CommercialBoundaryError extends Error {
       | 'economy_disabled'
       | 'asset_not_found'
       | 'not_content'
-      | 'invalid_state',
+      | 'invalid_state'
+      | 'invalid_price'
+      | 'invalid_age_floor',
     message: string,
   ) {
     super(message);
@@ -87,6 +106,10 @@ export interface AssetCommercialView {
   /** The live offer's id -- what an entitlement would reference. Null when free by default. */
   offerId: string | null;
   state: ContentCommercialState;
+  /** Whole Credits to unlock, exactly when `state` is `credit`. */
+  creditPrice: number | null;
+  /** Minimum age in years, or null for none. */
+  ageFloor: number | null;
   /** True when this is merely the default, with no offer written. */
   implicit: boolean;
   /** Economy configuration reference, when the offer names one. */
@@ -96,6 +119,8 @@ export interface AssetCommercialView {
 const IMPLICIT_FREE: AssetCommercialView = {
   offerId: null,
   state: DEFAULT_COMMERCIAL_STATE,
+  creditPrice: null,
+  ageFloor: null,
   implicit: true,
   economyRef: null,
 };
@@ -133,6 +158,8 @@ export async function describeAssetCommercial(
     out.set(row.assetId, {
       offerId: row.id,
       state: row.state,
+      creditPrice: row.creditPrice,
+      ageFloor: row.ageFloor,
       implicit: false,
       economyRef: row.economyRef ?? null,
     });
@@ -164,9 +191,33 @@ function snapshotOf(asset: CharacterVisualAssetRow, characterName: string): Reco
 
 export interface SetContentOfferInput {
   assetId: string;
-  state: Exclude<ContentCommercialState, 'retired'>;
+  state: ContentCommercialState;
+  /** Whole Credits: required for `credit`, and only for `credit`. */
+  creditPrice?: number | null;
+  /** Minimum age in years (18-99), or null / absent for none. */
+  ageFloor?: number | null;
   /** Economy configuration this offer resolves against (codes only). */
   economyRef?: Record<string, unknown> | null;
+}
+
+/** The terms, checked. The database holds the same rules; this says what is wrong in words. */
+function checkTerms(input: SetContentOfferInput): { creditPrice: number | null; ageFloor: number | null } {
+  if (!(CONTENT_ACCESS_STATES as readonly unknown[]).includes(input.state)) {
+    throw new CommercialBoundaryError('invalid_state', `state must be one of: ${CONTENT_ACCESS_STATES.join(', ')}.`);
+  }
+  const price = input.creditPrice ?? null;
+  if (input.state === 'credit') {
+    if (typeof price !== 'number' || !Number.isSafeInteger(price) || price < 1 || price > CREDIT_PRICE_MAX) {
+      throw new CommercialBoundaryError('invalid_price', 'Credit content needs a price: a whole number of Credits, 1 or more.');
+    }
+  } else if (price !== null) {
+    throw new CommercialBoundaryError('invalid_price', `Only credit content has a Credit price; ${input.state} content has none.`);
+  }
+  const ageFloor = input.ageFloor ?? null;
+  if (ageFloor !== null && (typeof ageFloor !== 'number' || !Number.isInteger(ageFloor) || ageFloor < AGE_FLOOR_MIN || ageFloor > AGE_FLOOR_MAX)) {
+    throw new CommercialBoundaryError('invalid_age_floor', `The age floor must be a whole number of years from ${AGE_FLOOR_MIN} to ${AGE_FLOOR_MAX}, or none.`);
+  }
+  return { creditPrice: price, ageFloor };
 }
 
 /**
@@ -185,6 +236,7 @@ export async function setContentOffer(
   input: SetContentOfferInput,
 ): Promise<ContentOfferRow> {
   assertCommercialWrite(commerce);
+  const terms = checkTerms(input);
 
   const [row] = await db
     .select({ asset: characterVisualAssets, characterName: characters.name })
@@ -209,6 +261,8 @@ export async function setContentOffer(
       .update(contentOffers)
       .set({
         state: input.state,
+        creditPrice: terms.creditPrice,
+        ageFloor: terms.ageFloor,
         economyRef: input.economyRef ?? null,
         snapshot,
         updatedAt: new Date(),
@@ -224,6 +278,8 @@ export async function setContentOffer(
       assetId: input.assetId,
       characterId: row.asset.characterId,
       state: input.state,
+      creditPrice: terms.creditPrice,
+      ageFloor: terms.ageFloor,
       economyRef: input.economyRef ?? null,
       snapshot,
     })
@@ -232,9 +288,10 @@ export async function setContentOffer(
 }
 
 /**
- * Stop offering this content. The row stays: entitlements already granted
- * against it remain valid, and a retired offer is how that history is kept.
- * A new offer for the same asset may then be written.
+ * Stop offering this content. The row stays, with the terms it had -- state,
+ * price, age floor: entitlements already granted against it remain valid, and
+ * a retired offer is how that history is kept. The content reads as FREE again
+ * until a new offer for it is written.
  */
 export async function retireContentOffer(
   db: Db,
@@ -244,7 +301,7 @@ export async function retireContentOffer(
   assertCommercialWrite(commerce);
   const [updated] = await db
     .update(contentOffers)
-    .set({ state: 'retired', retiredAt: new Date(), updatedAt: new Date() })
+    .set({ retiredAt: new Date(), updatedAt: new Date() })
     .where(and(eq(contentOffers.id, offerId), isNull(contentOffers.retiredAt)))
     .returning();
   return updated ?? null;

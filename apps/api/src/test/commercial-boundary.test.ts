@@ -93,7 +93,7 @@ const act = (assetId: string, verb: string) =>
 describe('the economy stays dark', () => {
   it('refuses to write commercial state while ECONOMY_ENABLED is off', async () => {
     const clip = await approvedClip();
-    await expect(setContentOffer(on.db, ECONOMY_OFF, { assetId: clip.id, state: 'paid' })).rejects.toBeInstanceOf(
+    await expect(setContentOffer(on.db, ECONOMY_OFF, { assetId: clip.id, state: 'credit', creditPrice: 50 })).rejects.toBeInstanceOf(
       CommercialBoundaryError,
     );
     await expect(retireContentOffer(on.db, ECONOMY_OFF, randomUUID())).rejects.toBeInstanceOf(
@@ -107,6 +107,8 @@ describe('the economy stays dark', () => {
     expect(await getAssetCommercial(on.db, clip.id)).toEqual({
       offerId: null,
       state: DEFAULT_COMMERCIAL_STATE,
+      creditPrice: null,
+      ageFloor: null,
       implicit: true,
       economyRef: null,
     });
@@ -150,11 +152,12 @@ describe('an offer is the only place commercial state lives', () => {
     const clip = await approvedClip();
     const offer = await setContentOffer(on.db, ECONOMY_ON, {
       assetId: clip.id,
-      state: 'paid',
+      state: 'credit',
+      creditPrice: 50,
       economyRef: { packCode: 'starter_pack' },
     });
 
-    expect(offer).toMatchObject({ assetId: clip.id, characterId: LUNA.id, state: 'paid', retiredAt: null });
+    expect(offer).toMatchObject({ assetId: clip.id, characterId: LUNA.id, state: 'credit', creditPrice: 50, ageFloor: null, retiredAt: null });
     expect(offer.economyRef).toEqual({ packCode: 'starter_pack' });
     expect(offer.snapshot).toMatchObject({
       characterName: LUNA.name,
@@ -163,7 +166,7 @@ describe('an offer is the only place commercial state lives', () => {
       mediaType: 'image',
       contentRating: 'sfw',
     });
-    // No price, no credits, no currency: those are economy configuration.
+    // The snapshot describes the content only: the price is the offer's own column (P4.1).
     for (const forbidden of ['price', 'priceMinor', 'credits', 'currency', 'amount']) {
       expect({ forbidden, present: forbidden in (offer.snapshot as object) }).toEqual({ forbidden, present: false });
     }
@@ -172,33 +175,33 @@ describe('an offer is the only place commercial state lives', () => {
   it('never writes anything onto the asset itself', async () => {
     const clip = await approvedClip();
     const before = (await getVisualAssetById(on.db, clip.id))!;
-    await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'locked' });
+    await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'premium' });
     expect(await getVisualAssetById(on.db, clip.id)).toEqual(before);
   });
 
   it('is content-only: identity references and chat media cannot be sold', async () => {
     const reference = SEED_VISUAL_ASSETS.find((a) => a.characterId === LUNA.id)!;
     await expect(
-      setContentOffer(on.db, ECONOMY_ON, { assetId: reference.id, state: 'paid' }),
+      setContentOffer(on.db, ECONOMY_ON, { assetId: reference.id, state: 'credit', creditPrice: 50 }),
     ).rejects.toMatchObject({ kind: 'not_content' });
 
     const chat = await approvedClip({ kind: 'chat' });
-    await expect(setContentOffer(on.db, ECONOMY_ON, { assetId: chat.id, state: 'paid' })).rejects.toMatchObject({
+    await expect(setContentOffer(on.db, ECONOMY_ON, { assetId: chat.id, state: 'credit', creditPrice: 50 })).rejects.toMatchObject({
       kind: 'not_content',
     });
 
     await expect(
-      setContentOffer(on.db, ECONOMY_ON, { assetId: randomUUID(), state: 'paid' }),
+      setContentOffer(on.db, ECONOMY_ON, { assetId: randomUUID(), state: 'credit', creditPrice: 50 }),
     ).rejects.toMatchObject({ kind: 'asset_not_found' });
     expect(await on.db.select().from(contentOffers)).toEqual([]);
   });
 
   it('keeps ONE live offer per asset, and updates it in place', async () => {
     const clip = await approvedClip();
-    const first = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'locked' });
-    const second = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'paid' });
+    const first = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'premium' });
+    const second = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'credit', creditPrice: 50 });
     expect(second.id).toBe(first.id);
-    expect(second.state).toBe('paid');
+    expect(second).toMatchObject({ state: 'credit', creditPrice: 50 });
     expect(await on.db.select().from(contentOffers)).toHaveLength(1);
 
     // The database holds that rule too, not just the service.
@@ -206,44 +209,42 @@ describe('an offer is the only place commercial state lives', () => {
       on.pool.query('INSERT INTO content_offers (asset_id, character_id, state) VALUES ($1, $2, $3)', [
         clip.id,
         LUNA.id,
-        'paid',
+        'premium',
       ]),
     ).rejects.toThrow(/content_offers_live_asset_idx/);
   });
 
   it('retires an offer instead of deleting it, and frees the slot for a new one', async () => {
     const clip = await approvedClip();
-    const original = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'paid' });
+    const original = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'credit', creditPrice: 50 });
     const retired = await retireContentOffer(on.db, ECONOMY_ON, original.id);
-    expect(retired).toMatchObject({ id: original.id, state: 'retired' });
+    // Retired, with the terms it had: the history an entitlement needs (P4.1).
+    expect(retired).toMatchObject({ id: original.id, state: 'credit', creditPrice: 50 });
     expect(retired!.retiredAt).not.toBeNull();
     expect(await liveOfferFor(on.db, clip.id)).toBeNull();
     expect(await getAssetCommercial(on.db, clip.id)).toMatchObject({ state: 'free', implicit: true });
 
-    const replacement = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'locked' });
+    const replacement = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'premium' });
     expect(replacement.id).not.toBe(original.id);
     // Both rows remain: the retired one is the history an entitlement needs.
     expect(await on.db.select().from(contentOffers)).toHaveLength(2);
     expect(await retireContentOffer(on.db, ECONOMY_ON, original.id)).toBeNull();
   });
 
-  it('holds retired and its timestamp together in the database', async () => {
+  it('marks retirement by retired_at, not by a state: there is no retired access state (P4.1)', async () => {
     const clip = await approvedClip();
-    const offer = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'paid' });
+    const offer = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'credit', creditPrice: 50 });
     await expect(
       on.pool.query(`UPDATE content_offers SET state = 'retired' WHERE id = $1`, [offer.id]),
-    ).rejects.toThrow(/content_offers_retired_consistent/);
-    await expect(
-      on.pool.query('UPDATE content_offers SET retired_at = now() WHERE id = $1', [offer.id]),
-    ).rejects.toThrow(/content_offers_retired_consistent/);
+    ).rejects.toThrow(/invalid input value for enum commercial_state/);
   });
 
   it('describes many assets at once, defaulting the ones without offers', async () => {
     const priced = await approvedClip();
     const free = await approvedClip();
-    await setContentOffer(on.db, ECONOMY_ON, { assetId: priced.id, state: 'locked' });
+    await setContentOffer(on.db, ECONOMY_ON, { assetId: priced.id, state: 'premium' });
     const described = await describeAssetCommercial(on.db, [priced.id, free.id]);
-    expect(described.get(priced.id)).toMatchObject({ state: 'locked', implicit: false });
+    expect(described.get(priced.id)).toMatchObject({ state: 'premium', implicit: false });
     expect(described.get(free.id)).toMatchObject({ state: 'free', implicit: true });
   });
 });
@@ -253,7 +254,7 @@ describe('an offer is the only place commercial state lives', () => {
  * ================================================================== */
 
 describe('commercial state is not moderation, publication or distribution', () => {
-  it('a locked or paid clip is still approved, still released, still live', async () => {
+  it('a premium or credit clip is still approved, still released, still live', async () => {
     const clip = await approvedClip();
     expect((await act(clip.id, 'publish')).statusCode).toBe(200);
     const shelfBefore = await on.app.inject({
@@ -265,7 +266,7 @@ describe('commercial state is not moderation, publication or distribution', () =
       (a) => a.assetId === clip.id,
     );
 
-    await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'paid' });
+    await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'credit', creditPrice: 50 });
 
     const shelfAfter = await on.app.inject({
       method: 'GET',
@@ -285,17 +286,17 @@ describe('commercial state is not moderation, publication or distribution', () =
 
   it('moderation and release decisions never touch an offer', async () => {
     const clip = await approvedClip();
-    const offer = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'paid' });
+    const offer = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'credit', creditPrice: 50 });
 
     for (const verb of ['publish', 'unpublish', 'archive', 'unarchive']) {
       expect((await act(clip.id, verb)).statusCode).toBe(200);
       const current = await liveOfferFor(on.db, clip.id);
-      expect({ verb, id: current?.id, state: current?.state }).toEqual({ verb, id: offer.id, state: 'paid' });
+      expect({ verb, id: current?.id, state: current?.state }).toEqual({ verb, id: offer.id, state: 'credit' });
     }
 
     // Even rejection, which takes content out of the workflow entirely.
     expect((await act(clip.id, 'reject')).statusCode).toBe(200);
-    expect(await liveOfferFor(on.db, clip.id)).toMatchObject({ id: offer.id, state: 'paid' });
+    expect(await liveOfferFor(on.db, clip.id)).toMatchObject({ id: offer.id, state: 'credit' });
   });
 });
 
@@ -308,7 +309,8 @@ describe('commercial records survive the content they were about', () => {
     const clip = await approvedClip();
     const offer = await setContentOffer(on.db, ECONOMY_ON, {
       assetId: clip.id,
-      state: 'paid',
+      state: 'credit',
+      creditPrice: 50,
       economyRef: { packCode: 'starter_pack' },
     });
 
@@ -318,7 +320,7 @@ describe('commercial records survive the content they were about', () => {
     expect(surviving).toBeTruthy();
     expect(surviving!.assetId).toBeNull();
     expect(surviving!.characterId).toBe(LUNA.id);
-    expect(surviving!.state).toBe('paid');
+    expect(surviving!).toMatchObject({ state: 'credit', creditPrice: 50 });
     expect(surviving!.economyRef).toEqual({ packCode: 'starter_pack' });
     // The snapshot is what a purchase history reads once the media is gone.
     expect(surviving!.snapshot).toMatchObject({ characterName: LUNA.name, mediaType: 'image' });
@@ -326,7 +328,7 @@ describe('commercial records survive the content they were about', () => {
 
   it('keeps it when the whole character is permanently deleted (the P9.4 case)', async () => {
     const clip = await approvedClip();
-    const offer = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'paid' });
+    const offer = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'credit', creditPrice: 50 });
 
     await on.db.delete(characters).where(eq(characters.id, LUNA.id));
 
@@ -335,7 +337,7 @@ describe('commercial records survive the content they were about', () => {
     expect({ asset: surviving!.assetId, character: surviving!.characterId, state: surviving!.state }).toEqual({
       asset: null,
       character: null,
-      state: 'paid',
+      state: 'credit',
     });
     expect(surviving!.snapshot).toMatchObject({ characterName: LUNA.name });
   });
@@ -358,7 +360,7 @@ describe('commercial records survive the content they were about', () => {
 
   it('still lists a character offers after her content is gone', async () => {
     const clip = await approvedClip();
-    await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'locked' });
+    await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'premium' });
     await on.db.delete(characterVisualAssets).where(eq(characterVisualAssets.id, clip.id));
     const offers = await listOffersForCharacter(on.db, LUNA.id);
     expect(offers).toHaveLength(1);
