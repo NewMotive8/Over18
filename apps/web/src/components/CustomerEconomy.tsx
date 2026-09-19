@@ -16,7 +16,7 @@ export function CreditBalance({ overview, compact = false }: { overview: Custome
   if (credits === null) return null;
   return (
     <Link
-      to="/wallet"
+      to="/credits"
       aria-label={`${credits} Credits available. View wallet.`}
       className={`inline-flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 font-medium text-amber-100 transition-colors hover:bg-amber-500/20 ${compact ? 'px-2.5 py-1 text-xs' : 'px-3 py-2 text-sm'}`}
     >

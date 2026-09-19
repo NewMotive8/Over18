@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
+import type { CustomerContentAccess } from '@over18/shared';
 import PostsTab from './PostsTab';
 import type { PublicClip } from '../../lib/api';
+import { contentAccessStateFromResponse, type ContentAccessState } from '../../lib/contentAccess';
 
 /**
  * The Posts tab is the character's REAL content collection.
@@ -21,8 +24,14 @@ const clip = (id: string, mediaType: 'image' | 'video' = 'video'): PublicClip =>
   characterName: 'Nova',
 });
 
-const render = (clips: PublicClip[]) =>
-  renderToStaticMarkup(<PostsTab clips={clips} onOpenClip={() => {}} />);
+const render = (clips: PublicClip[], access?: ContentAccessState) =>
+  renderToStaticMarkup(
+    <MemoryRouter>
+      <PostsTab clips={clips} onOpenClip={() => {}} access={access} />
+    </MemoryRouter>,
+  );
+
+const decided = (items: CustomerContentAccess[]): ContentAccessState => contentAccessStateFromResponse({ items });
 
 describe('the Posts tab renders the real collection', () => {
   it('renders one tile per returned asset — twelve means twelve', () => {
@@ -147,5 +156,64 @@ describe('the Posts tile keeps the approved heart mark and no fake count', () =>
     const markup = render([clip('safe')]);
     expect(markup).not.toContain('storageKey');
     expect(markup).not.toContain('/app/var/media');
+  });
+});
+
+/**
+ * P8.1 -- the tab renders each tile in the state the server (P4.2) gave for
+ * that asset, and asks for nothing of its own.
+ */
+describe('the Posts tab renders the access the server decided', () => {
+  const access = (assetId: string, over: Partial<CustomerContentAccess> = {}): CustomerContentAccess => ({
+    assetId,
+    state: 'free',
+    creditPrice: null,
+    ageFloor: null,
+    decision: 'open',
+    ...over,
+  });
+
+  it('is exactly the tab it is today while no access is known -- the production default', () => {
+    const markup = render([clip('a'), clip('b')]);
+    expect(markup).not.toContain('locked-content-card');
+    expect(markup).not.toMatch(/Premium|Credits|Unavailable/);
+    // No balance either: the pill renders nothing, and its row collapses.
+    expect(markup).toContain('flex justify-end empty:hidden');
+    expect(markup).not.toContain('Credits</span>');
+  });
+
+  it('locks each tile the server locked, and leaves the others playing', () => {
+    const markup = render(
+      [clip('free'), clip('prem'), clip('cost'), clip('poor'), clip('age'), clip('gone')],
+      decided([
+        access('free'),
+        access('prem', { state: 'premium', decision: 'premium_required' }),
+        access('cost', { state: 'credit', creditPrice: 50, decision: 'credits_required' }),
+        access('poor', { state: 'credit', creditPrice: 50, decision: 'insufficient_credits' }),
+        access('age', { ageFloor: 21, decision: 'age_restricted' }),
+        access('gone', { state: 'unavailable', decision: 'unavailable' }),
+      ]),
+    );
+    expect(markup.match(/data-testid="locked-content-card"/g)).toHaveLength(5);
+    for (const state of ['premium_required', 'credits_required', 'insufficient_credits', 'age_restricted', 'unavailable']) {
+      expect(markup, state).toContain(`data-state="${state}"`);
+    }
+    // The free tile still plays, and every tile still shows its own media.
+    expect(markup).toContain('<button type="button" aria-label="Post 1"');
+    for (const id of ['free', 'prem', 'cost', 'poor', 'age', 'gone']) expect(markup, id).toContain(`/api/media/assets/${id}/file`);
+    // Premium and Credits are told apart, and the price is the server's.
+    expect(markup).toContain('href="/subscription"');
+    expect(markup).toContain('href="/credits"');
+    expect(markup).toContain('50 Credits');
+  });
+
+  it('only autoplays what the server revealed', () => {
+    const markup = render([clip('free'), clip('prem')], decided([access('free'), access('prem', { state: 'premium', decision: 'premium_required' })]));
+    expect(markup.match(/autoplay=""/g)).toHaveLength(1);
+  });
+
+  it('shows no access state for an asset the server did not answer for', () => {
+    const markup = render([clip('a'), clip('b')], decided([access('a', { state: 'premium', decision: 'premium_required' })]));
+    expect(markup.match(/data-testid="locked-content-card"/g)).toHaveLength(1);
   });
 });

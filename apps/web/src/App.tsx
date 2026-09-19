@@ -126,6 +126,9 @@ export default function App() {
 
         {/* Premium / subscription placeholder (no billing) */}
         <Route path="/subscription" element={<SubscriptionPage />} />
+        {/* Credits is the customer-facing name (P8.1). The original path keeps
+            working so nothing already linked to it breaks. */}
+        <Route path="/credits" element={<WalletPage />} />
         <Route path="/wallet" element={<WalletPage />} />
 
         {/* Auth */}

@@ -1,4 +1,5 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
+import CreditsPill from './CreditsPill';
 import MobileNavigation from './MobileNavigation';
 
 /**
@@ -34,6 +35,9 @@ export default function AppShell() {
           >
             Over<span className="text-rose-500">18</span>
           </Link>
+          {/* The customer's Credits, before and during anything they pay for.
+              Renders nothing at all until a balance is known. */}
+          <CreditsPill />
         </header>
       )}
 

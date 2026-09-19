@@ -24,6 +24,7 @@ import type {
   CharacterVisualIdentityResponse,
   ConversationSummary,
   CustomerCommercialState,
+  CustomerContentAccessResponse,
   CustomerEconomyCatalog,
   AdminPackVersion,
   AdminPlanVersion,
@@ -1405,6 +1406,15 @@ export const adminEconomyApi = {
 };
 
 /** P2.5.1 -- the admin users read model. Read-only; the server enforces every permission. */
+/**
+ * P4.2 -- what this customer may do with the content on screen. The server
+ * decides; the browser renders the answer and never derives one.
+ */
+export const contentAccessApi = {
+  access: (assetIds: readonly string[]) =>
+    request<CustomerContentAccessResponse>(`/api/content/access?assetIds=${assetIds.map(encodeURIComponent).join(',')}`),
+};
+
 export const adminUsersApi = {
   /** `query` is the list's query string without the leading "?" (see admin/userManagement). */
   list: (query: string) => request<AdminUserList>(`/admin/users${query ? `?${query}` : ''}`),

@@ -50,12 +50,15 @@ describe('app shell + routes', () => {
     expect(html).not.toContain('Premium enrollment coming soon');
   });
 
-  it('does not render fabricated balance or activity on the customer wallet', () => {
-    const html = renderApp('/wallet');
-    expect(html).toContain('Wallet');
-    expect(html).toContain('Backend support pending');
-    expect(html).not.toContain('18 Credits');
-    expect(html).not.toContain('No wallet activity yet');
+  it('does not render fabricated balance or activity on the customer Credits screen', () => {
+    // Customers are told "Credits"; the original path still resolves (P8.1).
+    for (const path of ['/credits', '/wallet']) {
+      const html = renderApp(path);
+      expect(html, path).toContain('Credits');
+      expect(html, path).toContain('Backend support pending');
+      expect(html, path).not.toContain('18 Credits');
+      expect(html, path).not.toMatch(/Wallet|wallet activity/i);
+    }
   });
 
   it('claims no plan on the profile while the economy backend is pending', () => {
