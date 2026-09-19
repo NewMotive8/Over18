@@ -10,14 +10,14 @@ import { CrownIcon, LockIcon, PhoneIcon, SparkleIcon } from './icons';
  * available", never as a default (no 0 Credits, no "Free", no invented plan).
  */
 
-/** The server's spendable balance. Renders nothing while the wallet is not available. */
+/** The server's spendable balance. Renders nothing while it is not available. */
 export function CreditBalance({ overview, compact = false }: { overview: CustomerEconomyOverview; compact?: boolean }) {
   const credits = spendableCredits(overview);
   if (credits === null) return null;
   return (
     <Link
       to="/credits"
-      aria-label={`${credits} Credits available. View wallet.`}
+      aria-label={`${credits} Credits available. View your Credits.`}
       className={`inline-flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 font-medium text-amber-100 transition-colors hover:bg-amber-500/20 ${compact ? 'px-2.5 py-1 text-xs' : 'px-3 py-2 text-sm'}`}
     >
       <span aria-hidden className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/20 text-amber-300">✦</span>

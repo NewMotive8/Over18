@@ -28,7 +28,7 @@ export default function SubscriptionPage() {
           <PlanSummary overview={state.overview} />
           <PlanCatalog overview={state.overview} />
           <LockedPremiumCard action={getAction(state.overview, 'premium_content')} />
-          <p className="text-center text-[11px] text-zinc-600">Preview only — no subscription, payment, wallet transaction, entitlement, or Credit spend can be created here.</p>
+          <p className="text-center text-[11px] text-zinc-600">Preview only — no subscription, payment, entitlement, or Credit spend can be created here.</p>
         </>
       )}
 

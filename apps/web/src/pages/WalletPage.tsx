@@ -5,7 +5,8 @@ import { CreditBalance, EconomyStateNotice, PlanSummary } from '../components/Cu
 import { spendableCredits, useCustomerEconomy } from '../lib/customerEconomy';
 
 /**
- * Wallet -- the customer's balance, read-only.
+ * Credits -- the customer's balance, read-only. (The file and route keep their
+ * original names; customers are told "Credits" everywhere: P8.1.)
  *
  * The balance appears only when the server supplies it. There is no wallet
  * activity endpoint yet, so activity is stated as unavailable rather than
