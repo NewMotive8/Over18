@@ -28,6 +28,8 @@ import GenerationPage from './pages/admin/GenerationPage';
 import AdminAuditPage from './pages/admin/AdminAuditPage';
 import EconomyPage from './pages/admin/EconomyPage';
 import AdminWalletPage from './pages/admin/AdminWalletPage';
+import AdminUsersPage from './pages/admin/AdminUsersPage';
+import AdminUserDetailPage from './pages/admin/AdminUserDetailPage';
 import DiscoveryCategoriesPage from './pages/admin/DiscoveryCategoriesPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
@@ -93,6 +95,10 @@ export default function App() {
             operators holding users.commercial.read; the server enforces it. */}
         <Route path="wallets" element={<AdminWalletPage />} />
         <Route path="wallets/:userId" element={<AdminWalletPage />} />
+        {/* P2.5.1 -- Users: search and filter, then one user's read-only
+            detail. Listed for users.commercial.read; the server enforces it. */}
+        <Route path="users" element={<AdminUsersPage />} />
+        <Route path="users/:userId" element={<AdminUserDetailPage />} />
       </Route>
 
       <Route element={<AppShell />}>

@@ -1,5 +1,7 @@
 import type {
   AdminAccessView,
+  AdminUserDetail,
+  AdminUserList,
   AdminUserWallets,
   AdminWalletAdjustmentRequest,
   AdminWalletAdjustmentResult,
@@ -1396,6 +1398,13 @@ export const adminEconomyApi = {
       method: 'POST',
       body: JSON.stringify({ reason }),
     }),
+};
+
+/** P2.5.1 -- the admin users read model. Read-only; the server enforces every permission. */
+export const adminUsersApi = {
+  /** `query` is the list's query string without the leading "?" (see admin/userManagement). */
+  list: (query: string) => request<AdminUserList>(`/admin/users${query ? `?${query}` : ''}`),
+  detail: (userId: string) => request<AdminUserDetail>(`/admin/users/${encodeURIComponent(userId)}`),
 };
 
 /** P2.4 -- admin wallet support. The server enforces every permission, rule and cap. */

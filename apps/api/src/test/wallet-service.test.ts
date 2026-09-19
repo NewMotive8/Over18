@@ -667,10 +667,16 @@ describe('only the admin support service moves Credits (P2.4), and no customer p
     expect([...used]).toEqual(['adjustWallet']);
   });
 
-  it('every other importer only reads: the customer commercial state (P3.1) and the admin route', () => {
+  it('every other importer only reads: the customer commercial state (P3.1), the admin wallet route and the admin users read model (P2.5.1)', () => {
     const importers = application().filter((rel) => /wallet-service/.test(readFileSync(join(src, rel), 'utf8')));
-    expect(importers.sort()).toEqual(['routes/admin-wallets.ts', 'services/admin-wallet-service.ts', 'services/customer-economy.ts']);
+    expect(importers.sort()).toEqual([
+      'routes/admin-wallets.ts',
+      'services/admin-user-service.ts',
+      'services/admin-wallet-service.ts',
+      'services/customer-economy.ts',
+    ]);
     expect(importsFrom('services/customer-economy.ts', /\.\/wallet-service\.js/)).toEqual(['CREDITS_CURRENCY', 'readCommercialWallet']);
     expect(importsFrom('routes/admin-wallets.ts', /\.\.\/services\/wallet-service\.js/)).toEqual(['WalletError']);
+    expect(importsFrom('services/admin-user-service.ts', /\.\/wallet-service\.js/)).toEqual(['readWalletSummaries']);
   });
 });

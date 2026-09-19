@@ -58,6 +58,10 @@ const REFERENCE_MAX = 100;
 /** How a support reference is recorded on the transaction (P2.1 `source_type`). */
 export const SUPPORT_REFERENCE_SOURCE = 'support_reference';
 
+/** The audit object an adjustment is recorded against: one user's wallet in one currency. */
+export const WALLET_AUDIT_OBJECT_TYPE = 'wallet';
+export const walletAuditObjectId = (userId: string, currency: string) => `${userId}:${currency}`;
+
 function invalid(message: string): never {
   throw new AdminWalletError('invalid_request', message);
 }
@@ -182,8 +186,8 @@ export async function adjustUserWallet(
       await recordAudit(tx, {
         actor: ctx.actor,
         action: `wallet.adjust.${t.direction}`,
-        objectType: 'wallet',
-        objectId: `${userId}:${currency}`,
+        objectType: WALLET_AUDIT_OBJECT_TYPE,
+        objectId: walletAuditObjectId(userId, currency),
         before: { balance: t.balanceAfter - delta, held: t.heldAfter },
         after: { balance: t.balanceAfter, held: t.heldAfter },
         reason: t.reason,

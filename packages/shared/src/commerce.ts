@@ -369,3 +369,74 @@ export interface AdminWalletAdjustmentResult {
   wallet: AdminWalletSummary;
   allowance: AdminAdjustmentAllowance;
 }
+
+/* ------------------------------------------------------------------ *
+ * Admin users read model (P2.5.1)
+ * ------------------------------------------------------------------ */
+
+/** `users.role`: authorization, never a commercial tier. `admin` is staff. */
+export type AdminUserAccountRole = 'user' | 'admin';
+
+/** One row of GET /admin/users. */
+export interface AdminUserListItem {
+  id: string;
+  email: string;
+  role: AdminUserAccountRole;
+  /** Staff roles granted, in the §34.1 order of `ADMIN_ROLES`; empty for a customer. */
+  staffRoles: AdminRoleName[];
+  /** ISO 8601, microsecond precision, UTC. */
+  createdAt: string;
+  /** The most recent session started, or null if they never signed in. */
+  lastSignInAt: string | null;
+}
+
+/** GET /admin/users -- newest accounts first. */
+export interface AdminUserList {
+  users: AdminUserListItem[];
+  /** Pass as `cursor` for the next page; null on the last page. */
+  nextCursor: string | null;
+}
+
+/** One wallet in the P0 `CommercialWallet` terms, from the P2.4 wallet read model. */
+export interface AdminUserWallet {
+  currency: string;
+  /** False when the user has no wallet in this currency: every figure is then zero. */
+  exists: boolean;
+  included: number;
+  earned: number;
+  purchased: number;
+  /** Reserved for in-flight actions; not part of `spendable`. */
+  held: number;
+  spendable: number;
+  transactions: number;
+}
+
+/** GET /admin/users/:userId -- a consolidated, read-only view of one user. */
+export interface AdminUserDetail {
+  identity: { id: string; email: string };
+  account: {
+    role: AdminUserAccountRole;
+    staffRoles: Array<{ role: AdminRoleName; grantedAt: string; grantedBy: string | null }>;
+    createdAt: string;
+    updatedAt: string;
+  };
+  activity: {
+    lastSignInAt: string | null;
+    /** Sessions not yet expired. */
+    activeSessions: number;
+    conversations: number;
+    /** When any of their conversations last changed, e.g. by a message. */
+    lastConversationAt: string | null;
+  };
+  /** From the P3.1 commercial-state resolver -- the same facts the customer is told. */
+  commercial: {
+    /** Whether the economy is switched on. The facts are resolved either way. */
+    economyEnabled: boolean;
+    tier: CustomerCommercialState['tier'];
+    subscription: CustomerCommercialState['subscription'];
+    age: CustomerCommercialState['age'];
+  };
+  wallets: AdminUserWallet[];
+  /** Recent audit entries concerning this user -- only for an operator holding `audit.read`. */
+  audit: { available: true; entries: AuditEntryView[] } | { available: false; reason: 'audit_read_required' };
+}
