@@ -13,6 +13,8 @@ import type {
   ChatMessage,
   CharacterVisualIdentityResponse,
   ConversationSummary,
+  CustomerCommercialState,
+  CustomerEconomyCatalog,
   HealthResponse,
   PublicCharacter,
   SendMessageResult,
@@ -1026,6 +1028,21 @@ export const favouritesApi = {
     request<{ favourited: boolean }>(`/api/favourites/${encodeURIComponent(characterId)}`, {
       method: 'DELETE',
     }),
+};
+
+/**
+ * The customer economy READ endpoints -- the only two the backend has. Both
+ * need a session (401 otherwise) and answer 503 `economy_unavailable` while
+ * the economy is switched off. Nothing here buys, spends, quotes or grants.
+ */
+export const CUSTOMER_ECONOMY_ENDPOINTS = {
+  catalog: '/api/economy/catalog',
+  commercialState: '/api/me/commercial-state',
+} as const;
+
+export const economyApi = {
+  catalog: () => request<CustomerEconomyCatalog>(CUSTOMER_ECONOMY_ENDPOINTS.catalog),
+  commercialState: () => request<CustomerCommercialState>(CUSTOMER_ECONOMY_ENDPOINTS.commercialState),
 };
 
 export const discoveryApi = {

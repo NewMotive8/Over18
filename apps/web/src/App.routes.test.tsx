@@ -41,12 +41,30 @@ describe('app shell + routes', () => {
     expect(html).toContain('Membership');
   });
 
-  it('renders the Subscription placeholder without any real payment surface', () => {
+  it('fails closed on subscription details while customer economy backend support is pending', () => {
     const html = renderApp('/subscription');
-    expect(html).toContain('Go Premium');
-    expect(html).toContain('Payments are not enabled');
-    // placeholder subscribe control is disabled (no billing)
-    expect(html).toContain('disabled');
+    expect(html).toContain('Choose your experience');
+    expect(html).toContain('Backend support pending');
+    expect(html).not.toContain('Pricing will be shown when plans launch');
+    expect(html).not.toContain('18 Credits');
+    expect(html).not.toContain('Premium enrollment coming soon');
+  });
+
+  it('does not render fabricated balance or activity on the customer wallet', () => {
+    const html = renderApp('/wallet');
+    expect(html).toContain('Wallet');
+    expect(html).toContain('Backend support pending');
+    expect(html).not.toContain('18 Credits');
+    expect(html).not.toContain('No wallet activity yet');
+  });
+
+  it('claims no plan on the profile while the economy backend is pending', () => {
+    const html = renderApp('/profile');
+    expect(html).toContain('Membership');
+    expect(html).toContain('Plan details aren');
+    expect(html).not.toContain('Free plan');
+    expect(html).not.toContain('Premium plan');
+    expect(html).not.toContain(' Credits');
   });
 
   it('keeps the character-profile route mounted inside the shell (no crash)', () => {

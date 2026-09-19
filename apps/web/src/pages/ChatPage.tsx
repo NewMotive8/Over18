@@ -15,6 +15,8 @@ import { createPacedSend } from '../lib/chatPacing';
 import { createScrollFollower } from '../lib/chatScroll';
 import { createViewportAnchor, type ViewportAnchor } from '../lib/chatViewport';
 import MessageMedia from '../components/MessageMedia';
+import { CreditBalance, PaidActionButton } from '../components/CustomerEconomy';
+import { getAction, useCustomerEconomy } from '../lib/customerEconomy';
 
 type ChatState =
   | { status: 'loading' }
@@ -32,6 +34,7 @@ export default function ChatPage() {
   const [state, setState] = useState<ChatState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [imageFailed, setImageFailed] = useState(false);
+  const [economyState] = useCustomerEconomy();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // Latest history for the media-context read inside the memoised send
@@ -255,6 +258,9 @@ export default function ChatPage() {
   }
 
   const { character } = state.conversation;
+  // Ordinary text chat is not a paid action: only a server quote for a voice
+  // call is ever shown here, and `getAction` answers null without one.
+  const voiceAction = economyState.status === 'ready' ? getAction(economyState.overview, 'voice_call') : null;
   // P0.2: the portrait is a canonical `/api/...` route on the API origin, or a
   // legacy locator on the web origin. `absoluteMediaUrl` sends each to the
   // right server; used raw, a canonical route was requested from the web host.
@@ -263,7 +269,7 @@ export default function ChatPage() {
 
   return (
     <section className="flex h-full min-h-[60vh] flex-col">
-      <header className="flex items-center gap-3 border-b border-zinc-800 pb-3">
+      <header className="flex items-center justify-between gap-3 border-b border-zinc-800 pb-3">
         <Link
           to={`/characters/${character.id}`}
           aria-label={`View ${character.displayName}'s profile`}
@@ -286,6 +292,7 @@ export default function ChatPage() {
             <p className="text-xs text-zinc-500">Tap to view profile</p>
           </div>
         </Link>
+        {economyState.status === 'ready' && <CreditBalance overview={economyState.overview} compact />}
       </header>
 
       {/* No onScroll here on purpose. This element does not scroll (measured:
@@ -370,6 +377,12 @@ export default function ChatPage() {
           >
             {sending ? 'Retrying…' : 'Retry'}
           </button>
+        </div>
+      )}
+
+      {voiceAction && (
+        <div className="mb-3">
+          <PaidActionButton action={voiceAction} />
         </div>
       )}
 

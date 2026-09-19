@@ -10,6 +10,7 @@ import GoSteadyPage from './pages/GoSteadyPage';
 import FavouritesPage from './pages/FavouritesPage';
 import ProfilePage from './pages/ProfilePage';
 import SubscriptionPage from './pages/SubscriptionPage';
+import WalletPage from './pages/WalletPage';
 import ChatPage from './pages/ChatPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminShell from './admin/AdminShell';
@@ -109,6 +110,7 @@ export default function App() {
 
         {/* Premium / subscription placeholder (no billing) */}
         <Route path="/subscription" element={<SubscriptionPage />} />
+        <Route path="/wallet" element={<WalletPage />} />
 
         {/* Auth */}
         <Route path="/login" element={<LoginPage />} />

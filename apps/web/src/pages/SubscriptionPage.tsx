@@ -1,60 +1,36 @@
 import { Link } from 'react-router-dom';
 import PageContainer from '../components/PageContainer';
 import PageHeader from '../components/PageHeader';
-import { SparkleIcon } from '../components/icons';
+import { CreditBalance, EconomyStateNotice, LockedPremiumCard, PlanCatalog, PlanSummary } from '../components/CustomerEconomy';
+import { getAction, spendableCredits, useCustomerEconomy } from '../lib/customerEconomy';
 
 /**
- * Subscription (US-18) — placeholder commercial surface only.
+ * Subscription (US-18) -- plans and access, read-only.
  *
- * Provides the `/subscription` route the shell links to (from Profile / future
- * premium flows) so there is no navigation dead end. Intentionally NON-functional
- * commerce: NO Stripe, NO billing, NO payment call, and a configurable
- * placeholder price — monetization is out of scope for the shell ticket.
+ * Shows only what the server supplies: the customer's plan and balance when
+ * they are known, and the plans the server catalog offers, by code. Nothing
+ * here subscribes, pays, grants or spends; the subscribe control is disabled.
  */
-const BENEFITS = ['Chat with characters', 'Voice interaction', 'Premium experiences', 'More characters'];
-
-// Configurable placeholder — not a committed price (override via VITE_PREMIUM_PRICE_LABEL later).
-const PRICE_LABEL = 'Pricing to be confirmed';
-
 export default function SubscriptionPage() {
+  const [state, retry] = useCustomerEconomy();
   return (
     <PageContainer>
-      <PageHeader eyebrow="Premium" title="Go Premium" subtitle="Unlock the full experience." />
-
-      <div className="rounded-3xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 p-6">
-        <div className="flex items-center gap-2 text-rose-400">
-          <SparkleIcon className="h-5 w-5" />
-          <span className="text-sm font-semibold text-white">Premium</span>
-        </div>
-
-        <ul className="mt-4 flex flex-col gap-2">
-          {BENEFITS.map((b) => (
-            <li key={b} className="flex items-center gap-2 text-sm text-zinc-200">
-              <span aria-hidden className="text-rose-500">
-                ✓
-              </span>
-              {b}
-            </li>
-          ))}
-        </ul>
-
-        <div className="mt-6 flex items-baseline justify-between rounded-2xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
-          <span className="text-sm font-medium text-zinc-200">Monthly</span>
-          <span className="text-sm text-zinc-400">{PRICE_LABEL}</span>
-        </div>
-
-        <button
-          type="button"
-          disabled
-          aria-disabled
-          className="mt-6 w-full cursor-not-allowed rounded-xl bg-rose-600/60 py-3 text-sm font-semibold text-white/80"
-        >
-          Subscribe — coming soon
-        </button>
-        <p className="mt-3 text-center text-[11px] text-zinc-600">
-          Placeholder pricing — not a final commercial price. Payments are not enabled in this preview.
-        </p>
-      </div>
+      <PageHeader eyebrow="Plans & access" title="Choose your experience" subtitle="Compare your current plan, Credits, and future Premium access." />
+      <EconomyStateNotice state={state} retry={retry} />
+      {state.status === 'ready' && (
+        <>
+          {spendableCredits(state.overview) !== null && (
+            <div className="flex items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-900/50 px-4 py-3">
+              <div><p className="text-sm font-semibold text-white">Your available balance</p><p className="text-xs text-zinc-500">Always shown before a paid action.</p></div>
+              <CreditBalance overview={state.overview} compact />
+            </div>
+          )}
+          <PlanSummary overview={state.overview} />
+          <PlanCatalog overview={state.overview} />
+          <LockedPremiumCard action={getAction(state.overview, 'premium_content')} />
+          <p className="text-center text-[11px] text-zinc-600">Preview only — no subscription, payment, wallet transaction, entitlement, or Credit spend can be created here.</p>
+        </>
+      )}
 
       <Link to="/characters" className="text-center text-sm text-zinc-400 transition-colors hover:text-zinc-200">
         ← Back to Discover
