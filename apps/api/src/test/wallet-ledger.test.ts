@@ -530,10 +530,11 @@ describe('isolation', () => {
 /**
  * P2.1 is schema only. No route or service may read or write a wallet yet, so
  * no user can reach one -- their own or anyone else's. P2.2's wallet service is
- * added here deliberately, as a reviewed decision.
+ * added here deliberately, as a reviewed decision; wallet-service.test.ts
+ * checks that nothing in the application calls it yet.
  */
 describe('no application path touches a wallet yet', () => {
-  const ALLOWED = new Set(['db/schema.ts']);
+  const ALLOWED = new Set(['db/schema.ts', 'services/wallet-service.ts']);
   const WALLET_TABLES = /\b(walletCurrencies|wallets|walletTransactions|wallet_currencies|wallet_transactions)\b/;
 
   function sourceFiles(dir: string): string[] {
@@ -544,7 +545,7 @@ describe('no application path touches a wallet yet', () => {
     });
   }
 
-  it('only the schema names the wallet tables', () => {
+  it('only the schema and the wallet service name the wallet tables', () => {
     const src = fileURLToPath(new URL('..', import.meta.url));
     const offenders = sourceFiles(src)
       .map((path) => relative(src, path).split('\\').join('/'))
