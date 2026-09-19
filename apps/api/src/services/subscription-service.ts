@@ -7,7 +7,7 @@ import type {
   SubscriptionStatus,
 } from '@over18/shared';
 import type { Db } from '../db/client.js';
-import { economyPlans, economyPlanVersions, subscriptionHistory, subscriptions, users } from '../db/schema.js';
+import { subscriptionHistory, subscriptions, users } from '../db/schema.js';
 import {
   economyNow,
   loadPlanVersion,
@@ -164,19 +164,21 @@ export function subscriptionActions(current: { status: SubscriptionStatus } | nu
   return current.status === 'cancelled' ? ['change_plan', 'end'] : ['change_plan', 'cancel', 'end'];
 }
 
-/** A user's recorded changes, newest first, naming each plan version by its P1 code and number. */
+/**
+ * A user's recorded changes, newest first, naming each plan version by its P1
+ * code and number. The plan versions are read through the economy resolver --
+ * the one reader of economy configuration -- never joined here.
+ */
 export async function readSubscriptionHistory(db: Db, userId: string, limit = 20): Promise<AdminSubscriptionHistoryEntry[]> {
   const rows = await db.execute<{
     sequence: number;
     change: AdminSubscriptionAction;
     source: 'admin';
     effective_at: Date;
-    previous_code: string | null;
-    previous_version: number | null;
+    previous_plan_version_id: string | null;
     previous_status: SubscriptionStatus | null;
     previous_period_end: Date | null;
-    code: string;
-    version: number;
+    plan_version_id: string;
     status: SubscriptionStatus;
     current_period_end: Date;
     actor_user_id: string | null;
@@ -185,28 +187,36 @@ export async function readSubscriptionHistory(db: Db, userId: string, limit = 20
     reference: string | null;
   }>(sql`
     select h.sequence, h.change, h.source, h.effective_at,
-           pp.code as previous_code, pv.version as previous_version, h.previous_status, h.previous_period_end,
-           np.code, nv.version, h.status, h.current_period_end,
+           h.previous_plan_version_id, h.previous_status, h.previous_period_end,
+           h.plan_version_id, h.status, h.current_period_end,
            h.actor_user_id, a.email as actor_email, h.reason, h.reference
       from ${subscriptionHistory} h
-      left join ${economyPlanVersions} pv on pv.id = h.previous_plan_version_id
-      left join ${economyPlans} pp on pp.id = pv.plan_id
-      join ${economyPlanVersions} nv on nv.id = h.plan_version_id
-      join ${economyPlans} np on np.id = nv.plan_id
       left join ${users} a on a.id = h.actor_user_id
      where h.user_id = ${userId}
      order by h.sequence desc
      limit ${limit}`);
+
+  const versionIds = [...new Set(rows.rows.flatMap((r) => [r.plan_version_id, r.previous_plan_version_id]))].filter((id): id is string => id !== null);
+  const plans = new Map<string, { planCode: string; planVersion: number }>();
+  await Promise.all(
+    versionIds.map(async (id) => {
+      const plan = await loadPlanVersion(db, id);
+      // The foreign keys keep every version; only a draft is hidden, and none is ever subscribed to.
+      if (!plan.ok) throw new Error(`Subscription history names plan version ${id}, which cannot be loaded.`);
+      plans.set(id, { planCode: plan.value.ref.code, planVersion: plan.value.ref.version });
+    }),
+  );
+
   return rows.rows.map((r) => ({
     sequence: r.sequence,
     change: r.change,
     source: r.source,
     effectiveAt: new Date(r.effective_at).toISOString(),
     from:
-      r.previous_code !== null && r.previous_version !== null && r.previous_status !== null && r.previous_period_end !== null
-        ? { planCode: r.previous_code, planVersion: r.previous_version, status: r.previous_status, currentPeriodEnd: new Date(r.previous_period_end).toISOString() }
+      r.previous_plan_version_id !== null && r.previous_status !== null && r.previous_period_end !== null
+        ? { ...plans.get(r.previous_plan_version_id)!, status: r.previous_status, currentPeriodEnd: new Date(r.previous_period_end).toISOString() }
         : null,
-    to: { planCode: r.code, planVersion: r.version, status: r.status, currentPeriodEnd: new Date(r.current_period_end).toISOString() },
+    to: { ...plans.get(r.plan_version_id)!, status: r.status, currentPeriodEnd: new Date(r.current_period_end).toISOString() },
     actorUserId: r.actor_user_id,
     actorEmail: r.actor_email,
     reason: r.reason,
