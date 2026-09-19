@@ -26,6 +26,7 @@ import BannerEditorPage from './pages/admin/BannerEditorPage';
 import HomeComposerPage from './pages/admin/HomeComposerPage';
 import GenerationPage from './pages/admin/GenerationPage';
 import AdminAuditPage from './pages/admin/AdminAuditPage';
+import EconomyPage from './pages/admin/EconomyPage';
 import DiscoveryCategoriesPage from './pages/admin/DiscoveryCategoriesPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
@@ -83,6 +84,10 @@ export default function App() {
             server enforces access); only LISTED in the navigation once the
             audit switch is on and the operator holds audit.read. */}
         <Route path="audit" element={<AdminAuditPage />} />
+        {/* PRD v1.2 §31, P1.4 -- the economy console. Listed in the navigation
+            for operators holding economy.manage; the server enforces it. */}
+        <Route path="economy" element={<EconomyPage />} />
+        <Route path="economy/:section" element={<EconomyPage />} />
       </Route>
 
       <Route element={<AppShell />}>

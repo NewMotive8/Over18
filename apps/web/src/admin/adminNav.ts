@@ -110,7 +110,7 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
  * server regardless of what this list renders.
  * ------------------------------------------------------------------ */
 
-export type GatedAdminDestinationKey = 'audit';
+export type GatedAdminDestinationKey = 'economy' | 'audit';
 
 export interface GatedAdminDestination extends Omit<AdminDestination, 'key'> {
   key: GatedAdminDestinationKey;
@@ -122,6 +122,16 @@ export interface GatedAdminDestination extends Omit<AdminDestination, 'key'> {
 }
 
 export const GATED_ADMIN_DESTINATIONS: readonly GatedAdminDestination[] = [
+  {
+    key: 'economy',
+    label: 'Economy',
+    path: '/admin/economy',
+    matchPrefixes: ['/admin/economy'],
+    description: 'Plans, packs, costs and the economy preview',
+    status: 'available',
+    owner: 'P1.4 — Economy Admin UI (PRD v1.2 §31)',
+    requires: { permission: 'economy.manage' },
+  },
   {
     key: 'audit',
     label: 'Audit',

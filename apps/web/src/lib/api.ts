@@ -34,6 +34,8 @@ export class ApiRequestError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** The parsed error body, for endpoints whose envelope carries more (e.g. a list of validation messages). */
+    public readonly details: unknown = null,
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -49,14 +51,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let code = 'request_failed';
     let message = `Request failed (${res.status}).`;
+    let details: unknown = null;
     try {
       const body = (await res.json()) as Partial<ApiError>;
+      details = body;
       if (body.error) code = body.error;
       if (body.message) message = body.message;
     } catch {
       // Non-JSON error body — keep the generic message.
     }
-    throw new ApiRequestError(res.status, code, message);
+    throw new ApiRequestError(res.status, code, message, details);
   }
   return (await res.json()) as T;
 }
@@ -1196,6 +1200,163 @@ export const adminAccessApi = {
     request<AuditPage>(`/admin/audit${auditQuery(filters)}`),
   /** A plain URL: the browser downloads it with the session cookie. */
   exportUrl: (filters: AuditFilters = {}) => `${API_URL}/admin/audit/export.csv${auditQuery(filters)}`,
+};
+
+/* ------------------------------------------------------------------ *
+ * Admin -> Economy preview: the P1.3 wire contract
+ *
+ * A MIRROR of `EconomyPreview` in apps/api/src/services/economy-preview.ts,
+ * which is not in @over18/shared. Keep the two in step; moving the type into
+ * the shared package would remove the duplication.
+ * ------------------------------------------------------------------ */
+
+export interface PreviewMoney {
+  amount: string;
+  currency: string;
+}
+export type PreviewSource = 'live' | 'draft';
+export type PreviewGuardState = 'ok' | 'below_threshold' | 'not_evaluated';
+export interface PreviewGap {
+  reason:
+    | 'usage_not_supplied'
+    | 'unit_mismatch'
+    | 'rate_not_supplied'
+    | 'endpoint_not_declared'
+    | 'mixed_currencies'
+    | 'ai_provider_cost_incomplete'
+    | 'sales_channel_not_supplied'
+    | 'infrastructure_not_supplied'
+    | 'grant_cost_incomplete'
+    | 'no_purchasable_pack'
+    | 'currency_mismatch';
+  ref: string;
+}
+export type PreviewAiProviderCost =
+  | {
+      status: 'complete';
+      total: PreviewMoney;
+      base: PreviewMoney;
+      regionalPremium: PreviewMoney | null;
+      lines: Array<{ provider: string; meter: string; kind: string; quantity: string; cost: PreviewMoney; source: string | null }>;
+      observedAt: string | null;
+      ageDays: number | null;
+    }
+  | { status: 'incomplete'; gaps: PreviewGap[] };
+export interface PreviewOtherCosts {
+  lines: Array<{ kind: 'infrastructure' | 'telephony' | 'other'; label: string | null; cost: PreviewMoney }>;
+  infrastructure: 'supplied' | 'not_supplied';
+}
+type PreviewNet<Row> = { status: 'complete'; channels: Array<{ channel: string } & Row> } | { status: 'incomplete'; gaps: PreviewGap[] };
+
+export interface EconomyPreviewResponse {
+  asOf: string;
+  mode: 'drafted' | 'live';
+  configuration: {
+    plans: Array<{ code: string; version: number; source: PreviewSource; isPurchasable: boolean }>;
+    packs: Array<{ code: string; version: number; source: PreviewSource; isPurchasable: boolean }>;
+    ruleset: { version: number; source: PreviewSource } | null;
+  };
+  ladders: Array<{
+    currency: string;
+    rungs: Array<{ code: string; credits: number; price: PreviewMoney; perCredit: PreviewMoney; isBestValue: boolean }>;
+    spreadPercent: string | null;
+    issues: Array<{ kind: 'inverted' | 'flat'; rung: string; previous: string }>;
+  }>;
+  grants: Array<{
+    plan: string;
+    version: number;
+    source: PreviewSource;
+    monthlyCredits: number;
+    buys: Array<{ action: string; unit: 'per_action' | 'per_minute'; creditCost: number; quantity: number }>;
+    worstCaseAiProviderCost:
+      | { status: 'complete'; action: string; cost: PreviewMoney }
+      | { status: 'incomplete'; knownWorst: { action: string; cost: PreviewMoney } | null; missingCosts: string[] }
+      | { status: 'no_actions' };
+  }>;
+  actions: Array<{
+    action: string;
+    actionType: string;
+    qualityTier: string;
+    maxDurationSeconds: number | null;
+    unit: 'per_action' | 'per_minute';
+    creditCost: number;
+    runtime: string;
+    cashPrice: Array<{ pack: string; price: PreviewMoney }>;
+    aiProviderCost: PreviewAiProviderCost;
+    aiProviderCostPerCredit: PreviewMoney | null;
+    grossMargins: Array<{ pack: string; grossMarginPercent: string; costMultiple: string }>;
+    otherCosts: PreviewOtherCosts;
+    net: PreviewNet<{ rungs: Array<{ pack: string; deductions: PreviewMoney; contribution: PreviewMoney; netMarginPercent: string }> }>;
+    guard: PreviewGuardState;
+    netGuard: PreviewGuardState;
+  }>;
+  subscriptions: Array<{
+    plan: string;
+    version: number;
+    source: PreviewSource;
+    pricePerMonth: PreviewMoney;
+    includedUsage: PreviewAiProviderCost;
+    grantWorstCase: { status: 'complete'; action: string | null; cost: PreviewMoney } | { status: 'incomplete'; gaps: PreviewGap[] };
+    otherCosts: PreviewOtherCosts;
+    net: PreviewNet<{ deductions: PreviewMoney; contribution: PreviewMoney; netMarginPercent: string }>;
+  }>;
+  disabledActions: string[];
+  configurationIssues: Array<{ action: string; reason: string }>;
+  inputs: {
+    missingAiProviderCosts: string[];
+    unmatched: string[];
+    unusedRates: string[];
+    unitMismatches: string[];
+    currencyMismatches: string[];
+    undated: string[];
+    stale: Array<{ input: string; ageDays: number }>;
+    futureDated: string[];
+  };
+  marginGuard: {
+    status: 'not_configured' | 'evaluated';
+    minGrossMarginPercent: number | null;
+    maxCostAgeDays: number | null;
+    warnings: Array<{ action: string; pack: string; grossMarginPercent: string }>;
+    notEvaluated: Array<{ action: string; reason: string }>;
+    net: {
+      status: 'not_configured' | 'evaluated';
+      minNetMarginPercent: number | null;
+      warnings: Array<{ action: string; channel: string; pack: string; netMarginPercent: string }>;
+      notEvaluated: Array<{ action: string; reason: string }>;
+    };
+  };
+  parity: { thinnestAction: string; highestCostPerCredit: PreviewMoney; lowestCostPerCredit: PreviewMoney } | null;
+  caveats: string[];
+  precision: Record<string, number>;
+}
+
+/**
+ * The preview request. The cost inputs (providers, rates, usage, sales
+ * channels, other costs) travel as the admin wrote them; the server validates
+ * every field and answers 400 `invalid_preview_input` with all its messages.
+ */
+export interface EconomyPreviewRequest {
+  mode: 'drafted' | 'live';
+  marginGuard: {
+    minGrossMarginPercent: number | null;
+    minNetMarginPercent: number | null;
+    maxCostAgeDays: number | null;
+  };
+  providers?: unknown;
+  rates?: unknown;
+  usage?: unknown;
+  salesChannels?: unknown;
+  otherCosts?: unknown;
+}
+
+/**
+ * Admin -> Economy (P1.3 backend, P1.4 screens). The ONLY admin economy
+ * endpoint the server has: a read-only preview behind `economy.manage`. It
+ * publishes, schedules and stores nothing.
+ */
+export const adminEconomyApi = {
+  preview: (body: EconomyPreviewRequest) =>
+    request<EconomyPreviewResponse>('/admin/economy/preview', { method: 'POST', body: JSON.stringify(body) }),
 };
 
 export const adminDiscoveryApi = {
