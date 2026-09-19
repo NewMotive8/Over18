@@ -639,7 +639,7 @@ describe('consistency', () => {
  * No application path yet
  * ------------------------------------------------------------------ */
 
-describe('nothing in the application moves Credits yet', () => {
+describe('only the admin support service moves Credits (P2.4), and no customer path can', () => {
   function sourceFiles(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
       const path = join(dir, name);
@@ -652,16 +652,25 @@ describe('nothing in the application moves Credits yet', () => {
     sourceFiles(src)
       .map((path) => relative(src, path).split('\\').join('/'))
       .filter((rel) => rel !== 'services/wallet-service.ts');
+  const importsFrom = (rel: string, module: RegExp) =>
+    (readFileSync(join(src, rel), 'utf8').match(new RegExp(String.raw`import \{([^}]*)\} from '${module.source}'`))?.[1] ?? '')
+      .split(',')
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .sort();
 
-  it('no route or service calls a wallet operation: no customer can move Credits', () => {
-    const OPERATIONS = /\b(holdCredits|captureHold|releaseHold|refundTransaction|reverseTransaction)\b/;
-    expect(application().filter((rel) => OPERATIONS.test(readFileSync(join(src, rel), 'utf8')))).toEqual([]);
+  it('the one caller of a wallet operation is the admin support service, and it only adjusts', () => {
+    const OPERATIONS = /\b(holdCredits|captureHold|releaseHold|refundTransaction|reverseTransaction|adjustWallet)\b/;
+    const callers = application().filter((rel) => OPERATIONS.test(readFileSync(join(src, rel), 'utf8')));
+    expect(callers).toEqual(['services/admin-wallet-service.ts']);
+    const used = new Set(readFileSync(join(src, 'services/admin-wallet-service.ts'), 'utf8').match(new RegExp(OPERATIONS.source, 'g')));
+    expect([...used]).toEqual(['adjustWallet']);
   });
 
-  it('the only application reader is the customer commercial state (P3.1), and it only reads', () => {
+  it('every other importer only reads: the customer commercial state (P3.1) and the admin route', () => {
     const importers = application().filter((rel) => /wallet-service/.test(readFileSync(join(src, rel), 'utf8')));
-    expect(importers).toEqual(['services/customer-economy.ts']);
-    const imported = readFileSync(join(src, 'services/customer-economy.ts'), 'utf8').match(/import \{([^}]*)\} from '\.\/wallet-service\.js'/);
-    expect(imported?.[1]?.split(',').map((name) => name.trim()).sort()).toEqual(['CREDITS_CURRENCY', 'readCommercialWallet']);
+    expect(importers.sort()).toEqual(['routes/admin-wallets.ts', 'services/admin-wallet-service.ts', 'services/customer-economy.ts']);
+    expect(importsFrom('services/customer-economy.ts', /\.\/wallet-service\.js/)).toEqual(['CREDITS_CURRENCY', 'readCommercialWallet']);
+    expect(importsFrom('routes/admin-wallets.ts', /\.\.\/services\/wallet-service\.js/)).toEqual(['WalletError']);
   });
 });

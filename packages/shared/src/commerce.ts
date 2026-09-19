@@ -265,3 +265,107 @@ export interface AuditEntryView {
   requestId: string | null;
   metadata: Record<string, unknown>;
 }
+
+/* ------------------------------------------------------------------ *
+ * Admin wallet support (P2.4, PRD §16, §18, §34)
+ * ------------------------------------------------------------------ */
+
+export type WalletCreditClass = 'included' | 'earned' | 'purchased';
+export type WalletDirection = 'credit' | 'debit';
+export type WalletEntryType =
+  | 'grant'
+  | 'reward'
+  | 'purchase'
+  | 'paid_action'
+  | 'refund'
+  | 'reversal'
+  | 'admin_adjustment'
+  | 'hold'
+  | 'capture'
+  | 'release';
+
+/** The account being supported: enough to confirm it is the right one, nothing more. */
+export interface AdminWalletUser {
+  id: string;
+  email: string;
+  createdAt: string;
+}
+
+/** One currency's wallet. `exists: false` means the user has none yet; every figure is then zero. */
+export interface AdminWalletSummary {
+  currency: string;
+  exists: boolean;
+  /** Spendable Credits. */
+  balance: number;
+  /** Credits held for actions in flight; not spendable. */
+  held: number;
+  /** Transactions applied. */
+  version: number;
+  classes: Record<WalletCreditClass, { spendable: number; held: number }>;
+}
+
+export interface AdminAdjustmentLimit {
+  cap: number;
+  used: number;
+  remaining: number;
+}
+
+/** The signed-in operator's own daily adjustment limits in one currency (UTC day). */
+export interface AdminAdjustmentAllowance {
+  currency: string;
+  credit: AdminAdjustmentLimit;
+  debit: AdminAdjustmentLimit;
+}
+
+/** GET /admin/users/:userId/wallets */
+export interface AdminUserWallets {
+  user: AdminWalletUser;
+  /** While false, every adjustment is refused; reading is unaffected. */
+  economyEnabled: boolean;
+  wallets: AdminWalletSummary[];
+  allowances: AdminAdjustmentAllowance[];
+}
+
+/** One ledger transaction, as support sees it. Read-only. */
+export interface AdminWalletTransaction {
+  id: string;
+  sequence: number;
+  entryType: WalletEntryType;
+  direction: WalletDirection;
+  amount: number;
+  creditClass: WalletCreditClass;
+  balanceAfter: number;
+  heldAfter: number;
+  relatedTransactionId: string | null;
+  source: { type: string; id: string } | null;
+  reason: string | null;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+/** GET /admin/users/:userId/wallets/:currency/transactions -- newest first. */
+export interface AdminWalletHistory {
+  currency: string;
+  transactions: AdminWalletTransaction[];
+  /** Pass as `before` for the next, older page; null at the start of the history. */
+  nextBefore: number | null;
+}
+
+/** POST /admin/users/:userId/wallets/:currency/adjustments */
+export interface AdminWalletAdjustmentRequest {
+  direction: WalletDirection;
+  amount: number;
+  reason: string;
+  /** An optional support reference (e.g. a ticket id), recorded as the transaction's source. */
+  reference?: string | null;
+  /** One per intended adjustment: a retry with the same key applies once. */
+  idempotencyKey: string;
+}
+
+export interface AdminWalletAdjustmentResult {
+  transaction: AdminWalletTransaction;
+  /** True when this key had already been applied: nothing new was written. */
+  replayed: boolean;
+  wallet: AdminWalletSummary;
+  allowance: AdminAdjustmentAllowance;
+}

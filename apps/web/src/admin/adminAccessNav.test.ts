@@ -29,8 +29,8 @@ describe('gated admin navigation', () => {
   });
 
   it('keeps Audit hidden while the audit switch is off -- production defaults', () => {
-    // Enforcement off: every staff member holds economy.manage, so Economy shows.
-    expect(keys(visibleAdminDestinations(access()))).toEqual([...SIX, 'economy']);
+    // Enforcement off: every staff member holds every permission, so Economy and Wallets show.
+    expect(keys(visibleAdminDestinations(access()))).toEqual([...SIX, 'economy', 'wallets']);
   });
 
   it('keeps Audit hidden from an operator without audit.read, even with the switch on', () => {
@@ -40,7 +40,16 @@ describe('gated admin navigation', () => {
 
   it('shows Audit only with BOTH the permission and the switch, after the six', () => {
     const view = access({ features: { auditLog: true } });
-    expect(keys(visibleAdminDestinations(view))).toEqual([...SIX, 'economy', 'audit']);
+    expect(keys(visibleAdminDestinations(view))).toEqual([...SIX, 'economy', 'wallets', 'audit']);
+  });
+
+  it('shows Wallets (P2.4) only to an operator holding users.commercial.read -- no switch involved', () => {
+    const without = access({ enforced: true, permissions: ['economy.manage', 'users.credits.adjust'] });
+    expect(keys(visibleAdminDestinations(without))).toEqual([...SIX, 'economy']);
+    const support = access({ enforced: true, permissions: ['users.commercial.read', 'users.credits.adjust'] });
+    expect(keys(visibleAdminDestinations(support))).toEqual([...SIX, 'wallets']);
+    expect(activeAdminDestination('/admin/wallets')).toBe('wallets');
+    expect(activeAdminDestination('/admin/wallets/00000000-0000-4000-8000-000000000000')).toBe('wallets');
   });
 
   it('never adds a gated key to the ungated list the admin home renders', () => {

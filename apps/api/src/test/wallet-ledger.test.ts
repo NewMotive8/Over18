@@ -536,7 +536,24 @@ describe('isolation', () => {
 describe('no application path touches a wallet yet', () => {
   // P2.3: the read-only rebuild and reconciliation is the other reviewed reader.
   const ALLOWED = new Set(['db/schema.ts', 'services/wallet-service.ts', 'services/wallet-reconciliation.ts']);
-  const WALLET_TABLES = /\b(walletCurrencies|wallets|walletTransactions|wallet_currencies|wallet_transactions)\b/;
+  // Access to the TABLES: their schema objects imported or used, or their SQL
+  // names in a statement. (P2.4's admin routes have "wallets" in their URLs
+  // and names, and reach the tables only through the wallet service.)
+  const WALLET_TABLES = new RegExp(
+    [
+      String.raw`import\s*\{[^}]*\b(walletCurrencies|wallets|walletTransactions)\b[^}]*\}\s*from\s*'[^']*db\/schema\.js'`,
+      String.raw`\bschema\.(walletCurrencies|wallets|walletTransactions)\b`,
+      String.raw`\b(from|into|update|join|table)\s+"?(wallets|wallet_transactions|wallet_currencies)\b`,
+    ].join('|'),
+    'i',
+  );
+
+  it('recognises real access to the wallet tables', () => {
+    const src = fileURLToPath(new URL('..', import.meta.url));
+    for (const rel of ['services/wallet-service.ts', 'services/wallet-reconciliation.ts']) {
+      expect(WALLET_TABLES.test(readFileSync(join(src, rel), 'utf8')), rel).toBe(true);
+    }
+  });
 
   function sourceFiles(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {

@@ -110,7 +110,7 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
  * server regardless of what this list renders.
  * ------------------------------------------------------------------ */
 
-export type GatedAdminDestinationKey = 'economy' | 'audit';
+export type GatedAdminDestinationKey = 'economy' | 'wallets' | 'audit';
 
 export interface GatedAdminDestination extends Omit<AdminDestination, 'key'> {
   key: GatedAdminDestinationKey;
@@ -131,6 +131,16 @@ export const GATED_ADMIN_DESTINATIONS: readonly GatedAdminDestination[] = [
     status: 'available',
     owner: 'P1.4 — Economy Admin UI (PRD v1.2 §31)',
     requires: { permission: 'economy.manage' },
+  },
+  {
+    key: 'wallets',
+    label: 'Wallets',
+    path: '/admin/wallets',
+    matchPrefixes: ['/admin/wallets'],
+    description: "A user's wallets and ledger, and support Credit and Debit",
+    status: 'available',
+    owner: 'P2.4 — User Wallet and Support adjustment UI (PRD v1.2 §34)',
+    requires: { permission: 'users.commercial.read' },
   },
   {
     key: 'audit',

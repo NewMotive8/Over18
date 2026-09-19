@@ -1,5 +1,9 @@
 import type {
   AdminAccessView,
+  AdminUserWallets,
+  AdminWalletAdjustmentRequest,
+  AdminWalletAdjustmentResult,
+  AdminWalletHistory,
   ApiError,
   AuditEntryView,
   AuthCredentials,
@@ -1391,6 +1395,20 @@ export const adminEconomyApi = {
     request<void>(`/admin/economy/versions/${kind}/${encodeURIComponent(versionId)}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ reason }),
+    }),
+};
+
+/** P2.4 -- admin wallet support. The server enforces every permission, rule and cap. */
+export const adminWalletApi = {
+  wallets: (userId: string) => request<AdminUserWallets>(`/admin/users/${encodeURIComponent(userId)}/wallets`),
+  history: (userId: string, currency: string, before?: number | null) =>
+    request<AdminWalletHistory>(
+      `/admin/users/${encodeURIComponent(userId)}/wallets/${encodeURIComponent(currency)}/transactions${before ? `?before=${before}` : ''}`,
+    ),
+  adjust: (userId: string, currency: string, body: AdminWalletAdjustmentRequest) =>
+    request<AdminWalletAdjustmentResult>(`/admin/users/${encodeURIComponent(userId)}/wallets/${encodeURIComponent(currency)}/adjustments`, {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
 };
 

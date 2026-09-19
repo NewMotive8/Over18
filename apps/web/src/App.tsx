@@ -27,6 +27,7 @@ import HomeComposerPage from './pages/admin/HomeComposerPage';
 import GenerationPage from './pages/admin/GenerationPage';
 import AdminAuditPage from './pages/admin/AdminAuditPage';
 import EconomyPage from './pages/admin/EconomyPage';
+import AdminWalletPage from './pages/admin/AdminWalletPage';
 import DiscoveryCategoriesPage from './pages/admin/DiscoveryCategoriesPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
@@ -88,6 +89,10 @@ export default function App() {
             for operators holding economy.manage; the server enforces it. */}
         <Route path="economy" element={<EconomyPage />} />
         <Route path="economy/:section" element={<EconomyPage />} />
+        {/* PRD v1.2 §34, P2.4 -- wallet support by permanent User ID. Listed for
+            operators holding users.commercial.read; the server enforces it. */}
+        <Route path="wallets" element={<AdminWalletPage />} />
+        <Route path="wallets/:userId" element={<AdminWalletPage />} />
       </Route>
 
       <Route element={<AppShell />}>

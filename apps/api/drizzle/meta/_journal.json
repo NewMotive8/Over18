@@ -253,6 +253,13 @@
       "when": 1789816512800,
       "tag": "0035_daffy_odin",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789827513861,
+      "tag": "0036_futuristic_betty_ross",
+      "breakpoints": true
     }
   ]
 }

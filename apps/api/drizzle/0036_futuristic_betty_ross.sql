@@ -1,0 +1,1 @@
+CREATE INDEX "wallet_transactions_adjustment_cap_idx" ON "wallet_transactions" USING btree ("actor_user_id","currency","created_at") WHERE "wallet_transactions"."entry_type" = 'admin_adjustment';

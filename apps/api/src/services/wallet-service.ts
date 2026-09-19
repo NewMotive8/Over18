@@ -1,10 +1,11 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import type { CommercialWallet } from '@over18/shared';
 import type { Db } from '../db/client.js';
-import { wallets, walletTransactions, type WalletTransactionRow } from '../db/schema.js';
+import { walletCurrencies, wallets, walletTransactions, type WalletTransactionRow } from '../db/schema.js';
 
 /**
- * THE WALLET SERVICE (P2.2) -- hold, capture, release, refund and reversal.
+ * THE WALLET SERVICE (P2.2) -- hold, capture, release, refund and reversal;
+ * and, since P2.4, an operator's support adjustment.
  *
  * The one application module that writes a wallet. It adds no second ledger and
  * no balance of its own: every operation appends exactly ONE row to the P2.1
@@ -18,6 +19,7 @@ import { wallets, walletTransactions, type WalletTransactionRow } from '../db/sc
  *   release   return part or all of a hold's remaining Credits to spendable
  *   refund    return Credits charged by a paid action or a capture
  *   reversal  undo part or all of an earlier transaction, opposite to it
+ *   adjust    an operator's Credit or Debit, capped per day (P2.4)
  *
  * ONE TRANSACTION, ONE WALLET LOCK. Every operation runs in a database
  * transaction that first locks its wallet row, so operations on one wallet are
@@ -34,7 +36,7 @@ import { wallets, walletTransactions, type WalletTransactionRow } from '../db/sc
  * with `idempotency_conflict`. A reason, request id, actor or metadata that
  * differs on a retry is not material.
  *
- * THE IDEMPOTENCY BOUNDARY (P2.3), the same for all five operations:
+ * THE IDEMPOTENCY BOUNDARY (P2.3), the same for every operation:
  *   - A key names ONE operation in ONE wallet (user and currency), and one
  *     operation is exactly one ledger transaction. The same key in another
  *     currency's wallet is another operation.
@@ -66,8 +68,9 @@ import { wallets, walletTransactions, type WalletTransactionRow } from '../db/sc
  * when an earlier one holds some Credits but not enough.
  *
  * NOT HERE: granting, purchasing, rewards, expiry, paid-action charging, and any
- * route. No application module calls an operation yet; the customer commercial
- * state (P3.1) only READS a wallet, through `readCommercialWallet`.
+ * route. The only application caller of an operation is the admin support
+ * service (P2.4), and only `adjustWallet`; the customer commercial state (P3.1)
+ * only READS a wallet, through `readCommercialWallet`.
  */
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -89,6 +92,7 @@ export type WalletErrorCode =
   | 'credit_class_split_required'
   | 'exceeds_remaining'
   | 'idempotency_conflict'
+  | 'adjustment_cap_exceeded'
   | 'ledger_inconsistent'
   | 'ledger_refused';
 
@@ -276,6 +280,8 @@ async function byKey(tx: Tx, userId: string, currency: string, key: string): Pro
 
 interface Material {
   entryType: EntryType;
+  /** Stated where the type does not decide it: an adjustment may go either way. */
+  direction?: Direction;
   amount: number;
   relatedTransactionId: string | null;
   source: WalletSourceRef | null;
@@ -285,6 +291,7 @@ interface Material {
 function replay(existing: WalletTransactionRow, expected: Material): WalletOperationResult {
   const differences: string[] = [];
   if (existing.entryType !== expected.entryType) differences.push(`type ${existing.entryType}, not ${expected.entryType}`);
+  if (expected.direction && existing.direction !== expected.direction) differences.push(`direction ${existing.direction}, not ${expected.direction}`);
   if (existing.amount !== expected.amount) differences.push(`amount ${existing.amount}, not ${expected.amount}`);
   if (existing.relatedTransactionId !== expected.relatedTransactionId) differences.push('a different original transaction');
   if (existing.sourceType !== (expected.source?.type ?? null) || existing.sourceId !== (expected.source?.id ?? null)) {
@@ -352,6 +359,35 @@ async function classBalances(tx: Tx, userId: string, currency: string, cached: {
     );
   }
   return balances;
+}
+
+/**
+ * The class a spend of `amount` comes from, by the spend order: the first
+ * class, included -> earned -> purchased, whose spendable Credits cover it
+ * whole. Held Credits are never spendable. A spend that no single class covers,
+ * though the classes together do, is refused: one P2.1 transaction is one
+ * class, and splitting across classes is not supported (the P2.2 limitation).
+ */
+async function spendClass(
+  tx: Tx,
+  userId: string,
+  currency: string,
+  wallet: { balance: number; held: number },
+  amount: number,
+  what: string,
+): Promise<CreditClass> {
+  if (wallet.balance < amount) {
+    throw new WalletError('insufficient_credits', `${what} ${amount} needs ${amount} spendable Credits; the wallet has ${wallet.balance}.`);
+  }
+  const classes = await classBalances(tx, userId, currency, wallet);
+  const creditClass = CREDIT_SPEND_ORDER.find((c) => classes[c].spendable >= amount);
+  if (!creditClass) {
+    throw new WalletError(
+      'credit_class_split_required',
+      `${what} ${amount} would need Credits from more than one class (${CREDIT_SPEND_ORDER.map((c) => `${c} ${classes[c].spendable}`).join(', ')}); one transaction is one class.`,
+    );
+  }
+  return creditClass;
 }
 
 async function append(
@@ -448,17 +484,7 @@ export async function holdCredits(db: WalletDb, input: HoldInput): Promise<Walle
     const existing = await byKey(tx, input.userId, input.currency, input.idempotencyKey);
     if (existing) return replay(existing, expected);
 
-    if (wallet.balance < input.amount) {
-      throw new WalletError('insufficient_credits', `Holding ${input.amount} needs ${input.amount} spendable Credits; the wallet has ${wallet.balance}.`);
-    }
-    const classes = await classBalances(tx, input.userId, input.currency, wallet);
-    const creditClass = CREDIT_SPEND_ORDER.find((c) => classes[c].spendable >= input.amount);
-    if (!creditClass) {
-      throw new WalletError(
-        'credit_class_split_required',
-        `Holding ${input.amount} would need Credits from more than one class (${CREDIT_SPEND_ORDER.map((c) => `${c} ${classes[c].spendable}`).join(', ')}); a hold is one class.`,
-      );
-    }
+    const creditClass = await spendClass(tx, input.userId, input.currency, wallet, input.amount, 'Holding');
     const row = await append(tx, input, { currency: input.currency, entryType: 'hold', direction: 'debit', creditClass, relatedTransactionId: null });
     return { transaction: view(row), replayed: false };
   });
@@ -579,4 +605,220 @@ export async function reverseTransaction(db: WalletDb, input: CompensateInput): 
     });
     return { transaction: view(row), replayed: false };
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * Support adjustments (P2.4, PRD §30.1, §34.1-§34.3)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The daily caps on one operator's adjustments (PRD §34.3; decided
+ * 2026-09-19): per operator, per currency, per UTC calendar day on the
+ * database clock. A support safety rail, not an economy value: the admin page
+ * is told them, never written with them. An adjustment that would pass its cap
+ * is refused whole. There is no second-approver path.
+ */
+export const ADJUSTMENT_DAILY_CAPS: Readonly<Record<Direction, number>> = { credit: 500, debit: 1000 };
+
+/** An operator's Credit lands in `earned` (decided 2026-09-19). A Debit follows the spend order. */
+export const ADJUSTMENT_CREDIT_CLASS: CreditClass = 'earned';
+
+export interface AdjustInput extends OperationInput {
+  currency: string;
+  direction: Direction;
+  /** The operator: always recorded, and the one the caps count against. */
+  actorUserId: string;
+  /** Why. Required for every adjustment (§30.1, §34.2). */
+  reason: string;
+}
+
+export interface AdjustmentLimit {
+  cap: number;
+  used: number;
+  remaining: number;
+}
+
+export interface AdjustmentAllowance {
+  currency: string;
+  credit: AdjustmentLimit;
+  debit: AdjustmentLimit;
+}
+
+const START_OF_UTC_DAY = sql`(date_trunc('day', now() at time zone 'UTC') at time zone 'UTC')`;
+
+/** What an operator has adjusted in a currency since the start of today (UTC), by direction. */
+async function adjustedToday(db: Pick<Db, 'select'> | Tx, actorUserId: string, currency: string): Promise<Record<Direction, number>> {
+  const t = walletTransactions;
+  const rows = await db
+    .select({ direction: t.direction, total: sql<string>`coalesce(sum(${t.amount}), 0)` })
+    .from(t)
+    .where(and(eq(t.entryType, 'admin_adjustment'), eq(t.actorUserId, actorUserId), eq(t.currency, currency), gte(t.createdAt, START_OF_UTC_DAY)))
+    .groupBy(t.direction);
+  const used: Record<Direction, number> = { credit: 0, debit: 0 };
+  for (const row of rows) used[row.direction] = Number(row.total);
+  return used;
+}
+
+const limit = (cap: number, used: number): AdjustmentLimit => ({ cap, used, remaining: Math.max(cap - used, 0) });
+
+/** How much more an operator may Credit and Debit in a currency today. */
+export async function readAdjustmentAllowance(db: Pick<Db, 'select'>, actorUserId: string, currency: string): Promise<AdjustmentAllowance> {
+  const used = await adjustedToday(db, actorUserId, currency);
+  return { currency, credit: limit(ADJUSTMENT_DAILY_CAPS.credit, used.credit), debit: limit(ADJUSTMENT_DAILY_CAPS.debit, used.debit) };
+}
+
+/**
+ * ADJUSTMENT: an operator's Credit or Debit, as one `admin_adjustment` ledger
+ * transaction carrying the operator and the reason -- the sixth operation,
+ * under exactly the same rules as the other five: one transaction, the wallet
+ * locked first, the idempotency key checked after the lock, nothing edited.
+ *
+ *   Credit  lands in `earned`. A user without a wallet in the currency gets
+ *           one, created in the same transaction -- if the Credit is refused,
+ *           no wallet is left behind.
+ *   Debit   takes spendable Credits only (never held ones) from the class the
+ *           spend order gives; refused when the classes would have to be
+ *           split, or when the user has no wallet.
+ *
+ * THE CAPS HOLD UNDER CONCURRENCY. An operator's adjustments in a currency are
+ * serialised by a transaction-scoped advisory lock taken BEFORE the wallet
+ * lock, so two at once cannot both fit under the cap. No other operation takes
+ * it, and it is always taken first, so it cannot deadlock with them. A replay
+ * writes nothing and so counts nothing.
+ *
+ * Passing a transaction as `db` nests the adjustment in a savepoint: the admin
+ * service commits it together with its audit record.
+ */
+export async function adjustWallet(db: WalletDb, input: AdjustInput): Promise<WalletOperationResult> {
+  validate(input);
+  if (typeof input.currency !== 'string' || !CURRENCY.test(input.currency)) invalid('currency must be a wallet currency code.');
+  if (input.direction !== 'credit' && input.direction !== 'debit') invalid('direction must be credit or debit.');
+  if (typeof input.actorUserId !== 'string' || !UUID.test(input.actorUserId)) invalid('An adjustment must name the operator making it.');
+  if (typeof input.reason !== 'string' || input.reason.trim() === '') invalid('An adjustment needs a reason.');
+  const expected: Material = {
+    entryType: 'admin_adjustment',
+    direction: input.direction,
+    amount: input.amount,
+    relatedTransactionId: null,
+    source: input.source ?? null,
+  };
+  return operate(db, async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`wallet-adjustment:${input.actorUserId}:${input.currency}`}, 0))`);
+    let wallet = await lockWallet(tx, input.userId, input.currency);
+    if (!wallet) {
+      if (input.direction === 'debit') throw new WalletError('wallet_not_found', `The user has no ${input.currency} wallet to debit.`);
+      await tx.insert(wallets).values({ userId: input.userId, currency: input.currency }).onConflictDoNothing();
+      wallet = (await lockWallet(tx, input.userId, input.currency))!;
+    }
+    const existing = await byKey(tx, input.userId, input.currency, input.idempotencyKey);
+    if (existing) return replay(existing, expected);
+
+    const cap = ADJUSTMENT_DAILY_CAPS[input.direction];
+    const used = (await adjustedToday(tx, input.actorUserId, input.currency))[input.direction];
+    if (used + input.amount > cap) {
+      throw new WalletError(
+        'adjustment_cap_exceeded',
+        `This ${input.direction} of ${input.amount} would take your ${input.currency} ${input.direction}s today to ${used + input.amount}, over the daily cap of ${cap}; ${Math.max(cap - used, 0)} remain.`,
+      );
+    }
+
+    const creditClass =
+      input.direction === 'credit'
+        ? ADJUSTMENT_CREDIT_CLASS
+        : await spendClass(tx, input.userId, input.currency, wallet, input.amount, 'Debiting');
+    const row = await append(tx, input, {
+      currency: input.currency,
+      entryType: 'admin_adjustment',
+      direction: input.direction,
+      creditClass,
+      relatedTransactionId: null,
+    });
+    return { transaction: view(row), replayed: false };
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Reading for support (P2.4)
+ * ------------------------------------------------------------------ */
+
+export interface WalletSummary {
+  currency: string;
+  /** False when the user has no wallet in this currency yet: then everything is zero. */
+  exists: boolean;
+  /** Spendable Credits. */
+  balance: number;
+  /** Credits held for actions in flight; not spendable. */
+  held: number;
+  /** Transactions applied. */
+  version: number;
+  classes: Record<CreditClass, { spendable: number; held: number }>;
+}
+
+const emptyClasses = (): WalletSummary['classes'] =>
+  Object.fromEntries(CREDIT_SPEND_ORDER.map((c) => [c, { spendable: 0, held: 0 }])) as WalletSummary['classes'];
+
+/**
+ * A user's wallet in every currency there is, READ-ONLY, from one snapshot:
+ * the cached balance and held Credits, and the per-class figures derived from
+ * the ledger. A currency the user has no wallet in reads as empty.
+ */
+export async function readWalletSummaries(db: Pick<Db, 'transaction'>, userId: string): Promise<WalletSummary[]> {
+  return db.transaction(
+    async (tx) => {
+      const currencies = await tx.select({ code: walletCurrencies.code }).from(walletCurrencies).orderBy(asc(walletCurrencies.code));
+      const rows = await tx
+        .select({ currency: wallets.currency, balance: wallets.balance, held: wallets.held, version: wallets.version })
+        .from(wallets)
+        .where(eq(wallets.userId, userId));
+      const summaries: WalletSummary[] = [];
+      for (const { code } of currencies) {
+        const row = rows.find((r) => r.currency === code);
+        summaries.push(
+          row
+            ? { currency: code, exists: true, balance: row.balance, held: row.held, version: row.version, classes: await deriveClassBalances(tx, userId, code) }
+            : { currency: code, exists: false, balance: 0, held: 0, version: 0, classes: emptyClasses() },
+        );
+      }
+      return summaries;
+    },
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
+  );
+}
+
+/** Whether a wallet currency with this code exists. */
+export async function isWalletCurrency(db: Pick<Db, 'select'>, code: string): Promise<boolean> {
+  const [row] = await db.select({ code: walletCurrencies.code }).from(walletCurrencies).where(eq(walletCurrencies.code, code));
+  return Boolean(row);
+}
+
+export const HISTORY_PAGE_DEFAULT = 50;
+export const HISTORY_PAGE_MAX = 200;
+
+export interface WalletHistoryPage {
+  /** Newest first. */
+  transactions: WalletTransactionView[];
+  /** Pass as `before` for the next, older page; null at the start of the history. */
+  nextBefore: number | null;
+}
+
+/** A wallet's transactions, newest first, a page at a time by sequence. READ-ONLY. */
+export async function readWalletHistory(
+  db: Pick<Db, 'select'>,
+  userId: string,
+  currency: string,
+  page: { before?: number | null; limit?: number } = {},
+): Promise<WalletHistoryPage> {
+  const size = Math.min(Math.max(Math.trunc(page.limit ?? HISTORY_PAGE_DEFAULT), 1), HISTORY_PAGE_MAX);
+  const t = walletTransactions;
+  const rows = await db
+    .select()
+    .from(t)
+    .where(and(eq(t.userId, userId), eq(t.currency, currency), page.before != null ? lt(t.sequence, page.before) : undefined))
+    .orderBy(desc(t.sequence))
+    .limit(size + 1);
+  const shown = rows.slice(0, size);
+  return {
+    transactions: shown.map(view),
+    nextBefore: rows.length > size ? shown.at(-1)!.sequence : null,
+  };
 }

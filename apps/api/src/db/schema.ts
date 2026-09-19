@@ -2376,6 +2376,10 @@ export const walletTransactions = pgTable(
     index('wallet_transactions_source_idx')
       .on(t.sourceType, t.sourceId)
       .where(sql`${t.sourceType} is not null`),
+    /** P2.4: an operator's adjustments in a currency today, for the daily caps -- without scanning the ledger. */
+    index('wallet_transactions_adjustment_cap_idx')
+      .on(t.actorUserId, t.currency, t.createdAt)
+      .where(sql`${t.entryType} = 'admin_adjustment'`),
     check('wallet_transactions_amount_positive', sql`${t.amount} > 0`),
     check('wallet_transactions_sequence_positive', sql`${t.sequence} > 0`),
     check(
