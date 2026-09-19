@@ -2,8 +2,10 @@ import type {
   AdminAccessView,
   AdminAccountStatusChangeRequest,
   AdminAccountStatusChangeResult,
+  AdminSubscriptionChangeRequest,
   AdminUserDetail,
   AdminUserList,
+  AdminUserSubscription,
   AdminUserWallets,
   AdminWalletAdjustmentRequest,
   AdminWalletAdjustmentResult,
@@ -1410,6 +1412,14 @@ export const adminUsersApi = {
   /** P2.5.2 -- suspend or reactivate. The server enforces the permission, the rules and the conflict check. */
   changeStatus: (userId: string, body: AdminAccountStatusChangeRequest) =>
     request<AdminAccountStatusChangeResult>(`/admin/users/${encodeURIComponent(userId)}/status`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  /** P3.5 -- the subscription, its history and the assignable plans. */
+  subscription: (userId: string) => request<AdminUserSubscription>(`/admin/users/${encodeURIComponent(userId)}/subscription`),
+  /** P3.5 -- assign, change, cancel or end. The server enforces the permission, the lifecycle and the version check. */
+  changeSubscription: (userId: string, body: AdminSubscriptionChangeRequest) =>
+    request<AdminUserSubscription>(`/admin/users/${encodeURIComponent(userId)}/subscription`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),

@@ -267,6 +267,20 @@
       "when": 1789838493237,
       "tag": "0037_melodic_the_executioner",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789847178295,
+      "tag": "0038_equal_daredevil",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1789847187698,
+      "tag": "0039_subscription_history_append_only",
+      "breakpoints": true
     }
   ]
 }

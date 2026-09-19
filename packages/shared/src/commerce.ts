@@ -216,6 +216,12 @@ export const ADMIN_PERMISSIONS = [
    * Administrator only: no other role lists it.
    */
   'users.status.manage',
+  /**
+   * P3.5: assign, change, cancel or end one user's subscription, with a
+   * reason. Administrator only: no other role lists it. (Editing the plan
+   * catalogue itself is economy.manage.)
+   */
+  'users.subscription.manage',
   /** §34.1 analyst: read and export everything in §23. */
   'analytics.read',
   'analytics.export',
@@ -485,4 +491,96 @@ export interface AdminUserDetail {
   wallets: AdminUserWallet[];
   /** Recent audit entries concerning this user -- only for an operator holding `audit.read`. */
   audit: { available: true; entries: AuditEntryView[] } | { available: false; reason: 'audit_read_required' };
+}
+
+/* ------------------------------------------------------------------ *
+ * Admin user subscription management (P3.5)
+ * ------------------------------------------------------------------ */
+
+/**
+ * What an operator can do to one user's subscription, in the P3.1 states:
+ *   assign       no subscription, or an expired one -> active on a plan, for one
+ *                billing period of that plan from now;
+ *   change_plan  a current subscription moves to another plan now; its status
+ *                and period end stay as they are (no proration is defined);
+ *   cancel       -> cancelled: Premium continues to the period end, then expires;
+ *   end          -> expired now.
+ */
+export const ADMIN_SUBSCRIPTION_ACTIONS = ['assign', 'change_plan', 'cancel', 'end'] as const;
+export type AdminSubscriptionAction = (typeof ADMIN_SUBSCRIPTION_ACTIONS)[number];
+
+/** A plan version, as the P1 catalogue defines it. */
+export interface AdminSubscriptionPlan {
+  code: string;
+  version: number;
+  versionId: string;
+  displayName: string;
+  billingPeriodMonths: number;
+  monthlyIncludedCredits: number;
+  priceMinor: number;
+  currency: string;
+}
+
+/** The user's subscription now, resolved as the customer's commercial state resolves it. */
+export interface AdminSubscriptionState {
+  /** The exact version held. `live` is false when it is no longer published: then there is no Premium. */
+  plan: AdminSubscriptionPlan & { live: boolean };
+  /** As the customer is told it (a cancelled subscription past its period end reads as expired). */
+  status: SubscriptionStatus;
+  /** As recorded. */
+  storedStatus: SubscriptionStatus;
+  /** ISO 8601. */
+  currentPeriodEnd: string;
+  premium: boolean;
+}
+
+/** One side of a recorded change. */
+export interface AdminSubscriptionSnapshot {
+  planCode: string;
+  planVersion: number;
+  status: SubscriptionStatus;
+  currentPeriodEnd: string;
+}
+
+/** One recorded change, from the append-only subscription history. */
+export interface AdminSubscriptionHistoryEntry {
+  sequence: number;
+  change: AdminSubscriptionAction;
+  source: 'admin';
+  /** When it took effect. ISO 8601. */
+  effectiveAt: string;
+  /** Null when the user had no subscription before it. */
+  from: AdminSubscriptionSnapshot | null;
+  to: AdminSubscriptionSnapshot;
+  actorUserId: string | null;
+  actorEmail: string | null;
+  reason: string | null;
+  reference: string | null;
+}
+
+/** GET /admin/users/:userId/subscription -- and the answer to a change. */
+export interface AdminUserSubscription {
+  userId: string;
+  economyEnabled: boolean;
+  /** The number of changes recorded. A change must name it as `expectedVersion`. */
+  version: number;
+  current: AdminSubscriptionState | null;
+  /** Newest first. */
+  history: AdminSubscriptionHistoryEntry[];
+  /** The plans that can be assigned now: published, in effect and purchasable. */
+  plans: AdminSubscriptionPlan[];
+  /** What the current state allows. */
+  actions: AdminSubscriptionAction[];
+  /** Whether THIS operator may make a change now, decided by the server. */
+  change: { allowed: true } | { allowed: false; reason: 'permission_required' | 'own_account' | 'economy_disabled' };
+}
+
+/** POST /admin/users/:userId/subscription. */
+export interface AdminSubscriptionChangeRequest {
+  action: AdminSubscriptionAction;
+  /** For assign and change_plan only: the plan's code; its version in effect now is used. */
+  planCode?: string;
+  expectedVersion: number;
+  reason: string;
+  reference?: string | null;
 }

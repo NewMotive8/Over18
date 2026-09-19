@@ -2486,6 +2486,66 @@ export const subscriptions = pgTable('subscriptions', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** P3.5: what a recorded subscription change did. */
+export const subscriptionChange = pgEnum('subscription_change', ['assign', 'change_plan', 'cancel', 'end']);
+
+/** P3.5: who made it. Only an operator can yet; a billing provider (P9) will be another value. */
+export const subscriptionChangeSource = pgEnum('subscription_change_source', ['admin']);
+
+/**
+ * subscription_history (P3.5) -- every change ever made to a user's
+ * subscription, APPEND-ONLY (migration 0039 refuses UPDATE and DELETE).
+ *
+ * `subscriptions` remains the one current state; this is its history, never a
+ * second source of truth. Each row records the state before and after, when the
+ * change took effect, who made it and why. Written only by the subscription
+ * service, in the same transaction as the change it records.
+ *
+ * `sequence` counts one user's changes from 1. It is also the optimistic
+ * concurrency token: a change names the count it saw, and the unique index
+ * refuses a second change claiming the same number.
+ */
+export const subscriptionHistory = pgTable(
+  'subscription_history',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    sequence: integer('sequence').notNull(),
+    change: subscriptionChange('change').notNull(),
+    source: subscriptionChangeSource('source').notNull(),
+    effectiveAt: timestamp('effective_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The state before -- all three null when the user had no subscription. */
+    previousPlanVersionId: uuid('previous_plan_version_id').references(() => economyPlanVersions.id, { onDelete: 'restrict' }),
+    previousStatus: subscriptionStatus('previous_status'),
+    previousPeriodEnd: timestamp('previous_period_end', { withTimezone: true }),
+    /** The state after, exactly as written to `subscriptions`. */
+    planVersionId: uuid('plan_version_id')
+      .notNull()
+      .references(() => economyPlanVersions.id, { onDelete: 'restrict' }),
+    status: subscriptionStatus('status').notNull(),
+    currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }).notNull(),
+    actorUserId: uuid('actor_user_id'),
+    reason: text('reason'),
+    reference: text('reference'),
+    requestId: text('request_id'),
+  },
+  (t) => [
+    uniqueIndex('subscription_history_user_sequence_idx').on(t.userId, t.sequence),
+    check('subscription_history_sequence_positive', sql`${t.sequence} >= 1`),
+    check(
+      'subscription_history_previous_complete',
+      sql`(${t.previousPlanVersionId} IS NULL) = (${t.previousStatus} IS NULL) AND (${t.previousStatus} IS NULL) = (${t.previousPeriodEnd} IS NULL)`,
+    ),
+    // An operator's change always names the operator and says why.
+    check(
+      'subscription_history_admin_attributed',
+      sql`${t.source} <> 'admin' OR (${t.actorUserId} IS NOT NULL AND length(btrim(coalesce(${t.reason}, ''))) > 0)`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;

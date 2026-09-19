@@ -4,6 +4,7 @@ import type { AccountStatus, AdminRoleName, AdminUserDetail, AdminUserList, Admi
 import type { Db } from '../db/client.js';
 import { adminRoleGrants, conversations, sessions, users } from '../db/schema.js';
 import { ACCOUNT_STATUS_AUDIT_OBJECT_TYPE } from './account-status-service.js';
+import { SUBSCRIPTION_AUDIT_OBJECT_TYPE } from './admin-subscription-service.js';
 import { WALLET_AUDIT_OBJECT_TYPE, walletAuditObjectId } from './admin-wallet-service.js';
 import { listAuditEntriesConcerning } from './audit-service.js';
 import { readCustomerCommercialState } from './customer-economy.js';
@@ -249,6 +250,7 @@ export async function readUserDetail(
             { objectType: ROLE_GRANT_AUDIT_OBJECT_TYPE, objectId: userId },
             { objectType: ADMIN_ROUTE_AUDIT_OBJECT_TYPE, objectId: userId },
             { objectType: ACCOUNT_STATUS_AUDIT_OBJECT_TYPE, objectId: userId },
+            { objectType: SUBSCRIPTION_AUDIT_OBJECT_TYPE, objectId: userId },
             ...summaries.map((w) => ({ objectType: WALLET_AUDIT_OBJECT_TYPE, objectId: walletAuditObjectId(userId, w.currency) })),
           ],
         }),

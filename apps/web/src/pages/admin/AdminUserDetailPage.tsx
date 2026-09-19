@@ -26,6 +26,7 @@ import {
 import { adjustmentBlocked, adjustmentNotice } from '../../admin/walletSupport';
 import { ApiRequestError, adminAccessApi, adminUsersApi, adminWalletApi, authApi } from '../../lib/api';
 import { WalletAdjustment } from './AdminWalletPage';
+import { UserSubscription } from './UserSubscriptionPanel';
 import { Field, MessageList, Section, inputClass, secondaryButtonClass } from './economy/EconomyUi';
 
 /**
@@ -33,13 +34,16 @@ import { Field, MessageList, Section, inputClass, secondaryButtonClass } from '.
  * account, commercial state (the P3.1 resolver's), wallets (the P2.4 read
  * model) and activity.
  *
- * Two support actions are made here, each with a reason and a confirmation,
+ * Three support actions are made here, each with a reason and a confirmation,
  * each enforced and audited by the server:
  *   - the account status (P2.5.2): suspend or reactivate a customer;
  *   - a wallet Credit or Debit (P2.5.3): the Wallets screen's own adjustment
- *     (`WalletAdjustment`), through the same P2.4 endpoint -- not a second one.
- * After either, the user is read again, so balances and the audit panel show
- * the change at once. The full ledger stays on the Wallets screen, linked.
+ *     (`WalletAdjustment`), through the same P2.4 endpoint -- not a second one;
+ *   - the plan and subscription (P3.5): assign, change, cancel or end, through
+ *     the canonical subscription service, with its history.
+ * After any of them, the user is read again, so the commercial state, balances
+ * and the audit panel show the change at once. The full ledger stays on the
+ * Wallets screen, linked.
  */
 
 function Facts({ rows }: { rows: Array<[string, string | number]> }) {
@@ -181,10 +185,12 @@ export function UserDetailView({
   detail,
   statusControl,
   walletControl,
+  subscriptionControl,
 }: {
   detail: AdminUserDetail;
   statusControl?: ReactNode;
   walletControl?: ReactNode;
+  subscriptionControl?: ReactNode;
 }) {
   const { identity, account, activity, commercial, wallets, audit } = detail;
   return (
@@ -220,6 +226,7 @@ export function UserDetailView({
             ['Age verification', ageText(commercial.age)],
           ]}
         />
+        {subscriptionControl}
       </Section>
 
       <Section
@@ -424,7 +431,7 @@ export default function AdminUserDetailPage() {
           ← Users
         </Link>
         <h1 className="mt-1 text-xl font-semibold text-white">{state.status === 'ready' ? state.detail.identity.email : 'User'}</h1>
-        <p className="mt-1 text-sm text-zinc-400">Account status and wallet Credit / Debit are changed here. The full ledger is on the Wallets screen.</p>
+        <p className="mt-1 text-sm text-zinc-400">Account status, plan and wallet Credit / Debit are changed here. The full ledger is on the Wallets screen.</p>
       </div>
       {state.status === 'loading' && <p className="text-sm text-zinc-400">Loading the user…</p>}
       {state.status === 'failed' && <MessageList messages={state.messages} />}
@@ -432,6 +439,17 @@ export default function AdminUserDetailPage() {
       {state.status === 'ready' && (
         <UserDetailView
           detail={state.detail}
+          subscriptionControl={
+            <UserSubscription
+              key={state.detail.identity.id}
+              userId={state.detail.identity.id}
+              email={state.detail.identity.email}
+              onChanged={(message) => {
+                setNotice([message]);
+                void reload(state.detail.identity.id);
+              }}
+            />
+          }
           walletControl={
             state.detail.wallets.length > 0 ? (
               <UserWalletAdjustment

@@ -146,6 +146,12 @@ describe('the User detail', () => {
     expect(html).toContain('Audit entries need the audit.read permission.');
   });
 
+  it('places the plan and subscription control inside the Commercial / subscription section (P3.5)', () => {
+    const html = render(<UserDetailView detail={detail()} subscriptionControl={<p data-testid="probe">plan</p>} />);
+    const commercial = html.slice(html.indexOf('Commercial / subscription'), html.indexOf('>Wallet<'));
+    expect(commercial).toContain('data-testid="probe"');
+  });
+
   it('places the status control inside the Account section', () => {
     const html = render(<UserDetailView detail={detail()} statusControl={<p data-testid="probe">control</p>} />);
     const account = html.slice(html.indexOf('Account'), html.indexOf('Commercial / subscription'));

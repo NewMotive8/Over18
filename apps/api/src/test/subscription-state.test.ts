@@ -374,16 +374,24 @@ describe('one place resolves a subscription', () => {
   const src = fileURLToPath(new URL('..', import.meta.url));
   const application = () => sourceFiles(src).map((path) => relative(src, path).split('\\').join('/'));
 
-  it('only the schema and the subscription service name the subscriptions table', () => {
-    const TABLE = /import\s*\{[^}]*\bsubscriptions\b[^}]*\}\s*from\s*'[^']*db\/schema\.js'|\b(from|into|update|join)\s+"?subscriptions\b/i;
+  it('only the schema and the subscription service name the subscriptions table -- or its history (P3.5)', () => {
+    const TABLE =
+      /import\s*\{[^}]*\b(subscriptions|subscriptionHistory)\b[^}]*\}\s*from\s*'[^']*db\/schema\.js'|\b(from|into|update|join)\s+"?(subscriptions|subscription_history)\b/i;
     const readers = application().filter((rel) => rel !== 'db/schema.ts' && TABLE.test(readFileSync(join(src, rel), 'utf8')));
     expect(readers).toEqual(['services/subscription-service.ts']);
   });
 
-  it('only the customer commercial state asks it -- no second derivation of Premium', () => {
+  it('only the customer commercial state asks it for Premium -- no second derivation of Premium', () => {
     const askers = application().filter(
-      (rel) => rel !== 'services/subscription-service.ts' && /subscription-service|resolveSubscription/.test(readFileSync(join(src, rel), 'utf8')),
+      (rel) => rel !== 'services/subscription-service.ts' && /resolveSubscription/.test(readFileSync(join(src, rel), 'utf8')),
     );
     expect(askers).toEqual(['services/customer-economy.ts']);
+  });
+
+  it('only the customer commercial state and the admin subscription management (P3.5) use the subscription service', () => {
+    const importers = application().filter(
+      (rel) => rel !== 'services/subscription-service.ts' && /['/]subscription-service\.js'/.test(readFileSync(join(src, rel), 'utf8')),
+    );
+    expect(importers).toEqual(['routes/admin-users.ts', 'services/admin-subscription-service.ts', 'services/customer-economy.ts']);
   });
 });
