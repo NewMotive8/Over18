@@ -2415,6 +2415,62 @@ export const walletTransactions = pgTable(
   ],
 );
 
+/* ------------------------------------------------------------------ *
+ * Subscription state (PRD v1.2 §13, §18, UC-12, UC-15) -- P3.1
+ *
+ * The minimum a server needs to answer "what is this user's subscription?".
+ * NOTHING WRITES THIS YET: recording renewals, failed payments, cancellations
+ * and expiries is the billing lifecycle's job (P9). The subscription service
+ * is its only reader.
+ * ------------------------------------------------------------------ */
+
+/**
+ * A subscription's state, AS THE BILLING LIFECYCLE RECORDS IT (decided
+ * 2026-09-19). The server derives no transition from dates, with the one
+ * exception the PRD states: a cancelled subscription reads as expired once its
+ * period has ended.
+ *
+ *   active      paid and current
+ *   past_due    a renewal payment failed; Premium is kept (UC-15: no hard
+ *               lockout on the first failure)
+ *   grace       within the grace window after a lapse; Premium is kept (UC-15)
+ *   cancelled   cancelled with paid time left: Premium until
+ *               `current_period_end`, then expired (§13, UC-12). This IS the
+ *               contract's `cancelAtPeriodEnd`; there is no separate flag.
+ *   expired     over; no Premium
+ */
+export const subscriptionStatus = pgEnum('subscription_status', ['active', 'past_due', 'grace', 'cancelled', 'expired']);
+
+/**
+ * subscriptions -- a user's current subscription: one row, or none.
+ *
+ * NO ROW MEANS NO PAID SUBSCRIPTION. There is no "Free" subscription and no
+ * "Free" plan.
+ *
+ * THE PLAN IS REFERENCED, NEVER COPIED. `plan_version_id` names the exact P1
+ * plan version bought -- so a later price change never alters what an existing
+ * subscriber holds (§30.1, §31) -- and its code, price, grant and features are
+ * read from P1. No price, Credit amount or benefit is stored here. Only a
+ * published version resolves; the subscription service refuses to grant
+ * Premium on any other.
+ *
+ * The owner is a RESTRICT foreign key, like wallets: commercial history does
+ * not disappear with an account (a P9 retention decision).
+ */
+export const subscriptions = pgTable('subscriptions', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'restrict' }),
+  planVersionId: uuid('plan_version_id')
+    .notNull()
+    .references(() => economyPlanVersions.id, { onDelete: 'restrict' }),
+  status: subscriptionStatus('status').notNull(),
+  /** The end of the paid period: when it renews, or -- once cancelled -- when Premium ends. */
+  currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -2459,3 +2515,4 @@ export type ContentOfferRow = typeof contentOffers.$inferSelect;
 export type WalletCurrencyRow = typeof walletCurrencies.$inferSelect;
 export type WalletRow = typeof wallets.$inferSelect;
 export type WalletTransactionRow = typeof walletTransactions.$inferSelect;
+export type SubscriptionRow = typeof subscriptions.$inferSelect;

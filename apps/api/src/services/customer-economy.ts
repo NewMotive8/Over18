@@ -13,6 +13,8 @@ import {
   type PackVersionView,
   type PlanVersionView,
 } from './economy-resolver.js';
+import { resolveSubscription } from './subscription-service.js';
+import { CREDITS_CURRENCY, readCommercialWallet } from './wallet-service.js';
 
 /**
  * The customer economy READ boundary: what a signed-in customer may see of the
@@ -27,11 +29,13 @@ import {
  * spreading the resolver's view, so a field added to the view later (an
  * internal note, an audit column) is not published to customers by accident.
  *
- * NO PLACEHOLDERS. The backend has no subscription, wallet or age-verification
- * persistence yet (P2/P3). The phase-zero `resolveEntitlement` answers "free,
- * zero Credits, unverified" for everyone, which is a placeholder rather than a
- * fact, so it is deliberately NOT used here: each of those facts is reported
- * as unavailable, with the reason, until something authoritative exists.
+ * NO PLACEHOLDERS. The subscription and tier come from the subscription
+ * service (P3.1) and the Credits from the ledger (P2); age verification has no
+ * persistence yet and is reported as unavailable, with the reason. The
+ * phase-zero `resolveEntitlement` answers "free, zero Credits, unverified" for
+ * everyone, which is a placeholder rather than a fact, so it is deliberately
+ * NOT used here. A fact that cannot be resolved safely is reported as
+ * unavailable -- never defaulted, and never as Premium.
  *
  * READ-ONLY: no write, no lock, no reservation.
  */
@@ -83,18 +87,24 @@ export async function readCustomerCatalog(db: Db): Promise<CustomerEconomyCatalo
 }
 
 /**
- * The signed-in customer's commercial state, limited to what is authoritative
- * today: who they are, and that the economy is on (the caller only asks while
- * it is). Tier and subscription, wallet and age verification have no
- * persistence yet, so each says so.
+ * The signed-in customer's commercial state, as far as it is authoritative:
+ * who they are, that the economy is on (the caller only asks while it is),
+ * their tier and subscription as the server resolves them, and their Credits.
+ * A subscription whose plan cannot be resolved gives neither a tier nor a
+ * subscription -- so never Premium. Age verification has no persistence yet.
  */
-export function readCustomerCommercialState(user: SafeUser): CustomerCommercialState {
+export async function readCustomerCommercialState(db: Db, user: SafeUser): Promise<CustomerCommercialState> {
+  const [subscription, wallet] = await Promise.all([
+    resolveSubscription(db, user.id),
+    readCommercialWallet(db, user.id, CREDITS_CURRENCY),
+  ]);
+  const unresolvable = { available: false, reason: 'subscription_unresolvable' } as const;
   return {
     viewer: { userId: user.id },
     economyEnabled: true,
-    tier: { available: false, reason: 'subscriptions_not_supported' },
-    subscription: { available: false, reason: 'subscriptions_not_supported' },
-    wallet: { available: false, reason: 'wallet_not_supported' },
+    tier: subscription.ok ? { available: true, value: subscription.tier } : unresolvable,
+    subscription: subscription.ok ? { available: true, value: subscription.subscription } : unresolvable,
+    wallet: wallet ? { available: true, value: wallet } : { available: false, reason: 'wallet_unresolvable' },
     age: { available: false, reason: 'age_verification_not_supported' },
   };
 }

@@ -296,7 +296,7 @@ describe('GET /api/economy/catalog', () => {
  * ================================================================== */
 
 describe('GET /api/me/commercial-state', () => {
-  it('states who the customer is, and that nothing else is known yet -- no placeholder values', async () => {
+  it('states who the customer is: no subscription is Free, no ledger is no Credits, and age is still unknown', async () => {
     const { id, cookies } = await signIn();
     const res = await get(on, STATE, cookies);
     expect(res.statusCode).toBe(200);
@@ -304,9 +304,9 @@ describe('GET /api/me/commercial-state', () => {
     expect(res.json()).toEqual({
       viewer: { userId: id },
       economyEnabled: true,
-      tier: { available: false, reason: 'subscriptions_not_supported' },
-      subscription: { available: false, reason: 'subscriptions_not_supported' },
-      wallet: { available: false, reason: 'wallet_not_supported' },
+      tier: { available: true, value: 'free' },
+      subscription: { available: true, value: null },
+      wallet: { available: true, value: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 } },
       age: { available: false, reason: 'age_verification_not_supported' },
     } satisfies CustomerCommercialState);
   });
@@ -323,8 +323,9 @@ describe('GET /api/me/commercial-state', () => {
   it('does not treat an administrator as Premium -- staff access is not a commercial tier', async () => {
     const admin = await signIn('admin');
     const state = (await get(on, STATE, admin.cookies)).json() as CustomerCommercialState;
-    expect(state.tier).toEqual({ available: false, reason: 'subscriptions_not_supported' });
-    expect(state.wallet).toEqual({ available: false, reason: 'wallet_not_supported' });
+    expect(state.tier).toEqual({ available: true, value: 'free' });
+    expect(state.subscription).toEqual({ available: true, value: null });
+    expect(state.wallet).toEqual({ available: true, value: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 } });
   });
 
   it('answers only GET', async () => {

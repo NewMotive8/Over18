@@ -639,7 +639,7 @@ describe('consistency', () => {
  * No application path yet
  * ------------------------------------------------------------------ */
 
-describe('nothing in the application calls the wallet service yet', () => {
+describe('nothing in the application moves Credits yet', () => {
   function sourceFiles(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
       const path = join(dir, name);
@@ -647,13 +647,21 @@ describe('nothing in the application calls the wallet service yet', () => {
       return name.endsWith('.ts') && !name.endsWith('.test.ts') ? [path] : [];
     });
   }
-
-  it('no route or service imports it: no customer can reach a wallet', () => {
-    const src = fileURLToPath(new URL('..', import.meta.url));
-    const importers = sourceFiles(src)
+  const src = fileURLToPath(new URL('..', import.meta.url));
+  const application = () =>
+    sourceFiles(src)
       .map((path) => relative(src, path).split('\\').join('/'))
-      .filter((rel) => rel !== 'services/wallet-service.ts')
-      .filter((rel) => /wallet-service/.test(readFileSync(join(src, rel), 'utf8')));
-    expect(importers).toEqual([]);
+      .filter((rel) => rel !== 'services/wallet-service.ts');
+
+  it('no route or service calls a wallet operation: no customer can move Credits', () => {
+    const OPERATIONS = /\b(holdCredits|captureHold|releaseHold|refundTransaction|reverseTransaction)\b/;
+    expect(application().filter((rel) => OPERATIONS.test(readFileSync(join(src, rel), 'utf8')))).toEqual([]);
+  });
+
+  it('the only application reader is the customer commercial state (P3.1), and it only reads', () => {
+    const importers = application().filter((rel) => /wallet-service/.test(readFileSync(join(src, rel), 'utf8')));
+    expect(importers).toEqual(['services/customer-economy.ts']);
+    const imported = readFileSync(join(src, 'services/customer-economy.ts'), 'utf8').match(/import \{([^}]*)\} from '\.\/wallet-service\.js'/);
+    expect(imported?.[1]?.split(',').map((name) => name.trim()).sort()).toEqual(['CREDITS_CURRENCY', 'readCommercialWallet']);
   });
 });

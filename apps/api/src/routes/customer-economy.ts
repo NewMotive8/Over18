@@ -41,6 +41,6 @@ export default async function customerEconomyRoutes(
   app.get('/api/me/commercial-state', { preHandler: app.requireAuth }, async (request, reply) => {
     reply.header('cache-control', 'private, no-store');
     if (!opts.commerce.enabled) return reply.code(503).send(ECONOMY_UNAVAILABLE);
-    return readCustomerCommercialState(request.currentUser!);
+    return readCustomerCommercialState(opts.db, request.currentUser!);
   });
 }

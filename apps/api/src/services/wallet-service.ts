@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import type { CommercialWallet } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { wallets, walletTransactions, type WalletTransactionRow } from '../db/schema.js';
 
@@ -51,7 +52,8 @@ import { wallets, walletTransactions, type WalletTransactionRow } from '../db/sc
  * when an earlier one holds some Credits but not enough.
  *
  * NOT HERE: granting, purchasing, rewards, expiry, paid-action charging, and any
- * route. Nothing in the application calls this module yet.
+ * route. No application module calls an operation yet; the customer commercial
+ * state (P3.1) only READS a wallet, through `readCommercialWallet`.
  */
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -296,13 +298,12 @@ type ClassBalances = Record<CreditClass, { spendable: number; held: number }>;
 
 /**
  * Spendable and held Credits per class, derived from the ledger exactly as
- * migration 0034 applies each row to the wallet. They must be non-negative and
- * add up to the cached wallet; otherwise the class accounting cannot be trusted
- * and nothing is built on it.
+ * migration 0034 applies each row to the wallet -- in one statement, so from
+ * one consistent instant. A user with no transactions has none of either.
  */
-async function classBalances(tx: Tx, userId: string, currency: string, cached: { balance: number; held: number }): Promise<ClassBalances> {
+async function deriveClassBalances(db: Pick<Db, 'execute'> | Tx, userId: string, currency: string): Promise<ClassBalances> {
   const t = walletTransactions;
-  const result = await tx.execute<{ credit_class: CreditClass; spendable: string; held: string }>(sql`
+  const result = await db.execute<{ credit_class: CreditClass; spendable: string; held: string }>(sql`
     select ${t.creditClass} as credit_class,
            coalesce(sum(case when ${t.entryType} = 'capture' then 0
                              when ${t.direction} = 'credit' then ${t.amount}
@@ -315,10 +316,22 @@ async function classBalances(tx: Tx, userId: string, currency: string, cached: {
      group by ${t.creditClass}`);
   const balances = Object.fromEntries(CREDIT_SPEND_ORDER.map((c) => [c, { spendable: 0, held: 0 }])) as ClassBalances;
   for (const row of result.rows) balances[row.credit_class] = { spendable: Number(row.spendable), held: Number(row.held) };
+  return balances;
+}
+
+const reconciles = (balances: ClassBalances) => Object.values(balances).every((b) => b.spendable >= 0 && b.held >= 0);
+
+/**
+ * The per-class balances an operation builds on, under the wallet lock. They
+ * must be non-negative and add up to the cached wallet; otherwise the class
+ * accounting cannot be trusted and nothing is built on it.
+ */
+async function classBalances(tx: Tx, userId: string, currency: string, cached: { balance: number; held: number }): Promise<ClassBalances> {
+  const balances = await deriveClassBalances(tx, userId, currency);
   const all = Object.values(balances);
   const spendable = all.reduce((sum, b) => sum + b.spendable, 0);
   const held = all.reduce((sum, b) => sum + b.held, 0);
-  if (all.some((b) => b.spendable < 0 || b.held < 0) || spendable !== cached.balance || held !== cached.held) {
+  if (!reconciles(balances) || spendable !== cached.balance || held !== cached.held) {
     throw new WalletError(
       'ledger_inconsistent',
       `The ${currency} wallet's Credit classes do not reconcile with its balance (${JSON.stringify(balances)}; balance ${cached.balance}, held ${cached.held}).`,
@@ -373,6 +386,33 @@ function view(row: WalletTransactionRow): WalletTransactionView {
     actorUserId: row.actorUserId,
     requestId: row.requestId,
     createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Reading (P3.1)
+ * ------------------------------------------------------------------ */
+
+/** The customer-facing Credits currency (seeded by migration 0034). */
+export const CREDITS_CURRENCY = 'credits';
+
+/**
+ * A user's Credits in the P0 `CommercialWallet` shape, READ-ONLY: spendable
+ * Credits by class, and held Credits (not spendable). Derived from the ledger
+ * -- the record, not the cache -- in one statement, taking no lock and writing
+ * nothing. A user with no wallet has no Credits. `null` when a class does not
+ * reconcile: a balance that cannot be trusted is not reported.
+ */
+export async function readCommercialWallet(db: Pick<Db, 'execute'>, userId: string, currency: string): Promise<CommercialWallet | null> {
+  const balances = await deriveClassBalances(db, userId, currency);
+  if (!reconciles(balances)) return null;
+  const all = Object.values(balances);
+  return {
+    included: balances.included.spendable,
+    earned: balances.earned.spendable,
+    purchased: balances.purchased.spendable,
+    held: all.reduce((sum, b) => sum + b.held, 0),
+    spendable: all.reduce((sum, b) => sum + b.spendable, 0),
   };
 }
 

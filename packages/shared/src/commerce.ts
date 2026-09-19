@@ -119,12 +119,20 @@ export interface CustomerEconomyCatalog {
 }
 
 /**
- * A commercial fact the backend cannot yet state with authority, because
- * nothing persists it. Stated as absent, never as a placeholder value.
+ * A commercial fact the backend cannot state with authority -- because nothing
+ * persists it yet, or because what is stored cannot be resolved safely (a
+ * subscription naming a plan version that is not published; Credit classes
+ * that do not reconcile). Stated as absent, never as a placeholder value, and
+ * never as Premium.
  */
 export interface CommercialFactUnavailable {
   available: false;
-  reason: 'subscriptions_not_supported' | 'wallet_not_supported' | 'age_verification_not_supported';
+  reason:
+    | 'subscriptions_not_supported'
+    | 'wallet_not_supported'
+    | 'age_verification_not_supported'
+    | 'subscription_unresolvable'
+    | 'wallet_unresolvable';
 }
 
 /**
