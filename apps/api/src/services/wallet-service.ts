@@ -93,6 +93,7 @@ export type WalletErrorCode =
   | 'exceeds_remaining'
   | 'idempotency_conflict'
   | 'adjustment_cap_exceeded'
+  | 'own_wallet'
   | 'ledger_inconsistent'
   | 'ledger_refused';
 
@@ -680,6 +681,11 @@ export async function readAdjustmentAllowance(db: Pick<Db, 'select'>, actorUserI
  *           spend order gives; refused when the classes would have to be
  *           split, or when the user has no wallet.
  *
+ * NEVER ONE'S OWN WALLET (P2.5.3). An operator cannot Credit or Debit their
+ * own wallet in any currency: another operator must. Refused before anything is
+ * locked, opened or written, so it opens no wallet and uses no allowance --
+ * and, being here, it holds for every way an adjustment can be made.
+ *
  * THE CAPS HOLD UNDER CONCURRENCY. An operator's adjustments in a currency are
  * serialised by a transaction-scoped advisory lock taken BEFORE the wallet
  * lock, so two at once cannot both fit under the cap. No other operation takes
@@ -694,6 +700,10 @@ export async function adjustWallet(db: WalletDb, input: AdjustInput): Promise<Wa
   if (typeof input.currency !== 'string' || !CURRENCY.test(input.currency)) invalid('currency must be a wallet currency code.');
   if (input.direction !== 'credit' && input.direction !== 'debit') invalid('direction must be credit or debit.');
   if (typeof input.actorUserId !== 'string' || !UUID.test(input.actorUserId)) invalid('An adjustment must name the operator making it.');
+  // User IDs are compared as UUIDs, not as text: a path may spell one in upper case.
+  if (input.actorUserId.toLowerCase() === input.userId.toLowerCase()) {
+    throw new WalletError('own_wallet', 'You cannot adjust your own wallet. Another operator must make this adjustment.');
+  }
   if (typeof input.reason !== 'string' || input.reason.trim() === '') invalid('An adjustment needs a reason.');
   const expected: Material = {
     entryType: 'admin_adjustment',

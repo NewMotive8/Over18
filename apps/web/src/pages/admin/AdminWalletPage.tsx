@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import type {
   AdminAdjustmentAllowance,
   AdminUserWallets,
   AdminWalletAdjustmentRequest,
+  AdminWalletAdjustmentResult,
   AdminWalletSummary,
   AdminWalletTransaction,
   AdminWalletUser,
@@ -14,6 +15,7 @@ import { serverMessages } from '../../admin/economyConfig';
 import {
   DIRECTION_LABEL,
   adjustmentBlocked,
+  adjustmentNotice,
   adjustmentRequest,
   confirmationBody,
   confirmationTitle,
@@ -34,10 +36,12 @@ import { Field, MessageList, Section, buttonClass, inputClass, secondaryButtonCl
  * Admin -> Wallets (P2.4, PRD §16, §18, §34): one user's wallets, their ledger,
  * and support Credit and Debit.
  *
- * Looked up by the permanent User ID only -- searching users is P2.5. Every
- * figure shown is the server's; every adjustment is a new ledger transaction
- * made by the server, which enforces the permission, the caps, the balance and
- * idempotency. Nothing here edits a balance or a past transaction.
+ * Looked up by the permanent User ID; Admin -> Users finds users by email too,
+ * and its User Detail makes the same adjustment with this page's own
+ * `WalletAdjustment` (P2.5.3). Every figure shown is the server's; every
+ * adjustment is a new ledger transaction made by the server, which enforces the
+ * permission, the caps, the balance, the operator's own wallet and idempotency.
+ * Nothing here edits a balance or a past transaction.
  */
 
 /* ------------------------------------------------------------------ *
@@ -46,7 +50,14 @@ import { Field, MessageList, Section, buttonClass, inputClass, secondaryButtonCl
 
 export function AccountCard({ user }: { user: AdminWalletUser }) {
   return (
-    <Section title="Account">
+    <Section
+      title="Account"
+      actions={
+        <Link to={`/admin/users/${user.id}`} className="text-sm text-rose-400 hover:text-rose-300">
+          Open in Users →
+        </Link>
+      }
+    >
       <dl className="grid gap-2 text-sm sm:grid-cols-3">
         <div>
           <dt className="text-xs text-zinc-500">Email</dt>
@@ -249,6 +260,107 @@ export function HistoryTable({ transactions }: { transactions: readonly AdminWal
 }
 
 /* ------------------------------------------------------------------ *
+ * The adjustment -- one implementation, also used by Admin -> Users -> User
+ * Detail (P2.5.3)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Credit or Debit one user's wallet in one currency: two separate actions, the
+ * chosen one's form, a review in a confirmation dialog, then the P2.4
+ * adjustment endpoint -- where the server enforces the permission, the caps,
+ * the balance, the operator's own wallet and idempotency.
+ *
+ * The idempotency key is made when a review opens and kept for any retry of
+ * that same adjustment, so confirming twice cannot apply it twice; changing the
+ * adjustment makes it a new one. `onAdjusted` receives the server's result, and
+ * the host shows it.
+ */
+export function WalletAdjustment({
+  userId,
+  email,
+  currency,
+  allowances,
+  blocked,
+  onAdjusted,
+}: {
+  userId: string;
+  email: string;
+  currency: string;
+  allowances: readonly AdminAdjustmentAllowance[];
+  /** Why adjusting is impossible now (see adjustmentBlocked); null when it is possible. */
+  blocked: string | null;
+  onAdjusted: (result: AdminWalletAdjustmentResult) => void | Promise<void>;
+}) {
+  const [form, setForm] = useState<AdjustmentForm | null>(null);
+  const [pending, setPending] = useState<AdminWalletAdjustmentRequest | null>(null);
+  const [key, setKey] = useState<string | null>(null);
+  const [messages, setMessages] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const editForm = (next: AdjustmentForm) => {
+    setForm(next);
+    setKey(null); // a changed adjustment is a new one
+    setMessages([]);
+  };
+
+  const review = () => {
+    if (!form) return;
+    const intended = key ?? newIdempotencyKey();
+    const built = adjustmentRequest(form, intended);
+    if (!built.ok) return setMessages(built.errors);
+    setKey(intended);
+    setPending(built.value);
+  };
+
+  const submit = async () => {
+    if (!pending) return;
+    setBusy(true);
+    let result: AdminWalletAdjustmentResult | null = null;
+    try {
+      result = await adminWalletApi.adjust(userId, currency, pending);
+      setForm(null);
+      setKey(null);
+      setMessages([]);
+    } catch (error) {
+      // The key is kept: confirming the same adjustment again cannot apply it twice.
+      setMessages(serverMessages(error));
+    } finally {
+      setPending(null);
+      setBusy(false);
+    }
+    // Outside the try: whatever the host does next, this adjustment was applied.
+    if (result) await onAdjusted(result);
+  };
+
+  return (
+    <>
+      <AdjustmentPanel
+        currency={currency}
+        allowances={allowances}
+        blocked={blocked}
+        form={form}
+        onChoose={(direction) => editForm(emptyAdjustment(direction))}
+        onForm={editForm}
+        onReview={review}
+        busy={busy}
+        messages={messages}
+      />
+      <ConfirmDialog
+        open={pending !== null}
+        title={pending ? confirmationTitle(pending, currency, email) : ''}
+        body={pending ? confirmationBody(pending) : ''}
+        confirmLabel={pending ? DIRECTION_LABEL[pending.direction] : 'Confirm'}
+        cancelLabel="Go back"
+        onConfirm={() => void submit()}
+        onCancel={() => setPending(null)}
+        busy={busy}
+        tone={pending?.direction === 'debit' ? 'danger' : 'default'}
+      />
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * The workspace for one user
  * ------------------------------------------------------------------ */
 
@@ -259,12 +371,8 @@ function UserWallets({ userId }: { userId: string }) {
   const [permitted, setPermitted] = useState(false);
   const [currency, setCurrency] = useState<string | null>(null);
   const [history, setHistory] = useState<{ transactions: AdminWalletTransaction[]; nextBefore: number | null } | null>(null);
-  const [form, setForm] = useState<AdjustmentForm | null>(null);
-  const [pending, setPending] = useState<AdminWalletAdjustmentRequest | null>(null);
-  const [key, setKey] = useState<string | null>(null);
-  const [messages, setMessages] = useState<string[]>([]);
+  const [historyMessages, setHistoryMessages] = useState<string[]>([]);
   const [notice, setNotice] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -281,12 +389,13 @@ function UserWallets({ userId }: { userId: string }) {
       if (!currency) return;
       try {
         const page = await adminWalletApi.history(userId, currency, before);
+        setHistoryMessages([]);
         setHistory((current) => ({
           transactions: before && current ? [...current.transactions, ...page.transactions] : page.transactions,
           nextBefore: page.nextBefore,
         }));
       } catch (error) {
-        setMessages(serverMessages(error));
+        setHistoryMessages(serverMessages(error));
       }
     },
     [userId, currency],
@@ -305,49 +414,22 @@ function UserWallets({ userId }: { userId: string }) {
     void loadHistory(null);
   }, [loadHistory]);
 
-  const editForm = (next: AdjustmentForm) => {
-    setForm(next);
-    setKey(null); // a changed adjustment is a new one
-    setMessages([]);
-  };
-
-  const review = () => {
-    if (!form) return;
-    const intended = key ?? newIdempotencyKey();
-    const built = adjustmentRequest(form, intended);
-    if (!built.ok) return setMessages(built.errors);
-    setKey(intended);
-    setPending(built.value);
-  };
-
-  const submit = async () => {
-    if (!pending || !currency || state.status !== 'ready') return;
-    setBusy(true);
-    try {
-      const result = await adminWalletApi.adjust(userId, currency, pending);
-      const t = result.transaction;
-      setNotice([
-        `${DIRECTION_LABEL[t.direction]} of ${t.amount} ${currency} ${result.replayed ? 'was already applied' : 'applied'}. Spendable now ${result.wallet.balance}, held ${result.wallet.held}.`,
-      ]);
-      setState({
-        status: 'ready',
-        data: {
-          ...state.data,
-          wallets: state.data.wallets.map((w) => (w.currency === currency ? result.wallet : w)),
-          allowances: state.data.allowances.map((a) => (a.currency === currency ? result.allowance : a)),
-        },
-      });
-      setForm(null);
-      setKey(null);
-      setMessages([]);
-      void loadHistory(null);
-    } catch (error) {
-      // The key is kept: confirming the same adjustment again cannot apply it twice.
-      setMessages(serverMessages(error));
-    } finally {
-      setPending(null);
-      setBusy(false);
-    }
+  const adjusted = (result: AdminWalletAdjustmentResult) => {
+    const adjustedCurrency = result.wallet.currency;
+    setNotice([adjustmentNotice(result, adjustedCurrency)]);
+    setState((current) =>
+      current.status !== 'ready'
+        ? current
+        : {
+            status: 'ready',
+            data: {
+              ...current.data,
+              wallets: current.data.wallets.map((w) => (w.currency === adjustedCurrency ? result.wallet : w)),
+              allowances: current.data.allowances.map((a) => (a.currency === adjustedCurrency ? result.allowance : a)),
+            },
+          },
+    );
+    void loadHistory(null);
   };
 
   if (state.status === 'loading') return <p className="text-sm text-zinc-400">Loading the wallet…</p>;
@@ -369,10 +451,7 @@ function UserWallets({ userId }: { userId: string }) {
               type="button"
               role="tab"
               aria-selected={w.currency === wallet?.currency}
-              onClick={() => {
-                setCurrency(w.currency);
-                setForm(null);
-              }}
+              onClick={() => setCurrency(w.currency)}
               className={secondaryButtonClass}
             >
               {w.currency}
@@ -386,20 +465,25 @@ function UserWallets({ userId }: { userId: string }) {
             <WalletBalances wallet={wallet} />
           </Section>
           <Section title="Support adjustment">
-            <AdjustmentPanel
+            {/* Keyed by currency: switching currency starts a fresh adjustment. */}
+            <WalletAdjustment
+              key={wallet.currency}
+              userId={userId}
+              email={data.user.email}
               currency={wallet.currency}
               allowances={data.allowances}
               blocked={blocked}
-              form={form}
-              onChoose={(direction) => editForm(emptyAdjustment(direction))}
-              onForm={editForm}
-              onReview={review}
-              busy={busy}
-              messages={messages}
+              onAdjusted={adjusted}
             />
           </Section>
           <Section title="Transactions">
-            {history ? <HistoryTable transactions={history.transactions} /> : <p className="text-sm text-zinc-400">Loading transactions…</p>}
+            {history ? (
+              <HistoryTable transactions={history.transactions} />
+            ) : historyMessages.length > 0 ? (
+              <MessageList messages={historyMessages} />
+            ) : (
+              <p className="text-sm text-zinc-400">Loading transactions…</p>
+            )}
             {history?.nextBefore ? (
               <button type="button" onClick={() => void loadHistory(history.nextBefore)} className={`${secondaryButtonClass} mt-3`}>
                 Show older
@@ -408,17 +492,6 @@ function UserWallets({ userId }: { userId: string }) {
           </Section>
         </>
       )}
-      <ConfirmDialog
-        open={pending !== null}
-        title={pending && wallet ? confirmationTitle(pending, wallet.currency, data.user.email) : ''}
-        body={pending ? confirmationBody(pending) : ''}
-        confirmLabel={pending ? DIRECTION_LABEL[pending.direction] : 'Confirm'}
-        cancelLabel="Go back"
-        onConfirm={() => void submit()}
-        onCancel={() => setPending(null)}
-        busy={busy}
-        tone={pending?.direction === 'debit' ? 'danger' : 'default'}
-      />
     </div>
   );
 }

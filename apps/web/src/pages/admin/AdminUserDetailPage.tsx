@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import type { AccountStatus, AdminAccountStatusChange, AdminAccountStatusChangeRequest, AdminUserDetail } from '@over18/shared';
+import type {
+  AccountStatus,
+  AdminAccountStatusChange,
+  AdminAccountStatusChangeRequest,
+  AdminAdjustmentAllowance,
+  AdminUserDetail,
+  AdminWalletAdjustmentResult,
+} from '@over18/shared';
 import ConfirmDialog from '../../admin/ConfirmDialog';
 import { serverMessages } from '../../admin/economyConfig';
 import {
@@ -16,18 +23,23 @@ import {
   tierText,
   when,
 } from '../../admin/userManagement';
-import { ApiRequestError, adminUsersApi } from '../../lib/api';
-import { Field, MessageList, Section, inputClass } from './economy/EconomyUi';
+import { adjustmentBlocked, adjustmentNotice } from '../../admin/walletSupport';
+import { ApiRequestError, adminAccessApi, adminUsersApi, adminWalletApi, authApi } from '../../lib/api';
+import { WalletAdjustment } from './AdminWalletPage';
+import { Field, MessageList, Section, inputClass, secondaryButtonClass } from './economy/EconomyUi';
 
 /**
  * Admin -> Users -> one user (P2.5.1): a consolidated view -- identity,
  * account, commercial state (the P3.1 resolver's), wallets (the P2.4 read
  * model) and activity.
  *
- * The one change made here is the account status (P2.5.2): suspend or
- * reactivate a customer, with a reason and a confirmation. The server decides
- * whether this operator may, enforces it, and records it in the audit log.
- * Wallet support stays on the existing Wallets screen, linked from here.
+ * Two support actions are made here, each with a reason and a confirmation,
+ * each enforced and audited by the server:
+ *   - the account status (P2.5.2): suspend or reactivate a customer;
+ *   - a wallet Credit or Debit (P2.5.3): the Wallets screen's own adjustment
+ *     (`WalletAdjustment`), through the same P2.4 endpoint -- not a second one.
+ * After either, the user is read again, so balances and the audit panel show
+ * the change at once. The full ledger stays on the Wallets screen, linked.
  */
 
 function Facts({ rows }: { rows: Array<[string, string | number]> }) {
@@ -105,7 +117,75 @@ export function AccountStatusPanel({
   );
 }
 
-export function UserDetailView({ detail, statusControl }: { detail: AdminUserDetail; statusControl?: ReactNode }) {
+/** What the wallet adjustment needs beyond the detail, from the same sources the Wallets page uses. */
+export type WalletSupport =
+  | { status: 'loading' }
+  | { status: 'failed'; messages: string[] }
+  | { status: 'ready'; allowances: AdminAdjustmentAllowance[]; economyEnabled: boolean; permitted: boolean; ownAccount: boolean };
+
+/**
+ * Credit and Debit in the User Detail Wallet section (P2.5.3). The adjustment
+ * itself is the Wallets page's `WalletAdjustment`; this only chooses the
+ * currency and says why adjusting is blocked, when it is.
+ */
+export function UserWalletAdjustment({
+  userId,
+  email,
+  currencies,
+  currency,
+  onCurrency,
+  support,
+  onAdjusted,
+}: {
+  userId: string;
+  email: string;
+  currencies: readonly string[];
+  currency: string;
+  onCurrency: (currency: string) => void;
+  support: WalletSupport;
+  onAdjusted: (result: AdminWalletAdjustmentResult) => void | Promise<void>;
+}) {
+  return (
+    <div className="mt-4 flex flex-col gap-3 border-t border-zinc-800 pt-4" data-testid="wallet-adjustment">
+      <h3 className="text-sm font-semibold text-zinc-200">Support adjustment</h3>
+      {support.status === 'loading' && <p className="text-sm text-zinc-400">Loading your adjustment allowance…</p>}
+      {support.status === 'failed' && <MessageList messages={support.messages} />}
+      {support.status === 'ready' && (
+        <>
+          {currencies.length > 1 && (
+            <div className="flex gap-2" role="tablist" aria-label="Currency">
+              {currencies.map((c) => (
+                <button key={c} type="button" role="tab" aria-selected={c === currency} onClick={() => onCurrency(c)} className={secondaryButtonClass}>
+                  {c}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* Keyed by currency: switching currency starts a fresh adjustment, as on the Wallets page. */}
+          <WalletAdjustment
+            key={currency}
+            userId={userId}
+            email={email}
+            currency={currency}
+            allowances={support.allowances}
+            blocked={adjustmentBlocked({ economyEnabled: support.economyEnabled, permitted: support.permitted, ownAccount: support.ownAccount })}
+            onAdjusted={onAdjusted}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+export function UserDetailView({
+  detail,
+  statusControl,
+  walletControl,
+}: {
+  detail: AdminUserDetail;
+  statusControl?: ReactNode;
+  walletControl?: ReactNode;
+}) {
   const { identity, account, activity, commercial, wallets, audit } = detail;
   return (
     <div className="flex flex-col gap-4">
@@ -146,7 +226,7 @@ export function UserDetailView({ detail, statusControl }: { detail: AdminUserDet
         title="Wallet"
         actions={
           <Link to={`/admin/wallets/${identity.id}`} className="text-sm text-rose-400 hover:text-rose-300">
-            Open wallet support →
+            Full ledger history →
           </Link>
         }
       >
@@ -181,6 +261,7 @@ export function UserDetailView({ detail, statusControl }: { detail: AdminUserDet
             </tbody>
           </table>
         </div>
+        {walletControl}
       </Section>
 
       <Section title="Activity">
@@ -239,6 +320,8 @@ export default function AdminUserDetailPage() {
   const [busy, setBusy] = useState(false);
   const [messages, setMessages] = useState<string[]>([]);
   const [notice, setNotice] = useState<string[]>([]);
+  const [walletSupport, setWalletSupport] = useState<WalletSupport>({ status: 'loading' });
+  const [walletCurrency, setWalletCurrency] = useState<string | null>(null);
 
   /** Reads the user again: after a change -- or a conflict -- the server's detail is the truth. */
   const reload = useCallback(async (id: string) => {
@@ -261,6 +344,44 @@ export default function AdminUserDetailPage() {
       current = false;
     };
   }, [userId]);
+
+  // The adjustment's own facts, from the sources the Wallets page uses: the
+  // operator's allowance and the economy switch (the wallets read), their
+  // permission (their admin access), and whether this is their own account
+  // (their session). If either of the last two cannot be read, the server
+  // still decides: it refuses what it must, and the refusal is shown.
+  useEffect(() => {
+    if (!userId) return;
+    let current = true;
+    setWalletSupport({ status: 'loading' });
+    Promise.all([adminWalletApi.wallets(userId), adminAccessApi.me().catch(() => null), authApi.me().catch(() => null)])
+      .then(([wallets, access, me]) => {
+        if (!current) return;
+        setWalletSupport({
+          status: 'ready',
+          allowances: wallets.allowances,
+          economyEnabled: wallets.economyEnabled,
+          permitted: access?.permissions.includes('users.credits.adjust') ?? false,
+          ownAccount: me?.id === userId,
+        });
+      })
+      .catch((error: unknown) => current && setWalletSupport({ status: 'failed', messages: serverMessages(error) }));
+    return () => {
+      current = false;
+    };
+  }, [userId]);
+
+  /** An adjustment applied: say what it did, keep the allowance current, and read the user again. */
+  const walletAdjusted = async (result: AdminWalletAdjustmentResult) => {
+    if (!userId) return;
+    setNotice([`${adjustmentNotice(result, result.wallet.currency)} Ledger transaction #${result.transaction.sequence}.`]);
+    setWalletSupport((current) =>
+      current.status !== 'ready'
+        ? current
+        : { ...current, allowances: current.allowances.map((a) => (a.currency === result.allowance.currency ? result.allowance : a)) },
+    );
+    await reload(userId);
+  };
 
   const review = () => {
     if (state.status !== 'ready') return;
@@ -303,7 +424,7 @@ export default function AdminUserDetailPage() {
           ← Users
         </Link>
         <h1 className="mt-1 text-xl font-semibold text-white">{state.status === 'ready' ? state.detail.identity.email : 'User'}</h1>
-        <p className="mt-1 text-sm text-zinc-400">Account status can be changed here. Wallet support happens on its own screen.</p>
+        <p className="mt-1 text-sm text-zinc-400">Account status and wallet Credit / Debit are changed here. The full ledger is on the Wallets screen.</p>
       </div>
       {state.status === 'loading' && <p className="text-sm text-zinc-400">Loading the user…</p>}
       {state.status === 'failed' && <MessageList messages={state.messages} />}
@@ -311,6 +432,19 @@ export default function AdminUserDetailPage() {
       {state.status === 'ready' && (
         <UserDetailView
           detail={state.detail}
+          walletControl={
+            state.detail.wallets.length > 0 ? (
+              <UserWalletAdjustment
+                userId={state.detail.identity.id}
+                email={state.detail.identity.email}
+                currencies={state.detail.wallets.map((w) => w.currency)}
+                currency={walletCurrency ?? state.detail.wallets[0]!.currency}
+                onCurrency={setWalletCurrency}
+                support={walletSupport}
+                onAdjusted={walletAdjusted}
+              />
+            ) : null
+          }
           statusControl={
             <AccountStatusPanel
               status={state.detail.account.status}

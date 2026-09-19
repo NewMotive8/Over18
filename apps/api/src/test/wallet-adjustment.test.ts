@@ -296,6 +296,34 @@ describe('idempotency and concurrency', () => {
  * Reading, reconciliation, and the customer's view
  * ------------------------------------------------------------------ */
 
+describe("never the operator's own wallet (P2.5.3)", () => {
+  it('refuses a Credit and a Debit to their own wallet -- opening none, writing nothing, using no allowance', async () => {
+    const self = await user(false);
+    const own = { userId: self, actorUserId: self } as const;
+    await expect(adjust({ ...own, direction: 'credit', amount: 5 })).rejects.toMatchObject(refusal('own_wallet'));
+    await expect(adjust({ ...own, direction: 'debit', amount: 5 })).rejects.toMatchObject(refusal('own_wallet'));
+    expect(await walletOf(self)).toBeUndefined();
+
+    await fund(self, 50, 'earned');
+    await expect(adjust({ ...own, direction: 'debit', amount: 5 })).rejects.toMatchObject(refusal('own_wallet'));
+    await expect(adjust({ ...own, direction: 'credit', amount: 5 })).rejects.toMatchObject(refusal('own_wallet'));
+    // User IDs are compared as ids: an upper-case spelling is the same user.
+    await expect(adjust({ userId: self.toUpperCase(), actorUserId: self, direction: 'credit', amount: 5 })).rejects.toMatchObject(refusal('own_wallet'));
+    await expect(adjust({ userId: self, actorUserId: self.toUpperCase(), direction: 'credit', amount: 5 })).rejects.toMatchObject(refusal('own_wallet'));
+
+    expect(await walletOf(self)).toMatchObject({ balance: 50, version: 1 });
+    expect((await q("SELECT 1 FROM wallet_transactions WHERE entry_type = 'admin_adjustment'")).rowCount).toBe(0);
+    const allowance = await readAdjustmentAllowance(on.db, self, 'credits');
+    expect([allowance.credit.used, allowance.debit.used]).toEqual([0, 0]);
+  });
+
+  it("another operator may adjust that same person's wallet", async () => {
+    const self = await user(false);
+    const result = await adjustWallet(on.db, { userId: self, actorUserId: operator, currency: 'credits', direction: 'credit', amount: 5, idempotencyKey: randomUUID(), reason: 'Goodwill' });
+    expect(result.transaction).toMatchObject({ direction: 'credit', amount: 5, actorUserId: operator });
+  });
+});
+
 describe('after adjustments', () => {
   it('the wallet reconciles with its ledger, and the customer commercial state (P3.1) shows the result', async () => {
     const u = await user();

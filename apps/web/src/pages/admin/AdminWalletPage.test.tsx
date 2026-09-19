@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { AdminAdjustmentAllowance, AdminWalletSummary, AdminWalletTransaction } from '@over18/shared';
 import { emptyAdjustment } from '../../admin/walletSupport';
-import AdminWalletPage, { AccountCard, AdjustmentLimits, AdjustmentPanel, HistoryTable, WalletBalances } from './AdminWalletPage';
+import AdminWalletPage, { AccountCard, AdjustmentLimits, AdjustmentPanel, HistoryTable, WalletAdjustment, WalletBalances } from './AdminWalletPage';
 
 /**
  * P2.4 -- the admin Wallets page, rendered statically (the suite runs no
@@ -157,5 +157,35 @@ describe('the page', () => {
     );
     expect(html).toContain('Loading the wallet');
     expect(html).toContain('value="3f2504e0-4f89-41d3-9a0c-0305e82c3301"');
+  });
+});
+
+describe('P2.5.3 -- one adjustment, shared with the User Detail', () => {
+  it("links the account back to the user's detail in Admin -> Users", () => {
+    const html = render(<AccountCard user={{ id: '3f2504e0-4f89-41d3-9a0c-0305e82c3301', email: 'customer@example.com', createdAt: '2026-09-01T00:00:00.000Z' }} />);
+    expect(html).toContain('href="/admin/users/3f2504e0-4f89-41d3-9a0c-0305e82c3301"');
+    expect(html).toContain('Open in Users');
+  });
+
+  it('WalletAdjustment is the panel above -- Credit and Debit apart, nothing chosen, no dialog open', () => {
+    const html = render(
+      <WalletAdjustment userId="u-1" email="customer@example.com" currency="credits" allowances={allowances} blocked={null} onAdjusted={noop} />,
+    );
+    expect(html).toContain('data-testid="adjustment-panel"');
+    expect(html).toMatch(/aria-pressed="false"[^>]*>Credit…/);
+    expect(html).toMatch(/aria-pressed="false"[^>]*>Debit…/);
+    expect(html).toContain('70 of 77 left today (UTC)');
+    expect(html).not.toContain('role="dialog"');
+    expect(html).not.toContain('role="alertdialog"');
+    // Exactly the panel the Wallets page rendered before the extraction.
+    expect(html).toBe(panel());
+  });
+
+  it('WalletAdjustment disables both actions, and says why, when blocked', () => {
+    const html = render(
+      <WalletAdjustment userId="u-1" email="a@example.com" currency="credits" allowances={allowances} blocked="You cannot adjust your own wallet. Another operator must make this adjustment." onAdjusted={noop} />,
+    );
+    expect(html).toContain('cannot adjust your own wallet');
+    expect(html.match(/disabled=""[^>]*>(Credit|Debit)…/g)).toHaveLength(2);
   });
 });

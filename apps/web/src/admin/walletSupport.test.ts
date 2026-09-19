@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { AdminAdjustmentAllowance } from '@over18/shared';
 import {
   adjustmentBlocked,
+  adjustmentNotice,
   adjustmentRequest,
   confirmationBody,
   confirmationTitle,
@@ -74,6 +75,13 @@ describe('when adjusting is possible', () => {
     expect(adjustmentBlocked({ economyEnabled: true, permitted: false })).toMatch(/does not permit/);
   });
 
+  it("never on the operator's own wallet (P2.5.3) -- the server refuses it too", () => {
+    expect(adjustmentBlocked({ economyEnabled: true, permitted: true, ownAccount: true })).toMatch(/cannot adjust your own wallet/);
+    expect(adjustmentBlocked({ economyEnabled: false, permitted: true, ownAccount: true })).toMatch(/own wallet/);
+    expect(adjustmentBlocked({ economyEnabled: true, permitted: false, ownAccount: true })).toMatch(/does not permit/);
+    expect(adjustmentBlocked({ economyEnabled: true, permitted: true, ownAccount: false })).toBeNull();
+  });
+
   it("shows the server's limits, never its own", () => {
     const allowances: AdminAdjustmentAllowance[] = [
       { currency: 'credits', credit: { cap: 77, used: 7, remaining: 70 }, debit: { cap: 33, used: 33, remaining: 0 } },
@@ -100,5 +108,17 @@ describe('the history', () => {
     expect(signedAmount({ direction: 'debit', amount: 5 })).toBe('-5');
     expect(referenceText({ source: { type: 'support_reference', id: 'T-1' } })).toBe('support_reference: T-1');
     expect(referenceText({ source: null })).toBe('—');
+  });
+});
+
+describe('after an adjustment', () => {
+  it("says what it did in the server's figures -- one wording for the Wallets page and the User Detail", () => {
+    const result = {
+      transaction: { direction: 'debit', amount: 5 },
+      replayed: false,
+      wallet: { balance: 32, held: 4 },
+    } as unknown as Parameters<typeof adjustmentNotice>[0];
+    expect(adjustmentNotice(result, 'credits')).toBe('Debit of 5 credits applied. Spendable now 32, held 4.');
+    expect(adjustmentNotice({ ...result, replayed: true }, 'credits')).toBe('Debit of 5 credits was already applied. Spendable now 32, held 4.');
   });
 });

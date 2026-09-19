@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { AdminUserDetail, AdminUserListItem } from '@over18/shared';
 import { EMPTY_FILTERS } from '../../admin/userManagement';
-import AdminUserDetailPage, { AccountStatusPanel, UserDetailView } from './AdminUserDetailPage';
+import AdminUserDetailPage, { AccountStatusPanel, UserDetailView, UserWalletAdjustment, type WalletSupport } from './AdminUserDetailPage';
 import AdminUsersPage, { UserFiltersForm, UsersListBody, UsersTable } from './AdminUsersPage';
 
 /**
@@ -127,8 +127,10 @@ describe('the User detail', () => {
     expect(render(<UserDetailView detail={detail({ account: { ...detail().account, status: 'suspended' } })} />)).toContain('>Suspended</dd>');
   });
 
-  it('links to the existing wallet support screen', () => {
-    expect(render(<UserDetailView detail={detail()} />)).toContain(`href="/admin/wallets/${ID}"`);
+  it('links to the full ledger on the existing Wallets screen', () => {
+    const html = render(<UserDetailView detail={detail()} />);
+    expect(html).toContain(`href="/admin/wallets/${ID}"`);
+    expect(html).toContain('Full ledger history →');
   });
 
   it('says so when there is no wallet, or when audit entries need audit.read', () => {
@@ -205,5 +207,73 @@ describe('the account status control (P2.5.2)', () => {
     const html = panel({ reason: 'x', messages: ['This account is suspended now, not active: it changed since you loaded it. Nothing was changed.'] });
     expect(html).toContain('role="alert"');
     expect(html).toContain('it changed since you loaded it');
+  });
+});
+
+describe('the wallet adjustment in the User Detail (P2.5.3)', () => {
+  const ready = (over: Partial<Extract<WalletSupport, { status: 'ready' }>> = {}): WalletSupport => ({
+    status: 'ready',
+    allowances: [{ currency: 'credits', credit: { cap: 77, used: 7, remaining: 70 }, debit: { cap: 33, used: 0, remaining: 33 } }],
+    economyEnabled: true,
+    permitted: true,
+    ownAccount: false,
+    ...over,
+  });
+  const adjustment = (support: WalletSupport, currencies: string[] = ['credits']) =>
+    render(
+      <UserWalletAdjustment
+        userId={ID}
+        email="customer@example.com"
+        currencies={currencies}
+        currency={currencies[0]!}
+        onCurrency={() => {}}
+        support={support}
+        onAdjusted={() => {}}
+      />,
+    );
+
+  it('sits inside the Wallet section, under the balances', () => {
+    const html = render(<UserDetailView detail={detail()} walletControl={<p data-testid="probe">wallet</p>} />);
+    const wallet = html.slice(html.indexOf('Wallet'), html.indexOf('Activity'));
+    expect(wallet).toContain('data-testid="probe"');
+    expect(wallet.indexOf('data-testid="wallet-row"')).toBeLessThan(wallet.indexOf('data-testid="probe"'));
+  });
+
+  it("offers the Wallets page's own Credit and Debit, with the operator's remaining allowance", () => {
+    const html = adjustment(ready());
+    expect(html).toContain('data-testid="wallet-adjustment"');
+    expect(html).toContain('data-testid="adjustment-panel"');
+    expect(html).toMatch(/aria-pressed="false"[^>]*>Credit…/);
+    expect(html).toMatch(/aria-pressed="false"[^>]*>Debit…/);
+    expect(html).not.toMatch(/disabled=""[^>]*>(Credit|Debit)…/);
+    expect(html).toContain('70 of 77 left today (UTC)');
+    expect(html).toContain('33 of 33 left today (UTC)');
+  });
+
+  it('says why it is blocked -- no permission, own account, economy off -- and offers nothing to press', () => {
+    for (const [support, words] of [
+      [ready({ permitted: false }), 'does not permit wallet adjustments'],
+      [ready({ ownAccount: true }), 'cannot adjust your own wallet'],
+      [ready({ economyEnabled: false }), 'economy is switched off'],
+    ] as const) {
+      const html = adjustment(support);
+      expect(html).toContain(words);
+      expect(html.match(/disabled=""[^>]*>(Credit|Debit)…/g)).toHaveLength(2);
+      expect(html).not.toMatch(/<form/);
+    }
+  });
+
+  it('while its facts load, and when they cannot be read, says so', () => {
+    expect(adjustment({ status: 'loading' })).toContain('Loading your adjustment allowance');
+    const failed = adjustment({ status: 'failed', messages: ['Request failed (500).'] });
+    expect(failed).toContain('role="alert"');
+    expect(failed).not.toContain('adjustment-panel');
+  });
+
+  it('offers a choice of currency only when there is more than one', () => {
+    expect(adjustment(ready())).not.toContain('role="tablist"');
+    const two = adjustment(ready(), ['credits', 'gems']);
+    expect(two).toContain('role="tablist"');
+    expect(two).toMatch(/aria-selected="true"[^>]*>credits</);
   });
 });

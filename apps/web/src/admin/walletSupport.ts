@@ -2,6 +2,7 @@ import type {
   AdminAdjustmentAllowance,
   AdminAdjustmentLimit,
   AdminWalletAdjustmentRequest,
+  AdminWalletAdjustmentResult,
   AdminWalletTransaction,
   WalletDirection,
   WalletEntryType,
@@ -81,11 +82,22 @@ export function confirmationBody(request: AdminWalletAdjustmentRequest): string 
   return `Reason: ${request.reason}.${reference} This adds a new ledger transaction; it cannot be edited or deleted afterwards, only corrected by another adjustment.`;
 }
 
-/** Why adjusting is not possible right now, or null when it is. */
-export function adjustmentBlocked(state: { economyEnabled: boolean; permitted: boolean }): string | null {
+/**
+ * Why adjusting is not possible right now, or null when it is. `ownAccount`:
+ * the operator is looking at their own wallet, which the server refuses to
+ * adjust (P2.5.3).
+ */
+export function adjustmentBlocked(state: { economyEnabled: boolean; permitted: boolean; ownAccount?: boolean }): string | null {
   if (!state.permitted) return 'Your role does not permit wallet adjustments.';
+  if (state.ownAccount) return 'You cannot adjust your own wallet. Another operator must make this adjustment.';
   if (!state.economyEnabled) return 'The economy is switched off: adjustments are disabled. Reading is unaffected.';
   return null;
+}
+
+/** What an applied (or already-applied) adjustment did, in the server's figures. */
+export function adjustmentNotice(result: AdminWalletAdjustmentResult, currency: string): string {
+  const t = result.transaction;
+  return `${DIRECTION_LABEL[t.direction]} of ${t.amount} ${currency} ${result.replayed ? 'was already applied' : 'applied'}. Spendable now ${result.wallet.balance}, held ${result.wallet.held}.`;
 }
 
 /** The server's limit for one currency and direction, or null when it sent none. */
