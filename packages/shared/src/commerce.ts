@@ -641,3 +641,36 @@ export interface CustomerContentAccess {
 export interface CustomerContentAccessResponse {
   items: CustomerContentAccess[];
 }
+
+/* ------------------------------------------------------------------ *
+ * Admin content access -- a character's Free/Premium clips (P4.D2)
+ * ------------------------------------------------------------------ */
+
+/** One clip of a character, and the access it has now. */
+export interface AdminClipAccess {
+  assetId: string;
+  /** What the clip is, as the admin content shelf states it. */
+  mediaType: string;
+  workflow: string;
+  /** Whether a customer can meet it anywhere today. */
+  live: boolean;
+  state: ContentAccessState;
+  /** True while nothing was written for this clip: it reads its character's default. */
+  byDefault: boolean;
+  creditPrice: number | null;
+  ageFloor: number | null;
+}
+
+/**
+ * GET /admin/characters/:characterId/content-access -- and the answer to every
+ * change. `allocation.configured` is the character's opt-in: while it is true,
+ * her clips -- including ones uploaded later -- are Premium unless an offer
+ * says otherwise.
+ */
+export interface AdminCharacterContentAccess {
+  characterId: string;
+  economyEnabled: boolean;
+  allocation: { configured: boolean; freeClipCount: number | null };
+  clips: AdminClipAccess[];
+  counts: { clips: number; free: number; premium: number };
+}

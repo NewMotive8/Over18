@@ -13,6 +13,7 @@ import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
 import customerEconomyRoutes from './routes/customer-economy.js';
 import adminWalletRoutes from './routes/admin-wallets.js';
+import adminContentAccessRoutes from './routes/admin-content-access.js';
 import adminUserRoutes from './routes/admin-users.js';
 import favouriteRoutes from './routes/favourites.js';
 import messageRoutes from './routes/messages.js';
@@ -205,6 +206,9 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     permissionsEnforced: env.admin.permissionsEnforced,
     auditEnabled: env.admin.auditEnabled,
   });
+  // P4.D2 -- a character's Free/Premium clips. Reads always; changes only once
+  // the economy is switched on.
+  await app.register(adminContentAccessRoutes, { db, commerce: env.commerce });
   // Character Media Messages (commit 2). The flag is a STRUCTURAL kill switch:
   // when it is off no selector object exists, so the eligibility query cannot
   // run and media_asset_id can never be written — rather than selecting an

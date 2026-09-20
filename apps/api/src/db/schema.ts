@@ -2134,6 +2134,37 @@ export const commercialState = pgEnum('commercial_state', ['free', 'premium', 'c
  * they arrive, an entitlement references `content_offers.id` -- never an asset
  * id -- which is what lets it survive everything above.
  */
+/**
+ * character_clip_allocation (P4.D2) -- a character's Free/Premium allocation.
+ *
+ * THE ROW IS THE OPT-IN. A character with no row is exactly as she is today:
+ * her clips carry no offer and read FREE. Once a row exists, this character's
+ * clips are PREMIUM unless an offer says otherwise -- which is what makes a
+ * newly uploaded clip Premium without touching the content workflow that
+ * uploaded it.
+ *
+ * `free_clip_count` is the number of Free clips the operator configured. It
+ * records the intent; the clips actually chosen are ordinary content offers,
+ * so the access state of a clip is still answered in exactly one place.
+ *
+ * It holds no commercial history: unlike an offer, an allocation is only a
+ * current setting, so it goes with the character (CASCADE).
+ */
+export const characterClipAllocation = pgTable(
+  'character_clip_allocation',
+  {
+    characterId: uuid('character_id')
+      .primaryKey()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    /** How many of her clips should be Free. Null: none configured; the operator marks clips one by one. */
+    freeClipCount: integer('free_clip_count'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: uuid('updated_by'),
+  },
+  (t) => [check('character_clip_allocation_free_count', sql`${t.freeClipCount} is null or ${t.freeClipCount} >= 0`)],
+);
+
 export const contentOffers = pgTable(
   'content_offers',
   {

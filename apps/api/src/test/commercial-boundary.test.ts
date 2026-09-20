@@ -122,11 +122,11 @@ describe('the economy stays dark', () => {
   });
 
   /**
-   * The offers table stays behind the boundary. P4.2's content access resolver
-   * reads offers through this service -- the reviewed way in -- and nothing
-   * names the table for itself.
+   * The offers table stays behind the boundary. The reviewed ways in are the
+   * P4.2 customer resolver and P4.D2's admin allocation (with its route, for
+   * the boundary's own error type) -- and nothing names the table for itself.
    */
-  it('is reached only through the boundary service, by the P4.2 resolver alone', () => {
+  it('is reached only through the boundary service, by the reviewed callers alone', () => {
     const srcRoot = fileURLToPath(new URL('..', import.meta.url));
     const tableReaders: string[] = [];
     const serviceReaders: string[] = [];
@@ -146,7 +146,11 @@ describe('the economy stays dark', () => {
     };
     walk(srcRoot);
     expect(tableReaders).toEqual([]);
-    expect(serviceReaders.sort()).toEqual(['services/content-access.ts']);
+    expect(serviceReaders.sort()).toEqual([
+      'routes/admin-content-access.ts',
+      'services/admin-content-access-service.ts',
+      'services/content-access.ts',
+    ]);
   });
 });
 

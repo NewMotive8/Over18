@@ -1,6 +1,7 @@
 import type {
   AdminAccessView,
   AdminAccountStatusChangeRequest,
+  AdminCharacterContentAccess,
   AdminAccountStatusChangeResult,
   AdminSubscriptionChangeRequest,
   AdminUserDetail,
@@ -1406,6 +1407,29 @@ export const adminEconomyApi = {
 };
 
 /** P2.5.1 -- the admin users read model. Read-only; the server enforces every permission. */
+/**
+ * P4.D2 -- a character's Free/Premium clips. Every state shown comes from the
+ * server, which owns the allocation and writes the access itself.
+ */
+export const adminContentAccessApi = {
+  get: (characterId: string) => request<AdminCharacterContentAccess>(`/admin/characters/${encodeURIComponent(characterId)}/content-access`),
+  allocate: (characterId: string, body: { freeClipCount: number; reason: string }) =>
+    request<AdminCharacterContentAccess>(`/admin/characters/${encodeURIComponent(characterId)}/content-access/allocation`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  markClip: (characterId: string, assetId: string, body: { state: 'free' | 'premium'; reason: string }) =>
+    request<AdminCharacterContentAccess>(
+      `/admin/characters/${encodeURIComponent(characterId)}/content-access/clips/${encodeURIComponent(assetId)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  clear: (characterId: string, body: { reason: string }) =>
+    request<AdminCharacterContentAccess>(`/admin/characters/${encodeURIComponent(characterId)}/content-access/clear`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+};
+
 /**
  * P4.2 -- what this customer may do with the content on screen. The server
  * decides; the browser renders the answer and never derives one.

@@ -33,6 +33,8 @@ export {
   type AdminAccountStatusChange,
   type AdminAccountStatusChangeRequest,
   type AdminAccountStatusChangeResult,
+  type AdminCharacterContentAccess,
+  type AdminClipAccess,
   type AdminSubscriptionAction,
   type AdminSubscriptionChangeRequest,
   type AdminSubscriptionHistoryEntry,

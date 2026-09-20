@@ -1,7 +1,8 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { CONTENT_ACCESS_STATES, type ContentAccessState } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import {
+  characterClipAllocation,
   characters,
   characterVisualAssets,
   contentOffers,
@@ -68,6 +69,10 @@ import { mediaTypeOf } from './content-review-service.js';
  * unlocks or checks anyone.
  */
 
+/** A database or a transaction: applying an allocation writes several offers at once. */
+type Reader = Pick<Db, 'select'>;
+type Writer = Reader & Pick<Db, 'insert' | 'update' | 'delete'>;
+
 /** The `commercial_state` enum: the P4.1 access states. */
 export type ContentCommercialState = ContentAccessState;
 
@@ -75,8 +80,17 @@ export type ContentCommercialState = ContentAccessState;
  * Content nobody has priced is FREE, with no age floor. There is no backfill
  * and no migration of existing content: absence of an offer is the answer, not
  * missing data.
+ *
+ * ONE EXCEPTION, AND THE OPERATOR CHOOSES IT (P4.D2). A character given a clip
+ * allocation is opted in to Free/Premium: from then on HER un-offered clips
+ * read PREMIUM instead, which is what makes a clip uploaded tomorrow Premium
+ * without the upload workflow knowing anything about the economy. Every other
+ * character, and the whole library until an operator says otherwise, is
+ * unchanged.
  */
 export const DEFAULT_COMMERCIAL_STATE: ContentCommercialState = 'free';
+/** What an un-offered clip of an allocated character reads as. */
+export const ALLOCATED_DEFAULT_STATE: ContentCommercialState = 'premium';
 
 /** The age-floor bounds, in years, the database also holds (`content_offers_age_floor`). */
 export const AGE_FLOOR_MIN = 18;
@@ -125,6 +139,9 @@ const IMPLICIT_FREE: AssetCommercialView = {
   economyRef: null,
 };
 
+/** The same, for a clip of a character whose clips are Premium by default (P4.D2). */
+const IMPLICIT_PREMIUM: AssetCommercialView = { ...IMPLICIT_FREE, state: ALLOCATED_DEFAULT_STATE };
+
 /**
  * THE FLAG GATE. Commercial state may not be written while the economy is off,
  * so nothing can quietly accumulate in production before the phase that owns it
@@ -141,13 +158,22 @@ export function assertCommercialWrite(commerce: { enabled: boolean }): void {
 
 /** The live (non-retired) offers for these assets, keyed by asset id. */
 export async function describeAssetCommercial(
-  db: Db,
+  db: Reader,
   assetIds: readonly string[],
 ): Promise<Map<string, AssetCommercialView>> {
   const out = new Map<string, AssetCommercialView>();
   for (const id of assetIds) out.set(id, IMPLICIT_FREE);
   if (assetIds.length === 0) return out;
 
+  // P4.D2: a clip of an allocated character defaults to Premium, not Free.
+  const allocated = await db
+    .select({ id: characterVisualAssets.id })
+    .from(characterVisualAssets)
+    .innerJoin(characterClipAllocation, eq(characterClipAllocation.characterId, characterVisualAssets.characterId))
+    .where(inArray(characterVisualAssets.id, [...assetIds]));
+  for (const row of allocated) out.set(row.id, IMPLICIT_PREMIUM);
+
+  // An offer always wins over a default: it is what an operator actually said.
   const rows = await db
     .select()
     .from(contentOffers)
@@ -167,7 +193,7 @@ export async function describeAssetCommercial(
   return out;
 }
 
-export async function getAssetCommercial(db: Db, assetId: string): Promise<AssetCommercialView> {
+export async function getAssetCommercial(db: Reader, assetId: string): Promise<AssetCommercialView> {
   return (await describeAssetCommercial(db, [assetId])).get(assetId) ?? IMPLICIT_FREE;
 }
 
@@ -231,7 +257,7 @@ function checkTerms(input: SetContentOfferInput): { creditPrice: number | null; 
  * changes, so moderation, release and placement are exactly as they were.
  */
 export async function setContentOffer(
-  db: Db,
+  db: Writer,
   commerce: { enabled: boolean },
   input: SetContentOfferInput,
 ): Promise<ContentOfferRow> {
@@ -294,7 +320,7 @@ export async function setContentOffer(
  * until a new offer for it is written.
  */
 export async function retireContentOffer(
-  db: Db,
+  db: Writer,
   commerce: { enabled: boolean },
   offerId: string,
 ): Promise<ContentOfferRow | null> {
@@ -307,7 +333,7 @@ export async function retireContentOffer(
   return updated ?? null;
 }
 
-export async function liveOfferFor(db: Db, assetId: string): Promise<ContentOfferRow | null> {
+export async function liveOfferFor(db: Reader, assetId: string): Promise<ContentOfferRow | null> {
   const [row] = await db
     .select()
     .from(contentOffers)
@@ -325,8 +351,69 @@ export async function liveOfferFor(db: Db, assetId: string): Promise<ContentOffe
  * gone.
  */
 export async function listOffersForCharacter(
-  db: Db,
+  db: Reader,
   characterId: string,
 ): Promise<ContentOfferRow[]> {
   return db.select().from(contentOffers).where(eq(contentOffers.characterId, characterId));
+}
+
+/* ------------------------------------------------------------------ *
+ * The Free/Premium allocation of one character's clips (P4.D2)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A character's allocation. Its EXISTENCE opts her clips in to Premium by
+ * default; `freeClipCount` records how many Free clips the operator asked for.
+ * Which clips are Free is not stored here -- those are ordinary offers, so a
+ * clip's access state still has exactly one answer.
+ */
+export interface ClipAllocation {
+  characterId: string;
+  freeClipCount: number | null;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+const toAllocation = (row: typeof characterClipAllocation.$inferSelect): ClipAllocation => ({
+  characterId: row.characterId,
+  freeClipCount: row.freeClipCount,
+  updatedAt: row.updatedAt.toISOString(),
+  updatedBy: row.updatedBy,
+});
+
+export async function readClipAllocation(db: Reader, characterId: string): Promise<ClipAllocation | null> {
+  const [row] = await db.select().from(characterClipAllocation).where(eq(characterClipAllocation.characterId, characterId));
+  return row ? toAllocation(row) : null;
+}
+
+/** Opts a character in to Free/Premium, and records how many Free clips she should have. */
+export async function setClipAllocation(
+  db: Writer,
+  commerce: { enabled: boolean },
+  input: { characterId: string; freeClipCount: number | null; actorUserId: string | null },
+): Promise<ClipAllocation> {
+  assertCommercialWrite(commerce);
+  if (input.freeClipCount !== null && (!Number.isSafeInteger(input.freeClipCount) || input.freeClipCount < 0)) {
+    throw new CommercialBoundaryError('invalid_state', 'The number of Free clips must be a whole number, 0 or more.');
+  }
+  const [row] = await db
+    .insert(characterClipAllocation)
+    .values({ characterId: input.characterId, freeClipCount: input.freeClipCount, updatedBy: input.actorUserId })
+    .onConflictDoUpdate({
+      target: characterClipAllocation.characterId,
+      set: { freeClipCount: input.freeClipCount, updatedBy: input.actorUserId, updatedAt: sql`now()` },
+    })
+    .returning();
+  return toAllocation(row!);
+}
+
+/**
+ * Takes a character back out: her clips read as they did before any of this,
+ * which is FREE. The offers themselves are the caller's to retire -- a
+ * commercial record is never deleted here.
+ */
+export async function removeClipAllocation(db: Writer, commerce: { enabled: boolean }, characterId: string): Promise<boolean> {
+  assertCommercialWrite(commerce);
+  const removed = await db.delete(characterClipAllocation).where(eq(characterClipAllocation.characterId, characterId)).returning();
+  return removed.length > 0;
 }
