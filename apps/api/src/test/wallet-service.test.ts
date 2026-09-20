@@ -636,10 +636,10 @@ describe('consistency', () => {
 });
 
 /* ------------------------------------------------------------------ *
- * No application path yet
+ * Who may move Credits at all
  * ------------------------------------------------------------------ */
 
-describe('only the admin support service moves Credits (P2.4), and no customer path can', () => {
+describe('only two modules move Credits: admin support (P2.4) and the paid-action framework (P7.1)', () => {
   function sourceFiles(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
       const path = join(dir, name);
@@ -659,12 +659,20 @@ describe('only the admin support service moves Credits (P2.4), and no customer p
       .filter(Boolean)
       .sort();
 
-  it('the one caller of a wallet operation is the admin support service, and it only adjusts', () => {
+  /**
+   * P7.1 added the second caller, deliberately. An operator's adjustment and a
+   * paid action are the only two reasons Credits may move in this product, and
+   * each uses exactly the operations its job needs: support adjusts and nothing
+   * else; the framework holds, settles and compensates but never adjusts.
+   * Nothing calls the framework itself yet -- paid-action.test.ts holds that line.
+   */
+  it('the callers of a wallet operation are those two, and each uses only its own operations', () => {
     const OPERATIONS = /\b(holdCredits|captureHold|releaseHold|refundTransaction|reverseTransaction|adjustWallet)\b/;
     const callers = application().filter((rel) => OPERATIONS.test(readFileSync(join(src, rel), 'utf8')));
-    expect(callers).toEqual(['services/admin-wallet-service.ts']);
-    const used = new Set(readFileSync(join(src, 'services/admin-wallet-service.ts'), 'utf8').match(new RegExp(OPERATIONS.source, 'g')));
-    expect([...used]).toEqual(['adjustWallet']);
+    expect(callers.sort()).toEqual(['services/admin-wallet-service.ts', 'services/paid-action-service.ts']);
+    const uses = (rel: string) => [...new Set(readFileSync(join(src, rel), 'utf8').match(new RegExp(OPERATIONS.source, 'g')))].sort();
+    expect(uses('services/admin-wallet-service.ts')).toEqual(['adjustWallet']);
+    expect(uses('services/paid-action-service.ts')).toEqual(['captureHold', 'holdCredits', 'refundTransaction', 'releaseHold']);
   });
 
   it('every other importer only reads: the customer commercial state (P3.1), the admin wallet route and the admin users read model (P2.5.1)', () => {
@@ -674,6 +682,7 @@ describe('only the admin support service moves Credits (P2.4), and no customer p
       'services/admin-user-service.ts',
       'services/admin-wallet-service.ts',
       'services/customer-economy.ts',
+      'services/paid-action-service.ts',
     ]);
     expect(importsFrom('services/customer-economy.ts', /\.\/wallet-service\.js/)).toEqual(['CREDITS_CURRENCY', 'readCommercialWallet']);
     expect(importsFrom('routes/admin-wallets.ts', /\.\.\/services\/wallet-service\.js/)).toEqual(['WalletError']);

@@ -2593,6 +2593,119 @@ export const subscriptionHistory = pgTable(
   ],
 );
 
+/* ------------------------------------------------------------------ *
+ * Paid actions (PRD v1.2 §19.2) -- P7.1
+ *
+ * The record of ONE paid action from end to end: what was asked for, which
+ * economy version priced it, the Credits held for it, and how it finished.
+ *
+ * IT IS NOT A SECOND LEDGER AND NOT A SECOND BALANCE. Every Credit movement is
+ * a P2.1 `wallet_transactions` row written by the wallet service; the columns
+ * here NAME those rows rather than restating their amounts as truth. Nothing
+ * here can be spent, and deleting a row would move nothing.
+ *
+ * WHY IT EXISTS AT ALL. A wallet transaction is idempotent on its own key, but
+ * a paid action is SEVERAL of them -- a hold, then a capture or a release --
+ * around external work the wallet knows nothing about. This row is the identity
+ * that makes the whole operation replayable, and the place the resolved economy
+ * version is pinned so the price can be re-read exactly, never re-resolved.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Where a paid action stands.
+ *
+ *   held       Credits reserved; the external work may run
+ *   captured   the work succeeded and the reserved Credits were consumed
+ *   released   the work failed or was cancelled and the Credits went back
+ *   refunded   the work was captured and later returned (§6.3)
+ */
+export const paidActionStatus = pgEnum('paid_action_status', ['held', 'captured', 'released', 'refunded']);
+
+/**
+ * paid_actions -- one row per paid action, written only by the P7.1 framework.
+ *
+ * `idempotency_key` is unique per USER (not per wallet): one key names one paid
+ * action, whatever currency it is priced in, so a replayed request can never
+ * start a second one. `request_id` carries the caller's correlation id through
+ * every step.
+ *
+ * `ruleset_id` and `ruleset_version` PIN the configuration the price came from,
+ * recorded under the P1.2 recording lock. The price is re-read from that exact
+ * version, never re-resolved by timestamp.
+ *
+ * `hold_transaction_id` is the reservation; `settlement_transaction_id` is the
+ * capture or release that ended it; `refund_transaction_id` is the refund of a
+ * capture. The checks below keep the three in step with `status`, so a row can
+ * never claim to be settled without naming what settled it. A hold belongs to
+ * exactly one paid action.
+ *
+ * The owner is a RESTRICT foreign key, like wallets and subscriptions:
+ * commercial history does not disappear with an account.
+ */
+export const paidActions = pgTable(
+  'paid_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** The ruleset's action type and quality tier: this table invents neither. */
+    actionType: text('action_type').notNull(),
+    qualityTier: text('quality_tier').notNull(),
+    /** Present only where the action is priced by duration. */
+    durationSeconds: integer('duration_seconds'),
+    currency: text('currency')
+      .notNull()
+      .references(() => walletCurrencies.code, { onDelete: 'restrict' }),
+    /** The price, in whole Credits, as the pinned version gave it. */
+    amount: integer('amount').notNull(),
+    rulesetId: uuid('ruleset_id')
+      .notNull()
+      .references(() => economyRulesets.id, { onDelete: 'restrict' }),
+    rulesetVersion: integer('ruleset_version').notNull(),
+    status: paidActionStatus('status').notNull().default('held'),
+    holdTransactionId: uuid('hold_transaction_id')
+      .notNull()
+      .references(() => walletTransactions.id, { onDelete: 'restrict' }),
+    settlementTransactionId: uuid('settlement_transaction_id').references(() => walletTransactions.id, { onDelete: 'restrict' }),
+    refundTransactionId: uuid('refund_transaction_id').references(() => walletTransactions.id, { onDelete: 'restrict' }),
+    idempotencyKey: text('idempotency_key').notNull(),
+    requestId: text('request_id'),
+    /** Why the work failed or was cancelled; never shown to decide anything. */
+    failureReason: text('failure_reason'),
+    /** Context for audit. Never a credential or payment instrument. */
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => [
+    /** One key, one paid action, per user. */
+    uniqueIndex('paid_actions_idempotency_idx').on(t.userId, t.idempotencyKey),
+    /** A reservation settles exactly one paid action. */
+    uniqueIndex('paid_actions_hold_idx').on(t.holdTransactionId),
+    /** A user's paid actions, newest first. */
+    index('paid_actions_user_idx').on(t.userId, t.createdAt),
+    check('paid_actions_amount_positive', sql`${t.amount} > 0`),
+    check('paid_actions_duration_positive', sql`${t.durationSeconds} is null or ${t.durationSeconds} > 0`),
+    /** Settled exactly when something settled it, and stamped when it happened. */
+    check(
+      'paid_actions_settlement_by_status',
+      sql`(${t.status} = 'held') = (${t.settlementTransactionId} is null)
+        and (${t.status} = 'held') = (${t.settledAt} is null)`,
+    ),
+    /** Only a captured action can be refunded, and a refunded one always names its refund. */
+    check(
+      'paid_actions_refund_by_status',
+      sql`(${t.status} = 'refunded') = (${t.refundTransactionId} is not null)
+        and (${t.refundTransactionId} is null or ${t.settlementTransactionId} is not null)`,
+    ),
+    check(
+      'paid_actions_idempotency_key_format',
+      sql`length(btrim(${t.idempotencyKey})) > 0 and length(${t.idempotencyKey}) <= 200`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -2638,3 +2751,4 @@ export type WalletCurrencyRow = typeof walletCurrencies.$inferSelect;
 export type WalletRow = typeof wallets.$inferSelect;
 export type WalletTransactionRow = typeof walletTransactions.$inferSelect;
 export type SubscriptionRow = typeof subscriptions.$inferSelect;
+export type PaidActionRow = typeof paidActions.$inferSelect;
