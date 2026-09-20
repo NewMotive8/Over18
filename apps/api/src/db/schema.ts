@@ -2629,9 +2629,15 @@ export const paidActionStatus = pgEnum('paid_action_status', ['held', 'captured'
  * start a second one. `request_id` carries the caller's correlation id through
  * every step.
  *
- * `ruleset_id` and `ruleset_version` PIN the configuration the price came from,
- * recorded under the P1.2 recording lock. The price is re-read from that exact
- * version, never re-resolved by timestamp.
+ * `price_source` names WHICH server authority priced it, and the pin follows
+ * from that. For `ruleset` -- generated actions, the ordinary case --
+ * `ruleset_id` and `ruleset_version` pin the P1 configuration, recorded under
+ * the P1.2 recording lock, and the price is re-read from that exact version,
+ * never re-resolved by timestamp. For anything else, `price_ref_id` names the
+ * row that priced it: P8.2's content unlock pins the `content_offers` id, since
+ * locked photos and videos are priced per asset on the offer rather than in the
+ * economy configuration's action costs. Exactly one of the two pins is present,
+ * and the checks below keep it that way -- a charge always says what priced it.
  *
  * `hold_transaction_id` is the reservation; `settlement_transaction_id` is the
  * capture or release that ended it; `refund_transaction_id` is the refund of a
@@ -2659,10 +2665,13 @@ export const paidActions = pgTable(
       .references(() => walletCurrencies.code, { onDelete: 'restrict' }),
     /** The price, in whole Credits, as the pinned version gave it. */
     amount: integer('amount').notNull(),
-    rulesetId: uuid('ruleset_id')
-      .notNull()
-      .references(() => economyRulesets.id, { onDelete: 'restrict' }),
-    rulesetVersion: integer('ruleset_version').notNull(),
+    /** Which authority priced it: `ruleset`, or another named server-side source. */
+    priceSource: text('price_source').notNull().default('ruleset'),
+    /** The pinned P1 configuration -- for a ruleset-priced action only. */
+    rulesetId: uuid('ruleset_id').references(() => economyRulesets.id, { onDelete: 'restrict' }),
+    rulesetVersion: integer('ruleset_version'),
+    /** The pinned row that priced it -- for every other source. */
+    priceRefId: text('price_ref_id'),
     status: paidActionStatus('status').notNull().default('held'),
     holdTransactionId: uuid('hold_transaction_id')
       .notNull()
@@ -2702,6 +2711,77 @@ export const paidActions = pgTable(
     check(
       'paid_actions_idempotency_key_format',
       sql`length(btrim(${t.idempotencyKey})) > 0 and length(${t.idempotencyKey}) <= 200`,
+    ),
+    check('paid_actions_price_source_format', sql`${t.priceSource} ~ ${SOURCE_TYPE_PATTERN}`),
+    /** Exactly one pin, and it is the one the price source implies. */
+    check(
+      'paid_actions_price_pinned',
+      sql`(${t.priceSource} = 'ruleset') = (${t.rulesetId} is not null)
+        and (${t.rulesetId} is not null) = (${t.rulesetVersion} is not null)
+        and (${t.priceSource} = 'ruleset') = (${t.priceRefId} is null)`,
+    ),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * Content ownership (PRD v1.2 §10, UC-08/09/16) -- P8.2
+ * ------------------------------------------------------------------ */
+
+/**
+ * content_entitlements -- what a customer has bought outright, and keeps.
+ *
+ * IT POINTS AT AN OFFER, NEVER AN ASSET. That is the rule P0.8 wrote down when
+ * it made `content_offers` survive content deletion, and this is the table it
+ * was written for: an entitlement has to stay answerable after P9.4 deletes the
+ * character and the media, which an asset id could not do.
+ *
+ * ONE LIVE ENTITLEMENT PER CUSTOMER PER OFFER -- the partial unique index below
+ * -- so a retried unlock cannot create a second one, however many times it is
+ * attempted. It is the database's half of P8.2's idempotency; the unlock
+ * service's own checks are the other half.
+ *
+ * OWNERSHIP IS UNCONDITIONAL. It names no subscription, tier or period, because
+ * it does not depend on one: a customer who bought a clip keeps it when their
+ * Premium lapses. The only thing that ends it is `revoked_at`, set when a
+ * purchase is refunded -- and the row stays, as the history the refund refers
+ * to, which is why the index is partial rather than a plain unique constraint.
+ *
+ * `credit_price` is what was actually paid, pinned here rather than read back
+ * from the offer, which an operator may re-price later.
+ */
+export const contentEntitlements = pgTable(
+  'content_entitlements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    offerId: uuid('offer_id')
+      .notNull()
+      .references(() => contentOffers.id, { onDelete: 'restrict' }),
+    /** The P7.1 paid action that bought it: one purchase, one entitlement. */
+    paidActionId: uuid('paid_action_id')
+      .notNull()
+      .references(() => paidActions.id, { onDelete: 'restrict' }),
+    creditPrice: integer('credit_price').notNull(),
+    acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Set when the purchase is refunded. The row remains as history. */
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokeReason: text('revoke_reason'),
+  },
+  (t) => [
+    /** One live entitlement per customer per offer. */
+    uniqueIndex('content_entitlements_live_idx')
+      .on(t.userId, t.offerId)
+      .where(sql`${t.revokedAt} is null`),
+    /** One paid action buys one entitlement. */
+    uniqueIndex('content_entitlements_paid_action_idx').on(t.paidActionId),
+    /** What this customer owns, newest first. */
+    index('content_entitlements_user_idx').on(t.userId, t.acquiredAt),
+    check('content_entitlements_price_positive', sql`${t.creditPrice} > 0`),
+    check(
+      'content_entitlements_revocation_complete',
+      sql`(${t.revokedAt} is null) = (${t.revokeReason} is null)`,
     ),
   ],
 );
@@ -2752,3 +2832,4 @@ export type WalletRow = typeof wallets.$inferSelect;
 export type WalletTransactionRow = typeof walletTransactions.$inferSelect;
 export type SubscriptionRow = typeof subscriptions.$inferSelect;
 export type PaidActionRow = typeof paidActions.$inferSelect;
+export type ContentEntitlementRow = typeof contentEntitlements.$inferSelect;

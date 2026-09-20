@@ -46,6 +46,7 @@ export {
   type CustomerAccessDecision,
   type CustomerContentAccess,
   type CustomerContentAccessResponse,
+  type CustomerContentUnlock,
   type AdminUserAccountRole,
   type AdminUserDetail,
   type AdminUserList,

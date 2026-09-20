@@ -36,6 +36,22 @@ describe('the card shows exactly what the server decided', () => {
     expect(view).toMatchObject({ state: 'open', revealed: true, badge: null, message: null, cta: null });
   });
 
+  it('content the customer bought is revealed and marked Unlocked, with nothing left to buy', () => {
+    const view = contentCardView(access({ state: 'credit', creditPrice: 50, decision: 'owned' }));
+    expect(view).toEqual({
+      state: 'owned',
+      revealed: true,
+      badge: { label: 'Unlocked', tone: 'credit' },
+      message: null,
+      cta: null,
+    });
+  });
+
+  it('still says Unlocked once the price has moved on, because owning it is the point', () => {
+    expect(contentCardView(access({ state: 'credit', creditPrice: 500, decision: 'owned' })).badge?.label).toBe('Unlocked');
+    expect(contentCardView(access({ state: 'free', creditPrice: null, decision: 'owned' })).revealed).toBe(true);
+  });
+
   it("marks Premium content a subscriber holds as included, without selling them Premium again", () => {
     const view = contentCardView(access({ state: 'premium', decision: 'open' }));
     expect(view).toMatchObject({ revealed: true, badge: { label: 'Included', tone: 'premium' }, cta: null });

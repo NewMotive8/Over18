@@ -47,6 +47,16 @@ describe('revealed content', () => {
     expect(html).not.toContain('See Premium');
   });
 
+  it('shows content the customer owns, with an Unlocked chip and no way to buy it again', () => {
+    const html = card({ state: 'credit', creditPrice: 50, decision: 'owned' });
+    expect(html).toContain('Unlocked');
+    expect(html).toContain('<video');
+    expect(html).not.toContain('Unlock ·');
+    expect(html).not.toContain('50 Credits');
+    // The locked overlay is absent: the media is shown, not blurred behind a lock.
+    expect(html).not.toContain('blur-xl');
+  });
+
   it('renders exactly as today when the server said nothing about the content', () => {
     const html = card(null);
     expect(html).toContain('<button type="button"');

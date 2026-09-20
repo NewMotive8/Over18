@@ -39,11 +39,16 @@ import {
  *
  * ── FOUR RULES EVERY CALLER INHERITS ─────────────────────────────────────────
  *
- * 1. THE SERVER PRICES IT. A caller says WHAT is being done -- the ruleset's
- *    action type, quality tier and, where it is priced by length, the duration
- *    -- never what it costs. The price comes from the P1.2 resolver and nowhere
- *    else. There is no default, no fallback and no zero: a configuration that
- *    does not price an action stops it.
+ * 1. THE SERVER PRICES IT, AND A CALLER NEVER STATES A PRICE. Ordinarily a
+ *    caller says WHAT is being done -- the ruleset's action type, quality tier
+ *    and, where it is priced by length, the duration -- and the price comes
+ *    from the P1.2 resolver. Some things are priced by a different server
+ *    authority: locked photos and videos carry their price on the content
+ *    offer, per asset, not in the economy configuration's action costs. Such a
+ *    caller passes a RESOLVER, not a number, and this module runs it inside the
+ *    charging transaction and pins what it used -- so the guarantee is the same
+ *    either way. There is no default, no fallback and no zero: an authority
+ *    that does not price something stops it.
  *
  * 2. THE VERSION IS PINNED, NOT REMEMBERED AS A TIME. The exact ruleset row is
  *    locked with `lockEconomyRefForRecording` in the same transaction that
@@ -110,10 +115,13 @@ const SECONDS_PER_MINUTE = 60;
 /** The tier assumed when a caller does not name one, as in the resolver. */
 export const DEFAULT_QUALITY_TIER = 'standard';
 
+/** The ordinary price authority: the P1 ruleset's action costs. */
+export const RULESET_SOURCE = 'ruleset';
+
 export type PaidActionErrorCode =
   | 'invalid_request'
   | 'economy_disabled'
-  /** The configuration does not price this action: from `actionCostFor`, or no ruleset at all. */
+  /** Nothing prices this action: from `actionCostFor`, no ruleset at all, or the caller's own authority. */
   | 'not_priced'
   /** The pinned version was cancelled or is not yet in effect: nothing is charged against it. */
   | 'configuration_changed'
@@ -152,10 +160,27 @@ export function assertPaidActionsEnabled(commerce: Pick<CommerceEnv, 'enabled'>)
  * What a caller asks for, and what they get back
  * ------------------------------------------------------------------ */
 
+/**
+ * A price from somewhere other than the P1 ruleset.
+ *
+ * `resolve` is run INSIDE the charging transaction, so the price is read at the
+ * moment the Credits move, not earlier by a caller who might have gone stale.
+ * It returns the price and `refId`, the id of the row that decided it, which is
+ * pinned on the paid action exactly as a ruleset version would be. A caller
+ * that simply returned a constant would be stating a price, which is the one
+ * thing this interface exists to prevent -- so what it returns is checked, and
+ * what priced it is always recorded.
+ */
+export interface ExternalPricing {
+  /** The authority, as it is recorded: lower-case, e.g. `content_offer`. */
+  source: string;
+  resolve: (db: Reader) => Promise<{ amount: number; refId: string }>;
+}
+
 export interface PaidActionRequest {
   /** Whose Credits. Whether they MAY act is entitlement's question, decided before this. */
   userId: string;
-  /** A ruleset action type. Unknown here means unpriced, which stops the action. */
+  /** A ruleset action type, or -- with `pricedBy` -- the name this action is recorded under. */
   actionType: string;
   qualityTier?: string;
   /** Whole seconds, where the action is priced by length. */
@@ -168,6 +193,8 @@ export interface PaidActionRequest {
   currency?: string;
   /** Context for audit. Never a credential or payment instrument. */
   metadata?: Record<string, unknown>;
+  /** Priced by another server authority instead of the ruleset (P8.2). */
+  pricedBy?: ExternalPricing;
 }
 
 /** What an action costs on a resolved configuration -- read-only, nothing reserved. */
@@ -177,8 +204,12 @@ export interface PaidActionQuote {
   actionType: string;
   qualityTier: string;
   durationSeconds: number | null;
-  /** The exact version this price came from. */
-  ruleset: Extract<EconomyRef, { kind: 'ruleset' }>;
+  /** Which authority priced it: `ruleset`, or the caller's own. */
+  priceSource: string;
+  /** The exact configuration version this price came from -- only when the ruleset priced it. */
+  ruleset: Extract<EconomyRef, { kind: 'ruleset' }> | null;
+  /** The row that priced it -- for every other authority. */
+  priceRefId: string | null;
   /** The instant it was resolved at. A quote is not a reservation: it can go stale. */
   asOf: EconomyInstant;
 }
@@ -194,7 +225,9 @@ export interface PaidActionRecord {
   durationSeconds: number | null;
   currency: string;
   amount: number;
-  ruleset: Extract<EconomyRef, { kind: 'ruleset' }>;
+  priceSource: string;
+  ruleset: Extract<EconomyRef, { kind: 'ruleset' }> | null;
+  priceRefId: string | null;
   status: PaidActionStatus;
   holdTransactionId: string;
   /** The capture or release that ended the hold; null while held. */
@@ -223,7 +256,9 @@ function toRecord(row: PaidActionRow): PaidActionRecord {
     durationSeconds: row.durationSeconds,
     currency: row.currency,
     amount: row.amount,
-    ruleset: { kind: 'ruleset', id: row.rulesetId, version: row.rulesetVersion },
+    priceSource: row.priceSource,
+    ruleset: row.rulesetId === null || row.rulesetVersion === null ? null : { kind: 'ruleset', id: row.rulesetId, version: row.rulesetVersion },
+    priceRefId: row.priceRefId,
     status: row.status,
     holdTransactionId: row.holdTransactionId,
     settlementTransactionId: row.settlementTransactionId,
@@ -250,12 +285,20 @@ interface ParsedRequest {
   requestId: string | null;
   currency: string;
   metadata: Record<string, unknown>;
+  pricedBy: ExternalPricing | null;
 }
 
 function parse(request: PaidActionRequest): ParsedRequest {
   if (!request || typeof request !== 'object') invalid('A paid action must be described by an object.');
   if (typeof request.userId !== 'string' || !UUID.test(request.userId)) invalid('userId must be a user id.');
-  if (typeof request.actionType !== 'string' || !CODE.test(request.actionType)) invalid('actionType must be a ruleset action type.');
+  if (typeof request.actionType !== 'string' || !CODE.test(request.actionType)) invalid('actionType must be a lower-case action name.');
+  const pricedBy = request.pricedBy ?? null;
+  if (pricedBy !== null) {
+    if (typeof pricedBy.source !== 'string' || !CODE.test(pricedBy.source) || pricedBy.source === RULESET_SOURCE) {
+      invalid('pricedBy.source must name a price authority other than the ruleset.');
+    }
+    if (typeof pricedBy.resolve !== 'function') invalid('pricedBy.resolve must be a function.');
+  }
   const qualityTier = request.qualityTier ?? DEFAULT_QUALITY_TIER;
   if (typeof qualityTier !== 'string' || !CODE.test(qualityTier)) invalid('qualityTier must be a ruleset quality tier.');
   let durationSeconds: number | null = null;
@@ -289,6 +332,7 @@ function parse(request: PaidActionRequest): ParsedRequest {
     requestId: request.requestId ?? null,
     currency,
     metadata: request.metadata ?? {},
+    pricedBy,
   };
 }
 
@@ -331,24 +375,38 @@ export function priceOn(
 const notPriced = (reason: string, actionType: string): PaidActionError =>
   new PaidActionError('not_priced', `The economy configuration does not price "${actionType}" (${reason}).`, reason);
 
-/** The live ruleset and this action's price on it, at one database instant. */
-async function quoteOn(db: Reader, request: ParsedRequest): Promise<{ quote: PaidActionQuote; ruleset: RulesetSnapshot }> {
+/** The price, from whichever authority applies, at one database instant. */
+async function quoteOn(db: Reader, request: ParsedRequest): Promise<{ quote: PaidActionQuote; ruleset: RulesetSnapshot | null }> {
   const asOf = await economyNow(db);
+  const common = {
+    currency: request.currency,
+    actionType: request.actionType,
+    qualityTier: request.qualityTier,
+    durationSeconds: request.durationSeconds,
+    asOf,
+  };
+
+  if (request.pricedBy) {
+    const answer = await request.pricedBy.resolve(db);
+    // A caller's authority is still held to the framework's arithmetic: a price
+    // outside the ledger's range, or one that names nothing, prices nothing.
+    if (!answer || !Number.isSafeInteger(answer.amount) || answer.amount < 1 || answer.amount > AMOUNT_MAX) {
+      throw notPriced('price_out_of_range', request.actionType);
+    }
+    if (typeof answer.refId !== 'string' || answer.refId.trim() === '') throw notPriced('price_ref_missing', request.actionType);
+    return {
+      ruleset: null,
+      quote: { ...common, amount: answer.amount, priceSource: request.pricedBy.source, ruleset: null, priceRefId: answer.refId },
+    };
+  }
+
   const resolved = await resolveRuleset(db, asOf);
   if (!resolved.ok) throw notPriced(resolved.reason, request.actionType);
   const priced = priceOn(resolved.value, request);
   if (!priced.ok) throw notPriced(priced.reason, request.actionType);
   return {
     ruleset: resolved.value,
-    quote: {
-      amount: priced.amount,
-      currency: request.currency,
-      actionType: request.actionType,
-      qualityTier: request.qualityTier,
-      durationSeconds: request.durationSeconds,
-      ruleset: resolved.value.ref,
-      asOf,
-    },
+    quote: { ...common, amount: priced.amount, priceSource: RULESET_SOURCE, ruleset: resolved.value.ref, priceRefId: null },
   };
 }
 
@@ -385,6 +443,7 @@ export async function readPaidAction(db: Reader, userId: string, idempotencyKey:
  * loads: it is what the charge was made against.
  */
 export async function readPaidActionRuleset(db: Reader, action: PaidActionRecord): Promise<RulesetSnapshot | null> {
+  if (action.ruleset === null) return null;
   const loaded = await loadRuleset(db, action.ruleset.id);
   return loaded.ok ? loaded.value : null;
 }
@@ -403,6 +462,8 @@ function assertSameRequest(existing: PaidActionRow, request: ParsedRequest): voi
   if (existing.qualityTier !== request.qualityTier) differences.push(`quality ${existing.qualityTier}, not ${request.qualityTier}`);
   if (existing.durationSeconds !== request.durationSeconds) differences.push('a different duration');
   if (existing.currency !== request.currency) differences.push(`currency ${existing.currency}, not ${request.currency}`);
+  const source = request.pricedBy?.source ?? RULESET_SOURCE;
+  if (existing.priceSource !== source) differences.push(`priced by ${existing.priceSource}, not ${source}`);
   if (differences.length > 0) {
     throw new PaidActionError(
       'idempotency_conflict',
@@ -446,13 +507,17 @@ export async function beginPaidAction(
 
     const { quote, ruleset } = await quoteOn(tx, parsed);
     // Rule 2: hold the exact version still while the reservation is written.
-    const pinned = await lockEconomyRefForRecording(tx, ruleset.ref);
-    if (!pinned.ok) {
-      throw new PaidActionError(
-        'configuration_changed',
-        `The economy configuration changed while pricing this action (${pinned.reason}); nothing was charged.`,
-        pinned.reason,
-      );
+    // Only a ruleset has one to hold -- another authority pins its own row, and
+    // resolving it inside this transaction is what keeps it still.
+    if (ruleset) {
+      const pinned = await lockEconomyRefForRecording(tx, ruleset.ref);
+      if (!pinned.ok) {
+        throw new PaidActionError(
+          'configuration_changed',
+          `The economy configuration changed while pricing this action (${pinned.reason}); nothing was charged.`,
+          pinned.reason,
+        );
+      }
     }
 
     const id = randomUUID();
@@ -476,8 +541,10 @@ export async function beginPaidAction(
         durationSeconds: parsed.durationSeconds,
         currency: parsed.currency,
         amount: quote.amount,
-        rulesetId: ruleset.ref.id,
-        rulesetVersion: ruleset.ref.version,
+        priceSource: quote.priceSource,
+        rulesetId: ruleset?.ref.id ?? null,
+        rulesetVersion: ruleset?.ref.version ?? null,
+        priceRefId: quote.priceRefId,
         status: 'held',
         holdTransactionId: hold.transaction.id,
         idempotencyKey: parsed.idempotencyKey,

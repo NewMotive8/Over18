@@ -606,8 +606,10 @@ export type ContentAccessState = (typeof CONTENT_ACCESS_STATES)[number];
  * What the signed-in customer may do with one piece of content right now
  * (P4.2). The server decides this; a client never derives it.
  *
- *   open                 it opens: free content, Premium content for a
- *                        subscriber, or content they already have access to
+ *   owned                they bought it and keep it, whatever their tier or
+ *                        balance is now (P8.2)
+ *   open                 it opens: free content, or Premium content for a
+ *                        subscriber
  *   premium_required     Premium content, and this customer is not Premium
  *   credits_required     Credit content: it can be unlocked for `creditPrice`
  *   insufficient_credits Credit content, and their balance is below the price
@@ -618,6 +620,7 @@ export type ContentAccessState = (typeof CONTENT_ACCESS_STATES)[number];
  * cannot be bought, so no content is ever owned.
  */
 export type CustomerAccessDecision =
+  | 'owned'
   | 'open'
   | 'premium_required'
   | 'credits_required'
@@ -640,6 +643,25 @@ export interface CustomerContentAccess {
 /** GET /api/content/access -- one entry per asset asked about, in the order asked. */
 export interface CustomerContentAccessResponse {
   items: CustomerContentAccess[];
+}
+
+/**
+ * POST /api/content/:assetId/unlock -- what the customer now owns (P8.2).
+ *
+ * The same answer whether this call bought it or a previous one did: ownership
+ * is the fact, and `replayed` only says whether this particular request is what
+ * created it. No balance, ledger or wallet detail is ever included.
+ */
+export interface CustomerContentUnlock {
+  assetId: string;
+  entitlementId: string;
+  /** The content offer bought -- the durable identity ownership is recorded against. */
+  offerId: string;
+  /** Whole Credits actually paid, pinned at the time of purchase. */
+  creditPrice: number;
+  acquiredAt: string;
+  /** True when this request had already been applied: nothing was charged. */
+  replayed: boolean;
 }
 
 /* ------------------------------------------------------------------ *

@@ -194,7 +194,7 @@ describe('pricing comes from the economy configuration, never from the caller', 
     const user = await funded();
     const { action } = await beginPaidAction(on.db, ON, request(user));
     expect(action.amount).toBe(7);
-    expect(action.ruleset.id).not.toBe(scheduled.id);
+    expect(action.ruleset?.id).not.toBe(scheduled.id);
   });
 });
 
@@ -611,11 +611,19 @@ describe('the framework stays a framework', () => {
     expect(source.match(forbidden)).toBeNull();
   });
 
-  it('nothing in the application calls it yet -- P7.2 is the first caller', () => {
+  /**
+   * P8.2's content unlock is the first caller, and for now the only one. It
+   * reaches the framework the way any paid action must -- begin, then settle --
+   * and prices itself through the pricing resolver rather than by handing over
+   * a number.
+   */
+  it('its callers are the reviewed ones, and they only begin and settle', () => {
     const callers = application()
       .filter((rel) => rel !== SERVICE)
       .filter((rel) => /paid-action-service/.test(read(rel)));
-    expect(callers).toEqual([]);
+    expect(callers).toEqual(['services/content-unlock-service.ts']);
+    const used = new Set(read('services/content-unlock-service.ts').match(/\b(beginPaidAction|capturePaidAction|releasePaidAction|refundPaidAction|runPaidAction|quotePaidAction)\b/g));
+    expect([...used].sort()).toEqual(['beginPaidAction', 'capturePaidAction', 'refundPaidAction']);
   });
 
   it('only this table is its own: the money stays in the P2 ledger', () => {

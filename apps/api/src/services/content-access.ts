@@ -5,6 +5,7 @@ import { characterVisualAssets } from '../db/schema.js';
 import { characterPostsCondition, publiclyReachableCondition } from './asset-distribution.js';
 import type { SafeUser } from './auth-service.js';
 import { describeAssetCommercial, type AssetCommercialView } from './commercial-boundary.js';
+import { readOwnedAssetIds } from './content-ownership.js';
 import { readCustomerCommercialState } from './customer-economy.js';
 
 /**
@@ -13,9 +14,10 @@ import { readCustomerCommercialState } from './customer-economy.js';
  *
  * IT OWNS NOTHING. The content's terms -- state, Credit price, age floor --
  * are P4.1's, read through the commercial boundary; the customer's tier and
- * Credits are P3.1's commercial state. There is no second access, entitlement,
- * wallet, subscription or pricing model here, and nothing is charged, reserved
- * or unlocked: this module only answers a question.
+ * Credits are P3.1's commercial state; what they have bought is P8.2's
+ * ownership. There is no second access, entitlement, wallet, subscription or
+ * pricing model here, and nothing is charged, reserved or unlocked: this module
+ * only answers a question.
  *
  * THE DECISION, IN ORDER. The first that applies wins, which is the precedence
  * the customer UX specification fixes:
@@ -24,10 +26,17 @@ import { readCustomerCommercialState } from './customer-economy.js';
  *                      this customer could reach at all
  *   age_restricted     the content states an age floor (P5 will decide whether
  *                      a customer meets it; until then nobody does)
+ *   owned              the customer bought this content and keeps it (P8.2)
  *   open               free content, or Premium content for a Premium customer
  *   premium_required   Premium content, and this customer is not Premium
  *   credits_required   Credit content that can be unlocked at its price
  *   insufficient_credits  Credit content priced above the customer's Credits
+ *
+ * OWNERSHIP COMES AFTER THE TWO GATES AND BEFORE EVERY COMMERCIAL ONE. Content
+ * that is withdrawn stays withdrawn and an age floor still applies -- neither
+ * is a commercial condition that buying can settle. But having bought something
+ * outranks tier and balance entirely, which is what makes ownership survive a
+ * Premium lapse and an empty wallet alike.
  *
  * FAIL CLOSED. An id that names nothing, content a customer could not reach,
  * a subscription that cannot be resolved -- each answers with no access.
@@ -88,10 +97,16 @@ async function reachable(db: Db, assetIds: string[]): Promise<Set<string>> {
   return new Set(rows.map((r) => r.id));
 }
 
-function decide(terms: AssetCommercialView, viewer: { premium: boolean; credits: number | null }): CustomerAccessDecision {
+function decide(
+  terms: AssetCommercialView,
+  viewer: { premium: boolean; credits: number | null },
+  owned: boolean,
+): CustomerAccessDecision {
   if (terms.state === 'unavailable') return 'unavailable';
   // Age comes before access: P5 owns it, and until it exists nobody has met a floor.
   if (terms.ageFloor !== null) return 'age_restricted';
+  // Bought and kept (P8.2). Ahead of tier and balance, never ahead of the two gates.
+  if (owned) return 'owned';
   if (terms.state === 'free') return 'open';
   if (terms.state === 'premium') return viewer.premium ? 'open' : 'premium_required';
   // Credit content: the price is always stated. An unknown balance is not a
@@ -113,9 +128,10 @@ export async function readContentAccess(db: Db, user: SafeUser, assetIds: string
   if (assetIds.length === 0) return { items: [] };
 
   const visible = await reachable(db, assetIds);
-  const [terms, commercial] = await Promise.all([
+  const [terms, commercial, owned] = await Promise.all([
     describeAssetCommercial(db, [...visible]),
     readCustomerCommercialState(db, user),
+    readOwnedAssetIds(db, user.id, [...visible]),
   ]);
 
   // A tier that cannot be resolved is not Premium, and an unknown balance is
@@ -135,7 +151,7 @@ export async function readContentAccess(db: Db, user: SafeUser, assetIds: string
         state: asset.state,
         creditPrice: asset.state === 'credit' ? asset.creditPrice : null,
         ageFloor: asset.ageFloor,
-        decision: decide(asset, viewer),
+        decision: decide(asset, viewer, owned.has(assetId)),
       };
     }),
   };

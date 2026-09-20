@@ -675,15 +675,18 @@ describe('only two modules move Credits: admin support (P2.4) and the paid-actio
     expect(uses('services/paid-action-service.ts')).toEqual(['captureHold', 'holdCredits', 'refundTransaction', 'releaseHold']);
   });
 
-  it('every other importer only reads: the customer commercial state (P3.1), the admin wallet route and the admin users read model (P2.5.1)', () => {
+  it('every other importer only reads, or reads an error: the customer commercial state (P3.1), the admin wallet route and users read model (P2.5.1), and the P8.2 unlock', () => {
     const importers = application().filter((rel) => /wallet-service/.test(readFileSync(join(src, rel), 'utf8')));
     expect(importers.sort()).toEqual([
       'routes/admin-wallets.ts',
       'services/admin-user-service.ts',
       'services/admin-wallet-service.ts',
+      'services/content-unlock-service.ts',
       'services/customer-economy.ts',
       'services/paid-action-service.ts',
     ]);
+    // P8.2 takes the error type alone, to say "not enough Credits" in its own words.
+    expect(importsFrom('services/content-unlock-service.ts', /\.\/wallet-service\.js/)).toEqual(['WalletError']);
     expect(importsFrom('services/customer-economy.ts', /\.\/wallet-service\.js/)).toEqual(['CREDITS_CURRENCY', 'readCommercialWallet']);
     expect(importsFrom('routes/admin-wallets.ts', /\.\.\/services\/wallet-service\.js/)).toEqual(['WalletError']);
     expect(importsFrom('services/admin-user-service.ts', /\.\/wallet-service\.js/)).toEqual(['readWalletSummaries']);

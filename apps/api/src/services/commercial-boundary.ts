@@ -357,6 +357,36 @@ export async function listOffersForCharacter(
   return db.select().from(contentOffers).where(eq(contentOffers.characterId, characterId));
 }
 
+/**
+ * EVERY offer ever written for these assets, live and retired alike, by asset
+ * id (P8.2).
+ *
+ * Retired ones are included deliberately, and that is the whole point of this
+ * function. An entitlement names the offer it was bought under, so a customer
+ * who unlocked a clip holds THAT offer -- and an operator who later retires it
+ * and writes a new one at a new price must not thereby make the customer pay
+ * again. Ownership is therefore asked of an asset's whole offer history, never
+ * only of its live offer.
+ *
+ * An asset with no offer at all is absent, not an empty list: there is nothing
+ * anyone could own.
+ */
+export async function offerHistoryForAssets(db: Reader, assetIds: readonly string[]): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (assetIds.length === 0) return out;
+  const rows = await db
+    .select({ id: contentOffers.id, assetId: contentOffers.assetId })
+    .from(contentOffers)
+    .where(inArray(contentOffers.assetId, [...assetIds]));
+  for (const row of rows) {
+    if (row.assetId === null) continue;
+    const list = out.get(row.assetId);
+    if (list) list.push(row.id);
+    else out.set(row.assetId, [row.id]);
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ *
  * The Free/Premium allocation of one character's clips (P4.D2)
  * ------------------------------------------------------------------ */

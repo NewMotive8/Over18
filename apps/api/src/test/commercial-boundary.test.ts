@@ -123,8 +123,9 @@ describe('the economy stays dark', () => {
 
   /**
    * The offers table stays behind the boundary. The reviewed ways in are the
-   * P4.2 customer resolver and P4.D2's admin allocation (with its route, for
-   * the boundary's own error type) -- and nothing names the table for itself.
+   * P4.2 customer resolver, P4.D2's admin allocation (with its route, for the
+   * boundary's own error type) and P8.2's ownership and unlock -- and nothing
+   * names the table for itself.
    */
   it('is reached only through the boundary service, by the reviewed callers alone', () => {
     const srcRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -150,6 +151,8 @@ describe('the economy stays dark', () => {
       'routes/admin-content-access.ts',
       'services/admin-content-access-service.ts',
       'services/content-access.ts',
+      'services/content-ownership.ts',
+      'services/content-unlock-service.ts',
     ]);
   });
 });

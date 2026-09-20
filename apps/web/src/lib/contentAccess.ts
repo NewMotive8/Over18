@@ -111,6 +111,15 @@ const OPEN_VIEW: ContentCardView = { state: 'unknown', revealed: true, badge: nu
 export function contentCardView(access: CustomerContentAccess | null): ContentCardView {
   if (!access) return OPEN_VIEW;
   switch (access.decision) {
+    case 'owned':
+      return {
+        state: 'owned',
+        revealed: true,
+        // Bought and kept: said once, quietly, so it reads differently from free content.
+        badge: { label: 'Unlocked', tone: 'credit' },
+        message: null,
+        cta: null,
+      };
     case 'open':
       return {
         state: 'open',
