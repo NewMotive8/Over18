@@ -48,6 +48,7 @@ export default function LockedContentCard({
   media,
   footer,
   onOpen,
+  onUnlock,
 }: {
   view: ContentCardView;
   /** What this tile is, for assistive technology. */
@@ -58,6 +59,12 @@ export default function LockedContentCard({
   footer?: ReactNode;
   /** Opens the media. Only ever called when the server revealed it. */
   onOpen?: () => void;
+  /**
+   * Starts the unlock the surface offered (P8.2): it opens a confirmation.
+   * Nothing is charged by pressing this, and the tile does not change until the
+   * server says it has.
+   */
+  onUnlock?: () => void;
 }) {
   // The approved tile frame, unchanged -- including the order of its classes,
   // which the Posts tab's presentation guard checks.
@@ -96,7 +103,15 @@ export default function LockedContentCard({
         </span>
         {view.message && <p className="text-[12px] font-medium leading-snug text-zinc-100">{view.message}</p>}
         {view.cta &&
-          (view.cta.disabled || view.cta.to === null ? (
+          (view.cta.action === 'unlock' && !view.cta.disabled ? (
+            <button
+              type="button"
+              onClick={onUnlock}
+              className="min-h-11 w-full rounded-xl bg-rose-600 px-3 text-[13px] font-semibold text-white transition-colors hover:bg-rose-500"
+            >
+              {view.cta.label}
+            </button>
+          ) : view.cta.disabled || view.cta.to === null ? (
             <>
               <button
                 type="button"

@@ -217,3 +217,72 @@ describe('the Posts tab renders the access the server decided', () => {
     expect(markup.match(/data-testid="locked-content-card"/g)).toHaveLength(1);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * Unlocking, from the tab that offers it (P8.2)
+ * ------------------------------------------------------------------ */
+
+describe('the tab offers the unlock, and shows what the server decided', () => {
+  const priced = (id: string, over: Partial<CustomerContentAccess> = {}): CustomerContentAccess => ({
+    assetId: id,
+    state: 'credit',
+    creditPrice: 50,
+    ageFloor: null,
+    decision: 'credits_required',
+    ...over,
+  });
+
+  it('a Credit-priced tile offers a real unlock here, not a "coming soon"', () => {
+    const markup = render([clip('a1')], decided([priced('a1')]));
+    expect(markup).toContain('Unlock · 50 Credits');
+    // This tab CAN carry it through, so the control works.
+    expect(markup).not.toContain('Unlocking is coming soon.');
+    expect(markup).not.toContain('disabled=""');
+    // And nothing is revealed by offering it.
+    expect(markup).toContain('data-state="credits_required"');
+  });
+
+  it('once the server says it is owned, the same tile is revealed and plays', () => {
+    const locked = render([clip('a1')], decided([priced('a1')]));
+    expect(locked).toContain('blur-xl');
+    expect(locked).not.toContain('autoplay');
+
+    // The only thing that changed is the server's answer.
+    const owned = render([clip('a1')], decided([priced('a1', { decision: 'owned' })]));
+    expect(owned).toContain('Unlocked');
+    expect(owned).not.toContain('blur-xl');
+    expect(owned).toContain('autoplay');
+    expect(owned).not.toContain('Unlock · 50 Credits');
+  });
+
+  it('too few Credits is never an unlock: it is the existing route to Credits', () => {
+    const markup = render([clip('a1')], decided([priced('a1', { decision: 'insufficient_credits' })]));
+    expect(markup).toContain('You need 50 Credits to unlock this.');
+    expect(markup).toContain('href="/credits"');
+    expect(markup).not.toContain('Unlock · 50 Credits');
+  });
+
+  it('keeps Premium and Credits apart: a Premium tile still sends them to Premium', () => {
+    const markup = render([clip('a1')], decided([priced('a1', { state: 'premium', creditPrice: null, decision: 'premium_required' })]));
+    expect(markup).toContain('href="/subscription"');
+    expect(markup).not.toContain('href="/credits"');
+    expect(markup).not.toMatch(/Unlock ·/);
+  });
+
+  it('keeps age restriction ahead of the price: nothing can be bought through it', () => {
+    const markup = render([clip('a1')], decided([priced('a1', { ageFloor: 21, decision: 'age_restricted' })]));
+    expect(markup).toContain('21+');
+    expect(markup).toContain('Confirm your age to view this.');
+    expect(markup).not.toMatch(/Unlock ·/);
+  });
+
+  it('shows no confirmation until the customer asks for one', () => {
+    expect(render([clip('a1')], decided([priced('a1')]))).not.toContain('data-testid="unlock-sheet"');
+  });
+
+  it('shows no balance, and no unlock, when the server said nothing about the content', () => {
+    const markup = render([clip('a1')]);
+    expect(markup).not.toMatch(/Unlock ·|Credits/);
+    expect(markup).not.toContain('data-testid="unlock-sheet"');
+  });
+});

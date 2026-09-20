@@ -80,6 +80,24 @@ describe('the card shows exactly what the server decided', () => {
     expect(contentCardView(access({ state: 'credit', creditPrice: 1, decision: 'credits_required' })).badge?.label).toBe('1 Credit');
   });
 
+  it('a surface that can carry an unlock gets a live action instead of "coming soon"', () => {
+    const view = contentCardView(access({ state: 'credit', creditPrice: 50, decision: 'credits_required' }), { canUnlock: true });
+    expect(view.cta).toEqual({ label: 'Unlock · 50 Credits', to: null, action: 'unlock', disabled: false, hint: null });
+    // Still the server's price, and still nowhere to navigate to.
+    expect(view.badge).toEqual({ label: '50 Credits', tone: 'credit' });
+    expect(view.revealed).toBe(false);
+  });
+
+  it('only Credit content becomes an action: Premium and age keep exactly what they had', () => {
+    const premium = contentCardView(access({ state: 'premium', decision: 'premium_required' }), { canUnlock: true });
+    expect(premium.cta).toEqual({ label: 'See Premium', to: '/subscription', action: null, disabled: false, hint: null });
+    const age = contentCardView(access({ ageFloor: 21, decision: 'age_restricted' }), { canUnlock: true });
+    expect(age.cta?.action).toBeNull();
+    expect(age.cta?.disabled).toBe(true);
+    const short = contentCardView(access({ state: 'credit', creditPrice: 50, decision: 'insufficient_credits' }), { canUnlock: true });
+    expect(short.cta).toEqual({ label: 'Get Credits', to: '/credits', action: null, disabled: false, hint: null });
+  });
+
   it('too few Credits keeps the price and offers Credits -- not Premium', () => {
     const view = contentCardView(access({ state: 'credit', creditPrice: 50, decision: 'insufficient_credits' }));
     expect(view).toMatchObject({

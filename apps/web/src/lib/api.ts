@@ -26,6 +26,7 @@ import type {
   ConversationSummary,
   CustomerCommercialState,
   CustomerContentAccessResponse,
+  CustomerContentUnlock,
   CustomerEconomyCatalog,
   AdminPackVersion,
   AdminPlanVersion,
@@ -1437,6 +1438,16 @@ export const adminContentAccessApi = {
 export const contentAccessApi = {
   access: (assetIds: readonly string[]) =>
     request<CustomerContentAccessResponse>(`/api/content/access?assetIds=${assetIds.map(encodeURIComponent).join(',')}`),
+  /**
+   * P8.2 -- unlock one Credit-priced asset. The body carries the idempotency
+   * key and nothing else: the price is the server's, read from the content's
+   * own offer, and no client value can influence what is charged.
+   */
+  unlock: (assetId: string, body: { idempotencyKey: string }) =>
+    request<CustomerContentUnlock>(`/api/content/${encodeURIComponent(assetId)}/unlock`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 export const adminUsersApi = {

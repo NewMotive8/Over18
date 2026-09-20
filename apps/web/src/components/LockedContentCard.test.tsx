@@ -101,6 +101,26 @@ describe('locked content', () => {
     expect(html).not.toContain('href=');
   });
 
+  it('Credit, where the surface can unlock: a real button, no link, and no "coming soon"', () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <LockedContentCard
+          view={contentCardView(access({ state: 'credit', creditPrice: 50, decision: 'credits_required' }), { canUnlock: true })}
+          title="Post 1"
+          media={<video src="/api/media/assets/a/file" />}
+          onUnlock={() => {}}
+        />
+      </MemoryRouter>,
+    );
+    expect(html).toContain('Unlock · 50 Credits');
+    expect(html).not.toContain('disabled=""');
+    expect(html).not.toContain('Unlocking is coming soon.');
+    expect(html).not.toContain('href=');
+    // Still locked until the server says otherwise: pressing it only asks.
+    expect(html).toContain('data-state="credits_required"');
+    expect(html).toContain('blur-xl');
+  });
+
   it('too few Credits: the price stays, and the way out is Credits', () => {
     const html = card({ state: 'credit', creditPrice: 50, decision: 'insufficient_credits' });
     expect(html).toContain('You need 50 Credits to unlock this.');

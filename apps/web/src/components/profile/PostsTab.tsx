@@ -1,8 +1,11 @@
 import type { PublicClip } from '../../lib/api';
 import { accessFor, contentCardView, useContentAccess, type ContentAccessState } from '../../lib/contentAccess';
+import { useContentUnlock, type ContentUnlockClient } from '../../lib/contentUnlock';
+import { spendableCredits, useCustomerEconomy, type CustomerEconomyClient } from '../../lib/customerEconomy';
 import ClipMedia from '../lobby/ClipMedia';
-import CreditsPill from '../CreditsPill';
+import { CreditBalance } from '../CustomerEconomy';
 import LockedContentCard from '../LockedContentCard';
+import UnlockSheet from '../UnlockSheet';
 import { LikeIcon } from '../icons';
 
 /**
@@ -44,19 +47,47 @@ import { LikeIcon } from '../icons';
  * is no likes column, no reactions table, and no engagement source anywhere in
  * the schema. The mark itself is approved presentation and stays; the invented
  * count does not come back unless a real one exists to print.
+ *
+ * UNLOCKING HAPPENS HERE (P8.2), because this is where Credit-priced content
+ * and the customer's balance are both already on screen. The tab offers the
+ * confirmation and sends it; it owns no ownership state of its own. When the
+ * server confirms, the tab re-reads BOTH the access answers and the balance,
+ * and the tile changes because the server now says `owned` — not because
+ * anything here decided it did. A failure changes nothing at all.
  */
 export default function PostsTab({
   clips,
   onOpenClip,
   access,
+  accessClient,
+  economyClient,
+  unlockClient,
 }: {
   clips: PublicClip[];
   onOpenClip: (index: number) => void;
   /** The server's access answers. Read here when the caller passes none. */
   access?: ContentAccessState;
+  /** Injected in tests and development; production uses the module defaults. */
+  accessClient?: Parameters<typeof useContentAccess>[1];
+  economyClient?: CustomerEconomyClient;
+  unlockClient?: ContentUnlockClient;
 }) {
-  const [fetched] = useContentAccess(clips.map((clip) => clip.id));
+  const [fetched, refreshAccess] = useContentAccess(
+    clips.map((clip) => clip.id),
+    accessClient,
+  );
   const state = access ?? fetched;
+  // Her Credits, read once here: the pill shows them, the confirmation states
+  // them, and both move together when an unlock goes through.
+  const [economy, refreshEconomy] = useCustomerEconomy(economyClient);
+  const unlock = useContentUnlock({
+    client: unlockClient,
+    onUnlocked: () => {
+      refreshAccess();
+      refreshEconomy();
+    },
+  });
+
   if (clips.length === 0) {
     // Said plainly rather than filled with invented tiles. An empty collection
     // is a real state, and pretending otherwise is what this tab used to do.
@@ -68,17 +99,22 @@ export default function PostsTab({
       {/* Her Credits, where she might spend them. Empty -- and invisible --
           while no balance is known, so the tab is unchanged as it is today. */}
       <div className="flex justify-end empty:hidden">
-        <CreditsPill />
+        {economy.status === 'ready' && <CreditBalance overview={economy.overview} compact />}
       </div>
       <div className="grid grid-cols-2 gap-3">
         {clips.map((clip, index) => {
-          const view = contentCardView(accessFor(state, clip.id));
+          const item = accessFor(state, clip.id);
+          // This tab can carry an unlock through, so a Credit-priced tile
+          // offers one rather than saying it is coming.
+          const view = contentCardView(item, { canUnlock: true });
+          const title = `Post ${index + 1}`;
           return (
             <LockedContentCard
               key={clip.id}
               view={view}
-              title={`Post ${index + 1}`}
+              title={title}
               onOpen={() => onOpenClip(index)}
+              onUnlock={() => unlock.open({ assetId: clip.id, title, creditPrice: item?.creditPrice ?? null })}
               media={<ClipMedia clip={clip} autoPlay={view.revealed} />}
               footer={
                 /* Approved mark, unchanged position and styling. Decorative: it
@@ -94,6 +130,17 @@ export default function PostsTab({
           );
         })}
       </div>
+
+      {unlock.target && (
+        <UnlockSheet
+          target={unlock.target}
+          balance={spendableCredits(economy.status === 'ready' ? economy.overview : null)}
+          busy={unlock.busy}
+          failure={unlock.failure}
+          onConfirm={unlock.confirm}
+          onCancel={unlock.cancel}
+        />
+      )}
     </div>
   );
 }

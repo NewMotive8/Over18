@@ -34,7 +34,7 @@ export const pendingContentAccessClient: ContentAccessClient = {
   getAccess: () => Promise.reject(new ContentAccessUnavailableError()),
 };
 
-export function createHttpContentAccessClient(endpoints = contentAccessApi): ContentAccessClient {
+export function createHttpContentAccessClient(endpoints: Pick<typeof contentAccessApi, 'access'> = contentAccessApi): ContentAccessClient {
   return { kind: 'http', getAccess: (assetIds) => endpoints.access(assetIds) };
 }
 
@@ -88,6 +88,8 @@ export interface ContentCardCta {
   label: string;
   /** Where it goes, when it goes anywhere. */
   to: string | null;
+  /** Something the surface does, rather than a place to go (P8.2). */
+  action: 'unlock' | null;
   /** True while the capability behind it does not exist yet. */
   disabled: boolean;
   /** Why it is disabled, said plainly. */
@@ -107,8 +109,19 @@ export interface ContentCardView {
 
 const OPEN_VIEW: ContentCardView = { state: 'unknown', revealed: true, badge: null, message: null, cta: null };
 
-/** Premium and Credits are never the same offer: rose for one, amber for the other. */
-export function contentCardView(access: CustomerContentAccess | null): ContentCardView {
+/**
+ * Premium and Credits are never the same offer: rose for one, amber for the
+ * other.
+ *
+ * `canUnlock` is the SURFACE saying it can carry an unlock through -- it has a
+ * confirmation to open and somewhere to send it. It is off by default, so a
+ * surface that cannot do that still shows the Credit price and says unlocking
+ * is not open there, rather than offering a button that would do nothing.
+ */
+export function contentCardView(
+  access: CustomerContentAccess | null,
+  options: { canUnlock?: boolean } = {},
+): ContentCardView {
   if (!access) return OPEN_VIEW;
   switch (access.decision) {
     case 'owned':
@@ -135,23 +148,27 @@ export function contentCardView(access: CustomerContentAccess | null): ContentCa
         revealed: false,
         badge: { label: 'Premium', tone: 'premium' },
         message: 'Included with Premium.',
-        cta: { label: 'See Premium', to: '/subscription', disabled: false, hint: null },
+        cta: { label: 'See Premium', to: '/subscription', action: null, disabled: false, hint: null },
       };
-    case 'credits_required':
+    case 'credits_required': {
+      const unlock = `Unlock · ${creditLabel(access.creditPrice)}`;
       return {
         state: 'credits_required',
         revealed: false,
         badge: { label: creditLabel(access.creditPrice), tone: 'credit' },
         message: `Unlock this with ${creditLabel(access.creditPrice)}.`,
-        cta: { label: `Unlock · ${creditLabel(access.creditPrice)}`, to: null, disabled: true, hint: 'Unlocking is coming soon.' },
+        cta: options.canUnlock
+          ? { label: unlock, to: null, action: 'unlock', disabled: false, hint: null }
+          : { label: unlock, to: null, action: null, disabled: true, hint: 'Unlocking is coming soon.' },
       };
+    }
     case 'insufficient_credits':
       return {
         state: 'insufficient_credits',
         revealed: false,
         badge: { label: creditLabel(access.creditPrice), tone: 'credit' },
         message: `You need ${creditLabel(access.creditPrice)} to unlock this.`,
-        cta: { label: 'Get Credits', to: '/credits', disabled: false, hint: null },
+        cta: { label: 'Get Credits', to: '/credits', action: null, disabled: false, hint: null },
       };
     case 'age_restricted':
       return {
@@ -159,7 +176,7 @@ export function contentCardView(access: CustomerContentAccess | null): ContentCa
         revealed: false,
         badge: { label: access.ageFloor === null ? 'Age check' : `${access.ageFloor}+`, tone: 'neutral' },
         message: 'Confirm your age to view this.',
-        cta: { label: 'Confirm age', to: null, disabled: true, hint: 'Age confirmation is coming soon.' },
+        cta: { label: 'Confirm age', to: null, action: null, disabled: true, hint: 'Age confirmation is coming soon.' },
       };
     case 'unavailable':
       return {
