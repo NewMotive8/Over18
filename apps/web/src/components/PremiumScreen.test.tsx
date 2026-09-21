@@ -112,6 +112,15 @@ describe('choosing a billing period', () => {
     expect(html.match(/Choose /g)).toHaveLength(1);
   });
 
+  it('reads shortest commitment first, whatever order the catalogue returns', () => {
+    const jumbled = overviewOf({
+      catalog: { asOf: 'x', plans: [ANNUAL, MONTHLY, QUARTERLY], packs: [] },
+    } as unknown as Partial<CustomerEconomyOverview>);
+    const html = render(<PlanCatalog overview={jumbled} onBuy={() => {}} />);
+    const order = [...html.matchAll(/data-testid="plan-([a-z_]+)"/g)].map((m) => m[1]);
+    expect(order).toEqual(['premium_monthly', 'premium_quarterly', 'premium_annual']);
+  });
+
   it('pre-selects the best value and names it on the button, with its price', () => {
     const html = render(<PlanCatalog overview={freeViewer} onBuy={() => {}} />);
     expect(html).toContain('data-testid="plan-premium_annual" data-selected="true"');

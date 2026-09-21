@@ -198,7 +198,10 @@ export function CurrentPlanCard({ overview }: { overview: CustomerEconomyOvervie
  * refuse should never be on screen.
  */
 export function PlanCatalog({ overview, onBuy }: { overview: CustomerEconomyOverview; onBuy?: (planCode: string) => void }) {
-  const plans = offeredPlans(overview);
+  // Shortest commitment first, so the ladder reads Monthly, Quarterly, Annual
+  // whatever order the catalogue happens to return. Presentation only: which
+  // plans exist, and their prices, are still entirely the server's.
+  const plans = [...offeredPlans(overview)].sort((a, b) => a.billingPeriodMonths - b.billingPeriodMonths);
   const current = getCurrentPlan(overview);
   const premium = commercialTier(overview) === 'premium';
   const featured = bestValuePlan(plans);
