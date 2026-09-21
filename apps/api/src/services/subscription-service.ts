@@ -240,7 +240,7 @@ export class SubscriptionError extends Error {
   }
 }
 
-export interface SubscriptionChange {
+interface SubscriptionChangeBase {
   /** The user's id as stored (lower case). */
   userId: string;
   action: AdminSubscriptionAction;
@@ -248,12 +248,22 @@ export interface SubscriptionChange {
   planCode: string | null;
   /** The version the caller saw: the change is refused if another was recorded since. */
   expectedVersion: number;
-  source: 'admin';
-  actorUserId: string;
   reason: string;
   reference: string | null;
   requestId: string | null;
 }
+
+/**
+ * WHO MADE THE CHANGE, and what that obliges them to supply.
+ *
+ * A discriminated union rather than two loose fields, because migration 0039
+ * refuses an `admin` history row without an operator and a reason -- so the
+ * type should refuse it too, rather than leaving the database to catch it.
+ * A payment has no operator: the provider's confirmation is the authority, and
+ * the payment itself is named in `reference`.
+ */
+export type SubscriptionChange = SubscriptionChangeBase &
+  ({ source: 'admin'; actorUserId: string } | { source: 'payment'; actorUserId: null });
 
 /** One side of a change, for its audit record. */
 export interface SubscriptionSnapshot {

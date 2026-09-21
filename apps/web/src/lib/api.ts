@@ -27,6 +27,9 @@ import type {
   CustomerCommercialState,
   CustomerContentAccessResponse,
   CustomerContentUnlock,
+  CustomerCheckout,
+  CustomerPaymentView,
+  SimulatedPaymentResult,
   CustomerEconomyCatalog,
   AdminPackVersion,
   AdminPlanVersion,
@@ -1448,6 +1451,21 @@ export const contentAccessApi = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+};
+
+/**
+ * P9.1 customer payments. A checkout names a PLAN, never a price: what it
+ * costs is the server's to resolve. Nothing here grants anything -- only a
+ * signed provider event does, on the server.
+ */
+export const paymentsApi = {
+  startCheckout: (body: { planCode: string; method: string; idempotencyKey: string; returnUrl: string }) =>
+    request<CustomerCheckout>('/api/payments/checkout', { method: 'POST', body: JSON.stringify(body) }),
+  read: (paymentId: string) => request<CustomerPaymentView>(`/api/payments/${encodeURIComponent(paymentId)}`),
+  readCheckout: (checkoutRef: string) => request<CustomerPaymentView>(`/api/payments/checkout/${encodeURIComponent(checkoutRef)}`),
+  /** TEST ONLY -- the server refuses this unless the fake provider is selected. */
+  simulate: (body: { checkoutRef: string; outcome: string }) =>
+    request<SimulatedPaymentResult>('/api/payments/simulate', { method: 'POST', body: JSON.stringify(body) }),
 };
 
 export const adminUsersApi = {

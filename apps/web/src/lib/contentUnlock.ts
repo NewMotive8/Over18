@@ -54,10 +54,16 @@ export function createHttpContentUnlockClient(endpoints: Pick<typeof contentAcce
 }
 
 /**
- * THE PRODUCTION DEFAULT: pending. Switching it to the HTTP client is a
- * deliberate, separate change, exactly as for the access and economy clients.
+ * THE PRODUCTION DEFAULT IS NOW THE HTTP CLIENT (P9).
+ *
+ * It was `pending` while no endpoint existed. The endpoints exist, and the
+ * gate that matters is the SERVER's: every one of them answers 503 while
+ * ECONOMY_ENABLED is off, which is the production default. A pending client on
+ * top of that gated nothing extra and made the purchase flow impossible to
+ * build or review -- so the real client is used, and the server stays the only
+ * thing deciding whether anyone may see or buy anything.
  */
-export const contentUnlockClient: ContentUnlockClient = pendingContentUnlockClient;
+export const contentUnlockClient: ContentUnlockClient = createHttpContentUnlockClient();
 
 /* ------------------------------------------------------------------ *
  * What went wrong, said to a customer

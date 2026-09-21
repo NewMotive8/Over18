@@ -20,6 +20,7 @@ import { walletCurrencies, wallets, walletTransactions, type WalletTransactionRo
  *   refund    return Credits charged by a paid action or a capture
  *   reversal  undo part or all of an earlier transaction, opposite to it
  *   adjust    an operator's Credit or Debit, capped per day (P2.4)
+ *   grant     Credits a confirmed payment entitles a customer to (P9.2)
  *
  * ONE TRANSACTION, ONE WALLET LOCK. Every operation runs in a database
  * transaction that first locks its wallet row, so operations on one wallet are
@@ -67,10 +68,10 @@ import { walletCurrencies, wallets, walletTransactions, type WalletTransactionRo
  * misattributed to a single class. Likewise a hold is taken from a later class
  * when an earlier one holds some Credits but not enough.
  *
- * NOT HERE: granting, purchasing, rewards, expiry, paid-action charging, and any
- * route. The only application caller of an operation is the admin support
- * service (P2.4), and only `adjustWallet`; the customer commercial state (P3.1)
- * only READS a wallet, through `readCommercialWallet`.
+ * NOT HERE: purchasing, rewards, expiry, paid-action charging, and any route.
+ * `grantCredits` gives Credits but decides nothing about WHY -- it is called
+ * only by the payment service, after a provider has confirmed the money, and it
+ * refuses to invent a reason of its own.
  */
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -741,6 +742,66 @@ export async function adjustWallet(db: WalletDb, input: AdjustInput): Promise<Wa
       entryType: 'admin_adjustment',
       direction: input.direction,
       creditClass,
+      relatedTransactionId: null,
+    });
+    return { transaction: view(row), replayed: false };
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Granting (P9.2) -- Credits a confirmed payment entitles a customer to
+ * ------------------------------------------------------------------ */
+
+export interface GrantInput extends OperationInput {
+  currency: string;
+  /**
+   * Which class the Credits land in. A plan's included allowance is
+   * `included`; Credits bought outright are `purchased`. The caller states it
+   * because only the caller knows what was paid for -- this module will not
+   * guess, and the class decides expiry and refund treatment later (§6.3).
+   */
+  creditClass: CreditClass;
+}
+
+/**
+ * GRANT: adds Credits to a wallet, as one `grant` ledger transaction.
+ *
+ * THE SEVENTH OPERATION, under exactly the same rules as the other six: one
+ * transaction, the wallet locked first, the idempotency key checked after the
+ * lock, nothing edited. A replay returns the original grant and adds nothing,
+ * which is what makes a redelivered payment event safe.
+ *
+ * IT PROVES NOTHING ABOUT PAYMENT. This module cannot tell a confirmed payment
+ * from an imagined one, so it does not try: the caller must already have the
+ * provider's confirmation, and `source` must name what it was. Passing a
+ * transaction as `db` commits the grant with the subscription it came from, so
+ * a customer can never end up with the Credits but not the plan, or the plan
+ * but not the Credits.
+ *
+ * A user without a wallet in the currency gets one, created in the same
+ * transaction -- if the grant is refused, no wallet is left behind.
+ */
+export async function grantCredits(db: WalletDb, input: GrantInput): Promise<WalletOperationResult> {
+  validate(input);
+  if (typeof input.currency !== 'string' || !CURRENCY.test(input.currency)) invalid('currency must be a wallet currency code.');
+  if (!CREDIT_SPEND_ORDER.includes(input.creditClass)) {
+    invalid(`creditClass must be one of: ${CREDIT_SPEND_ORDER.join(', ')}.`);
+  }
+  const expected: Material = { entryType: 'grant', amount: input.amount, relatedTransactionId: null, source: input.source ?? null };
+  return operate(db, async (tx) => {
+    let wallet = await lockWallet(tx, input.userId, input.currency);
+    if (!wallet) {
+      await tx.insert(wallets).values({ userId: input.userId, currency: input.currency }).onConflictDoNothing();
+      wallet = (await lockWallet(tx, input.userId, input.currency))!;
+    }
+    const existing = await byKey(tx, input.userId, input.currency, input.idempotencyKey);
+    if (existing) return replay(existing, expected);
+
+    const row = await append(tx, input, {
+      currency: input.currency,
+      entryType: 'grant',
+      direction: 'credit',
+      creditClass: input.creditClass,
       relatedTransactionId: null,
     });
     return { transaction: view(row), replayed: false };

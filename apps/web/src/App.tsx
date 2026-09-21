@@ -10,6 +10,7 @@ import GoSteadyPage from './pages/GoSteadyPage';
 import FavouritesPage from './pages/FavouritesPage';
 import ProfilePage from './pages/ProfilePage';
 import SubscriptionPage from './pages/SubscriptionPage';
+import SimulatedCheckoutPage from './pages/SimulatedCheckoutPage';
 import WalletPage from './pages/WalletPage';
 import ChatPage from './pages/ChatPage';
 import NotFoundPage from './pages/NotFoundPage';
@@ -126,6 +127,9 @@ export default function App() {
 
         {/* Premium / subscription placeholder (no billing) */}
         <Route path="/subscription" element={<SubscriptionPage />} />
+        {/* P9: where the payment provider's hosted checkout will be. The
+            server refuses it unless the simulated provider is selected. */}
+        <Route path="/fake-checkout/:checkoutRef" element={<SimulatedCheckoutPage />} />
         {/* Credits is the customer-facing name (P8.1). The original path keeps
             working so nothing already linked to it breaks. */}
         <Route path="/credits" element={<WalletPage />} />

@@ -639,7 +639,7 @@ describe('consistency', () => {
  * Who may move Credits at all
  * ------------------------------------------------------------------ */
 
-describe('only two modules move Credits: admin support (P2.4) and the paid-action framework (P7.1)', () => {
+describe('only three modules move Credits: admin support (P2.4), paid actions (P7.1) and payments (P9.2)', () => {
   function sourceFiles(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
       const path = join(dir, name);
@@ -666,13 +666,20 @@ describe('only two modules move Credits: admin support (P2.4) and the paid-actio
    * else; the framework holds, settles and compensates but never adjusts.
    * Nothing calls the framework itself yet -- paid-action.test.ts holds that line.
    */
-  it('the callers of a wallet operation are those two, and each uses only its own operations', () => {
-    const OPERATIONS = /\b(holdCredits|captureHold|releaseHold|refundTransaction|reverseTransaction|adjustWallet)\b/;
+  it('the callers of a wallet operation are the reviewed ones, and each uses only its own operations', () => {
+    const OPERATIONS = /\b(holdCredits|captureHold|releaseHold|refundTransaction|reverseTransaction|adjustWallet|grantCredits)\b/;
     const callers = application().filter((rel) => OPERATIONS.test(readFileSync(join(src, rel), 'utf8')));
-    expect(callers.sort()).toEqual(['services/admin-wallet-service.ts', 'services/paid-action-service.ts']);
+    expect(callers.sort()).toEqual([
+      'services/admin-wallet-service.ts',
+      'services/paid-action-service.ts',
+      'services/payment-service.ts',
+    ]);
     const uses = (rel: string) => [...new Set(readFileSync(join(src, rel), 'utf8').match(new RegExp(OPERATIONS.source, 'g')))].sort();
     expect(uses('services/admin-wallet-service.ts')).toEqual(['adjustWallet']);
     expect(uses('services/paid-action-service.ts')).toEqual(['captureHold', 'holdCredits', 'refundTransaction', 'releaseHold']);
+    // P9.2 gives Credits a confirmed payment entitles a customer to, and does
+    // nothing else to a wallet: it cannot spend, hold, adjust or reverse.
+    expect(uses('services/payment-service.ts')).toEqual(['grantCredits']);
   });
 
   it('every other importer only reads, or reads an error: the customer commercial state (P3.1), the admin wallet route and users read model (P2.5.1), and the P8.2 unlock', () => {
@@ -684,6 +691,7 @@ describe('only two modules move Credits: admin support (P2.4) and the paid-actio
       'services/content-unlock-service.ts',
       'services/customer-economy.ts',
       'services/paid-action-service.ts',
+      'services/payment-service.ts',
     ]);
     // P8.2 takes the error type alone, to say "not enough Credits" in its own words.
     expect(importsFrom('services/content-unlock-service.ts', /\.\/wallet-service\.js/)).toEqual(['WalletError']);

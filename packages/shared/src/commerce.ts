@@ -664,6 +664,72 @@ export interface CustomerContentUnlock {
   replayed: boolean;
 }
 
+
+/* ------------------------------------------------------------------ *
+ * Payments (P9.1 / P9.2)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The payment method a customer picks before being sent to the provider.
+ *
+ * A HINT, NEVER AUTHORITY. Which method actually took the money is the
+ * provider's to report; a real hosted checkout may offer a different one, or
+ * the customer may change their mind on the provider's own page.
+ */
+export const PAYMENT_METHODS = ['apple_pay', 'google_pay', 'paypal'] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+export const PAYMENT_METHOD_LABELS: Readonly<Record<PaymentMethod, string>> = {
+  apple_pay: 'Apple Pay',
+  google_pay: 'Google Pay',
+  paypal: 'PayPal',
+};
+
+/** Where a payment stands. Mirrors the `payment_status` enum. */
+export type PaymentStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled' | 'refunded' | 'disputed';
+
+/** One payment, as its own customer may see it. No card data, ever. */
+export interface CustomerPaymentView {
+  id: string;
+  status: PaymentStatus;
+  kind: 'subscription' | 'credit_pack';
+  /** Our product identifier -- a plan code. Never the processor's. */
+  productRef: string;
+  /** Integer minor units. */
+  amountMinor: number;
+  currency: string;
+  methodHint: string | null;
+  /** Which adapter took it: `fake` while the processor is undecided (P9.D1). */
+  provider: string;
+  createdAt: string;
+  settledAt: string | null;
+}
+
+/**
+ * POST /api/payments/checkout -- a started checkout.
+ *
+ * `redirectUrl` is where the customer goes to pay. NOTHING is activated or
+ * granted by this call: the payment is `pending` until the provider confirms it.
+ */
+export interface CustomerCheckout {
+  payment: CustomerPaymentView;
+  checkoutRef: string;
+  /** Null when the checkout was already created under this key. */
+  redirectUrl: string | null;
+  replayed: boolean;
+}
+
+/** What a simulated payment is told to do. Test-only; never a real processor. */
+export const SIMULATED_OUTCOMES = ['success', 'failure', 'cancel'] as const;
+export type SimulatedOutcome = (typeof SIMULATED_OUTCOMES)[number];
+
+/** POST /api/payments/simulate -- the result of feeding one simulated provider event in. */
+export interface SimulatedPaymentResult {
+  /** `processed`, `replayed`, `rejected` or `ignored`, as the ingestion decided. */
+  status: string;
+  payment: CustomerPaymentView | null;
+}
+
 /* ------------------------------------------------------------------ *
  * Admin content access -- a character's Free/Premium clips (P4.D2)
  * ------------------------------------------------------------------ */

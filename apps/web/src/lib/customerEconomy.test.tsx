@@ -144,7 +144,7 @@ describe('no plan is invented', () => {
     const html = render(<PlanCatalog overview={overview} />);
     expect(html).toContain('Plan premium_monthly');
     expect(html).toContain('$12.99 / month');
-    expect(html).toContain('300 Credits included each month');
+    expect(html).toContain('300 Credits included each cycle');
     expect(html).not.toContain('Plan legacy_monthly');
     expect(html).not.toMatch(/\bFree\b/);
   });
@@ -260,11 +260,26 @@ describe('the fixture is explicit-only', () => {
  * ================================================================== */
 
 describe('production fails closed', () => {
-  it('the default client is pending, starts unavailable, and yields no data', async () => {
-    expect(customerEconomyClient).toBe(pendingCustomerEconomyClient);
-    expect(customerEconomyClient.kind).toBe('pending');
-    expect(initialEconomyState(customerEconomyClient)).toEqual({ status: 'unavailable', message: ECONOMY_MESSAGES.pending });
-    await expect(customerEconomyClient.getOverview()).rejects.toBeInstanceOf(EconomyBackendUnavailableError);
+  /**
+   * P9 moved the default from the pending client to the real one. The property
+   * that mattered is unchanged and is asserted here directly: production shows
+   * no commercial data, because the SERVER answers 503 while ECONOMY_ENABLED is
+   * off and that maps to `disabled` carrying no overview. The pending client
+   * remains for tests and for any surface that must never call.
+   */
+  it('the default client calls the server, and a switched-off economy yields no data', async () => {
+    expect(customerEconomyClient.kind).toBe('http');
+    // Nothing commercial is shown before the server has answered.
+    expect(initialEconomyState(customerEconomyClient).status).toBe('loading');
+    const off = economyStateFromError(new ApiRequestError(503, 'economy_unavailable', 'The economy is not available yet.'));
+    expect(off.status).toBe('disabled');
+    expect(off).not.toHaveProperty('overview');
+  });
+
+  it('the pending client is still available, and still yields nothing', async () => {
+    expect(pendingCustomerEconomyClient.kind).toBe('pending');
+    expect(initialEconomyState(pendingCustomerEconomyClient)).toEqual({ status: 'unavailable', message: ECONOMY_MESSAGES.pending });
+    await expect(pendingCustomerEconomyClient.getOverview()).rejects.toBeInstanceOf(EconomyBackendUnavailableError);
   });
 
   it('only a ready state carries an overview, and every failure maps to one without', () => {

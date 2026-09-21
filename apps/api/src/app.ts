@@ -11,7 +11,10 @@ import adminEconomyRoutes from './routes/admin-economy.js';
 import authRoutes from './routes/auth.js';
 import characterRoutes from './routes/characters.js';
 import conversationRoutes from './routes/conversations.js';
+import { randomBytes } from 'node:crypto';
 import customerEconomyRoutes from './routes/customer-economy.js';
+import customerPaymentRoutes from './routes/customer-payments.js';
+import { selectPaymentProvider } from './commerce/select-providers.js';
 import adminWalletRoutes from './routes/admin-wallets.js';
 import adminContentAccessRoutes from './routes/admin-content-access.js';
 import adminUserRoutes from './routes/admin-users.js';
@@ -195,6 +198,19 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // `economy_unavailable` while ECONOMY_ENABLED is off. Serves only what the
   // P1.2 resolver says is published and in effect; writes nothing.
   await app.register(customerEconomyRoutes, { db, commerce: env.commerce });
+  // P9.1 customer payments. The provider is whatever `PAYMENT_PROVIDER`
+  // selects -- `none` (every route 503) or the fake one, which
+  // commerce/fake-provider-policy.ts refuses to build in production or on
+  // Railway. The fake signing secret is generated per process rather than
+  // configured: it is only ever used to sign an event this same process then
+  // verifies, so there is nothing to leak and nothing to rotate.
+  const fakeSecret = randomBytes(32).toString('hex');
+  await app.register(customerPaymentRoutes, {
+    db,
+    commerce: env.commerce,
+    provider: selectPaymentProvider(env.commerce.paymentProvider, { secret: fakeSecret, baseUrl: env.corsOrigin }),
+    fakeSecret,
+  });
   // P2.4 admin wallet support: read with `users.commercial.read`; Credit or
   // Debit with `users.credits.adjust`, refused while ECONOMY_ENABLED is off.
   await app.register(adminWalletRoutes, { db, commerce: env.commerce });

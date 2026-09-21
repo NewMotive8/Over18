@@ -388,10 +388,21 @@ describe('one place resolves a subscription', () => {
     expect(askers).toEqual(['services/customer-economy.ts']);
   });
 
-  it('only the customer commercial state and the admin subscription management (P3.5) use the subscription service', () => {
+  /**
+   * P9 added the third writer, deliberately. A subscription changes for exactly
+   * three reasons: an operator changes it (P3.5), or a confirmed payment
+   * activates or renews it (P9.2) -- and the customer commercial state only
+   * reads it. Nothing else may resolve or write a subscription for itself.
+   */
+  it('only the reviewed modules use the subscription service', () => {
     const importers = application().filter(
       (rel) => rel !== 'services/subscription-service.ts' && /['/]subscription-service\.js'/.test(readFileSync(join(src, rel), 'utf8')),
     );
-    expect(importers).toEqual(['routes/admin-users.ts', 'services/admin-subscription-service.ts', 'services/customer-economy.ts']);
+    expect(importers.sort()).toEqual([
+      'routes/admin-users.ts',
+      'services/admin-subscription-service.ts',
+      'services/customer-economy.ts',
+      'services/payment-service.ts',
+    ]);
   });
 });

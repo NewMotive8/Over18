@@ -58,7 +58,17 @@ export function createHttpCustomerEconomyClient(endpoints: CustomerEconomyEndpoi
  * THE PRODUCTION DEFAULT: pending. Switching it to the HTTP client is a
  * deliberate, separate change -- the backend endpoints are not released yet.
  */
-export const customerEconomyClient: CustomerEconomyClient = pendingCustomerEconomyClient;
+/**
+ * THE PRODUCTION DEFAULT IS NOW THE HTTP CLIENT (P9).
+ *
+ * It was `pending` while no endpoint existed. The endpoints exist, and the
+ * gate that matters is the SERVER's: every one of them answers 503 while
+ * ECONOMY_ENABLED is off, which is the production default. A pending client on
+ * top of that gated nothing extra and made the purchase flow impossible to
+ * build or review -- so the real client is used, and the server stays the only
+ * thing deciding whether anyone may see or buy anything.
+ */
+export const customerEconomyClient: CustomerEconomyClient = createHttpCustomerEconomyClient();
 
 export const ECONOMY_MESSAGES = {
   pending: 'Backend support pending. Economy details are unavailable right now.',

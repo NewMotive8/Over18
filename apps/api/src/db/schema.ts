@@ -2536,8 +2536,8 @@ export const subscriptions = pgTable('subscriptions', {
 /** P3.5: what a recorded subscription change did. */
 export const subscriptionChange = pgEnum('subscription_change', ['assign', 'change_plan', 'cancel', 'end']);
 
-/** P3.5: who made it. Only an operator can yet; a billing provider (P9) will be another value. */
-export const subscriptionChangeSource = pgEnum('subscription_change_source', ['admin']);
+/** P3.5: who made it -- an operator (P3.5), or a confirmed payment (P9.2). */
+export const subscriptionChangeSource = pgEnum('subscription_change_source', ['admin', 'payment']);
 
 /**
  * subscription_history (P3.5) -- every change ever made to a user's
@@ -2786,6 +2786,142 @@ export const contentEntitlements = pgTable(
   ],
 );
 
+/* ------------------------------------------------------------------ *
+ * Payments (PRD v1.2 §6, §16, §18) -- P9.1 / P9.2
+ *
+ *   checkout -> payments row (pending)
+ *        -> provider event -> payment_events row (stored first, verbatim)
+ *        -> commercial state: subscription + Credit grant, exactly once
+ *
+ * THE PAYMENT RECORD IS NOT A WALLET AND NOT A SUBSCRIPTION. It records what a
+ * customer was charged and by whom; what they are OWED as a result is the
+ * subscription's and the ledger's. The two are linked by id so support can
+ * reconcile them, and neither is derived from the other.
+ *
+ * PROVIDER-AGNOSTIC BY CONSTRUCTION, like `commerce/payment-provider.ts`. No
+ * column names a processor's concept; `provider` says which adapter produced
+ * the references, so a second provider can be added without a migration.
+ * ------------------------------------------------------------------ */
+
+/** What a payment is for. Mirrors `CheckoutKind` in the provider interface. */
+export const paymentKind = pgEnum('payment_kind', ['subscription', 'credit_pack']);
+
+/**
+ * Where a payment stands.
+ *
+ *   pending     checkout created; nothing granted, and nothing may be
+ *   succeeded   the provider confirmed it; the commercial state was applied
+ *   failed      the provider declined it
+ *   cancelled   the customer abandoned it
+ *   refunded    returned after succeeding
+ *   disputed    charged back
+ */
+export const paymentStatus = pgEnum('payment_status', ['pending', 'succeeded', 'failed', 'cancelled', 'refunded', 'disputed']);
+
+/**
+ * payments -- one customer payment, from checkout to settlement.
+ *
+ * NO CARD DATA, EVER. Only the provider's own opaque references are kept
+ * (§6.2): the checkout, the transaction, the provider's subscription and
+ * customer ids. No PAN, no CVV, no expiry, no token that could authorise a
+ * charge on its own.
+ *
+ * `idempotency_key` is the key sent to the provider when the checkout was
+ * created, unique per user, so a customer double-tapping "Subscribe" gets the
+ * same checkout rather than a second one. `(provider, checkout_ref)` is unique
+ * because that is what an inbound event names.
+ *
+ * `method_hint` is what the customer chose before being sent to the provider
+ * (Apple Pay, Google Pay, PayPal). It is a HINT, never authority: the method
+ * actually used is the provider's to report, and a real hosted checkout may
+ * offer a different one.
+ *
+ * The owner is a RESTRICT foreign key, like wallets and subscriptions:
+ * commercial history does not disappear with an account.
+ */
+export const payments = pgTable(
+  'payments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** Which adapter produced the references below: `fake` today, a processor later. */
+    provider: text('provider').notNull(),
+    kind: paymentKind('kind').notNull(),
+    /** Our own product identifier -- a plan code today. Never the processor's. */
+    productRef: text('product_ref').notNull(),
+    /** Integer minor units. Never a float, anywhere money is carried. */
+    amountMinor: integer('amount_minor').notNull(),
+    /** ISO 4217, upper case. */
+    currency: text('currency').notNull(),
+    status: paymentStatus('status').notNull().default('pending'),
+    checkoutRef: text('checkout_ref').notNull(),
+    transactionRef: text('transaction_ref'),
+    providerSubscriptionRef: text('provider_subscription_ref'),
+    providerCustomerRef: text('provider_customer_ref'),
+    /** apple_pay | google_pay | paypal -- what the customer picked, not what was used. */
+    methodHint: text('method_hint'),
+    idempotencyKey: text('idempotency_key').notNull(),
+    /** Why it failed, as the provider said. Recorded, never used to decide anything. */
+    failureReason: text('failure_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    /** When it stopped being pending. */
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => [
+    /** What an inbound provider event names. */
+    uniqueIndex('payments_provider_checkout_idx').on(t.provider, t.checkoutRef),
+    /** One key, one checkout, per user. */
+    uniqueIndex('payments_user_idempotency_idx').on(t.userId, t.idempotencyKey),
+    index('payments_user_idx').on(t.userId, t.createdAt),
+    check('payments_amount_positive', sql`${t.amountMinor} > 0`),
+    check('payments_currency_format', sql`${t.currency} ~ '^[A-Z]{3}$'`),
+    /** Pending exactly while nothing has settled it. */
+    check('payments_settled_by_status', sql`(${t.status} = 'pending') = (${t.settledAt} is null)`),
+  ],
+);
+
+/**
+ * payment_events -- every provider event, STORED BEFORE IT IS PROCESSED.
+ *
+ * `(provider, event_ref)` is unique, and that single index is what makes a
+ * purchase grant Credits exactly once however many times a processor
+ * redelivers (§19.2). A redelivery loses the race to insert and is answered as
+ * a replay, having changed nothing.
+ *
+ * The raw envelope is kept verbatim in `payload` because reconciling a dispute
+ * months later means reading what the processor actually sent, not our
+ * interpretation of it. `signature_valid` records whether it authenticated:
+ * an event that did not is stored and NEVER processed, so a forged delivery
+ * leaves evidence instead of silence.
+ */
+export const paymentEvents = pgTable(
+  'payment_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: text('provider').notNull(),
+    /** The processor's own id for this delivery. The idempotency key. */
+    eventRef: text('event_ref').notNull(),
+    /** The payment it resolved to, once known. */
+    paymentId: uuid('payment_id').references(() => payments.id, { onDelete: 'restrict' }),
+    /** The parsed event type, or `unrecognised`. */
+    type: text('type').notNull(),
+    signatureValid: boolean('signature_valid').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Set once the event has been applied. Null means stored but not acted on. */
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [
+    /** Exactly-once: one event, one effect. */
+    uniqueIndex('payment_events_provider_ref_idx').on(t.provider, t.eventRef),
+    index('payment_events_payment_idx').on(t.paymentId),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
@@ -2833,3 +2969,5 @@ export type WalletTransactionRow = typeof walletTransactions.$inferSelect;
 export type SubscriptionRow = typeof subscriptions.$inferSelect;
 export type PaidActionRow = typeof paidActions.$inferSelect;
 export type ContentEntitlementRow = typeof contentEntitlements.$inferSelect;
+export type PaymentRow = typeof payments.$inferSelect;
+export type PaymentEventRow = typeof paymentEvents.$inferSelect;

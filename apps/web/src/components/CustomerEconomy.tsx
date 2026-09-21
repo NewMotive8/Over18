@@ -87,7 +87,7 @@ export function PlanSummary({ overview }: { overview: CustomerEconomyOverview })
  * code. No plan is added here -- in particular there is no "Free" plan card.
  * Raw plan `features` are not rendered (their customer wording is undecided).
  */
-export function PlanCatalog({ overview }: { overview: CustomerEconomyOverview }) {
+export function PlanCatalog({ overview, onBuy }: { overview: CustomerEconomyOverview; onBuy?: (planCode: string) => void }) {
   const plans = offeredPlans(overview);
   if (plans.length === 0) {
     return <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">No plans are offered right now.</div>;
@@ -100,8 +100,19 @@ export function PlanCatalog({ overview }: { overview: CustomerEconomyOverview })
             <h3 className="text-lg font-semibold text-white">{plan.displayName}</h3>
             <span className="text-xs text-zinc-400">{formatPlanPrice(plan)}</span>
           </div>
-          <p className="mt-2 text-sm text-zinc-400">{plan.monthlyIncludedCredits} Credits included each month</p>
-          <button type="button" disabled aria-disabled className="mt-5 w-full cursor-not-allowed rounded-xl bg-rose-600/50 py-3 text-sm font-semibold text-white/80">Subscribing isn't available yet</button>
+          <p className="mt-2 text-sm text-zinc-400">{plan.monthlyIncludedCredits} Credits included each cycle</p>
+          {onBuy ? (
+            <button
+              type="button"
+              data-testid={`buy-${plan.code}`}
+              onClick={() => onBuy(plan.code)}
+              className="mt-5 min-h-11 w-full rounded-xl bg-rose-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+            >
+              Subscribe · {formatPlanPrice(plan)}
+            </button>
+          ) : (
+            <button type="button" disabled aria-disabled className="mt-5 w-full cursor-not-allowed rounded-xl bg-rose-600/50 py-3 text-sm font-semibold text-white/80">Subscribing isn't available yet</button>
+          )}
         </article>
       ))}
     </section>

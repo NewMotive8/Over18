@@ -309,6 +309,13 @@
       "when": 1789865017910,
       "tag": "0043_simple_morg",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790006446803,
+      "tag": "0044_chief_blazing_skull",
+      "breakpoints": true
     }
   ]
 }
