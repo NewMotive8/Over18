@@ -17,14 +17,16 @@ import type { PaymentProvider } from './payment-provider.js';
  *
  * This lock reads the environment itself (see fake-provider-policy.ts) rather
  * than taking an `isProduction` flag from the caller, and it fails closed: a
- * fake is built only in an explicit development/test process off Railway.
+ * fake is built only in an explicit development/test process off Railway, or on
+ * the staging environment with its opt-in variable deliberately set.
  */
 
 export class FakeProviderInProductionError extends Error {
   constructor(kind: string) {
     super(
       `Refusing to use the fake ${kind} provider: fakes are allowed only when NODE_ENV is ` +
-        'development or test and the process is not running on Railway.',
+        'development or test and the process is not running on Railway, or when ' +
+        'RAILWAY_ENVIRONMENT_NAME is staging and ALLOW_SIMULATED_PAYMENTS is true.',
     );
     this.name = 'FakeProviderInProductionError';
   }

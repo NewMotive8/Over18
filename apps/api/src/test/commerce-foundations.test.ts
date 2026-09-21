@@ -53,6 +53,7 @@ describe('economy and admin flags', () => {
     RAILWAY_ENVIRONMENT_NAME: undefined,
     RAILWAY_PROJECT_ID: undefined,
     RAILWAY_SERVICE_ID: undefined,
+    ALLOW_SIMULATED_PAYMENTS: undefined,
   };
 
   it('defaults every switch OFF', () => {
@@ -100,6 +101,31 @@ describe('economy and admin flags', () => {
     });
     expect(env.commerce.paymentProvider).toBe('none');
     expect(env.commerce.ageVerificationProvider).toBe('none');
+  });
+
+  it('selects a fake on staging when the opt-in is set -- the first of three locks', () => {
+    const staging = load({
+      ...UNSET,
+      // Staging is built from the same image as production, so it reports
+      // NODE_ENV=production. The environment NAME is what distinguishes it.
+      NODE_ENV: 'production',
+      RAILWAY_ENVIRONMENT_NAME: 'staging',
+      RAILWAY_PROJECT_ID: 'a-railway-project',
+      ALLOW_SIMULATED_PAYMENTS: 'true',
+      PAYMENT_PROVIDER: 'fake',
+    });
+    expect(staging.commerce.paymentProvider).toBe('fake');
+  });
+
+  it('refuses a fake on staging when the opt-in is absent', () => {
+    const staging = load({
+      ...UNSET,
+      NODE_ENV: 'production',
+      RAILWAY_ENVIRONMENT_NAME: 'staging',
+      RAILWAY_PROJECT_ID: 'a-railway-project',
+      PAYMENT_PROVIDER: 'fake',
+    });
+    expect(staging.commerce.paymentProvider).toBe('none');
   });
 
   it('does not change isProduction, which still means NODE_ENV === "production"', () => {
@@ -248,6 +274,66 @@ describe('the fake-provider policy', () => {
     // A blank value is not a Railway identity.
     expect(fakeProvidersAllowed({ NODE_ENV: 'test', RAILWAY_PROJECT_ID: ' ' })).toBe(true);
   });
+
+  /**
+   * DOOR 2: the staging deployment, the only way a fake reaches a Railway
+   * process. It exists so the simulated purchase flow can be reviewed on a real
+   * URL. BOTH halves are required, and production has neither.
+   */
+  const STAGING = {
+    NODE_ENV: 'production',
+    RAILWAY_ENVIRONMENT_NAME: 'staging',
+    ALLOW_SIMULATED_PAYMENTS: 'true',
+  };
+
+  it('allows a fake on staging when the opt-in is deliberately set', () => {
+    expect(fakeProvidersAllowed(STAGING)).toBe(true);
+    // Both halves are read the way every other flag in this codebase is read.
+    expect(fakeProvidersAllowed({ ...STAGING, RAILWAY_ENVIRONMENT_NAME: ' Staging ' })).toBe(true);
+    expect(fakeProvidersAllowed({ ...STAGING, ALLOW_SIMULATED_PAYMENTS: ' TRUE ' })).toBe(true);
+  });
+
+  it('refuses staging without the opt-in -- half a door is a shut door', () => {
+    for (const ALLOW_SIMULATED_PAYMENTS of [undefined, '', ' ', 'false', '1', 'yes', 'on', 'truthy']) {
+      expect(
+        fakeProvidersAllowed({ ...STAGING, ALLOW_SIMULATED_PAYMENTS }),
+        `ALLOW_SIMULATED_PAYMENTS=${String(ALLOW_SIMULATED_PAYMENTS)}`,
+      ).toBe(false);
+    }
+  });
+
+  it('refuses the opt-in anywhere but staging, however nearly it is spelled', () => {
+    for (const name of [undefined, '', ' ', 'production', 'staging-2', 'stage', 'preview', 'pr-14']) {
+      expect(
+        fakeProvidersAllowed({ ...STAGING, RAILWAY_ENVIRONMENT_NAME: name }),
+        `RAILWAY_ENVIRONMENT_NAME=${String(name)}`,
+      ).toBe(false);
+    }
+  });
+
+  it('refuses production as production actually looks -- opt-in and all', () => {
+    // The real shape of the production API process, plus the opt-in variable
+    // that someone could one day paste onto the wrong service. Still refused:
+    // the environment name comes from Railway and a deployment cannot forge it.
+    expect(
+      fakeProvidersAllowed({
+        NODE_ENV: 'production',
+        RAILWAY_ENVIRONMENT: 'production',
+        RAILWAY_ENVIRONMENT_ID: 'production-environment-id',
+        RAILWAY_ENVIRONMENT_NAME: 'production',
+        RAILWAY_PROJECT_ID: 'the-project-id',
+        RAILWAY_SERVICE_ID: 'the-api-service-id',
+        PAYMENT_PROVIDER: 'fake',
+        ALLOW_SIMULATED_PAYMENTS: 'true',
+      }),
+    ).toBe(false);
+  });
+
+  it('does not let the opt-in alone rescue an unnamed process off Railway', () => {
+    // No Railway identity at all, NODE_ENV not development/test: neither door.
+    expect(fakeProvidersAllowed({ ALLOW_SIMULATED_PAYMENTS: 'true' })).toBe(false);
+    expect(fakeProvidersAllowed({ NODE_ENV: 'production', ALLOW_SIMULATED_PAYMENTS: 'true' })).toBe(false);
+  });
 });
 
 describe('provider selection', () => {
@@ -280,6 +366,16 @@ describe('provider selection', () => {
   it('returns a fake in an explicit development environment', () => {
     expect(selectPaymentProvider('fake', opts(DEV))?.name).toBe('fake');
     expect(selectAgeVerificationProvider('fake', opts(DEV))?.name).toBe('fake');
+  });
+
+  it('builds a fake on staging with the opt-in -- the second lock agrees with the first', () => {
+    const staging = { NODE_ENV: 'production', RAILWAY_ENVIRONMENT_NAME: 'staging', ALLOW_SIMULATED_PAYMENTS: 'true' };
+    expect(selectPaymentProvider('fake', opts(staging))?.name).toBe('fake');
+  });
+
+  it('still refuses a fake on staging without the opt-in', () => {
+    const staging = { NODE_ENV: 'production', RAILWAY_ENVIRONMENT_NAME: 'staging' };
+    expect(() => selectPaymentProvider('fake', opts(staging))).toThrow(FakeProviderInProductionError);
   });
 
   it('judges process.env itself when no environment is passed', () => {
