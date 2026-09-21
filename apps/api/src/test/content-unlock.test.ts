@@ -265,6 +265,33 @@ describe('unlocking Credit-priced content', () => {
     expect(await paidActionRows()).toEqual([]);
   });
 
+  /**
+   * THE CUSTOMER WHO HAS NEVER HELD A CREDIT.
+   *
+   * She has no wallet ROW at all, which is a different shape from a wallet
+   * holding zero -- and the wallet says so with `wallet_not_found`, not
+   * `insufficient_credits`. Only the second was translated, so the first
+   * escaped as a 500 while P4.2 was already answering the same customer
+   * `insufficient_credits`. The resolver and the unlock have to agree, and
+   * "you have no Credits yet" is a customer's ordinary state, not an error.
+   */
+  it('refuses a customer who has never held Credits the same way, not a server error', async () => {
+    const operator = await account(true);
+    const customer = await account();
+    const clip = await publishedClip(operator);
+    await setContentOffer(dark.db, ON, { assetId: clip, state: 'credit', creditPrice: 50 });
+
+    const wallets = await q<{ n: number }>("SELECT count(*)::int AS n FROM wallets WHERE user_id = $1", [customer.id]);
+    expect(wallets.rows[0]!.n, 'this customer must have no wallet row at all').toBe(0);
+    expect((await accessOf(customer, clip)).decision).toBe('insufficient_credits');
+
+    const res = await unlockVia(live, customer, clip);
+    expect(res.statusCode, res.body).toBe(402);
+    expect(res.json()).toMatchObject({ error: 'insufficient_credits' });
+    expect(await entitlements()).toBe(0);
+    expect(await paidActionRows()).toEqual([]);
+  });
+
   it.each([
     ['free content', { state: 'free' as const }, 409, 'not_purchasable'],
     ['Premium content', { state: 'premium' as const }, 403, 'premium_required'],

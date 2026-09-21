@@ -247,7 +247,17 @@ export async function unlockContent(
       const won = await readEntitlementFor(db, user.id, assetId);
       if (won) return toUnlock(assetId, won, true);
     }
-    if (error instanceof WalletError && error.code === 'insufficient_credits') {
+    // A customer who has never held Credits has no wallet ROW, not a wallet
+    // holding zero -- and to an unlock those mean the same thing: not enough
+    // Credits. P4.2 already reads an absent wallet as zero and answers
+    // `insufficient_credits`, so translating only the short-wallet case left the
+    // two contradicting each other: the resolver said "you cannot afford this"
+    // and the unlock answered 500 `wallet_not_found`, leaking an internal
+    // condition to a customer whose only mistake was having no Credits yet.
+    if (
+      error instanceof WalletError &&
+      (error.code === 'insufficient_credits' || error.code === 'wallet_not_found')
+    ) {
       throw new ContentUnlockError('insufficient_credits', 'You do not have enough Credits to unlock this.');
     }
     if (error instanceof PaidActionError && error.code === 'not_priced') {
