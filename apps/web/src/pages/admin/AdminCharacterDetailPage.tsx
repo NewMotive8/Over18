@@ -561,10 +561,7 @@ export default function AdminCharacterDetailPage() {
         </div>
       )}
 
-      <CharacterEligibilityPanel
-        readiness={detail.readiness}
-        publishability={detail.publishability}
-      />
+      <CharacterEligibilityPanel readiness={detail.readiness} />
 
       {actionError && (
         <p role="alert" className="mb-4 rounded-lg border border-red-900 bg-red-950/60 px-3 py-2 text-sm text-red-300">
