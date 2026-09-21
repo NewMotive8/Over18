@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
+import StagingBanner from '../components/StagingBanner';
 import type { AdminAccessView } from '@over18/shared';
 import { activeAdminDestination, visibleAdminDestinations } from './adminNav';
 import { useAuth } from '../auth/AuthContext';
@@ -112,6 +113,10 @@ export default function AdminShell() {
             </NavLink>
           ))}
         </nav>
+
+        {/* Below the admin navigation, on every admin screen. Renders nothing
+            outside a staging build. */}
+        <StagingBanner />
 
         <main className="flex-1 overflow-y-auto px-6 py-8">
           <Outlet />

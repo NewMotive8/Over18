@@ -1,6 +1,7 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import CreditsPill from './CreditsPill';
 import MobileNavigation from './MobileNavigation';
+import StagingBanner from './StagingBanner';
 
 /**
  * Persistent application shell (US-18).
@@ -40,6 +41,11 @@ export default function AppShell() {
           <CreditsPill />
         </header>
       )}
+
+      {/* Immediately below the header -- and at the very top on the immersive
+          routes, which have no header of their own. Renders nothing outside a
+          staging build. */}
+      <StagingBanner />
 
       <main className={`flex flex-1 flex-col overflow-y-auto ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}>
         <Outlet />
