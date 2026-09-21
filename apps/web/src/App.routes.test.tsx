@@ -48,7 +48,7 @@ describe('app shell + routes', () => {
    */
   it('invents no plan, price or balance on the subscription screen before the server answers', () => {
     const html = renderApp('/subscription');
-    expect(html).toContain('Choose your experience');
+    expect(html).toContain('Premium');
     expect(html).not.toContain('Pricing will be shown when plans launch');
     expect(html).not.toContain('18 Credits');
     expect(html).not.toContain('Premium enrollment coming soon');

@@ -100,8 +100,10 @@ describe('the plan list', () => {
         <PlanCatalog overview={overview()} onBuy={() => {}} />
       </MemoryRouter>,
     );
-    expect(html).toContain('Subscribe · $12.99 / month');
-    expect(html).toContain('200 Credits included each cycle');
+    // One CTA, naming the period it will buy and carrying the server's price.
+    expect(html).toContain('Choose Monthly');
+    expect(html).toContain('$12.99 / month');
+    expect(html).toContain('200 Credits');
     expect(html).not.toContain("Subscribing isn't available yet");
     expect(html).not.toContain('disabled=""');
   });
@@ -112,9 +114,9 @@ describe('the plan list', () => {
         <PlanCatalog overview={overview()} />
       </MemoryRouter>,
     );
-    // The apostrophe is HTML-escaped in static markup.
-    expect(html).toContain('Subscribing isn&#x27;t available yet');
+    // A typographic apostrophe, so not the escaped ASCII one.
+    expect(html).toContain('Subscribing isn\u2019t available yet');
     expect(html).toContain('disabled=""');
-    expect(html).not.toContain('Subscribe ·');
+    expect(html).not.toContain('Choose Monthly');
   });
 });

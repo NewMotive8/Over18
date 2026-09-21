@@ -1,15 +1,16 @@
 import { useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { PaymentMethod } from '@over18/shared';
 import PageContainer from '../components/PageContainer';
 import PageHeader from '../components/PageHeader';
 import PaymentMethodSheet from '../components/PaymentMethodSheet';
-import { CreditBalance, EconomyStateNotice, LockedPremiumCard, PlanCatalog, PlanSummary } from '../components/CustomerEconomy';
-import { formatPlanPrice, getAction, getCurrentPlan, offeredPlans, spendableCredits, useCustomerEconomy } from '../lib/customerEconomy';
+import { CurrentPlanCard, EconomyStateNotice, PlanCatalog, PremiumBenefits } from '../components/CustomerEconomy';
+import { formatPlanPrice, offeredPlans, useCustomerEconomy } from '../lib/customerEconomy';
 import { useCheckout } from '../lib/payments';
 
 /**
- * Subscription (US-18, P9.1) -- plans, access, and buying Premium.
+ * Premium (US-18, P9.1) -- what Premium is, what the customer has now, and
+ * choosing a billing period.
  *
  * WHAT THE SERVER SAYS, AND ONLY THAT. The plan, the balance and the
  * subscription period are read from the customer's commercial state; nothing on
@@ -17,6 +18,13 @@ import { useCheckout } from '../lib/payments';
  * customer to the provider -- while the processor is undecided (P9.D1) that is
  * a clearly marked TEST screen -- and the result is whatever the server reports
  * afterwards, never what this page hoped for.
+ *
+ * THE ORDER IS THE ARGUMENT: what Premium is, what you have, what it costs.
+ * The balance appears once here, because the brand bar already carries the
+ * Credits pill on every screen; a second large balance card read as a second
+ * balance. Each plan is a row rather than a card, because they are one product
+ * at three billing periods, not three offers -- which is also what keeps the
+ * CTA above the fold on a phone.
  */
 export default function SubscriptionPage() {
   const [state, retry] = useCustomerEconomy();
@@ -27,8 +35,6 @@ export default function SubscriptionPage() {
 
   const overview = state.status === 'ready' ? state.overview : null;
   const plan = overview ? offeredPlans(overview).find((p) => p.code === chosen) ?? null : null;
-  const current = overview ? getCurrentPlan(overview) : null;
-  const subscription = overview?.commercial?.subscription;
   const premium = overview?.commercial?.tier?.available && overview.commercial.tier.value === 'premium';
   /** Set when the customer has just come back from a checkout. */
   const returned = params.get('from') === 'checkout';
@@ -46,7 +52,11 @@ export default function SubscriptionPage() {
 
   return (
     <PageContainer>
-      <PageHeader eyebrow="Plans & access" title="Choose your experience" subtitle="Compare your current plan, Credits, and Premium access." />
+      <PageHeader
+        eyebrow="Plans & Premium"
+        title="Premium"
+        subtitle="Unlimited text chat, Premium content, and Credits every billing cycle."
+      />
       <EconomyStateNotice state={state} retry={retry} />
 
       {overview && (
@@ -58,54 +68,26 @@ export default function SubscriptionPage() {
               className={`rounded-2xl border px-4 py-3 ${premium ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-zinc-700 bg-zinc-900/60'}`}
             >
               {premium ? (
-                <>
-                  <p className="text-sm font-semibold text-emerald-100">Premium is active.</p>
-                  <p className="mt-1 text-xs text-emerald-100/80">
-                    {current ? `${current.displayName} · ` : ''}
-                    {subscription?.available && subscription.value
-                      ? `renews ${new Date(subscription.value.currentPeriodEnd).toLocaleDateString()}`
-                      : 'Your period is shown below.'}
-                  </p>
-                </>
+                <p className="text-sm font-semibold text-emerald-100">Premium is active.</p>
               ) : (
-                <p className="text-sm text-zinc-300">
-                  No payment was completed, so nothing changed. You can try again whenever you like.
-                </p>
+                <p className="text-sm text-zinc-300">No payment was completed, so nothing changed. You can try again whenever you like.</p>
               )}
             </div>
           )}
 
-          {spendableCredits(overview) !== null && (
-            <div className="flex items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-900/50 px-4 py-3">
-              <div>
-                <p className="text-sm font-semibold text-white">Your available balance</p>
-                <p className="text-xs text-zinc-500">Always shown before a paid action.</p>
-              </div>
-              <CreditBalance overview={overview} compact />
-            </div>
-          )}
+          <CurrentPlanCard overview={overview} />
+          <PremiumBenefits overview={overview} />
+          <PlanCatalog overview={overview} onBuy={(code) => setChosen(code)} />
 
-          <PlanSummary overview={overview} />
-
-          {/* Premium status and period, as the server states them. */}
-          {premium && subscription?.available && subscription.value && (
-            <div data-testid="premium-status" className="rounded-2xl border border-zinc-800 bg-zinc-900/50 px-4 py-3 text-sm">
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-zinc-400">Status</span>
-                <span className="font-semibold text-emerald-200">{subscription.value.status}</span>
-              </div>
-              <div className="mt-1 flex items-baseline justify-between gap-3">
-                <span className="text-zinc-400">Current period ends</span>
-                <span className="font-semibold text-zinc-100">{new Date(subscription.value.currentPeriodEnd).toLocaleDateString()}</span>
-              </div>
-            </div>
-          )}
-
-          <PlanCatalog overview={overview} onBuy={premium ? undefined : (code) => setChosen(code)} />
-          <LockedPremiumCard action={getAction(overview, 'premium_content')} />
-
-          <p className="text-center text-[11px] text-zinc-600">
-            Payments are simulated while the provider is being selected. No card is collected and no money moves.
+          {/*
+            The disclosure is part of the offer, not a footnote: someone about
+            to press a payment button should read it without hunting for it.
+          */}
+          <p
+            data-testid="payment-note"
+            className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-center text-xs text-amber-200/90"
+          >
+            Payments are simulated in Staging. No card is collected and no real money moves.
           </p>
         </>
       )}
@@ -123,10 +105,6 @@ export default function SubscriptionPage() {
           }}
         />
       )}
-
-      <Link to="/characters" className="text-center text-sm text-zinc-400 transition-colors hover:text-zinc-200">
-        ← Back to Discover
-      </Link>
     </PageContainer>
   );
 }

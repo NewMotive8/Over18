@@ -142,10 +142,10 @@ describe('no plan is invented', () => {
     const overview = overviewOf({ catalog: catalogOf(plan('premium_monthly'), plan('legacy_monthly', { isPurchasable: false })) });
     expect(offeredPlans(overview).map((p) => p.code)).toEqual(['premium_monthly']);
     const html = render(<PlanCatalog overview={overview} />);
-    expect(html).toContain('Plan premium_monthly');
+    expect(html).toContain('data-testid="plan-premium_monthly"');
     expect(html).toContain('$12.99 / month');
-    expect(html).toContain('300 Credits included each cycle');
-    expect(html).not.toContain('Plan legacy_monthly');
+    expect(html).toContain('300 Credits');
+    expect(html).not.toContain('data-testid="plan-legacy_monthly"');
     expect(html).not.toMatch(/\bFree\b/);
   });
 

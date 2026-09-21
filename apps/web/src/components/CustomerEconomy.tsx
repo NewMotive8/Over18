@@ -1,7 +1,17 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { CustomerAction, CustomerEconomyOverview, CustomerEconomyState } from '../lib/customerEconomy';
-import { commercialTier, formatPlanPrice, getCurrentPlan, offeredPlans, spendableCredits } from '../lib/customerEconomy';
+import {
+  bestValuePlan,
+  billingPeriodLabel,
+  commercialTier,
+  formatMonthlyEquivalent,
+  formatPlanPrice,
+  getCurrentPlan,
+  offeredPlans,
+  savingsPercent,
+  spendableCredits,
+} from '../lib/customerEconomy';
 import { CrownIcon, LockIcon, PhoneIcon, SparkleIcon } from './icons';
 
 /**
@@ -83,38 +93,210 @@ export function PlanSummary({ overview }: { overview: CustomerEconomyOverview })
 }
 
 /**
- * The plans offered now, from the server catalog: purchasable plans only, by
- * code. No plan is added here -- in particular there is no "Free" plan card.
- * Raw plan `features` are not rendered (their customer wording is undecided).
+ * WHAT PREMIUM IS, in the customer's words.
+ *
+ * Four facts, and only facts the product already states. The Credits figure is
+ * the server's `monthlyIncludedCredits`, never a constant, so changing the plan
+ * in the economy configuration changes this line too. With no plan to read it
+ * from this renders nothing rather than guessing a number.
+ */
+export function PremiumBenefits({ overview }: { overview: CustomerEconomyOverview }) {
+  const plans = offeredPlans(overview);
+  const credits = plans.length > 0 ? plans[0]!.monthlyIncludedCredits : null;
+  if (credits === null) return null;
+  const benefits = [
+    { key: 'chat', icon: <PhoneIcon className="h-4 w-4" />, text: 'Unlimited text chat' },
+    { key: 'content', icon: <CrownIcon className="h-4 w-4" />, text: 'Premium content included while your plan is active' },
+    { key: 'credits', icon: <SparkleIcon className="h-4 w-4" />, text: `${credits} Credits every billing cycle` },
+    { key: 'spend', icon: <SparkleIcon className="h-4 w-4" />, text: 'Spend Credits on anything priced in Credits' },
+  ];
+  return (
+    <section aria-label="What Premium includes" data-testid="premium-benefits" className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-rose-400">What Premium includes</h3>
+      <ul className="mt-3 flex flex-col gap-2.5">
+        {benefits.map((benefit) => (
+          <li key={benefit.key} className="flex items-start gap-3 text-sm text-zinc-200">
+            <span aria-hidden className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-rose-500/15 text-rose-300">
+              {benefit.icon}
+            </span>
+            <span>{benefit.text}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The customer's plan right now, compactly: tier, plan, renewal, and the
+ * balance ONCE.
+ *
+ * The brand bar already carries the Credits pill on every screen, so this
+ * states the balance as one small figure rather than a second large balance
+ * card -- the same number twice, in two different shapes, reads as two
+ * balances.
+ */
+export function CurrentPlanCard({ overview }: { overview: CustomerEconomyOverview }) {
+  const tier = commercialTier(overview);
+  const plan = getCurrentPlan(overview);
+  const credits = spendableCredits(overview);
+  const subscription = overview.commercial?.subscription;
+  const period = subscription?.available && subscription.value ? subscription.value : null;
+  const premium = tier === 'premium';
+
+  return (
+    <section
+      aria-label="Your current plan"
+      data-testid="current-plan"
+      data-tier={tier ?? 'unknown'}
+      className="rounded-2xl border border-zinc-800 bg-zinc-900/40 px-4 py-3"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Your plan</p>
+          {tier === null ? (
+            <p className="mt-0.5 text-sm text-zinc-400">Not available yet</p>
+          ) : (
+            <p className="mt-0.5 flex items-center gap-1.5 text-base font-semibold text-white">
+              {premium && <CrownIcon aria-hidden className="h-4 w-4 shrink-0 text-amber-300" />}
+              <span className="truncate">{premium ? plan?.displayName ?? 'Premium' : 'Free'}</span>
+            </p>
+          )}
+        </div>
+        {credits !== null && (
+          <p className="shrink-0 text-right">
+            <span className="block text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Credits</span>
+            <span className="text-base font-semibold text-amber-200">{credits}</span>
+          </p>
+        )}
+      </div>
+      {premium && period && (
+        <p className="mt-2 border-t border-zinc-800 pt-2 text-xs text-zinc-400">
+          {period.status === 'cancelled' ? 'Premium until' : 'Renews'} {new Date(period.currentPeriodEnd).toLocaleDateString()}
+          <span className="ml-1 text-zinc-500">&middot; {period.status}</span>
+        </p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * THE PLAN SELECTOR: one decision, three billing periods.
+ *
+ * Every plan is the same product, so this is a choice of billing period rather
+ * than three competing offers -- one row each, one of them selected, and one
+ * primary CTA underneath carrying the price. The monthly equivalent and any
+ * saving are DERIVED from the server's own prices (see the selectors); nothing
+ * here invents a discount, and a saving that cannot be computed is not shown.
+ *
+ * The included Credits are stated once when every plan includes the same
+ * number, and per row only when they differ -- the same fact three times is
+ * noise, and on a phone it is noise that pushes the CTA off the screen.
+ *
+ * A PREMIUM CUSTOMER IS NOT SOLD PREMIUM. Their plan is marked and no purchase
+ * CTA is drawn: the server refuses a second subscription, so an offer it would
+ * refuse should never be on screen.
  */
 export function PlanCatalog({ overview, onBuy }: { overview: CustomerEconomyOverview; onBuy?: (planCode: string) => void }) {
   const plans = offeredPlans(overview);
+  const current = getCurrentPlan(overview);
+  const premium = commercialTier(overview) === 'premium';
+  const featured = bestValuePlan(plans);
+  const [picked, setPicked] = useState<string | null>(null);
+
   if (plans.length === 0) {
     return <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">No plans are offered right now.</div>;
   }
+
+  const selectedCode = picked ?? current?.code ?? featured?.code ?? plans[0]!.code;
+  const selected = plans.find((plan) => plan.code === selectedCode) ?? plans[0]!;
+  const credits = plans[0]!.monthlyIncludedCredits;
+  const sameCreditsEverywhere = plans.every((plan) => plan.monthlyIncludedCredits === credits);
+
   return (
     <section className="flex flex-col gap-3">
-      {plans.map((plan) => (
-        <article key={plan.code} className="rounded-3xl border border-rose-500/30 bg-gradient-to-b from-rose-500/10 to-zinc-950 p-5">
-          <div className="flex items-baseline justify-between gap-3">
-            <h3 className="text-lg font-semibold text-white">{plan.displayName}</h3>
-            <span className="text-xs text-zinc-400">{formatPlanPrice(plan)}</span>
-          </div>
-          <p className="mt-2 text-sm text-zinc-400">{plan.monthlyIncludedCredits} Credits included each cycle</p>
-          {onBuy ? (
-            <button
-              type="button"
-              data-testid={`buy-${plan.code}`}
-              onClick={() => onBuy(plan.code)}
-              className="mt-5 min-h-11 w-full rounded-xl bg-rose-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+      <div role="radiogroup" aria-label="Billing period" className="flex flex-col gap-2">
+        {plans.map((plan) => {
+          const chosen = plan.code === selected.code;
+          const mine = current?.code === plan.code;
+          const save = savingsPercent(plans, plan);
+          const permonth = formatMonthlyEquivalent(plan);
+          return (
+            <label
+              key={plan.code}
+              data-testid={`plan-${plan.code}`}
+              data-selected={chosen ? 'true' : 'false'}
+              className={`flex min-h-[3.5rem] cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 transition-colors ${
+                chosen ? 'border-rose-500 bg-rose-500/10' : 'border-zinc-800 bg-zinc-900/40 hover:border-zinc-700'
+              }`}
             >
-              Subscribe · {formatPlanPrice(plan)}
-            </button>
-          ) : (
-            <button type="button" disabled aria-disabled className="mt-5 w-full cursor-not-allowed rounded-xl bg-rose-600/50 py-3 text-sm font-semibold text-white/80">Subscribing isn't available yet</button>
-          )}
-        </article>
-      ))}
+              <input
+                type="radio"
+                name="billing-period"
+                value={plan.code}
+                checked={chosen}
+                onChange={() => setPicked(plan.code)}
+                className="sr-only"
+              />
+              <span
+                aria-hidden
+                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${chosen ? 'border-rose-500' : 'border-zinc-600'}`}
+              >
+                {chosen && <span className="h-2.5 w-2.5 rounded-full bg-rose-500" />}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-sm font-semibold text-white">{billingPeriodLabel(plan)}</span>
+                  {plan.code === featured?.code && plans.length > 1 && (
+                    <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">Best value</span>
+                  )}
+                  {mine && (
+                    <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">Your plan</span>
+                  )}
+                </span>
+                {permonth && <span className="mt-0.5 block text-xs text-zinc-400">{permonth}</span>}
+                {!sameCreditsEverywhere && (
+                  <span className="mt-0.5 block text-xs text-amber-200/80">{plan.monthlyIncludedCredits} Credits each cycle</span>
+                )}
+              </span>
+              <span className="shrink-0 text-right">
+                <span className="block text-sm font-semibold text-white">{formatPlanPrice(plan)}</span>
+                {save !== null && <span className="block text-[11px] font-medium text-emerald-300">Save {save}%</span>}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+
+      {sameCreditsEverywhere && (
+        <p className="text-center text-xs text-zinc-400">
+          Every plan includes <span className="font-semibold text-amber-200">{credits} Credits</span> each billing cycle.
+        </p>
+      )}
+
+      {premium ? (
+        <p data-testid="already-premium" className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-center text-sm text-emerald-100">
+          You&rsquo;re on Premium &mdash; there&rsquo;s nothing to buy here.
+        </p>
+      ) : onBuy ? (
+        <button
+          type="button"
+          data-testid={`buy-${selected.code}`}
+          onClick={() => onBuy(selected.code)}
+          className="min-h-[3rem] w-full rounded-xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+        >
+          Choose {billingPeriodLabel(selected)} &middot; {formatPlanPrice(selected)}
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled
+          aria-disabled
+          className="min-h-[3rem] w-full cursor-not-allowed rounded-xl bg-rose-600/40 px-4 py-3 text-sm font-semibold text-white/70"
+        >
+          Subscribing isn&rsquo;t available yet
+        </button>
+      )}
     </section>
   );
 }
