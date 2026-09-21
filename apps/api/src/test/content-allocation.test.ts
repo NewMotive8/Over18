@@ -114,12 +114,20 @@ const allocate = (who: Account, freeClipCount: unknown, characterId = LUNA.id, c
     cookies: who.cookies,
     payload: { freeClipCount, reason: 'Launch allocation' },
   });
-const mark = (who: Account, assetId: string, state: unknown, characterId = LUNA.id, ctx: TestContext = live) =>
+const mark = (
+  who: Account,
+  assetId: string,
+  state: unknown,
+  characterId = LUNA.id,
+  ctx: TestContext = live,
+  creditPrice?: unknown,
+) =>
   ctx.app.inject({
     method: 'PUT',
     url: `${ACCESS(characterId)}/clips/${assetId}`,
     cookies: who.cookies,
-    payload: { state, reason: 'Chosen as a taster' },
+    // Absent unless a test says otherwise: `credit` needs one, nothing else may carry one.
+    payload: { state, ...(creditPrice === undefined ? {} : { creditPrice }), reason: 'Chosen as a taster' },
   });
 const clear = (who: Account, characterId = LUNA.id, ctx: TestContext = live) =>
   ctx.app.inject({ method: 'POST', url: `${ACCESS(characterId)}/clear`, cookies: who.cookies, payload: { reason: 'Back to free' } });
@@ -190,7 +198,7 @@ describe('allocating N Free clips', () => {
     const page = await applied(await allocate(operator, 2));
 
     expect(page.allocation).toEqual({ configured: true, freeClipCount: 2 });
-    expect(page.counts).toEqual({ clips: 5, free: 2, premium: 3 });
+    expect(page.counts).toEqual({ clips: 5, free: 2, premium: 3, credit: 0 });
     const free = page.clips.filter((c) => c.state === 'free').map((c) => c.assetId);
     expect(free).toHaveLength(2);
     for (const id of ids) expect(page.clips.some((c) => c.assetId === id)).toBe(true);
@@ -220,8 +228,8 @@ describe('allocating N Free clips', () => {
   it('asking for more Free clips than she has makes them all Free; asking for none locks them all', async () => {
     const operator = await account([]);
     await clips(operator, 3);
-    expect((await applied(await allocate(operator, 99))).counts).toEqual({ clips: 3, free: 3, premium: 0 });
-    expect((await applied(await allocate(operator, 0))).counts).toEqual({ clips: 3, free: 0, premium: 3 });
+    expect((await applied(await allocate(operator, 99))).counts).toEqual({ clips: 3, free: 3, premium: 0, credit: 0 });
+    expect((await applied(await allocate(operator, 0))).counts).toEqual({ clips: 3, free: 0, premium: 3, credit: 0 });
   });
 
   it('a clip uploaded afterwards is Premium, with nothing written for it', async () => {
@@ -232,7 +240,7 @@ describe('allocating N Free clips', () => {
 
     const page = await view(operator);
     expect(stateOf(page, later)).toMatchObject({ state: 'premium', byDefault: true });
-    expect(page.counts).toEqual({ clips: 3, free: 2, premium: 1 });
+    expect(page.counts).toEqual({ clips: 3, free: 2, premium: 1, credit: 0 });
   });
 
   it('only that character: another character is untouched', async () => {
@@ -254,7 +262,7 @@ describe('marking one clip', () => {
     expect(res.statusCode, res.body).toBe(200);
     const page = res.json() as AdminCharacterContentAccess;
     expect(stateOf(page, ids[1]!)).toMatchObject({ state: 'free', byDefault: false });
-    expect(page.counts).toEqual({ clips: 3, free: 1, premium: 2 });
+    expect(page.counts).toEqual({ clips: 3, free: 1, premium: 2, credit: 0 });
 
     // And back again.
     const premium = (await mark(operator, ids[1]!, 'premium')).json() as AdminCharacterContentAccess;
@@ -272,6 +280,148 @@ describe('marking one clip', () => {
   });
 });
 
+/* ------------------------------------------------------------------ *
+ * Credit prices
+ * ------------------------------------------------------------------ */
+
+describe('pricing one clip in Credits', () => {
+  /**
+   * The third thing a clip can be. It is the SAME offer row as Free and
+   * Premium -- one pricing model, P4.1's -- carrying a whole-Credit price.
+   */
+
+  it('prices a Free clip in Credits', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    expect(stateOf(await applied(await mark(operator, asset!, 'free')), asset!)).toMatchObject({ state: 'free', creditPrice: null });
+
+    const page = await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 50));
+    expect(stateOf(page, asset!)).toMatchObject({ state: 'credit', creditPrice: 50, byDefault: false });
+    expect(page.counts.credit).toBe(1);
+  });
+
+  it('prices a Premium clip in Credits', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await applied(await mark(operator, asset!, 'premium'));
+    const page = await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 125));
+    expect(stateOf(page, asset!)).toMatchObject({ state: 'credit', creditPrice: 125 });
+  });
+
+  it('takes the price off again: Credit to Free, with no price left behind', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 50));
+    const page = await applied(await mark(operator, asset!, 'free'));
+    expect(stateOf(page, asset!)).toMatchObject({ state: 'free', creditPrice: null });
+    expect(page.counts.credit).toBe(0);
+  });
+
+  it('moves a priced clip into Premium, with no price left behind', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 50));
+    const page = await applied(await mark(operator, asset!, 'premium'));
+    expect(stateOf(page, asset!)).toMatchObject({ state: 'premium', creditPrice: null });
+  });
+
+  it('re-prices in place rather than stacking a second offer on the clip', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 50));
+    const before = await offerCount();
+    const page = await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 75));
+    expect(stateOf(page, asset!)).toMatchObject({ state: 'credit', creditPrice: 75 });
+    expect(await offerCount()).toBe(before);
+  });
+
+  it('refuses a price that is not a whole number of Credits (400), and writes nothing', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    for (const bad of [0, -5, 12.5, '50', null, true, Number.NaN, 1e21]) {
+      const res = await mark(operator, asset!, 'credit', LUNA.id, live, bad);
+      expect(res.statusCode, `price ${String(bad)}`).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'invalid_price' });
+    }
+    const missing = await mark(operator, asset!, 'credit');
+    expect(missing.statusCode, 'credit with no price at all').toBe(400);
+    expect(missing.json()).toMatchObject({ error: 'invalid_price' });
+
+    expect(await offerCount(), 'no refused attempt may write an offer').toBe(0);
+    expect(await accessAudits()).toEqual([]);
+  });
+
+  it('refuses a price on Free or Premium content rather than quietly dropping it', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    for (const state of ['free', 'premium']) {
+      const res = await mark(operator, asset!, state, LUNA.id, live, 50);
+      expect(res.statusCode, state).toBe(400);
+      expect(res.json()).toMatchObject({ error: 'invalid_price' });
+    }
+    expect(await offerCount()).toBe(0);
+  });
+
+  it('refuses a state that is not one of the three', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    for (const state of ['unavailable', 'CREDIT', 'cheap', 42, null]) {
+      expect((await mark(operator, asset!, state)).statusCode, String(state)).toBe(400);
+    }
+    expect(await offerCount()).toBe(0);
+  });
+
+  it('needs the same access.manage permission as every other access change, not a new one', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    const customer = await account();
+    expect((await mark(customer, asset!, 'credit', LUNA.id, live, 50)).statusCode).toBe(403);
+
+    const economyEditor = await account(['economy_editor']);
+    const refused = await mark(economyEditor, asset!, 'credit', LUNA.id, enforced, 50);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toMatchObject({ error: 'forbidden', permission: 'access.manage' });
+
+    const editor = await account(['content_editor']);
+    expect((await mark(editor, asset!, 'credit', LUNA.id, enforced, 50)).statusCode).toBe(200);
+    expect(await offerCount()).toBe(1);
+  });
+
+  it('is refused while the economy is off, like every other commercial write', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    expect((await mark(operator, asset!, 'credit', LUNA.id, dark, 50)).statusCode).toBe(503);
+    expect(await offerCount()).toBe(0);
+  });
+
+  it('records the price in the audit trail, with the reason the operator gave', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 50));
+    await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 75));
+    await applied(await mark(operator, asset!, 'free'));
+
+    const trail = await accessAudits();
+    expect(trail.map((row) => row.action)).toEqual(['content.access.credit', 'content.access.credit', 'content.access.free']);
+    expect(trail.every((row) => row.object_id === asset && row.reason === 'Chosen as a taster')).toBe(true);
+    // "Priced at 50" and "priced at 75" are different facts; the trail keeps both.
+    expect(trail.map((row) => (row.after as { creditPrice: number | null }).creditPrice)).toEqual([50, 75, null]);
+  });
+
+  it('the customer resolver reads the price the operator set', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await applied(await mark(operator, asset!, 'credit', LUNA.id, live, 50));
+
+    const customer = await account();
+    const res = await live.app.inject({ method: 'GET', url: `/api/content/access?assetIds=${asset}`, cookies: customer.cookies });
+    expect(res.statusCode, res.body).toBe(200);
+    const [item] = (res.json() as CustomerContentAccessResponse).items;
+    // The price is the offer's, and with no Credits yet the decision follows from it.
+    expect(item).toMatchObject({ state: 'credit', creditPrice: 50, decision: 'insufficient_credits' });
+  });
+});
+
 describe('taking a character back out', () => {
   it('clears the allocation and retires the offers: her clips read Free again, as they did before', async () => {
     const operator = await account([]);
@@ -283,7 +433,7 @@ describe('taking a character back out', () => {
     expect(res.statusCode, res.body).toBe(200);
     const page = res.json() as AdminCharacterContentAccess;
     expect(page.allocation).toEqual({ configured: false, freeClipCount: null });
-    expect(page.counts).toEqual({ clips: 3, free: 3, premium: 0 });
+    expect(page.counts).toEqual({ clips: 3, free: 3, premium: 0, credit: 0 });
     for (const id of ids) expect(stateOf(page, id)).toMatchObject({ state: 'free', byDefault: true });
 
     // The offers stay as history, retired -- never deleted.

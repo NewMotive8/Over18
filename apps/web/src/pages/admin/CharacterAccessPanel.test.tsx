@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { AdminCharacterContentAccess, AdminClipAccess } from '@over18/shared';
-import CharacterAccessSection, { ContentAccessPanel, allocationSummary, clipStateLabel } from './CharacterAccessPanel';
+import CharacterAccessSection, { ContentAccessPanel, allocationSummary, clipStateLabel, parseCreditPrice } from './CharacterAccessPanel';
 
 /**
  * P4.D2 -- a character's Free/Premium clips, rendered statically. Every state
@@ -27,12 +27,12 @@ const page = (over: Partial<AdminCharacterContentAccess> = {}): AdminCharacterCo
   economyEnabled: true,
   allocation: { configured: true, freeClipCount: 2 },
   clips: [clip('aaaaaaaa-1111-4111-8111-111111111111', { state: 'free', byDefault: false }), clip('bbbbbbbb-2222-4222-8222-222222222222')],
-  counts: { clips: 2, free: 1, premium: 1 },
+  counts: { clips: 2, free: 1, premium: 1, credit: 0 },
   ...over,
 });
 
 const noop = () => {};
-const panel = (over: Partial<AdminCharacterContentAccess> = {}, reason = 'Launch allocation') =>
+const panel = (over: Partial<AdminCharacterContentAccess> = {}, reason = 'Launch allocation', prices: Record<string, string> = {}) =>
   renderToStaticMarkup(
     <MemoryRouter>
       <ContentAccessPanel
@@ -41,8 +41,10 @@ const panel = (over: Partial<AdminCharacterContentAccess> = {}, reason = 'Launch
         reason={reason}
         busy={false}
         messages={[]}
+        prices={prices}
         onFreeCount={noop}
         onReason={noop}
+        onPrice={noop}
         onAllocate={noop}
         onClear={noop}
         onMark={noop}
@@ -56,7 +58,7 @@ describe('what the panel says about a character', () => {
     expect(allocationSummary(page({ allocation: { configured: false, freeClipCount: null } }))).toBe(
       '1 of 2 Free, 1 Premium. New clips are Free: she is not in Free/Premium yet.',
     );
-    expect(allocationSummary(page({ clips: [], counts: { clips: 0, free: 0, premium: 0 } }))).toBe('She has no clips yet.');
+    expect(allocationSummary(page({ clips: [], counts: { clips: 0, free: 0, premium: 0, credit: 0 } }))).toBe('She has no clips yet.');
   });
 
   it('names each access state as an operator would say it', () => {
@@ -74,9 +76,11 @@ describe('the panel', () => {
     expect(html).toContain('data-state="free"');
     expect(html).toContain('data-state="premium"');
     expect(html).toContain('by default');
-    // The action offered is the opposite of what the clip is now.
-    expect(html).toContain('Make Premium');
-    expect(html).toContain('Make Free');
+    // Three explicit choices per clip, rather than a two-way toggle.
+    expect(html.match(/data-testid="set-free"/g)).toHaveLength(2);
+    expect(html.match(/data-testid="set-premium"/g)).toHaveLength(2);
+    expect(html.match(/data-testid="set-credit"/g)).toHaveLength(2);
+    expect(html.match(/data-testid="credit-price"/g)).toHaveLength(2);
   });
 
   it('offers the random allocation, and turning it off only when she is in it', () => {
@@ -100,16 +104,58 @@ describe('the panel', () => {
   });
 
   it('says what happens to clips uploaded later when she has none yet', () => {
-    const html = panel({ clips: [], counts: { clips: 0, free: 0, premium: 0 } });
+    const html = panel({ clips: [], counts: { clips: 0, free: 0, premium: 0, credit: 0 } });
     expect(html).toContain('No clips yet.');
     expect(html).toContain('follows this character');
     expect(html).not.toContain('clip-access-row');
   });
 
+  /**
+   * PRICING ONE CLIP IN CREDITS.
+   *
+   * The price box is the only new input, and "Set price" stays shut until what
+   * is in it is a price. The SERVER still decides -- this only avoids sending
+   * a request that would certainly be refused.
+   */
+  const shutCreditButtons = (html: string) => (html.match(/data-testid="set-credit"[^>]*disabled=""/g) ?? []).length;
+
+  it('will not offer to set a Credit price until a whole number is typed', () => {
+    expect(shutCreditButtons(panel()), 'nothing typed: neither clip can be priced').toBe(2);
+    expect(shutCreditButtons(panel({}, 'Launch allocation', { 'bbbbbbbb-2222-4222-8222-222222222222': '50' }))).toBe(1);
+    expect(shutCreditButtons(panel({}, 'Launch allocation', { 'bbbbbbbb-2222-4222-8222-222222222222': '12.5' }))).toBe(2);
+    expect(shutCreditButtons(panel({}, 'Launch allocation', { 'bbbbbbbb-2222-4222-8222-222222222222': '0' }))).toBe(2);
+  });
+
+  it('will not price anything without a reason, however good the price is', () => {
+    expect(shutCreditButtons(panel({}, '   ', { 'bbbbbbbb-2222-4222-8222-222222222222': '50' }))).toBe(2);
+  });
+
+  it('counts Credit-priced clips in the summary instead of hiding them', () => {
+    const priced = page({
+      clips: [clip('c', { state: 'credit', creditPrice: 50, byDefault: false })],
+      counts: { clips: 1, free: 0, premium: 0, credit: 1 },
+    });
+    expect(allocationSummary(priced)).toContain('1 Credit-priced');
+  });
+
   it('shows no Credit price or age floor of its own: only what the server sent', () => {
-    const html = panel({ clips: [clip('c', { state: 'credit', creditPrice: 50, byDefault: false })], counts: { clips: 1, free: 0, premium: 0 } });
+    const html = panel({ clips: [clip('c', { state: 'credit', creditPrice: 50, byDefault: false })], counts: { clips: 1, free: 0, premium: 0, credit: 0 } });
     expect(html).toContain('50 Credits');
     expect(html).not.toMatch(/\$\d|wallet|ledger/i);
+  });
+});
+
+describe('what counts as a Credit price', () => {
+  it('accepts whole Credits, 1 or more, however it was spaced', () => {
+    expect(parseCreditPrice('1')).toBe(1);
+    expect(parseCreditPrice(' 50 ')).toBe(50);
+    expect(parseCreditPrice('1000')).toBe(1000);
+  });
+
+  it('rejects everything that is not one', () => {
+    for (const bad of ['', '   ', '0', '-3', '12.5', '1e3', 'fifty', '5 Credits', '٥', '+7']) {
+      expect(parseCreditPrice(bad), JSON.stringify(bad)).toBeNull();
+    }
   });
 });
 

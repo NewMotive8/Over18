@@ -1422,7 +1422,12 @@ export const adminContentAccessApi = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
-  markClip: (characterId: string, assetId: string, body: { state: 'free' | 'premium'; reason: string }) =>
+  /** `creditPrice` belongs to `credit` alone; the server refuses it anywhere else. */
+  markClip: (
+    characterId: string,
+    assetId: string,
+    body: { state: 'free' | 'premium' | 'credit'; creditPrice?: number; reason: string },
+  ) =>
     request<AdminCharacterContentAccess>(
       `/admin/characters/${encodeURIComponent(characterId)}/content-access/clips/${encodeURIComponent(assetId)}`,
       { method: 'PUT', body: JSON.stringify(body) },

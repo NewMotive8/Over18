@@ -760,5 +760,5 @@ export interface AdminCharacterContentAccess {
   economyEnabled: boolean;
   allocation: { configured: boolean; freeClipCount: number | null };
   clips: AdminClipAccess[];
-  counts: { clips: number; free: number; premium: number };
+  counts: { clips: number; free: number; premium: number; credit: number };
 }

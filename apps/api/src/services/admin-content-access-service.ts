@@ -14,8 +14,8 @@ import {
 import { listCharacterContent } from './content-review-service.js';
 
 /**
- * ADMIN CONTENT ACCESS (P4.D2): which of a character's clips are Free, and
- * which are Premium.
+ * ADMIN CONTENT ACCESS (P4.D2): what each of a character's clips costs to
+ * see -- Free, included with Premium, or unlocked for a price in Credits.
  *
  * IT ADDS NO CONTENT MANAGEMENT. Clips are uploaded, approved and released
  * exactly as before; this only says what each one costs to see. The clips it
@@ -28,7 +28,8 @@ import { listCharacterContent } from './content-review-service.js';
  * make Free, and records what it did.
  *
  * THE TWO OPERATOR ACTIONS, from the P4.D2 decision:
- *   mark        one clip Free or Premium;
+ *   mark        one clip Free, Premium, or Credit-priced at a whole number of
+ *               Credits;
  *   allocate    "N of her clips should be Free" -- the system picks N at
  *               random, and every other clip becomes Premium.
  * Both write offers for the clips she has NOW. A clip uploaded afterwards
@@ -52,8 +53,16 @@ export class AdminContentAccessError extends Error {
 export const CONTENT_ACCESS_AUDIT_OBJECT_TYPE = 'content_access';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** The states an operator may set on one clip here. Credit pricing is a separate decision (P4.1). */
-const CLIP_STATES: readonly ContentAccessState[] = ['free', 'premium'];
+/**
+ * The states an operator may set on one clip.
+ *
+ * `unavailable` is deliberately absent: withdrawing content is the content
+ * workflow's decision (archive it), never a price. The PRICE that `credit`
+ * needs is not validated here -- P4.1 already requires a whole number of
+ * Credits for `credit` and refuses one for anything else, and restating that
+ * rule here would be the second pricing model this must not become.
+ */
+const CLIP_STATES: readonly ContentAccessState[] = ['free', 'premium', 'credit'];
 
 function invalid(message: string): never {
   throw new AdminContentAccessError('invalid_request', message);
@@ -106,6 +115,7 @@ export async function readCharacterContentAccess(
       clips: items.length,
       free: items.filter((clip) => clip.state === 'free').length,
       premium: items.filter((clip) => clip.state === 'premium').length,
+      credit: items.filter((clip) => clip.state === 'credit').length,
     },
   };
 }
@@ -115,11 +125,19 @@ interface ActorContext {
   requestId: string | null;
 }
 
-/** Marks ONE clip Free or Premium, whatever her allocation says. */
+/**
+ * Marks ONE clip Free, Premium or Credit-priced, whatever her allocation says.
+ *
+ * The Credit price is passed to P4.1 exactly as the operator sent it, so one
+ * rule decides what a price may be: a whole number of Credits, 1 or more, on
+ * `credit` content and nothing else. A price sent with `free` or `premium` is
+ * therefore refused rather than quietly dropped -- an operator who typed one
+ * meant something, and silently ignoring it would price the clip at nothing.
+ */
 export async function setClipAccess(
   db: Db,
   commerce: { enabled: boolean },
-  input: { characterId: string; assetId: string; state: unknown; reason: unknown },
+  input: { characterId: string; assetId: string; state: unknown; creditPrice?: unknown; reason: unknown },
   ctx: ActorContext,
 ): Promise<AdminCharacterContentAccess> {
   const id = await requireCharacter(db, input.characterId);
@@ -130,16 +148,21 @@ export async function setClipAccess(
   const clip = clips.find((candidate) => candidate.assetId === input.assetId);
   if (!clip) throw new AdminContentAccessError('asset_not_found', 'That clip is not one of this character\'s clips.');
 
+  const creditPrice = (input.creditPrice ?? null) as number | null;
+
   const before = (await describeAssetCommercial(db, [clip.assetId])).get(clip.assetId)!;
   await db.transaction(async (tx) => {
-    await setContentOffer(tx, commerce, { assetId: clip.assetId, state });
+    await setContentOffer(tx, commerce, { assetId: clip.assetId, state, creditPrice });
     await recordAudit(tx, {
       actor: ctx.actor,
       action: `content.access.${state}`,
       objectType: CONTENT_ACCESS_AUDIT_OBJECT_TYPE,
       objectId: clip.assetId,
-      before: { state: before.state, byDefault: before.implicit },
-      after: { state, byDefault: false },
+      // The price belongs in the trail: "made Credit-priced" is not the same
+      // record as "made Credit-priced at 50", and re-pricing changes nothing
+      // else about the clip.
+      before: { state: before.state, byDefault: before.implicit, creditPrice: before.creditPrice },
+      after: { state, byDefault: false, creditPrice },
       reason,
       requestId: ctx.requestId,
       metadata: { characterId: id, source: 'admin' },

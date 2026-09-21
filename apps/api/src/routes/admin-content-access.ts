@@ -18,8 +18,8 @@ const ACCESS_CHANGES_UNAVAILABLE: EconomyUnavailableResponse = {
 };
 
 /**
- * Admin -> a character's Free/Premium clips (P4.D2) -- a thin HTTP boundary
- * over `services/admin-content-access-service.ts`.
+ * Admin -> what a character's clips cost to see (P4.D2) -- a thin HTTP
+ * boundary over `services/admin-content-access-service.ts`.
  *
  * STAFF ONLY, BY PERMISSION: `access.manage` (§32: per-asset access states and
  * Credit prices), through the existing `requirePermission`.
@@ -78,8 +78,17 @@ export default async function adminContentAccessRoutes(
     },
   );
 
-  /** One clip: Free, or Premium. */
-  app.put<{ Params: { characterId: string; assetId: string }; Body: { state?: unknown; reason?: unknown } }>(
+  /**
+   * One clip: Free, Premium, or Credit-priced.
+   *
+   * `creditPrice` is required for `credit` and refused for anything else. The
+   * rule lives in P4.1, not here, and a price it rejects comes back as 400
+   * `invalid_price` through `failed` below.
+   */
+  app.put<{
+    Params: { characterId: string; assetId: string };
+    Body: { state?: unknown; creditPrice?: unknown; reason?: unknown };
+  }>(
     '/admin/characters/:characterId/content-access/clips/:assetId',
     change,
     async (request, reply) => {
@@ -93,6 +102,7 @@ export default async function adminContentAccessRoutes(
             characterId: request.params.characterId,
             assetId: request.params.assetId,
             state: request.body?.state,
+            creditPrice: request.body?.creditPrice,
             reason: request.body?.reason,
           },
           { actor: { userId: request.currentUser!.id, email: request.currentUser!.email }, requestId: request.id },
