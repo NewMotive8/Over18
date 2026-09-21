@@ -181,12 +181,29 @@ describe('who may set a character\'s Free clips', () => {
  * ------------------------------------------------------------------ */
 
 describe('a character nobody has allocated', () => {
-  it('is exactly as she is today: every clip Free, by default, with nothing written', async () => {
+  /**
+   * P4.D2, the decision itself: "for each character, all clips are Premium by
+   * default". No opt-in, no allocation row, nothing written -- a character
+   * nobody has touched is already Premium.
+   */
+  it('has every clip PREMIUM by default, with nothing written', async () => {
     const operator = await account([]);
     const ids = await clips(operator, 3);
     const page = await view(operator);
-    expect(page).toMatchObject({ characterId: LUNA.id, allocation: { configured: false, freeClipCount: null }, counts: { clips: 3, free: 3, premium: 0 } });
-    for (const id of ids) expect(stateOf(page, id)).toMatchObject({ state: 'free', byDefault: true, creditPrice: null, ageFloor: null });
+    expect(page).toMatchObject({
+      characterId: LUNA.id,
+      allocation: { configured: false, freeClipCount: null },
+      counts: { clips: 3, free: 0, premium: 3 },
+    });
+    for (const id of ids) expect(stateOf(page, id)).toMatchObject({ state: 'premium', byDefault: true, creditPrice: null, ageFloor: null });
+    expect(await offerCount(), 'the default is computed, never backfilled').toBe(0);
+  });
+
+  it('keeps a clip uploaded later Premium too, still with nothing written', async () => {
+    const operator = await account([]);
+    await clips(operator, 1);
+    const later = await clip(operator);
+    expect(stateOf(await view(operator), later)).toMatchObject({ state: 'premium', byDefault: true });
     expect(await offerCount()).toBe(0);
   });
 });
@@ -248,7 +265,8 @@ describe('allocating N Free clips', () => {
     await clips(operator, 2);
     const hers = await clip(operator, EMBER.id);
     await applied(await allocate(operator, 0));
-    expect(stateOf(await view(operator, EMBER.id), hers)).toMatchObject({ state: 'free', byDefault: true });
+    // Untouched now means the default, which is Premium -- not Free.
+    expect(stateOf(await view(operator, EMBER.id), hers)).toMatchObject({ state: 'premium', byDefault: true });
   });
 });
 
@@ -270,13 +288,15 @@ describe('marking one clip', () => {
     expect((await accessAudits()).map((a) => a.action)).toEqual(['content.access.allocate', 'content.access.free', 'content.access.premium']);
   });
 
-  it('works for a character with no allocation at all: one Free clip among Free clips', async () => {
+  it('works for a character with no allocation at all: one deliberate Free clip among Premium ones', async () => {
     const operator = await account([]);
     const ids = await clips(operator, 2);
-    expect((await mark(operator, ids[0]!, 'premium')).statusCode).toBe(200);
+    expect((await mark(operator, ids[0]!, 'free')).statusCode).toBe(200);
     const page = await view(operator);
-    expect(stateOf(page, ids[0]!)).toMatchObject({ state: 'premium', byDefault: false });
-    expect(stateOf(page, ids[1]!)).toMatchObject({ state: 'free', byDefault: true });
+    // The marked one is a decision; the other is still the default.
+    expect(stateOf(page, ids[0]!)).toMatchObject({ state: 'free', byDefault: false });
+    expect(stateOf(page, ids[1]!)).toMatchObject({ state: 'premium', byDefault: true });
+    expect(page.counts).toMatchObject({ clips: 2, free: 1, premium: 1 });
   });
 });
 
@@ -423,7 +443,7 @@ describe('pricing one clip in Credits', () => {
 });
 
 describe('taking a character back out', () => {
-  it('clears the allocation and retires the offers: her clips read Free again, as they did before', async () => {
+  it('clears the allocation and retires the offers: her clips return to Premium by default', async () => {
     const operator = await account([]);
     const ids = await clips(operator, 3);
     await applied(await allocate(operator, 1));
@@ -433,16 +453,16 @@ describe('taking a character back out', () => {
     expect(res.statusCode, res.body).toBe(200);
     const page = res.json() as AdminCharacterContentAccess;
     expect(page.allocation).toEqual({ configured: false, freeClipCount: null });
-    expect(page.counts).toEqual({ clips: 3, free: 3, premium: 0, credit: 0 });
-    for (const id of ids) expect(stateOf(page, id)).toMatchObject({ state: 'free', byDefault: true });
+    expect(page.counts).toEqual({ clips: 3, free: 0, premium: 3, credit: 0 });
+    for (const id of ids) expect(stateOf(page, id)).toMatchObject({ state: 'premium', byDefault: true });
 
     // The offers stay as history, retired -- never deleted.
     expect(await offerCount()).toBe(3);
     expect((await q<{ n: number }>('SELECT count(*)::int AS n FROM content_offers WHERE retired_at IS NOT NULL')).rows[0]!.n).toBe(3);
     expect(await allocationRows()).toBe(0);
-    // A clip uploaded now is Free again, like the rest of the library.
+    // And a clip uploaded now is Premium, like every unclassified clip.
     const later = await clip(operator);
-    expect(stateOf(await view(operator), later)).toMatchObject({ state: 'free', byDefault: true });
+    expect(stateOf(await view(operator), later)).toMatchObject({ state: 'premium', byDefault: true });
   });
 });
 
@@ -484,7 +504,7 @@ describe('while the economy is off', () => {
     const operator = await account([]);
     const ids = await clips(operator, 2);
     const page = await view(operator, LUNA.id, dark);
-    expect(page).toMatchObject({ economyEnabled: false, allocation: { configured: false }, counts: { clips: 2, free: 2 } });
+    expect(page).toMatchObject({ economyEnabled: false, allocation: { configured: false }, counts: { clips: 2, free: 0, premium: 2 } });
 
     for (const res of [
       await allocate(operator, 1, LUNA.id, dark),

@@ -165,13 +165,31 @@ export async function describeAssetCommercial(
   for (const id of assetIds) out.set(id, IMPLICIT_FREE);
   if (assetIds.length === 0) return out;
 
-  // P4.D2: a clip of an allocated character defaults to Premium, not Free.
-  const allocated = await db
-    .select({ id: characterVisualAssets.id })
+  /**
+   * P4.D2: EVERY CLIP IS PREMIUM BY DEFAULT -- "for each character, all clips
+   * are Premium by default", with no opt-in of any kind.
+   *
+   * The default used to depend on the character having a free-clip allocation
+   * row, so a character nobody had configured read Free. That inverted the
+   * decision: it made Premium the exception and required an operator to opt in
+   * before the product behaved as specified.
+   *
+   * ONLY CONTENT. An identity reference is not merchandise and chat media is
+   * private, so neither may carry an offer (see `setContentOffer`) and neither
+   * may acquire a default that would lock it -- a Premium-by-default portrait
+   * would put a padlock on the character's own face. They stay Free here, which
+   * for a non-merchandise asset means "access is not this module's business".
+   *
+   * The allocation row still exists and still remembers the configured number
+   * of Free clips; it simply no longer decides what an unclassified clip is.
+   */
+  const assets = await db
+    .select({ id: characterVisualAssets.id, kind: characterVisualAssets.kind })
     .from(characterVisualAssets)
-    .innerJoin(characterClipAllocation, eq(characterClipAllocation.characterId, characterVisualAssets.characterId))
     .where(inArray(characterVisualAssets.id, [...assetIds]));
-  for (const row of allocated) out.set(row.id, IMPLICIT_PREMIUM);
+  for (const asset of assets) {
+    if (assetRoleOf(asset.kind) === 'content') out.set(asset.id, IMPLICIT_PREMIUM);
+  }
 
   // An offer always wins over a default: it is what an operator actually said.
   const rows = await db

@@ -166,6 +166,8 @@ describe('the access endpoint', () => {
     const operator = await account(true);
     const customer = await account();
     const clip = await publishedClip(operator);
+    // Marked Free so the decision under test is about id handling, not access.
+    await setContentOffer(dark.db, ECONOMY_ON, { assetId: clip, state: 'free' });
     expect(await ask(customer, [clip, clip])).toHaveLength(1);
     const repeated = await live.app.inject({ method: 'GET', url: `/api/content/access?assetIds=${clip}&assetIds=${randomUUID()}`, cookies: customer.cookies });
     expect((repeated.json() as CustomerContentAccessResponse).items).toHaveLength(2);
@@ -198,19 +200,32 @@ describe('the access endpoint', () => {
  * ------------------------------------------------------------------ */
 
 describe('each P4.1 state, for each kind of customer', () => {
-  it('free content opens for everyone -- including content nobody priced', async () => {
+  it('content marked Free opens for everyone', async () => {
+    const operator = await account(true);
+    const free = await account();
+    const premium = await account();
+    await makePremium(premium.id, await premiumPlanVersion());
+    const explicit = await publishedClip(operator);
+    await setContentOffer(dark.db, ECONOMY_ON, { assetId: explicit, state: 'free' });
+    for (const who of [free, premium]) {
+      expect(await one(who, explicit)).toEqual({ assetId: explicit, state: 'free', creditPrice: null, ageFloor: null, decision: 'open' });
+    }
+  });
+
+  /**
+   * P4.D2: content nobody classified is PREMIUM, so the customer resolver locks
+   * it for a Free customer and opens it for a subscriber -- without a single
+   * offer row existing for it.
+   */
+  it('content nobody classified is Premium: locked for Free, open for Premium', async () => {
     const operator = await account(true);
     const free = await account();
     const premium = await account();
     await makePremium(premium.id, await premiumPlanVersion());
     const unpriced = await publishedClip(operator);
-    const explicit = await publishedClip(operator);
-    await setContentOffer(dark.db, ECONOMY_ON, { assetId: explicit, state: 'free' });
-    for (const who of [free, premium]) {
-      for (const id of [unpriced, explicit]) {
-        expect(await one(who, id)).toEqual({ assetId: id, state: 'free', creditPrice: null, ageFloor: null, decision: 'open' });
-      }
-    }
+
+    expect(await one(free, unpriced)).toEqual({ assetId: unpriced, state: 'premium', creditPrice: null, ageFloor: null, decision: 'premium_required' });
+    expect((await one(premium, unpriced)).decision).toBe('open');
   });
 
   it('premium content opens for a Premium customer and asks everyone else for Premium', async () => {
@@ -319,6 +334,7 @@ describe('anything unknown fails closed', () => {
     const operator = await account(true);
     const customer = await account();
     const clip = await publishedClip(operator);
+    await setContentOffer(dark.db, ECONOMY_ON, { assetId: clip, state: 'free' });
     expect((await one(customer, clip)).decision).toBe('open');
     expect((await dark.app.inject({ method: 'POST', url: `/admin/content/assets/${clip}/unpublish`, cookies: operator.cookies })).statusCode).toBe(200);
     expect(await one(customer, clip)).toMatchObject({ state: 'unavailable', decision: 'unavailable' });

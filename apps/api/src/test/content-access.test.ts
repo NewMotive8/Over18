@@ -79,14 +79,35 @@ describe('the access states', () => {
     expect([...CONTENT_ACCESS_STATES]).toEqual(['free', 'premium', 'credit', 'unavailable']);
   });
 
-  it('existing content stays FREE, with no age floor: nothing is written or backfilled for it', async () => {
+  /**
+   * P4.D2: "for each character, all clips are Premium by default". The default
+   * is COMPUTED, so nothing is written or backfilled for existing content --
+   * an unclassified clip simply reads Premium, and an operator marking one Free
+   * is what writes a row.
+   */
+  it('unclassified content is PREMIUM by default, with nothing written for it', async () => {
     const a = await clip();
     const b = await clip();
-    expect(await offerCount()).toBe(0);
+    expect(await offerCount(), 'the default costs no rows').toBe(0);
     const described = await describeAssetCommercial(on.db, [a.id, b.id]);
     for (const id of [a.id, b.id]) {
-      expect(described.get(id)).toMatchObject({ state: 'free', creditPrice: null, ageFloor: null, implicit: true });
+      expect(described.get(id)).toMatchObject({ state: 'premium', creditPrice: null, ageFloor: null, implicit: true });
     }
+  });
+
+  /**
+   * ONLY CONTENT IS MERCHANDISE. An identity reference cannot carry an offer,
+   * so it must not acquire a default that would lock it: a Premium-by-default
+   * portrait would put a padlock on the character's own face.
+   */
+  it('leaves identity references alone: they are not Premium by default', async () => {
+    const reference = (await q<{ id: string }>(
+      `SELECT id FROM character_visual_assets WHERE character_id = $1 AND kind = 'reference' LIMIT 1`,
+      [LUNA.id],
+    )).rows[0];
+    expect(reference, 'the seed gives Luna reference assets').toBeTruthy();
+    const described = await describeAssetCommercial(on.db, [reference!.id]);
+    expect(described.get(reference!.id)).toMatchObject({ state: 'free', implicit: true });
   });
 
   it('an offer written with no terms is FREE, unpriced and without an age floor, by the column defaults', async () => {
@@ -174,14 +195,15 @@ describe('writing the terms (economy on)', () => {
     expect(await offerCount()).toBe(1);
   });
 
-  it('retiring keeps the terms it had, as history -- and the content reads FREE again', async () => {
+  it('retiring keeps the terms it had, as history -- and the content returns to the default', async () => {
     const c = await clip();
     const offer = await set({ assetId: c.id, state: 'credit', creditPrice: 50, ageFloor: 21 });
     const retired = await retireContentOffer(on.db, ECONOMY_ON, offer.id);
     expect(retired).toMatchObject({ id: offer.id, state: 'credit', creditPrice: 50, ageFloor: 21 });
     expect(retired!.retiredAt).not.toBeNull();
     expect(await liveOfferFor(on.db, c.id)).toBeNull();
-    expect(await terms(c.id)).toEqual({ state: 'free', creditPrice: null, ageFloor: null, implicit: true });
+    // Retiring removes the operator's decision; what is left is P4.D2's default.
+    expect(await terms(c.id)).toEqual({ state: 'premium', creditPrice: null, ageFloor: null, implicit: true });
   });
 });
 

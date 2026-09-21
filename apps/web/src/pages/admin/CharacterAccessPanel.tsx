@@ -6,7 +6,13 @@ import { adminContentAccessApi } from '../../lib/api';
 import { Field, MessageList, Section, buttonClass, inputClass, secondaryButtonClass } from './economy/EconomyUi';
 
 /**
- * Admin -> a character -> what her clips cost to see (P4.D2).
+ * Admin -> a character -> which of her clips are Free (P4.D2).
+ *
+ * THE MODEL, AND THE WHOLE OF IT: every clip is Premium. An operator makes
+ * individual clips Free, or asks for N of them to be Free and lets the server
+ * pick which. Clips uploaded later are Premium as well. There is no opt-in and
+ * no switch to throw -- a character nobody has touched is already Premium, so
+ * the panel never asks anyone to turn Premium on.
  *
  * IT MANAGES NO CONTENT. Uploading, approving, releasing and deleting a clip
  * are exactly where they were on this page; this panel only says what each
@@ -39,15 +45,21 @@ export function parseCreditPrice(value: string): number | null {
 export const clipStateLabel = (clip: AdminClipAccess): string =>
   clip.state === 'free' ? 'Free' : clip.state === 'premium' ? 'Premium' : clip.state === 'credit' ? `${clip.creditPrice ?? '—'} Credits` : 'Unavailable';
 
-/** What the allocation is, in one line. */
+/**
+ * Where this character stands, in one line.
+ *
+ * Premium first, because that is the default and therefore the thing most of
+ * her clips are. "New clips are Premium" is stated unconditionally: it is true
+ * of every character, configured or not.
+ */
 export function allocationSummary(page: AdminCharacterContentAccess): string {
   const { counts, allocation } = page;
-  if (counts.clips === 0) return 'She has no clips yet.';
+  if (counts.clips === 0) return 'She has no clips yet. Anything uploaded will be Premium.';
   const priced = counts.credit > 0 ? `, ${counts.credit} Credit-priced` : '';
-  const shape = `${counts.free} of ${counts.clips} Free, ${counts.premium} Premium${priced}.`;
-  return allocation.configured
-    ? `${shape} New clips are Premium${allocation.freeClipCount === null ? '' : `; ${allocation.freeClipCount} Free clips configured`}.`
-    : `${shape} New clips are Free: she is not in Free/Premium yet.`;
+  const shape = `${counts.premium} of ${counts.clips} Premium, ${counts.free} Free${priced}.`;
+  const configured =
+    allocation.configured && allocation.freeClipCount !== null ? ` ${allocation.freeClipCount} Free clips are configured.` : '';
+  return `${shape} New clips are Premium.${configured}`;
 }
 
 /** The panel, rendered from server data alone. */
@@ -85,6 +97,9 @@ export function ContentAccessPanel({
       <p className="text-sm text-zinc-300" data-testid="access-summary">
         {allocationSummary(page)}
       </p>
+      <p className="text-xs text-zinc-500" data-testid="access-model">
+        Every clip is Premium unless you make it Free. Clips uploaded later are Premium too.
+      </p>
       {locked && (
         <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
           The economy is switched off: clip access cannot be changed yet. Everything below is read-only.
@@ -100,7 +115,7 @@ export function ContentAccessPanel({
           onAllocate();
         }}
       >
-        <Field label="Free clips" hint="Chosen at random.">
+        <Field label="Free clips" hint="N become Free at random; the rest stay Premium.">
           <input inputMode="numeric" value={freeCount} onChange={(e) => onFreeCount(e.target.value)} disabled={locked} className={inputClass} />
         </Field>
         <Field label="Reason (required)" hint="Recorded in the audit log.">
@@ -112,14 +127,14 @@ export function ContentAccessPanel({
           </button>
           {page.allocation.configured && (
             <button type="button" onClick={onClear} disabled={locked || busy || reason.trim() === ''} className={secondaryButtonClass}>
-              Turn off
+              Clear all
             </button>
           )}
         </div>
       </form>
 
       {page.clips.length === 0 ? (
-        <p className="text-sm text-zinc-500">No clips yet. Anything uploaded later follows this character's setting.</p>
+        <p className="text-sm text-zinc-500">No clips yet. Anything uploaded later is Premium.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[32rem] text-left text-sm">
@@ -148,44 +163,60 @@ export function ContentAccessPanel({
                       const price = parseCreditPrice(typed);
                       const blocked = locked || busy || reason.trim() === '';
                       return (
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            data-testid="set-free"
-                            onClick={() => onMark(clip, 'free')}
-                            disabled={blocked || clip.state === 'free'}
-                            className={`${secondaryButtonClass} px-2 py-1 text-xs`}
-                          >
-                            Free
-                          </button>
-                          <button
-                            type="button"
-                            data-testid="set-premium"
-                            onClick={() => onMark(clip, 'premium')}
-                            disabled={blocked || clip.state === 'premium'}
-                            className={`${secondaryButtonClass} px-2 py-1 text-xs`}
-                          >
-                            Premium
-                          </button>
-                          <input
-                            inputMode="numeric"
-                            data-testid="credit-price"
-                            aria-label={`Credit price for clip ${clip.assetId.slice(0, 8)}`}
-                            placeholder="Credits"
-                            value={typed}
-                            onChange={(event) => onPrice(clip.assetId, event.target.value)}
-                            disabled={locked || busy}
-                            className={`${inputClass} w-20 px-2 py-1 text-xs`}
-                          />
-                          <button
-                            type="button"
-                            data-testid="set-credit"
-                            onClick={() => price !== null && onMark(clip, 'credit', price)}
-                            disabled={blocked || price === null}
-                            className={`${secondaryButtonClass} px-2 py-1 text-xs`}
-                          >
-                            Set price
-                          </button>
+                        <div className="flex flex-col items-end gap-1.5">
+                          {/* The P4.D2 decision, and the only one on this page. */}
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              data-testid="set-free"
+                              onClick={() => onMark(clip, 'free')}
+                              disabled={blocked || clip.state === 'free'}
+                              className={`${secondaryButtonClass} min-h-8 px-3 py-1 text-xs`}
+                            >
+                              Free
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="set-premium"
+                              onClick={() => onMark(clip, 'premium')}
+                              disabled={blocked || clip.state === 'premium'}
+                              className={`${secondaryButtonClass} min-h-8 px-3 py-1 text-xs`}
+                            >
+                              Premium
+                            </button>
+                          </div>
+                          {/*
+                            CREDIT PRICING IS A SEPARATE SCOPE. The capability
+                            stays -- it is the same P4.1 offer -- but it is
+                            folded away so it cannot be mistaken for part of the
+                            Free/Premium decision above.
+                          */}
+                          <details className="w-full text-right">
+                            <summary data-testid="credit-disclosure" className="cursor-pointer list-none text-[11px] text-zinc-500 hover:text-zinc-300">
+                              Price in Credits
+                            </summary>
+                            <div className="mt-1 flex items-center justify-end gap-1">
+                              <input
+                                inputMode="numeric"
+                                data-testid="credit-price"
+                                aria-label={`Credit price for clip ${clip.assetId.slice(0, 8)}`}
+                                placeholder="Credits"
+                                value={typed}
+                                onChange={(event) => onPrice(clip.assetId, event.target.value)}
+                                disabled={locked || busy}
+                                className={`${inputClass} w-20 px-2 py-1 text-xs`}
+                              />
+                              <button
+                                type="button"
+                                data-testid="set-credit"
+                                onClick={() => price !== null && onMark(clip, 'credit', price)}
+                                disabled={blocked || price === null}
+                                className={`${secondaryButtonClass} px-2 py-1 text-xs`}
+                              >
+                                Set price
+                              </button>
+                            </div>
+                          </details>
                         </div>
                       );
                     })()}
@@ -230,10 +261,10 @@ export default function CharacterAccessSection({ characterId }: { characterId: s
     void load();
   }, [load]);
 
-  if (state.status === 'loading') return <Section title="Clip access and pricing"><p className="text-sm text-zinc-400">Loading clip access…</p></Section>;
+  if (state.status === 'loading') return <Section title="Free and Premium clips"><p className="text-sm text-zinc-400">Loading clip access…</p></Section>;
   if (state.status === 'failed') {
     return (
-      <Section title="Clip access and pricing">
+      <Section title="Free and Premium clips">
         <MessageList messages={state.messages} />
       </Section>
     );
@@ -269,13 +300,13 @@ export default function CharacterAccessSection({ characterId }: { characterId: s
         }
       : pending?.kind === 'clear'
         ? {
-            title: 'Turn off Free/Premium for this character?',
-            body: 'Her clips go back to being Free, as they were before. The access records are retired, not deleted.',
+            title: 'Clear every deliberate classification?',
+            body: 'Her Free marks and any Credit price are cleared, so every clip goes back to Premium by default. The access records are retired, not deleted.',
           }
         : null;
 
   return (
-    <Section title="Clip access and pricing">
+    <Section title="Free and Premium clips">
       <ContentAccessPanel
         page={state.page}
         freeCount={freeCount}
@@ -310,7 +341,7 @@ export default function CharacterAccessSection({ characterId }: { characterId: s
         open={confirmation !== null}
         title={confirmation?.title ?? ''}
         body={confirmation?.body ?? ''}
-        confirmLabel={pending?.kind === 'clear' ? 'Turn off' : 'Choose at random'}
+        confirmLabel={pending?.kind === 'clear' ? 'Clear all' : 'Choose at random'}
         cancelLabel="Go back"
         onConfirm={() =>
           void run(() =>

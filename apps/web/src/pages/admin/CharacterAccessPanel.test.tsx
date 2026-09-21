@@ -53,12 +53,30 @@ const panel = (over: Partial<AdminCharacterContentAccess> = {}, reason = 'Launch
   );
 
 describe('what the panel says about a character', () => {
-  it('summarises her clips, and whether new ones will be Premium', () => {
-    expect(allocationSummary(page())).toBe('1 of 2 Free, 1 Premium. New clips are Premium; 2 Free clips configured.');
+  /**
+   * P4.D2: every clip is Premium by default, so the summary leads with Premium
+   * and says "new clips are Premium" for EVERY character -- configured or not.
+   * The old copy told an unconfigured character that new clips would be Free,
+   * which was the opposite of the decision.
+   */
+  it('leads with Premium, and says new clips are Premium whether or not she is configured', () => {
+    expect(allocationSummary(page())).toBe('1 of 2 Premium, 1 Free. New clips are Premium. 2 Free clips are configured.');
     expect(allocationSummary(page({ allocation: { configured: false, freeClipCount: null } }))).toBe(
-      '1 of 2 Free, 1 Premium. New clips are Free: she is not in Free/Premium yet.',
+      '1 of 2 Premium, 1 Free. New clips are Premium.',
     );
-    expect(allocationSummary(page({ clips: [], counts: { clips: 0, free: 0, premium: 0, credit: 0 } }))).toBe('She has no clips yet.');
+    expect(allocationSummary(page({ clips: [], counts: { clips: 0, free: 0, premium: 0, credit: 0 } }))).toBe(
+      'She has no clips yet. Anything uploaded will be Premium.',
+    );
+  });
+
+  it('never suggests a character must be opted in to be Premium', () => {
+    const unconfigured = page({ allocation: { configured: false, freeClipCount: null } });
+    const html = panel({ allocation: { configured: false, freeClipCount: null } });
+    for (const gone of ['not in Free/Premium yet', 'New clips are Free', 'Turn off']) {
+      expect({ gone, found: html.includes(gone) }, gone).toEqual({ gone, found: false });
+    }
+    expect(allocationSummary(unconfigured)).not.toMatch(/opt|turn on|enable/i);
+    expect(html).toContain('Every clip is Premium unless you make it Free.');
   });
 
   it('names each access state as an operator would say it', () => {
@@ -83,10 +101,12 @@ describe('the panel', () => {
     expect(html.match(/data-testid="credit-price"/g)).toHaveLength(2);
   });
 
-  it('offers the random allocation, and turning it off only when she is in it', () => {
+  it('offers the random allocation, and clearing only when something was configured', () => {
     expect(panel()).toContain('Choose at random');
-    expect(panel()).toContain('Turn off');
-    expect(panel({ allocation: { configured: false, freeClipCount: null } })).not.toContain('Turn off');
+    expect(panel()).toContain('Clear all');
+    expect(panel({ allocation: { configured: false, freeClipCount: null } })).not.toContain('Clear all');
+    // What N actually does, next to the field that takes it.
+    expect(panel()).toContain('N become Free at random; the rest stay Premium.');
   });
 
   it('asks for a reason before anything can be changed', () => {
@@ -106,8 +126,24 @@ describe('the panel', () => {
   it('says what happens to clips uploaded later when she has none yet', () => {
     const html = panel({ clips: [], counts: { clips: 0, free: 0, premium: 0, credit: 0 } });
     expect(html).toContain('No clips yet.');
-    expect(html).toContain('follows this character');
+    expect(html).toContain('Anything uploaded later is Premium.');
     expect(html).not.toContain('clip-access-row');
+  });
+
+  /**
+   * CREDIT PRICING IS A SEPARATE SCOPE (P4.D2 vs P4.1 pricing). The capability
+   * is still here and still reachable, but folded away so it cannot be read as
+   * part of the Free/Premium decision.
+   */
+  it('puts Free and Premium first, with the Credit price folded away behind a disclosure', () => {
+    const html = panel();
+    expect(html.match(/data-testid="set-free"/g)).toHaveLength(2);
+    expect(html.match(/data-testid="set-premium"/g)).toHaveLength(2);
+    // Still present, but inside a collapsed <details>.
+    expect(html.match(/data-testid="credit-disclosure"/g)).toHaveLength(2);
+    expect(html.match(/data-testid="credit-price"/g)).toHaveLength(2);
+    expect(html).toContain('<details');
+    expect(html).not.toContain('<details open');
   });
 
   /**
