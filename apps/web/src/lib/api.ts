@@ -1,5 +1,16 @@
 import type {
   AdminAccessView,
+  AdminAccountStatusChangeRequest,
+  AdminCharacterContentAccess,
+  AdminAccountStatusChangeResult,
+  AdminSubscriptionChangeRequest,
+  AdminUserDetail,
+  AdminUserList,
+  AdminUserSubscription,
+  AdminUserWallets,
+  AdminWalletAdjustmentRequest,
+  AdminWalletAdjustmentResult,
+  AdminWalletHistory,
   ApiError,
   AuditEntryView,
   AuthCredentials,
@@ -13,6 +24,22 @@ import type {
   ChatMessage,
   CharacterVisualIdentityResponse,
   ConversationSummary,
+  CustomerCommercialState,
+  CustomerContentAccessResponse,
+  CustomerContentUnlock,
+  CustomerCheckout,
+  CustomerPaymentView,
+  SimulatedPaymentResult,
+  CustomerEconomyCatalog,
+  AdminPackVersion,
+  AdminPlanVersion,
+  AdminRulesetVersion,
+  EconomyConfigurationView,
+  EconomyPublishResult,
+  EconomyPublishReview,
+  PackDraftInput,
+  PlanDraftInput,
+  RulesetDraftInput,
   HealthResponse,
   PublicCharacter,
   SendMessageResult,
@@ -32,6 +59,8 @@ export class ApiRequestError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** The parsed error body, for endpoints whose envelope carries more (e.g. a list of validation messages). */
+    public readonly details: unknown = null,
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -47,15 +76,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let code = 'request_failed';
     let message = `Request failed (${res.status}).`;
+    let details: unknown = null;
     try {
       const body = (await res.json()) as Partial<ApiError>;
+      details = body;
       if (body.error) code = body.error;
       if (body.message) message = body.message;
     } catch {
       // Non-JSON error body — keep the generic message.
     }
-    throw new ApiRequestError(res.status, code, message);
+    throw new ApiRequestError(res.status, code, message, details);
   }
+  // 204 No Content (a discard, a cancellation) has no body to parse.
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -1028,6 +1061,21 @@ export const favouritesApi = {
     }),
 };
 
+/**
+ * The customer economy READ endpoints -- the only two the backend has. Both
+ * need a session (401 otherwise) and answer 503 `economy_unavailable` while
+ * the economy is switched off. Nothing here buys, spends, quotes or grants.
+ */
+export const CUSTOMER_ECONOMY_ENDPOINTS = {
+  catalog: '/api/economy/catalog',
+  commercialState: '/api/me/commercial-state',
+} as const;
+
+export const economyApi = {
+  catalog: () => request<CustomerEconomyCatalog>(CUSTOMER_ECONOMY_ENDPOINTS.catalog),
+  commercialState: () => request<CustomerCommercialState>(CUSTOMER_ECONOMY_ENDPOINTS.commercialState),
+};
+
 export const discoveryApi = {
   categories: () => request<{ categories: PublicDiscoveryCategory[] }>('/api/discovery/categories'),
   clips: (params: { category?: string | null; q?: string | null; limit?: number; offset?: number }) => {
@@ -1179,6 +1227,288 @@ export const adminAccessApi = {
     request<AuditPage>(`/admin/audit${auditQuery(filters)}`),
   /** A plain URL: the browser downloads it with the session cookie. */
   exportUrl: (filters: AuditFilters = {}) => `${API_URL}/admin/audit/export.csv${auditQuery(filters)}`,
+};
+
+/* ------------------------------------------------------------------ *
+ * Admin -> Economy preview: the P1.3 wire contract
+ *
+ * A MIRROR of `EconomyPreview` in apps/api/src/services/economy-preview.ts,
+ * which is not in @over18/shared. Keep the two in step; moving the type into
+ * the shared package would remove the duplication.
+ * ------------------------------------------------------------------ */
+
+export interface PreviewMoney {
+  amount: string;
+  currency: string;
+}
+export type PreviewSource = 'live' | 'draft';
+export type PreviewGuardState = 'ok' | 'below_threshold' | 'not_evaluated';
+export interface PreviewGap {
+  reason:
+    | 'usage_not_supplied'
+    | 'unit_mismatch'
+    | 'rate_not_supplied'
+    | 'endpoint_not_declared'
+    | 'mixed_currencies'
+    | 'ai_provider_cost_incomplete'
+    | 'sales_channel_not_supplied'
+    | 'infrastructure_not_supplied'
+    | 'grant_cost_incomplete'
+    | 'no_purchasable_pack'
+    | 'currency_mismatch';
+  ref: string;
+}
+export type PreviewAiProviderCost =
+  | {
+      status: 'complete';
+      total: PreviewMoney;
+      base: PreviewMoney;
+      regionalPremium: PreviewMoney | null;
+      lines: Array<{ provider: string; meter: string; kind: string; quantity: string; cost: PreviewMoney; source: string | null }>;
+      observedAt: string | null;
+      ageDays: number | null;
+    }
+  | { status: 'incomplete'; gaps: PreviewGap[] };
+export interface PreviewOtherCosts {
+  lines: Array<{ kind: 'infrastructure' | 'telephony' | 'other'; label: string | null; cost: PreviewMoney }>;
+  infrastructure: 'supplied' | 'not_supplied';
+}
+type PreviewNet<Row> = { status: 'complete'; channels: Array<{ channel: string } & Row> } | { status: 'incomplete'; gaps: PreviewGap[] };
+
+export interface EconomyPreviewResponse {
+  asOf: string;
+  mode: 'drafted' | 'live';
+  configuration: {
+    plans: Array<{ code: string; version: number; source: PreviewSource; isPurchasable: boolean }>;
+    packs: Array<{ code: string; version: number; source: PreviewSource; isPurchasable: boolean }>;
+    ruleset: { version: number; source: PreviewSource } | null;
+  };
+  ladders: Array<{
+    currency: string;
+    rungs: Array<{ code: string; credits: number; price: PreviewMoney; perCredit: PreviewMoney; isBestValue: boolean }>;
+    spreadPercent: string | null;
+    issues: Array<{ kind: 'inverted' | 'flat'; rung: string; previous: string }>;
+  }>;
+  grants: Array<{
+    plan: string;
+    version: number;
+    source: PreviewSource;
+    monthlyCredits: number;
+    buys: Array<{ action: string; unit: 'per_action' | 'per_minute'; creditCost: number; quantity: number }>;
+    worstCaseAiProviderCost:
+      | { status: 'complete'; action: string; cost: PreviewMoney }
+      | { status: 'incomplete'; knownWorst: { action: string; cost: PreviewMoney } | null; missingCosts: string[] }
+      | { status: 'no_actions' };
+  }>;
+  actions: Array<{
+    action: string;
+    actionType: string;
+    qualityTier: string;
+    maxDurationSeconds: number | null;
+    unit: 'per_action' | 'per_minute';
+    creditCost: number;
+    runtime: string;
+    cashPrice: Array<{ pack: string; price: PreviewMoney }>;
+    aiProviderCost: PreviewAiProviderCost;
+    aiProviderCostPerCredit: PreviewMoney | null;
+    grossMargins: Array<{ pack: string; grossMarginPercent: string; costMultiple: string }>;
+    otherCosts: PreviewOtherCosts;
+    net: PreviewNet<{ rungs: Array<{ pack: string; deductions: PreviewMoney; contribution: PreviewMoney; netMarginPercent: string }> }>;
+    guard: PreviewGuardState;
+    netGuard: PreviewGuardState;
+  }>;
+  subscriptions: Array<{
+    plan: string;
+    version: number;
+    source: PreviewSource;
+    pricePerMonth: PreviewMoney;
+    includedUsage: PreviewAiProviderCost;
+    grantWorstCase: { status: 'complete'; action: string | null; cost: PreviewMoney } | { status: 'incomplete'; gaps: PreviewGap[] };
+    otherCosts: PreviewOtherCosts;
+    net: PreviewNet<{ deductions: PreviewMoney; contribution: PreviewMoney; netMarginPercent: string }>;
+  }>;
+  disabledActions: string[];
+  configurationIssues: Array<{ action: string; reason: string }>;
+  inputs: {
+    missingAiProviderCosts: string[];
+    unmatched: string[];
+    unusedRates: string[];
+    unitMismatches: string[];
+    currencyMismatches: string[];
+    undated: string[];
+    stale: Array<{ input: string; ageDays: number }>;
+    futureDated: string[];
+  };
+  marginGuard: {
+    status: 'not_configured' | 'evaluated';
+    minGrossMarginPercent: number | null;
+    maxCostAgeDays: number | null;
+    warnings: Array<{ action: string; pack: string; grossMarginPercent: string }>;
+    notEvaluated: Array<{ action: string; reason: string }>;
+    net: {
+      status: 'not_configured' | 'evaluated';
+      minNetMarginPercent: number | null;
+      warnings: Array<{ action: string; channel: string; pack: string; netMarginPercent: string }>;
+      notEvaluated: Array<{ action: string; reason: string }>;
+    };
+  };
+  parity: { thinnestAction: string; highestCostPerCredit: PreviewMoney; lowestCostPerCredit: PreviewMoney } | null;
+  caveats: string[];
+  precision: Record<string, number>;
+}
+
+/**
+ * The preview request. The cost inputs (providers, rates, usage, sales
+ * channels, other costs) travel as the admin wrote them; the server validates
+ * every field and answers 400 `invalid_preview_input` with all its messages.
+ */
+export interface EconomyPreviewRequest {
+  mode: 'drafted' | 'live';
+  marginGuard: {
+    minGrossMarginPercent: number | null;
+    minNetMarginPercent: number | null;
+    maxCostAgeDays: number | null;
+  };
+  providers?: unknown;
+  rates?: unknown;
+  usage?: unknown;
+  salesChannels?: unknown;
+  otherCosts?: unknown;
+}
+
+/**
+ * Admin -> Economy (P1.3 backend, P1.4 screens). The ONLY admin economy
+ * endpoint the server has: a read-only preview behind `economy.manage`. It
+ * publishes, schedules and stores nothing.
+ */
+export const adminEconomyApi = {
+  preview: (body: EconomyPreviewRequest) =>
+    request<EconomyPreviewResponse>('/admin/economy/preview', { method: 'POST', body: JSON.stringify(body) }),
+  /** Every plan, pack and ruleset version with its state, and the key catalogue. */
+  configuration: () => request<EconomyConfigurationView>('/admin/economy/configuration'),
+  savePlanDraft: (code: string, body: PlanDraftInput & { reason?: string | null }) =>
+    request<AdminPlanVersion>(`/admin/economy/plans/${encodeURIComponent(code)}/draft`, { method: 'PUT', body: JSON.stringify(body) }),
+  discardPlanDraft: (code: string) =>
+    request<void>(`/admin/economy/plans/${encodeURIComponent(code)}/draft`, { method: 'DELETE' }),
+  savePackDraft: (code: string, body: PackDraftInput & { reason?: string | null }) =>
+    request<AdminPackVersion>(`/admin/economy/packs/${encodeURIComponent(code)}/draft`, { method: 'PUT', body: JSON.stringify(body) }),
+  discardPackDraft: (code: string) =>
+    request<void>(`/admin/economy/packs/${encodeURIComponent(code)}/draft`, { method: 'DELETE' }),
+  /** Action costs, allowances and rewards are one draft, always saved whole. */
+  saveRulesetDraft: (body: RulesetDraftInput & { reason?: string | null }) =>
+    request<AdminRulesetVersion>('/admin/economy/ruleset/draft', { method: 'PUT', body: JSON.stringify(body) }),
+  discardRulesetDraft: () => request<void>('/admin/economy/ruleset/draft', { method: 'DELETE' }),
+  /** The old -> new comparison of every open draft, with blocking errors and warnings. */
+  review: () => request<EconomyPublishReview>('/admin/economy/publish/review'),
+  /** Publishes every open draft together -- exactly the drafts the review token names. */
+  publish: (body: { reason: string; effectiveFrom: string | null; draftSetToken: string }) =>
+    request<EconomyPublishResult>('/admin/economy/publish', { method: 'POST', body: JSON.stringify(body) }),
+  cancelVersion: (kind: 'plan' | 'pack' | 'ruleset', versionId: string, reason: string) =>
+    request<void>(`/admin/economy/versions/${kind}/${encodeURIComponent(versionId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+};
+
+/** P2.5.1 -- the admin users read model. Read-only; the server enforces every permission. */
+/**
+ * P4.D2 -- a character's Free/Premium clips. Every state shown comes from the
+ * server, which owns the allocation and writes the access itself.
+ */
+export const adminContentAccessApi = {
+  get: (characterId: string) => request<AdminCharacterContentAccess>(`/admin/characters/${encodeURIComponent(characterId)}/content-access`),
+  allocate: (characterId: string, body: { freeClipCount: number; reason: string }) =>
+    request<AdminCharacterContentAccess>(`/admin/characters/${encodeURIComponent(characterId)}/content-access/allocation`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  /**
+   * `creditPrice` belongs to `credit` alone; the server refuses it anywhere
+   * else. `reason` is optional: classifying one clip is audited by who, when,
+   * which clip and both states, without anyone typing a sentence.
+   */
+  markClip: (
+    characterId: string,
+    assetId: string,
+    body: { state: 'free' | 'premium' | 'credit'; creditPrice?: number; reason?: string },
+  ) =>
+    request<AdminCharacterContentAccess>(
+      `/admin/characters/${encodeURIComponent(characterId)}/content-access/clips/${encodeURIComponent(assetId)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  clear: (characterId: string, body: { reason: string }) =>
+    request<AdminCharacterContentAccess>(`/admin/characters/${encodeURIComponent(characterId)}/content-access/clear`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+};
+
+/**
+ * P4.2 -- what this customer may do with the content on screen. The server
+ * decides; the browser renders the answer and never derives one.
+ */
+export const contentAccessApi = {
+  access: (assetIds: readonly string[]) =>
+    request<CustomerContentAccessResponse>(`/api/content/access?assetIds=${assetIds.map(encodeURIComponent).join(',')}`),
+  /**
+   * P8.2 -- unlock one Credit-priced asset. The body carries the idempotency
+   * key and nothing else: the price is the server's, read from the content's
+   * own offer, and no client value can influence what is charged.
+   */
+  unlock: (assetId: string, body: { idempotencyKey: string }) =>
+    request<CustomerContentUnlock>(`/api/content/${encodeURIComponent(assetId)}/unlock`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+};
+
+/**
+ * P9.1 customer payments. A checkout names a PLAN, never a price: what it
+ * costs is the server's to resolve. Nothing here grants anything -- only a
+ * signed provider event does, on the server.
+ */
+export const paymentsApi = {
+  startCheckout: (body: { planCode: string; method: string; idempotencyKey: string; returnUrl: string }) =>
+    request<CustomerCheckout>('/api/payments/checkout', { method: 'POST', body: JSON.stringify(body) }),
+  read: (paymentId: string) => request<CustomerPaymentView>(`/api/payments/${encodeURIComponent(paymentId)}`),
+  readCheckout: (checkoutRef: string) => request<CustomerPaymentView>(`/api/payments/checkout/${encodeURIComponent(checkoutRef)}`),
+  /** TEST ONLY -- the server refuses this unless the fake provider is selected. */
+  simulate: (body: { checkoutRef: string; outcome: string }) =>
+    request<SimulatedPaymentResult>('/api/payments/simulate', { method: 'POST', body: JSON.stringify(body) }),
+};
+
+export const adminUsersApi = {
+  /** `query` is the list's query string without the leading "?" (see admin/userManagement). */
+  list: (query: string) => request<AdminUserList>(`/admin/users${query ? `?${query}` : ''}`),
+  detail: (userId: string) => request<AdminUserDetail>(`/admin/users/${encodeURIComponent(userId)}`),
+  /** P2.5.2 -- suspend or reactivate. The server enforces the permission, the rules and the conflict check. */
+  changeStatus: (userId: string, body: AdminAccountStatusChangeRequest) =>
+    request<AdminAccountStatusChangeResult>(`/admin/users/${encodeURIComponent(userId)}/status`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  /** P3.5 -- the subscription, its history and the assignable plans. */
+  subscription: (userId: string) => request<AdminUserSubscription>(`/admin/users/${encodeURIComponent(userId)}/subscription`),
+  /** P3.5 -- assign, change, cancel or end. The server enforces the permission, the lifecycle and the version check. */
+  changeSubscription: (userId: string, body: AdminSubscriptionChangeRequest) =>
+    request<AdminUserSubscription>(`/admin/users/${encodeURIComponent(userId)}/subscription`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+};
+
+/** P2.4 -- admin wallet support. The server enforces every permission, rule and cap. */
+export const adminWalletApi = {
+  wallets: (userId: string) => request<AdminUserWallets>(`/admin/users/${encodeURIComponent(userId)}/wallets`),
+  history: (userId: string, currency: string, before?: number | null) =>
+    request<AdminWalletHistory>(
+      `/admin/users/${encodeURIComponent(userId)}/wallets/${encodeURIComponent(currency)}/transactions${before ? `?before=${before}` : ''}`,
+    ),
+  adjust: (userId: string, currency: string, body: AdminWalletAdjustmentRequest) =>
+    request<AdminWalletAdjustmentResult>(`/admin/users/${encodeURIComponent(userId)}/wallets/${encodeURIComponent(currency)}/adjustments`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 export const adminDiscoveryApi = {

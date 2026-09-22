@@ -62,6 +62,35 @@ export function mediaTypeOf(
 }
 
 /**
+ * The name the file arrived under, when one was recorded.
+ *
+ * Provenance is written by whoever created the asset: a manual upload records
+ * the operator's own filename, generation records none. This reports it and
+ * nothing else -- there is no derived, generated or fallback name anywhere,
+ * because a made-up name on a content screen is worse than no name: it looks
+ * like data.
+ */
+export function sourceFileNameOf(provenance?: Record<string, unknown> | null): string | null {
+  const recorded = provenance?.originalName;
+  if (typeof recorded !== 'string') return null;
+  const trimmed = recorded.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * How long a clip runs, where the generator recorded it.
+ *
+ * Only generated video carries this; a manual upload's duration is in the file
+ * and nothing has ever read it out. Null is therefore the ordinary answer, not
+ * a failure, and a caller must be able to show nothing.
+ */
+export function clipDurationSecondsOf(provenance?: Record<string, unknown> | null): number | null {
+  const recorded = provenance?.durationSeconds;
+  if (typeof recorded !== 'number' || !Number.isFinite(recorded) || recorded <= 0) return null;
+  return recorded;
+}
+
+/**
  * `mediaTypeOf(...) === 'video'`, expressed in SQL.
  *
  * WHY A SECOND EXPRESSION EXISTS AT ALL. Some reads have to choose ONE row per
@@ -334,6 +363,10 @@ export interface CharacterContentAsset extends AssetLifecycleView {
   kind: string;
   status: VisualAssetStatus;
   mediaType: MediaType;
+  /** What the file was called when it arrived, or null. Never derived. */
+  fileName: string | null;
+  /** Its duration in seconds where one was recorded, or null. */
+  durationSeconds: number | null;
   contentRating: ContentRating;
   requirementKey: string | null;
   /** True for an approved canonical reference — the character's primary set. */
@@ -440,6 +473,8 @@ export async function listCharacterContent(
     status: row.status,
     ...assetLifecycleOf(row),
     mediaType: mediaTypeOf(row.storageKey, row.provenance),
+    fileName: sourceFileNameOf(row.provenance),
+    durationSeconds: clipDurationSecondsOf(row.provenance),
     contentRating: row.contentRating,
     requirementKey: row.requirementKey,
     isPrimary: row.kind === 'reference' && row.status === 'approved' && row.isCanonical,

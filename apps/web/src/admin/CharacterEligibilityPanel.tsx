@@ -1,13 +1,18 @@
-import type { CharacterPublishability, CharacterReadiness } from '../lib/api';
+import type { CharacterReadiness } from '../lib/api';
 
 /**
- * Readiness and Publishability, as the SERVER decided them.
+ * Readiness, as the SERVER decided it.
  *
- * Purely presentational. Every rule -- what counts toward a requirement, what
- * makes her publishable -- lives in the API's character-readiness-service. This
- * component renders the verdict and the server's own explanation of each
- * blocker, and must never add a condition of its own: a second copy of the rules
- * in the browser is how the admin and the app start disagreeing.
+ * Purely presentational. Every rule -- what counts toward a requirement --
+ * lives in the API's character-readiness-service. This component renders the
+ * verdict and the server's own explanation of each blocker, and must never add
+ * a condition of its own: a second copy of the rules in the browser is how the
+ * admin and the app start disagreeing.
+ *
+ * PUBLISHABILITY IS NO LONGER SHOWN HERE. The verdict, its blockers and the
+ * `publishability` field of the character detail are all still computed and
+ * still returned by the API -- only this card was removed, and nothing about
+ * whether a character may be shown to users changed with it.
  */
 
 function Verdict({
@@ -52,15 +57,9 @@ function Verdict({
   );
 }
 
-export default function CharacterEligibilityPanel({
-  readiness,
-  publishability,
-}: {
-  readiness: CharacterReadiness;
-  publishability: CharacterPublishability;
-}) {
+export default function CharacterEligibilityPanel({ readiness }: { readiness: CharacterReadiness }) {
   return (
-    <section aria-label="Readiness and publishability" className="mb-6 grid gap-3 sm:grid-cols-2">
+    <section aria-label="Readiness" className="mb-6 grid gap-3">
       <Verdict
         title="Readiness"
         ok={readiness.ready}
@@ -68,14 +67,6 @@ export default function CharacterEligibilityPanel({
         no="Not ready"
         reasons={readiness.blockers}
         note="Production work: required content and an active identity."
-      />
-      <Verdict
-        title="Publishability"
-        ok={publishability.publishable}
-        yes="Publishable"
-        no="Not publishable"
-        reasons={publishability.blockers}
-        note="Whether she may be shown to users. Placement on Posts, Home, categories or Discovery is separate."
       />
     </section>
   );

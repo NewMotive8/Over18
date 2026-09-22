@@ -3,6 +3,8 @@ import PageContainer from '../components/PageContainer';
 import PageHeader from '../components/PageHeader';
 import { useAuth } from '../auth/AuthContext';
 import { ProfileIcon } from '../components/icons';
+import { CreditBalance, EconomyStateNotice } from '../components/CustomerEconomy';
+import { commercialTier, spendableCredits, useCustomerEconomy, type CustomerEconomyState } from '../lib/customerEconomy';
 
 /**
  * Profile / Account (US-18) — the third primary destination.
@@ -21,9 +23,18 @@ function PlaceholderRow({ label, hint }: { label: string; hint: string }) {
   );
 }
 
+/** The membership line: the server's tier when it is known, and never a default. */
+function membershipLabel(state: CustomerEconomyState): string {
+  if (state.status === 'loading') return 'Plan details loading';
+  const tier = state.status === 'ready' ? commercialTier(state.overview) : null;
+  if (tier === null) return "Plan details aren't available yet";
+  return tier === 'premium' ? 'Premium plan' : 'Free plan';
+}
+
 export default function ProfilePage() {
   const { user, status, logout } = useAuth();
   const navigate = useNavigate();
+  const [economyState, retryEconomy] = useCustomerEconomy();
 
   async function handleLogout() {
     await logout();
@@ -60,12 +71,13 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {/* Membership (placeholder — no billing in US-18) */}
+      <EconomyStateNotice state={economyState} retry={retryEconomy} />
+      {/* Membership shows only what the server states: no tier is assumed. */}
       <div className="rounded-3xl border border-zinc-800 bg-zinc-900/50 p-4">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Membership</h3>
-            <p className="mt-1 text-sm text-zinc-200">Free plan</p>
+            <p className="mt-1 text-sm text-zinc-200">{membershipLabel(economyState)}</p>
           </div>
           <Link
             to="/subscription"
@@ -74,6 +86,9 @@ export default function ProfilePage() {
             Go Premium
           </Link>
         </div>
+        {economyState.status === 'ready' && spendableCredits(economyState.overview) !== null && (
+          <div className="mt-4 border-t border-zinc-800 pt-4"><CreditBalance overview={economyState.overview} /></div>
+        )}
       </div>
 
       {/* Future account surfaces — clearly marked placeholders */}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 import CharacterEligibilityPanel from '../../admin/CharacterEligibilityPanel';
+import CharacterAccessSection from './CharacterAccessPanel';
 import {
   addKeywords,
   keywordsDiffer,
@@ -560,10 +561,7 @@ export default function AdminCharacterDetailPage() {
         </div>
       )}
 
-      <CharacterEligibilityPanel
-        readiness={detail.readiness}
-        publishability={detail.publishability}
-      />
+      <CharacterEligibilityPanel readiness={detail.readiness} />
 
       {actionError && (
         <p role="alert" className="mb-4 rounded-lg border border-red-900 bg-red-950/60 px-3 py-2 text-sm text-red-300">
@@ -1256,6 +1254,15 @@ export default function AdminCharacterDetailPage() {
         >
           {contentNotice}
         </p>
+      )}
+
+      {/* ---------------- Free / Premium clips (P4.D2) ----------------
+          Access only: uploading, approving and releasing stay exactly where
+          they are above. */}
+      {characterId && (
+        <section className="mb-10">
+          <CharacterAccessSection characterId={characterId} />
+        </section>
       )}
 
       {/* ---------------- Primary references ---------------- */}

@@ -232,6 +232,90 @@
       "when": 1789678938193,
       "tag": "0032_chief_ser_duncan",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1789794286628,
+      "tag": "0033_true_solo",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1789794300268,
+      "tag": "0034_wallet_ledger_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1789816512800,
+      "tag": "0035_daffy_odin",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789827513861,
+      "tag": "0036_futuristic_betty_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1789838493237,
+      "tag": "0037_melodic_the_executioner",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789847178295,
+      "tag": "0038_equal_daredevil",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1789847187698,
+      "tag": "0039_subscription_history_append_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789848845154,
+      "tag": "0040_thankful_wendigo",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789861630103,
+      "tag": "0041_overrated_plazm",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1789863684462,
+      "tag": "0042_puzzling_vector",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1789865017910,
+      "tag": "0043_simple_morg",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790006446803,
+      "tag": "0044_chief_blazing_skull",
+      "breakpoints": true
     }
   ]
 }

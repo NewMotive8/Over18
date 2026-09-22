@@ -1,6 +1,8 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { CONTENT_ACCESS_STATES, type ContentAccessState } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import {
+  characterClipAllocation,
   characters,
   characterVisualAssets,
   contentOffers,
@@ -52,20 +54,49 @@ import { mediaTypeOf } from './content-review-service.js';
  * so "what did this customer buy, and may they still download it?" stays
  * answerable when the media is gone.
  *
- * Prices live in economy configuration (P1.1) and are resolved at an instant
- * (P1.2). An offer names the configuration through `economyRef` and never keeps
- * a copy, so changing a price is a configuration decision, not an edit to every
- * asset that used it.
+ * ── THE ACCESS TERMS (P4.1, PRD §10, §32.1) ─────────────────────────────────
+ *
+ * An offer's terms are its access STATE -- free, premium, credit or
+ * unavailable -- a whole-Credit PRICE for credit content, and an optional AGE
+ * FLOOR. Locked photos and videos are priced per asset, here, not in the
+ * economy configuration's action costs (P1, `ECONOMY_ACTION_CATALOGUE`); plan
+ * prices and money never are. `economyRef` still names any configuration an
+ * offer relies on. The age floor is recorded here and enforced by P5.
+ *
+ * These are TERMS, not access decisions: whether a particular user may open a
+ * piece of content (their subscription, an unlock, their verified age) is the
+ * later access phases' to decide (P4/P5/P8), and nothing here charges,
+ * unlocks or checks anyone.
  */
 
-/** Mirrors the `commercial_state` enum. */
-export type ContentCommercialState = ContentOfferRow['state'];
+/** A database or a transaction: applying an allocation writes several offers at once. */
+type Reader = Pick<Db, 'select'>;
+type Writer = Reader & Pick<Db, 'insert' | 'update' | 'delete'>;
+
+/** The `commercial_state` enum: the P4.1 access states. */
+export type ContentCommercialState = ContentAccessState;
 
 /**
- * Content nobody has priced is FREE. There is no backfill and no migration of
- * existing content: absence of an offer is the answer, not missing data.
+ * Content nobody has priced is FREE, with no age floor. There is no backfill
+ * and no migration of existing content: absence of an offer is the answer, not
+ * missing data.
+ *
+ * ONE EXCEPTION, AND THE OPERATOR CHOOSES IT (P4.D2). A character given a clip
+ * allocation is opted in to Free/Premium: from then on HER un-offered clips
+ * read PREMIUM instead, which is what makes a clip uploaded tomorrow Premium
+ * without the upload workflow knowing anything about the economy. Every other
+ * character, and the whole library until an operator says otherwise, is
+ * unchanged.
  */
 export const DEFAULT_COMMERCIAL_STATE: ContentCommercialState = 'free';
+/** What an un-offered clip of an allocated character reads as. */
+export const ALLOCATED_DEFAULT_STATE: ContentCommercialState = 'premium';
+
+/** The age-floor bounds, in years, the database also holds (`content_offers_age_floor`). */
+export const AGE_FLOOR_MIN = 18;
+export const AGE_FLOOR_MAX = 99;
+/** The largest price the column holds (a Postgres integer). */
+const CREDIT_PRICE_MAX = 2 ** 31 - 1;
 
 /** Thrown when a write would break the boundary's rules. */
 export class CommercialBoundaryError extends Error {
@@ -74,7 +105,9 @@ export class CommercialBoundaryError extends Error {
       | 'economy_disabled'
       | 'asset_not_found'
       | 'not_content'
-      | 'invalid_state',
+      | 'invalid_state'
+      | 'invalid_price'
+      | 'invalid_age_floor',
     message: string,
   ) {
     super(message);
@@ -87,6 +120,10 @@ export interface AssetCommercialView {
   /** The live offer's id -- what an entitlement would reference. Null when free by default. */
   offerId: string | null;
   state: ContentCommercialState;
+  /** Whole Credits to unlock, exactly when `state` is `credit`. */
+  creditPrice: number | null;
+  /** Minimum age in years, or null for none. */
+  ageFloor: number | null;
   /** True when this is merely the default, with no offer written. */
   implicit: boolean;
   /** Economy configuration reference, when the offer names one. */
@@ -96,9 +133,14 @@ export interface AssetCommercialView {
 const IMPLICIT_FREE: AssetCommercialView = {
   offerId: null,
   state: DEFAULT_COMMERCIAL_STATE,
+  creditPrice: null,
+  ageFloor: null,
   implicit: true,
   economyRef: null,
 };
+
+/** The same, for a clip of a character whose clips are Premium by default (P4.D2). */
+const IMPLICIT_PREMIUM: AssetCommercialView = { ...IMPLICIT_FREE, state: ALLOCATED_DEFAULT_STATE };
 
 /**
  * THE FLAG GATE. Commercial state may not be written while the economy is off,
@@ -116,13 +158,40 @@ export function assertCommercialWrite(commerce: { enabled: boolean }): void {
 
 /** The live (non-retired) offers for these assets, keyed by asset id. */
 export async function describeAssetCommercial(
-  db: Db,
+  db: Reader,
   assetIds: readonly string[],
 ): Promise<Map<string, AssetCommercialView>> {
   const out = new Map<string, AssetCommercialView>();
   for (const id of assetIds) out.set(id, IMPLICIT_FREE);
   if (assetIds.length === 0) return out;
 
+  /**
+   * P4.D2: EVERY CLIP IS PREMIUM BY DEFAULT -- "for each character, all clips
+   * are Premium by default", with no opt-in of any kind.
+   *
+   * The default used to depend on the character having a free-clip allocation
+   * row, so a character nobody had configured read Free. That inverted the
+   * decision: it made Premium the exception and required an operator to opt in
+   * before the product behaved as specified.
+   *
+   * ONLY CONTENT. An identity reference is not merchandise and chat media is
+   * private, so neither may carry an offer (see `setContentOffer`) and neither
+   * may acquire a default that would lock it -- a Premium-by-default portrait
+   * would put a padlock on the character's own face. They stay Free here, which
+   * for a non-merchandise asset means "access is not this module's business".
+   *
+   * The allocation row still exists and still remembers the configured number
+   * of Free clips; it simply no longer decides what an unclassified clip is.
+   */
+  const assets = await db
+    .select({ id: characterVisualAssets.id, kind: characterVisualAssets.kind })
+    .from(characterVisualAssets)
+    .where(inArray(characterVisualAssets.id, [...assetIds]));
+  for (const asset of assets) {
+    if (assetRoleOf(asset.kind) === 'content') out.set(asset.id, IMPLICIT_PREMIUM);
+  }
+
+  // An offer always wins over a default: it is what an operator actually said.
   const rows = await db
     .select()
     .from(contentOffers)
@@ -133,6 +202,8 @@ export async function describeAssetCommercial(
     out.set(row.assetId, {
       offerId: row.id,
       state: row.state,
+      creditPrice: row.creditPrice,
+      ageFloor: row.ageFloor,
       implicit: false,
       economyRef: row.economyRef ?? null,
     });
@@ -140,7 +211,7 @@ export async function describeAssetCommercial(
   return out;
 }
 
-export async function getAssetCommercial(db: Db, assetId: string): Promise<AssetCommercialView> {
+export async function getAssetCommercial(db: Reader, assetId: string): Promise<AssetCommercialView> {
   return (await describeAssetCommercial(db, [assetId])).get(assetId) ?? IMPLICIT_FREE;
 }
 
@@ -164,9 +235,33 @@ function snapshotOf(asset: CharacterVisualAssetRow, characterName: string): Reco
 
 export interface SetContentOfferInput {
   assetId: string;
-  state: Exclude<ContentCommercialState, 'retired'>;
+  state: ContentCommercialState;
+  /** Whole Credits: required for `credit`, and only for `credit`. */
+  creditPrice?: number | null;
+  /** Minimum age in years (18-99), or null / absent for none. */
+  ageFloor?: number | null;
   /** Economy configuration this offer resolves against (codes only). */
   economyRef?: Record<string, unknown> | null;
+}
+
+/** The terms, checked. The database holds the same rules; this says what is wrong in words. */
+function checkTerms(input: SetContentOfferInput): { creditPrice: number | null; ageFloor: number | null } {
+  if (!(CONTENT_ACCESS_STATES as readonly unknown[]).includes(input.state)) {
+    throw new CommercialBoundaryError('invalid_state', `state must be one of: ${CONTENT_ACCESS_STATES.join(', ')}.`);
+  }
+  const price = input.creditPrice ?? null;
+  if (input.state === 'credit') {
+    if (typeof price !== 'number' || !Number.isSafeInteger(price) || price < 1 || price > CREDIT_PRICE_MAX) {
+      throw new CommercialBoundaryError('invalid_price', 'Credit content needs a price: a whole number of Credits, 1 or more.');
+    }
+  } else if (price !== null) {
+    throw new CommercialBoundaryError('invalid_price', `Only credit content has a Credit price; ${input.state} content has none.`);
+  }
+  const ageFloor = input.ageFloor ?? null;
+  if (ageFloor !== null && (typeof ageFloor !== 'number' || !Number.isInteger(ageFloor) || ageFloor < AGE_FLOOR_MIN || ageFloor > AGE_FLOOR_MAX)) {
+    throw new CommercialBoundaryError('invalid_age_floor', `The age floor must be a whole number of years from ${AGE_FLOOR_MIN} to ${AGE_FLOOR_MAX}, or none.`);
+  }
+  return { creditPrice: price, ageFloor };
 }
 
 /**
@@ -180,11 +275,12 @@ export interface SetContentOfferInput {
  * changes, so moderation, release and placement are exactly as they were.
  */
 export async function setContentOffer(
-  db: Db,
+  db: Writer,
   commerce: { enabled: boolean },
   input: SetContentOfferInput,
 ): Promise<ContentOfferRow> {
   assertCommercialWrite(commerce);
+  const terms = checkTerms(input);
 
   const [row] = await db
     .select({ asset: characterVisualAssets, characterName: characters.name })
@@ -209,6 +305,8 @@ export async function setContentOffer(
       .update(contentOffers)
       .set({
         state: input.state,
+        creditPrice: terms.creditPrice,
+        ageFloor: terms.ageFloor,
         economyRef: input.economyRef ?? null,
         snapshot,
         updatedAt: new Date(),
@@ -224,6 +322,8 @@ export async function setContentOffer(
       assetId: input.assetId,
       characterId: row.asset.characterId,
       state: input.state,
+      creditPrice: terms.creditPrice,
+      ageFloor: terms.ageFloor,
       economyRef: input.economyRef ?? null,
       snapshot,
     })
@@ -232,25 +332,26 @@ export async function setContentOffer(
 }
 
 /**
- * Stop offering this content. The row stays: entitlements already granted
- * against it remain valid, and a retired offer is how that history is kept.
- * A new offer for the same asset may then be written.
+ * Stop offering this content. The row stays, with the terms it had -- state,
+ * price, age floor: entitlements already granted against it remain valid, and
+ * a retired offer is how that history is kept. The content reads as FREE again
+ * until a new offer for it is written.
  */
 export async function retireContentOffer(
-  db: Db,
+  db: Writer,
   commerce: { enabled: boolean },
   offerId: string,
 ): Promise<ContentOfferRow | null> {
   assertCommercialWrite(commerce);
   const [updated] = await db
     .update(contentOffers)
-    .set({ state: 'retired', retiredAt: new Date(), updatedAt: new Date() })
+    .set({ retiredAt: new Date(), updatedAt: new Date() })
     .where(and(eq(contentOffers.id, offerId), isNull(contentOffers.retiredAt)))
     .returning();
   return updated ?? null;
 }
 
-export async function liveOfferFor(db: Db, assetId: string): Promise<ContentOfferRow | null> {
+export async function liveOfferFor(db: Reader, assetId: string): Promise<ContentOfferRow | null> {
   const [row] = await db
     .select()
     .from(contentOffers)
@@ -268,8 +369,140 @@ export async function liveOfferFor(db: Db, assetId: string): Promise<ContentOffe
  * gone.
  */
 export async function listOffersForCharacter(
-  db: Db,
+  db: Reader,
   characterId: string,
 ): Promise<ContentOfferRow[]> {
   return db.select().from(contentOffers).where(eq(contentOffers.characterId, characterId));
+}
+
+/**
+ * EVERY offer ever written for these assets, live and retired alike, by asset
+ * id (P8.2).
+ *
+ * Retired ones are included deliberately, and that is the whole point of this
+ * function. An entitlement names the offer it was bought under, so a customer
+ * who unlocked a clip holds THAT offer -- and an operator who later retires it
+ * and writes a new one at a new price must not thereby make the customer pay
+ * again. Ownership is therefore asked of an asset's whole offer history, never
+ * only of its live offer.
+ *
+ * An asset with no offer at all is absent, not an empty list: there is nothing
+ * anyone could own.
+ */
+export async function offerHistoryForAssets(db: Reader, assetIds: readonly string[]): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (assetIds.length === 0) return out;
+  const rows = await db
+    .select({ id: contentOffers.id, assetId: contentOffers.assetId })
+    .from(contentOffers)
+    .where(inArray(contentOffers.assetId, [...assetIds]));
+  for (const row of rows) {
+    if (row.assetId === null) continue;
+    const list = out.get(row.assetId);
+    if (list) list.push(row.id);
+    else out.set(row.assetId, [row.id]);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * The Free/Premium allocation of one character's clips (P4.D2)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A character's allocation. Its EXISTENCE opts her clips in to Premium by
+ * default; `freeClipCount` records how many Free clips the operator asked for.
+ * Which clips are Free is not stored here -- those are ordinary offers, so a
+ * clip's access state still has exactly one answer.
+ */
+export interface ClipAllocation {
+  characterId: string;
+  freeClipCount: number | null;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+const toAllocation = (row: typeof characterClipAllocation.$inferSelect): ClipAllocation => ({
+  characterId: row.characterId,
+  freeClipCount: row.freeClipCount,
+  updatedAt: row.updatedAt.toISOString(),
+  updatedBy: row.updatedBy,
+});
+
+export async function readClipAllocation(db: Reader, characterId: string): Promise<ClipAllocation | null> {
+  const [row] = await db.select().from(characterClipAllocation).where(eq(characterClipAllocation.characterId, characterId));
+  return row ? toAllocation(row) : null;
+}
+
+/** Opts a character in to Free/Premium, and records how many Free clips she should have. */
+export async function setClipAllocation(
+  db: Writer,
+  commerce: { enabled: boolean },
+  input: { characterId: string; freeClipCount: number | null; actorUserId: string | null },
+): Promise<ClipAllocation> {
+  assertCommercialWrite(commerce);
+  if (input.freeClipCount !== null && (!Number.isSafeInteger(input.freeClipCount) || input.freeClipCount < 0)) {
+    throw new CommercialBoundaryError('invalid_state', 'The number of Free clips must be a whole number, 0 or more.');
+  }
+  const [row] = await db
+    .insert(characterClipAllocation)
+    .values({ characterId: input.characterId, freeClipCount: input.freeClipCount, updatedBy: input.actorUserId })
+    .onConflictDoUpdate({
+      target: characterClipAllocation.characterId,
+      set: { freeClipCount: input.freeClipCount, updatedBy: input.actorUserId, updatedAt: sql`now()` },
+    })
+    .returning();
+  return toAllocation(row!);
+}
+
+/**
+ * Takes a character back out: her clips read as they did before any of this,
+ * which is FREE. The offers themselves are the caller's to retire -- a
+ * commercial record is never deleted here.
+ */
+export async function removeClipAllocation(db: Writer, commerce: { enabled: boolean }, characterId: string): Promise<boolean> {
+  assertCommercialWrite(commerce);
+  const removed = await db.delete(characterClipAllocation).where(eq(characterClipAllocation.characterId, characterId)).returning();
+  return removed.length > 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * Ordering Free content first
+ * ------------------------------------------------------------------ */
+
+/**
+ * FREE CONTENT FIRST, for any list built over `character_visual_assets`.
+ *
+ * The product rule -- a character's Free clips come before the ones a customer
+ * cannot simply watch -- belongs to whoever builds the list. WHICH offer row is
+ * the live one, and which state means "free", belong here: they are the same
+ * two facts every other read in this module is built on, and a list that
+ * decided them for itself would be a second opinion on commercial state.
+ *
+ * So a caller borrows both and names neither the table nor the state:
+ *
+ *   const offer = freeFirstJoin();
+ *   ...
+ *   .leftJoin(offer.table, offer.on)
+ *   .orderBy(freeFirstOrder(), <the order the list already had>)
+ *
+ * The join is scoped to the live offer, of which there is at most one per asset
+ * (`content_offers_live_asset_idx`), so it cannot duplicate a row. An asset
+ * with no offer sorts with the second group, which is what P4.D2's
+ * Premium-by-default means.
+ *
+ * The second group is "not Free" rather than "Premium" on purpose: Premium,
+ * Credit-priced and any state added later all sort after the content a
+ * customer can simply watch, without this having to be revisited.
+ */
+export function freeFirstJoin(): { table: typeof contentOffers; on: ReturnType<typeof and> } {
+  return {
+    table: contentOffers,
+    on: and(eq(contentOffers.assetId, characterVisualAssets.id), isNull(contentOffers.retiredAt)),
+  };
+}
+
+/** The sort key to use with `freeFirstJoin`: Free first, everything else after. */
+export function freeFirstOrder() {
+  return sql`case when ${contentOffers.state} = 'free' then 0 else 1 end`;
 }

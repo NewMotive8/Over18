@@ -2,6 +2,7 @@ import {
   bigserial,
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -10,8 +11,10 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { VisualDna } from '@over18/shared';
@@ -30,11 +33,22 @@ import type { VisualDna } from '@over18/shared';
  */
 export const userRole = pgEnum('user_role', ['user', 'admin']);
 
+/**
+ * P2.5.2: whether the account may be used at all. AUTHORITATIVE and separate
+ * from everything commercial -- a suspension touches no subscription, wallet,
+ * entitlement or content, only sign-in and sessions (services/auth-service).
+ * Reversible both ways; closing or deleting an account is not a status here.
+ * Defaults to 'active', so every existing and new account is active.
+ */
+export const accountStatus = pgEnum('account_status', ['active', 'suspended']);
+
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   role: userRole('role').notNull().default('user'),
+  /** Changed only by services/account-status-service.ts, with an audit record. */
+  status: accountStatus('status').notNull().default('active'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -2070,16 +2084,21 @@ export const economyRulesetRewards = pgTable(
  * ------------------------------------------------------------------ */
 
 /**
- * What an offer says about its content:
+ * THE ACCESS STATE of a piece of content (P4.1, PRD §10, §32.1) -- what an
+ * offer says about it:
  *
- *   free      no commercial condition -- today's entire library, implicitly
- *   locked    visible, but access is conditional (subscription, unlock, grant)
- *   paid      access is bought outright
- *   retired   no longer offered. History, never deletion: entitlements already
- *             granted stay valid, which is why this is a state and not a
- *             removed row.
+ *   free         no condition -- today's entire library, implicitly
+ *   premium      included with a subscription (Premium)
+ *   credit       unlocked with Credits, at the offer's `credit_price`
+ *   unavailable  cannot be accessed
+ *
+ * P0.8 named these free / locked / paid / retired; migration 0040 maps them
+ * (locked -> premium; a paid or retired offer, which has no price to become
+ * `credit` with, -> unavailable -- failing closed). Whether an offer is still
+ * live is `retired_at`, not a state: a retired offer keeps the state, price
+ * and age floor it had, as the history an entitlement needs.
  */
-export const commercialState = pgEnum('commercial_state', ['free', 'locked', 'paid', 'retired']);
+export const commercialState = pgEnum('commercial_state', ['free', 'premium', 'credit', 'unavailable']);
 
 /**
  * content_offers -- one asset's commercial standing, and the durable identity a
@@ -2098,17 +2117,54 @@ export const commercialState = pgEnum('commercial_state', ['free', 'locked', 'pa
  * it was at the time. A future "your purchases" list reads it and does not have
  * to join to content that may be gone.
  *
- * ── WHAT IS NOT HERE ─────────────────────────────────────────────────────────
+ * ── THE ACCESS TERMS (P4.1) ──────────────────────────────────────────────────
  *
- * No price, no credit amount, no currency. Those are economy CONFIGURATION
- * (P1.1) resolved at a point in time (P1.2); an offer names the configuration
- * it uses through `economy_ref` and never carries a copy of it, so a price
- * change is a configuration decision and not an edit to every asset.
+ * `state`, `credit_price` and `age_floor` are the content's access terms.
+ * A `credit` offer's price is a whole number of Credits, held HERE: locked
+ * photos and videos are priced per asset, not in the economy configuration's
+ * action costs (P1, `ECONOMY_ACTION_CATALOGUE`). No money, currency or plan
+ * price is ever stored here; `economy_ref` still names any configuration an
+ * offer relies on. `age_floor` is an optional minimum age, in years, for the
+ * content -- a requirement recorded now and enforced by the age-verification
+ * phase (P5), not here.
+ *
+ * ── WHAT IS NOT HERE ─────────────────────────────────────────────────────────
  *
  * No entitlement, wallet, purchase or ledger table. Those are P2/P3/P8. When
  * they arrive, an entitlement references `content_offers.id` -- never an asset
  * id -- which is what lets it survive everything above.
  */
+/**
+ * character_clip_allocation (P4.D2) -- a character's Free/Premium allocation.
+ *
+ * THE ROW IS THE OPT-IN. A character with no row is exactly as she is today:
+ * her clips carry no offer and read FREE. Once a row exists, this character's
+ * clips are PREMIUM unless an offer says otherwise -- which is what makes a
+ * newly uploaded clip Premium without touching the content workflow that
+ * uploaded it.
+ *
+ * `free_clip_count` is the number of Free clips the operator configured. It
+ * records the intent; the clips actually chosen are ordinary content offers,
+ * so the access state of a clip is still answered in exactly one place.
+ *
+ * It holds no commercial history: unlike an offer, an allocation is only a
+ * current setting, so it goes with the character (CASCADE).
+ */
+export const characterClipAllocation = pgTable(
+  'character_clip_allocation',
+  {
+    characterId: uuid('character_id')
+      .primaryKey()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    /** How many of her clips should be Free. Null: none configured; the operator marks clips one by one. */
+    freeClipCount: integer('free_clip_count'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: uuid('updated_by'),
+  },
+  (t) => [check('character_clip_allocation_free_count', sql`${t.freeClipCount} is null or ${t.freeClipCount} >= 0`)],
+);
+
 export const contentOffers = pgTable(
   'content_offers',
   {
@@ -2120,6 +2176,10 @@ export const contentOffers = pgTable(
     /** Denormalised owner, for the same reason and with the same nullability. */
     characterId: uuid('character_id').references(() => characters.id, { onDelete: 'set null' }),
     state: commercialState('state').notNull().default('free'),
+    /** Whole Credits to unlock: set exactly when `state = 'credit'` (checked below). */
+    creditPrice: integer('credit_price'),
+    /** Optional minimum age, in years, to access the content. Null: no age floor. */
+    ageFloor: integer('age_floor'),
     /**
      * What was offered, recorded when the offer was written: character name,
      * asset kind and media type. Never authoritative for live content -- read
@@ -2131,7 +2191,7 @@ export const contentOffers = pgTable(
      * nothing else (see economy_* tables). Null while the economy is dark.
      */
     economyRef: jsonb('economy_ref').$type<Record<string, unknown>>(),
-    /** Set exactly while `state = 'retired'`; the check below holds them together. */
+    /** Set once the offer is no longer live. It keeps its terms, as history. */
     retiredAt: timestamp('retired_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -2146,10 +2206,719 @@ export const contentOffers = pgTable(
       .on(t.assetId)
       .where(sql`${t.retiredAt} is null and ${t.assetId} is not null`),
     index('content_offers_character_idx').on(t.characterId),
-    check(
-      'content_offers_retired_consistent',
-      sql`(${t.state} = 'retired') = (${t.retiredAt} is not null)`,
+    // A Credit price exactly for Credit content, and always a positive whole number.
+    check('content_offers_credit_price', sql`(${t.state} = 'credit') = (${t.creditPrice} is not null)`),
+    check('content_offers_credit_price_positive', sql`${t.creditPrice} is null or ${t.creditPrice} > 0`),
+    // The platform is adults-only: a floor below 18 would say nothing.
+    check('content_offers_age_floor', sql`${t.ageFloor} is null or ${t.ageFloor} between 18 and 99`),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * Wallets and the append-only ledger (PRD v1.2 §18, §19.2, §30.1, §34.2) -- P2.1
+ *
+ *   user -> wallet (one per user and currency: a cached balance)
+ *        -> wallet_transactions (append-only: the authoritative history)
+ *
+ * THE LEDGER IS THE RECORD; THE WALLET IS A CACHE OF IT (§19.2). Every
+ * transaction states the balance it left behind, and a wallet's balance is
+ * always its latest transaction's `balance_after`.
+ *
+ * A BALANCE IS NEVER WRITTEN DIRECTLY -- for anyone, ever (§30.1, §34.2). This
+ * is enforced by the database (migration 0034), not merely avoided by the code:
+ *   - a wallet is created empty, and no statement may update it;
+ *   - appending a transaction is the ONLY thing that moves a balance: the
+ *     database locks the wallet, checks the movement, stamps the resulting
+ *     balance and the wallet's next sequence number, and updates the cache;
+ *   - a transaction can never be updated or deleted. A correction or a refund
+ *     is a new, compensating transaction that names the one it compensates.
+ * An operator's adjustment is a transaction like any other, carrying the
+ * operator and a reason. There is no "set balance" anywhere.
+ *
+ * WHAT IS NOT HERE, deliberately. No function moves Credits yet: granting,
+ * spending, holds and refunds are P2.2's services, built on these rules. No
+ * payment data either: a purchase's money lives in its own payment records
+ * (P8), and a transaction only REFERENCES the thing that caused it
+ * (`source_type` / `source_id`), never an amount of money, a processor or a
+ * payment instrument.
+ *
+ * NO BUSINESS RULE IS DECIDED HERE: the order Credit classes are spent in,
+ * expiry (D-7), caps on operator adjustments (§34.3) and which sources each
+ * kind of transaction must cite are the services' to apply. What the database
+ * guarantees is that whatever they write is internally consistent.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Stable virtual-currency codes: `credits`. Lower case, so an ISO 4217 money
+ * code (`USD`) can never be mistaken for a wallet currency, or vice versa.
+ */
+const WALLET_CURRENCY_PATTERN = sql.raw(`'^[a-z][a-z0-9_]{1,31}$'`);
+const SOURCE_TYPE_PATTERN = sql.raw(`'^[a-z][a-z0-9_]{1,63}$'`);
+
+/**
+ * wallet_currencies -- the virtual currencies a wallet can hold.
+ *
+ * `credits` is the only one, inserted by migration 0034. A future currency is a
+ * new row: the wallet and ledger are per currency throughout and need no
+ * redesign. Nothing else is stored here yet -- how a currency is named, sold or
+ * earned is configuration for the phase that introduces it.
+ */
+export const walletCurrencies = pgTable(
+  'wallet_currencies',
+  {
+    code: text('code').primaryKey(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check('wallet_currencies_code_format', sql`${t.code} ~ ${WALLET_CURRENCY_PATTERN}`)],
+);
+
+/**
+ * wallets -- one per user and currency: the CURRENT balance, cached.
+ *
+ * `balance` is what the user can spend now. `held` is reserved for in-flight
+ * paid actions and is NOT spendable (the P0 `CommercialWallet` contract): a
+ * hold moves Credits from `balance` to `held`, a capture consumes them, a
+ * release returns them. Neither can go below zero, in any currency.
+ *
+ * `version` counts the transactions applied, so it always equals the latest
+ * transaction's `sequence`. Only the ledger's trigger ever changes these three
+ * columns; a direct UPDATE is refused.
+ *
+ * The owner is a real foreign key, RESTRICT: a user with a wallet cannot be
+ * deleted, because a Credit history must not disappear with its account.
+ * Deleting or anonymising an account with a wallet is a retention decision
+ * (P9), not something a cascade should settle silently.
+ */
+export const wallets = pgTable(
+  'wallets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    currency: text('currency')
+      .notNull()
+      .references(() => walletCurrencies.code, { onDelete: 'restrict' }),
+    balance: integer('balance').notNull().default(0),
+    held: integer('held').notNull().default(0),
+    version: integer('version').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /** The wallet lookup, and what a transaction's (user, currency) references. */
+    unique('wallets_user_currency_unique').on(t.userId, t.currency),
+    check('wallets_balance_non_negative', sql`${t.balance} >= 0`),
+    check('wallets_held_non_negative', sql`${t.held} >= 0`),
+    check('wallets_version_non_negative', sql`${t.version} >= 0`),
+  ],
+);
+
+/** A transaction adds to or takes from the balance it moves. */
+export const walletEntryDirection = pgEnum('wallet_entry_direction', ['credit', 'debit']);
+
+/**
+ * What caused a transaction. Its direction follows from the type where the type
+ * decides it (a purchase only ever adds; a paid action only ever takes); a
+ * reversal and an operator adjustment may go either way.
+ *
+ *   grant, reward, purchase    credit    Credits given, earned or bought
+ *   paid_action                debit     an action paid for outright
+ *   hold                       debit     balance -> held, for an action in flight
+ *   capture                    debit     held Credits consumed (names its hold)
+ *   release                    credit    held -> balance (names its hold)
+ *   refund                     credit    Credits returned for a paid action or
+ *                                        capture (names it)
+ *   reversal                   either    undoes part or all of an earlier
+ *                                        transaction, opposite to it (names it)
+ *   admin_adjustment           either    an operator's adjustment: actor and
+ *                                        reason required
+ */
+export const walletEntryType = pgEnum('wallet_entry_type', [
+  'grant',
+  'reward',
+  'purchase',
+  'paid_action',
+  'refund',
+  'reversal',
+  'admin_adjustment',
+  'hold',
+  'capture',
+  'release',
+]);
+
+/**
+ * The class of the Credits a transaction moves (§18). The classes must stay
+ * distinguishable in the ledger because they may carry different expiry and
+ * refund treatment (§6.3). Which class is spent first is the spending
+ * service's rule, not the schema's.
+ */
+export const creditClass = pgEnum('credit_class', ['included', 'earned', 'purchased']);
+
+/** Transaction types that settle or compensate an earlier transaction, and must name it. */
+const RELATED_TYPES = sql.raw(`('capture', 'release', 'refund', 'reversal')`);
+
+/**
+ * wallet_transactions -- every movement of every wallet, append-only.
+ *
+ * STAMPED BY THE DATABASE, not the writer (migration 0034): `sequence` (1, 2, 3
+ * ... per wallet, gapless), `balance_after` and `held_after` (the wallet after
+ * this transaction) and `created_at` (the transaction's database time). Values
+ * a writer supplies for them are overwritten.
+ *
+ * `idempotency_key` is unique per wallet (§19.2): a retried or replayed write
+ * with the same key cannot apply twice. An `INSERT ... ON CONFLICT DO NOTHING`
+ * replay inserts nothing and moves nothing.
+ *
+ * `related_transaction_id` names what a capture, release, refund or reversal
+ * settles or compensates. It must be in the same wallet, and the database
+ * refuses to settle more of a hold, or compensate more of a transaction, than
+ * it was for.
+ *
+ * `source_type` / `source_id` name what caused the transaction -- a payment
+ * event, a purchase, an action, a reward -- so reconciliation can trace every
+ * grant and every spend (§19.2). Free text: those tables arrive in later
+ * phases.
+ *
+ * `actor_user_id` is who acted, when a person did: required for an operator
+ * adjustment. Not a foreign key, the same rule as `audit_log`: who changed a
+ * balance must outlive their account. `metadata` is context for audit; never a
+ * credential or payment instrument.
+ */
+export const walletTransactions = pgTable(
+  'wallet_transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id').notNull(),
+    currency: text('currency').notNull(),
+    /** Stamped: this wallet's next number, from 1, without gaps. */
+    sequence: integer('sequence').notNull().default(0),
+    entryType: walletEntryType('entry_type').notNull(),
+    direction: walletEntryDirection('direction').notNull(),
+    /** Always positive; `direction` says which way it moves. */
+    amount: integer('amount').notNull(),
+    creditClass: creditClass('credit_class').notNull(),
+    /** Stamped: the wallet's spendable balance after this transaction. */
+    balanceAfter: integer('balance_after').notNull().default(0),
+    /** Stamped: the wallet's held Credits after this transaction. */
+    heldAfter: integer('held_after').notNull().default(0),
+    idempotencyKey: text('idempotency_key').notNull(),
+    relatedTransactionId: uuid('related_transaction_id').references(
+      (): AnyPgColumn => walletTransactions.id,
+      { onDelete: 'restrict' },
     ),
+    sourceType: text('source_type'),
+    sourceId: text('source_id'),
+    reason: text('reason'),
+    actorUserId: uuid('actor_user_id'),
+    requestId: text('request_id'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    /** Stamped: the database time of the writing transaction. */
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /** A transaction belongs to its user's wallet in that currency -- never another's. */
+    foreignKey({
+      name: 'wallet_transactions_wallet_fk',
+      columns: [t.userId, t.currency],
+      foreignColumns: [wallets.userId, wallets.currency],
+    }).onDelete('restrict'),
+    /** A wallet's history in order, and its latest transaction. */
+    uniqueIndex('wallet_transactions_sequence_idx').on(t.userId, t.currency, t.sequence),
+    uniqueIndex('wallet_transactions_idempotency_idx').on(t.userId, t.currency, t.idempotencyKey),
+    /** What settled or compensated a transaction; the database sums these on every settlement. */
+    index('wallet_transactions_related_idx')
+      .on(t.relatedTransactionId)
+      .where(sql`${t.relatedTransactionId} is not null`),
+    /** Reconciliation: which transactions a payment event, purchase or action produced. */
+    index('wallet_transactions_source_idx')
+      .on(t.sourceType, t.sourceId)
+      .where(sql`${t.sourceType} is not null`),
+    /** P2.4: an operator's adjustments in a currency today, for the daily caps -- without scanning the ledger. */
+    index('wallet_transactions_adjustment_cap_idx')
+      .on(t.actorUserId, t.currency, t.createdAt)
+      .where(sql`${t.entryType} = 'admin_adjustment'`),
+    check('wallet_transactions_amount_positive', sql`${t.amount} > 0`),
+    check('wallet_transactions_sequence_positive', sql`${t.sequence} > 0`),
+    check(
+      'wallet_transactions_after_non_negative',
+      sql`${t.balanceAfter} >= 0 and ${t.heldAfter} >= 0`,
+    ),
+    check(
+      'wallet_transactions_direction_by_type',
+      sql`(${t.entryType} in ('grant', 'reward', 'purchase', 'refund', 'release') and ${t.direction} = 'credit')
+        or (${t.entryType} in ('paid_action', 'hold', 'capture') and ${t.direction} = 'debit')
+        or ${t.entryType} in ('reversal', 'admin_adjustment')`,
+    ),
+    check(
+      'wallet_transactions_related_by_type',
+      sql`(${t.relatedTransactionId} is not null) = (${t.entryType} in ${RELATED_TYPES})`,
+    ),
+    check(
+      'wallet_transactions_not_self_related',
+      sql`${t.relatedTransactionId} is null or ${t.relatedTransactionId} <> ${t.id}`,
+    ),
+    check(
+      'wallet_transactions_admin_attributed',
+      sql`${t.entryType} <> 'admin_adjustment' or (
+        ${t.actorUserId} is not null and ${t.reason} is not null and length(btrim(${t.reason})) > 0
+      )`,
+    ),
+    check(
+      'wallet_transactions_idempotency_key_format',
+      sql`length(btrim(${t.idempotencyKey})) > 0 and length(${t.idempotencyKey}) <= 200`,
+    ),
+    check(
+      'wallet_transactions_source_complete',
+      sql`(${t.sourceType} is null and ${t.sourceId} is null) or (
+        ${t.sourceType} ~ ${SOURCE_TYPE_PATTERN} and ${t.sourceId} is not null and length(btrim(${t.sourceId})) > 0
+      )`,
+    ),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * Subscription state (PRD v1.2 §13, §18, UC-12, UC-15) -- P3.1
+ *
+ * The minimum a server needs to answer "what is this user's subscription?".
+ * NOTHING WRITES THIS YET: recording renewals, failed payments, cancellations
+ * and expiries is the billing lifecycle's job (P9). The subscription service
+ * is its only reader.
+ * ------------------------------------------------------------------ */
+
+/**
+ * A subscription's state, AS THE BILLING LIFECYCLE RECORDS IT (decided
+ * 2026-09-19). The server derives no transition from dates, with the one
+ * exception the PRD states: a cancelled subscription reads as expired once its
+ * period has ended.
+ *
+ *   active      paid and current
+ *   past_due    a renewal payment failed; Premium is kept (UC-15: no hard
+ *               lockout on the first failure)
+ *   grace       within the grace window after a lapse; Premium is kept (UC-15)
+ *   cancelled   cancelled with paid time left: Premium until
+ *               `current_period_end`, then expired (§13, UC-12). This IS the
+ *               contract's `cancelAtPeriodEnd`; there is no separate flag.
+ *   expired     over; no Premium
+ */
+export const subscriptionStatus = pgEnum('subscription_status', ['active', 'past_due', 'grace', 'cancelled', 'expired']);
+
+/**
+ * subscriptions -- a user's current subscription: one row, or none.
+ *
+ * NO ROW MEANS NO PAID SUBSCRIPTION. There is no "Free" subscription and no
+ * "Free" plan.
+ *
+ * THE PLAN IS REFERENCED, NEVER COPIED. `plan_version_id` names the exact P1
+ * plan version bought -- so a later price change never alters what an existing
+ * subscriber holds (§30.1, §31) -- and its code, price, grant and features are
+ * read from P1. No price, Credit amount or benefit is stored here. Only a
+ * published version resolves; the subscription service refuses to grant
+ * Premium on any other.
+ *
+ * The owner is a RESTRICT foreign key, like wallets: commercial history does
+ * not disappear with an account (a P9 retention decision).
+ */
+export const subscriptions = pgTable('subscriptions', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'restrict' }),
+  planVersionId: uuid('plan_version_id')
+    .notNull()
+    .references(() => economyPlanVersions.id, { onDelete: 'restrict' }),
+  status: subscriptionStatus('status').notNull(),
+  /** The end of the paid period: when it renews, or -- once cancelled -- when Premium ends. */
+  currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** P3.5: what a recorded subscription change did. */
+export const subscriptionChange = pgEnum('subscription_change', ['assign', 'change_plan', 'cancel', 'end']);
+
+/** P3.5: who made it -- an operator (P3.5), or a confirmed payment (P9.2). */
+export const subscriptionChangeSource = pgEnum('subscription_change_source', ['admin', 'payment']);
+
+/**
+ * subscription_history (P3.5) -- every change ever made to a user's
+ * subscription, APPEND-ONLY (migration 0039 refuses UPDATE and DELETE).
+ *
+ * `subscriptions` remains the one current state; this is its history, never a
+ * second source of truth. Each row records the state before and after, when the
+ * change took effect, who made it and why. Written only by the subscription
+ * service, in the same transaction as the change it records.
+ *
+ * `sequence` counts one user's changes from 1. It is also the optimistic
+ * concurrency token: a change names the count it saw, and the unique index
+ * refuses a second change claiming the same number.
+ */
+export const subscriptionHistory = pgTable(
+  'subscription_history',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    sequence: integer('sequence').notNull(),
+    change: subscriptionChange('change').notNull(),
+    source: subscriptionChangeSource('source').notNull(),
+    effectiveAt: timestamp('effective_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The state before -- all three null when the user had no subscription. */
+    previousPlanVersionId: uuid('previous_plan_version_id').references(() => economyPlanVersions.id, { onDelete: 'restrict' }),
+    previousStatus: subscriptionStatus('previous_status'),
+    previousPeriodEnd: timestamp('previous_period_end', { withTimezone: true }),
+    /** The state after, exactly as written to `subscriptions`. */
+    planVersionId: uuid('plan_version_id')
+      .notNull()
+      .references(() => economyPlanVersions.id, { onDelete: 'restrict' }),
+    status: subscriptionStatus('status').notNull(),
+    currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }).notNull(),
+    actorUserId: uuid('actor_user_id'),
+    reason: text('reason'),
+    reference: text('reference'),
+    requestId: text('request_id'),
+  },
+  (t) => [
+    uniqueIndex('subscription_history_user_sequence_idx').on(t.userId, t.sequence),
+    check('subscription_history_sequence_positive', sql`${t.sequence} >= 1`),
+    check(
+      'subscription_history_previous_complete',
+      sql`(${t.previousPlanVersionId} IS NULL) = (${t.previousStatus} IS NULL) AND (${t.previousStatus} IS NULL) = (${t.previousPeriodEnd} IS NULL)`,
+    ),
+    // An operator's change always names the operator and says why.
+    check(
+      'subscription_history_admin_attributed',
+      sql`${t.source} <> 'admin' OR (${t.actorUserId} IS NOT NULL AND length(btrim(coalesce(${t.reason}, ''))) > 0)`,
+    ),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * Paid actions (PRD v1.2 §19.2) -- P7.1
+ *
+ * The record of ONE paid action from end to end: what was asked for, which
+ * economy version priced it, the Credits held for it, and how it finished.
+ *
+ * IT IS NOT A SECOND LEDGER AND NOT A SECOND BALANCE. Every Credit movement is
+ * a P2.1 `wallet_transactions` row written by the wallet service; the columns
+ * here NAME those rows rather than restating their amounts as truth. Nothing
+ * here can be spent, and deleting a row would move nothing.
+ *
+ * WHY IT EXISTS AT ALL. A wallet transaction is idempotent on its own key, but
+ * a paid action is SEVERAL of them -- a hold, then a capture or a release --
+ * around external work the wallet knows nothing about. This row is the identity
+ * that makes the whole operation replayable, and the place the resolved economy
+ * version is pinned so the price can be re-read exactly, never re-resolved.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Where a paid action stands.
+ *
+ *   held       Credits reserved; the external work may run
+ *   captured   the work succeeded and the reserved Credits were consumed
+ *   released   the work failed or was cancelled and the Credits went back
+ *   refunded   the work was captured and later returned (§6.3)
+ */
+export const paidActionStatus = pgEnum('paid_action_status', ['held', 'captured', 'released', 'refunded']);
+
+/**
+ * paid_actions -- one row per paid action, written only by the P7.1 framework.
+ *
+ * `idempotency_key` is unique per USER (not per wallet): one key names one paid
+ * action, whatever currency it is priced in, so a replayed request can never
+ * start a second one. `request_id` carries the caller's correlation id through
+ * every step.
+ *
+ * `price_source` names WHICH server authority priced it, and the pin follows
+ * from that. For `ruleset` -- generated actions, the ordinary case --
+ * `ruleset_id` and `ruleset_version` pin the P1 configuration, recorded under
+ * the P1.2 recording lock, and the price is re-read from that exact version,
+ * never re-resolved by timestamp. For anything else, `price_ref_id` names the
+ * row that priced it: P8.2's content unlock pins the `content_offers` id, since
+ * locked photos and videos are priced per asset on the offer rather than in the
+ * economy configuration's action costs. Exactly one of the two pins is present,
+ * and the checks below keep it that way -- a charge always says what priced it.
+ *
+ * `hold_transaction_id` is the reservation; `settlement_transaction_id` is the
+ * capture or release that ended it; `refund_transaction_id` is the refund of a
+ * capture. The checks below keep the three in step with `status`, so a row can
+ * never claim to be settled without naming what settled it. A hold belongs to
+ * exactly one paid action.
+ *
+ * The owner is a RESTRICT foreign key, like wallets and subscriptions:
+ * commercial history does not disappear with an account.
+ */
+export const paidActions = pgTable(
+  'paid_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** The ruleset's action type and quality tier: this table invents neither. */
+    actionType: text('action_type').notNull(),
+    qualityTier: text('quality_tier').notNull(),
+    /** Present only where the action is priced by duration. */
+    durationSeconds: integer('duration_seconds'),
+    currency: text('currency')
+      .notNull()
+      .references(() => walletCurrencies.code, { onDelete: 'restrict' }),
+    /** The price, in whole Credits, as the pinned version gave it. */
+    amount: integer('amount').notNull(),
+    /** Which authority priced it: `ruleset`, or another named server-side source. */
+    priceSource: text('price_source').notNull().default('ruleset'),
+    /** The pinned P1 configuration -- for a ruleset-priced action only. */
+    rulesetId: uuid('ruleset_id').references(() => economyRulesets.id, { onDelete: 'restrict' }),
+    rulesetVersion: integer('ruleset_version'),
+    /** The pinned row that priced it -- for every other source. */
+    priceRefId: text('price_ref_id'),
+    status: paidActionStatus('status').notNull().default('held'),
+    holdTransactionId: uuid('hold_transaction_id')
+      .notNull()
+      .references(() => walletTransactions.id, { onDelete: 'restrict' }),
+    settlementTransactionId: uuid('settlement_transaction_id').references(() => walletTransactions.id, { onDelete: 'restrict' }),
+    refundTransactionId: uuid('refund_transaction_id').references(() => walletTransactions.id, { onDelete: 'restrict' }),
+    idempotencyKey: text('idempotency_key').notNull(),
+    requestId: text('request_id'),
+    /** Why the work failed or was cancelled; never shown to decide anything. */
+    failureReason: text('failure_reason'),
+    /** Context for audit. Never a credential or payment instrument. */
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => [
+    /** One key, one paid action, per user. */
+    uniqueIndex('paid_actions_idempotency_idx').on(t.userId, t.idempotencyKey),
+    /** A reservation settles exactly one paid action. */
+    uniqueIndex('paid_actions_hold_idx').on(t.holdTransactionId),
+    /** A user's paid actions, newest first. */
+    index('paid_actions_user_idx').on(t.userId, t.createdAt),
+    check('paid_actions_amount_positive', sql`${t.amount} > 0`),
+    check('paid_actions_duration_positive', sql`${t.durationSeconds} is null or ${t.durationSeconds} > 0`),
+    /** Settled exactly when something settled it, and stamped when it happened. */
+    check(
+      'paid_actions_settlement_by_status',
+      sql`(${t.status} = 'held') = (${t.settlementTransactionId} is null)
+        and (${t.status} = 'held') = (${t.settledAt} is null)`,
+    ),
+    /** Only a captured action can be refunded, and a refunded one always names its refund. */
+    check(
+      'paid_actions_refund_by_status',
+      sql`(${t.status} = 'refunded') = (${t.refundTransactionId} is not null)
+        and (${t.refundTransactionId} is null or ${t.settlementTransactionId} is not null)`,
+    ),
+    check(
+      'paid_actions_idempotency_key_format',
+      sql`length(btrim(${t.idempotencyKey})) > 0 and length(${t.idempotencyKey}) <= 200`,
+    ),
+    check('paid_actions_price_source_format', sql`${t.priceSource} ~ ${SOURCE_TYPE_PATTERN}`),
+    /** Exactly one pin, and it is the one the price source implies. */
+    check(
+      'paid_actions_price_pinned',
+      sql`(${t.priceSource} = 'ruleset') = (${t.rulesetId} is not null)
+        and (${t.rulesetId} is not null) = (${t.rulesetVersion} is not null)
+        and (${t.priceSource} = 'ruleset') = (${t.priceRefId} is null)`,
+    ),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * Content ownership (PRD v1.2 §10, UC-08/09/16) -- P8.2
+ * ------------------------------------------------------------------ */
+
+/**
+ * content_entitlements -- what a customer has bought outright, and keeps.
+ *
+ * IT POINTS AT AN OFFER, NEVER AN ASSET. That is the rule P0.8 wrote down when
+ * it made `content_offers` survive content deletion, and this is the table it
+ * was written for: an entitlement has to stay answerable after P9.4 deletes the
+ * character and the media, which an asset id could not do.
+ *
+ * ONE LIVE ENTITLEMENT PER CUSTOMER PER OFFER -- the partial unique index below
+ * -- so a retried unlock cannot create a second one, however many times it is
+ * attempted. It is the database's half of P8.2's idempotency; the unlock
+ * service's own checks are the other half.
+ *
+ * OWNERSHIP IS UNCONDITIONAL. It names no subscription, tier or period, because
+ * it does not depend on one: a customer who bought a clip keeps it when their
+ * Premium lapses. The only thing that ends it is `revoked_at`, set when a
+ * purchase is refunded -- and the row stays, as the history the refund refers
+ * to, which is why the index is partial rather than a plain unique constraint.
+ *
+ * `credit_price` is what was actually paid, pinned here rather than read back
+ * from the offer, which an operator may re-price later.
+ */
+export const contentEntitlements = pgTable(
+  'content_entitlements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    offerId: uuid('offer_id')
+      .notNull()
+      .references(() => contentOffers.id, { onDelete: 'restrict' }),
+    /** The P7.1 paid action that bought it: one purchase, one entitlement. */
+    paidActionId: uuid('paid_action_id')
+      .notNull()
+      .references(() => paidActions.id, { onDelete: 'restrict' }),
+    creditPrice: integer('credit_price').notNull(),
+    acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Set when the purchase is refunded. The row remains as history. */
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokeReason: text('revoke_reason'),
+  },
+  (t) => [
+    /** One live entitlement per customer per offer. */
+    uniqueIndex('content_entitlements_live_idx')
+      .on(t.userId, t.offerId)
+      .where(sql`${t.revokedAt} is null`),
+    /** One paid action buys one entitlement. */
+    uniqueIndex('content_entitlements_paid_action_idx').on(t.paidActionId),
+    /** What this customer owns, newest first. */
+    index('content_entitlements_user_idx').on(t.userId, t.acquiredAt),
+    check('content_entitlements_price_positive', sql`${t.creditPrice} > 0`),
+    check(
+      'content_entitlements_revocation_complete',
+      sql`(${t.revokedAt} is null) = (${t.revokeReason} is null)`,
+    ),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * Payments (PRD v1.2 §6, §16, §18) -- P9.1 / P9.2
+ *
+ *   checkout -> payments row (pending)
+ *        -> provider event -> payment_events row (stored first, verbatim)
+ *        -> commercial state: subscription + Credit grant, exactly once
+ *
+ * THE PAYMENT RECORD IS NOT A WALLET AND NOT A SUBSCRIPTION. It records what a
+ * customer was charged and by whom; what they are OWED as a result is the
+ * subscription's and the ledger's. The two are linked by id so support can
+ * reconcile them, and neither is derived from the other.
+ *
+ * PROVIDER-AGNOSTIC BY CONSTRUCTION, like `commerce/payment-provider.ts`. No
+ * column names a processor's concept; `provider` says which adapter produced
+ * the references, so a second provider can be added without a migration.
+ * ------------------------------------------------------------------ */
+
+/** What a payment is for. Mirrors `CheckoutKind` in the provider interface. */
+export const paymentKind = pgEnum('payment_kind', ['subscription', 'credit_pack']);
+
+/**
+ * Where a payment stands.
+ *
+ *   pending     checkout created; nothing granted, and nothing may be
+ *   succeeded   the provider confirmed it; the commercial state was applied
+ *   failed      the provider declined it
+ *   cancelled   the customer abandoned it
+ *   refunded    returned after succeeding
+ *   disputed    charged back
+ */
+export const paymentStatus = pgEnum('payment_status', ['pending', 'succeeded', 'failed', 'cancelled', 'refunded', 'disputed']);
+
+/**
+ * payments -- one customer payment, from checkout to settlement.
+ *
+ * NO CARD DATA, EVER. Only the provider's own opaque references are kept
+ * (§6.2): the checkout, the transaction, the provider's subscription and
+ * customer ids. No PAN, no CVV, no expiry, no token that could authorise a
+ * charge on its own.
+ *
+ * `idempotency_key` is the key sent to the provider when the checkout was
+ * created, unique per user, so a customer double-tapping "Subscribe" gets the
+ * same checkout rather than a second one. `(provider, checkout_ref)` is unique
+ * because that is what an inbound event names.
+ *
+ * `method_hint` is what the customer chose before being sent to the provider
+ * (Apple Pay, Google Pay, PayPal). It is a HINT, never authority: the method
+ * actually used is the provider's to report, and a real hosted checkout may
+ * offer a different one.
+ *
+ * The owner is a RESTRICT foreign key, like wallets and subscriptions:
+ * commercial history does not disappear with an account.
+ */
+export const payments = pgTable(
+  'payments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** Which adapter produced the references below: `fake` today, a processor later. */
+    provider: text('provider').notNull(),
+    kind: paymentKind('kind').notNull(),
+    /** Our own product identifier -- a plan code today. Never the processor's. */
+    productRef: text('product_ref').notNull(),
+    /** Integer minor units. Never a float, anywhere money is carried. */
+    amountMinor: integer('amount_minor').notNull(),
+    /** ISO 4217, upper case. */
+    currency: text('currency').notNull(),
+    status: paymentStatus('status').notNull().default('pending'),
+    checkoutRef: text('checkout_ref').notNull(),
+    transactionRef: text('transaction_ref'),
+    providerSubscriptionRef: text('provider_subscription_ref'),
+    providerCustomerRef: text('provider_customer_ref'),
+    /** apple_pay | google_pay | paypal -- what the customer picked, not what was used. */
+    methodHint: text('method_hint'),
+    idempotencyKey: text('idempotency_key').notNull(),
+    /** Why it failed, as the provider said. Recorded, never used to decide anything. */
+    failureReason: text('failure_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    /** When it stopped being pending. */
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+  },
+  (t) => [
+    /** What an inbound provider event names. */
+    uniqueIndex('payments_provider_checkout_idx').on(t.provider, t.checkoutRef),
+    /** One key, one checkout, per user. */
+    uniqueIndex('payments_user_idempotency_idx').on(t.userId, t.idempotencyKey),
+    index('payments_user_idx').on(t.userId, t.createdAt),
+    check('payments_amount_positive', sql`${t.amountMinor} > 0`),
+    check('payments_currency_format', sql`${t.currency} ~ '^[A-Z]{3}$'`),
+    /** Pending exactly while nothing has settled it. */
+    check('payments_settled_by_status', sql`(${t.status} = 'pending') = (${t.settledAt} is null)`),
+  ],
+);
+
+/**
+ * payment_events -- every provider event, STORED BEFORE IT IS PROCESSED.
+ *
+ * `(provider, event_ref)` is unique, and that single index is what makes a
+ * purchase grant Credits exactly once however many times a processor
+ * redelivers (§19.2). A redelivery loses the race to insert and is answered as
+ * a replay, having changed nothing.
+ *
+ * The raw envelope is kept verbatim in `payload` because reconciling a dispute
+ * months later means reading what the processor actually sent, not our
+ * interpretation of it. `signature_valid` records whether it authenticated:
+ * an event that did not is stored and NEVER processed, so a forged delivery
+ * leaves evidence instead of silence.
+ */
+export const paymentEvents = pgTable(
+  'payment_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    provider: text('provider').notNull(),
+    /** The processor's own id for this delivery. The idempotency key. */
+    eventRef: text('event_ref').notNull(),
+    /** The payment it resolved to, once known. */
+    paymentId: uuid('payment_id').references(() => payments.id, { onDelete: 'restrict' }),
+    /** The parsed event type, or `unrecognised`. */
+    type: text('type').notNull(),
+    signatureValid: boolean('signature_valid').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Set once the event has been applied. Null means stored but not acted on. */
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  },
+  (t) => [
+    /** Exactly-once: one event, one effect. */
+    uniqueIndex('payment_events_provider_ref_idx').on(t.provider, t.eventRef),
+    index('payment_events_payment_idx').on(t.paymentId),
   ],
 );
 
@@ -2194,3 +2963,11 @@ export type EconomyRulesetActionCostRow = typeof economyRulesetActionCosts.$infe
 export type EconomyRulesetAllowanceRow = typeof economyRulesetAllowances.$inferSelect;
 export type EconomyRulesetRewardRow = typeof economyRulesetRewards.$inferSelect;
 export type ContentOfferRow = typeof contentOffers.$inferSelect;
+export type WalletCurrencyRow = typeof walletCurrencies.$inferSelect;
+export type WalletRow = typeof wallets.$inferSelect;
+export type WalletTransactionRow = typeof walletTransactions.$inferSelect;
+export type SubscriptionRow = typeof subscriptions.$inferSelect;
+export type PaidActionRow = typeof paidActions.$inferSelect;
+export type ContentEntitlementRow = typeof contentEntitlements.$inferSelect;
+export type PaymentRow = typeof payments.$inferSelect;
+export type PaymentEventRow = typeof paymentEvents.$inferSelect;

@@ -590,7 +590,10 @@ describe('migration 0029', () => {
  * second, subtly different notion of "the current price".
  */
 describe('the resolver is the only reader of economy configuration', () => {
-  const ALLOWED = new Set(['db/schema.ts', 'services/economy-resolver.ts']);
+  // P1: the configuration writer (drafts, review, publish, cancel) is the one
+  // reviewed addition -- it drives the P1.1 lifecycle, it does not choose a
+  // live version for runtime.
+  const ALLOWED = new Set(['db/schema.ts', 'services/economy-resolver.ts', 'services/economy-admin-service.ts']);
   const ECONOMY_TABLES = /\beconomy(Plans|PlanVersions|Packs|PackVersions|Rulesets|RulesetActionCosts|RulesetAllowances|RulesetRewards)\b|\beconomy_(plans|plan_versions|packs|pack_versions|rulesets|ruleset_action_costs|ruleset_allowances|ruleset_rewards)\b/;
 
   function sourceFiles(dir: string): string[] {

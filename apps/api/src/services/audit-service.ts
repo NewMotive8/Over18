@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, type SQL } from 'drizzle-orm';
+import { and, desc, eq, lt, or, type SQL } from 'drizzle-orm';
 import type { AuditEntryView } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { auditLog, type AuditLogRow } from '../db/schema.js';
@@ -111,6 +111,38 @@ export async function listAuditEntries(
     entries: page.map(toView),
     nextCursor: rows.length > limit ? page[page.length - 1]!.id : null,
   };
+}
+
+/** An audited object, by the (object_type, object_id) pair its entries were recorded under. */
+export interface AuditObjectRef {
+  objectType: string;
+  objectId: string;
+}
+
+/**
+ * The most recent entries concerning one user (P2.5.1): entries recorded
+ * against any of `objects` -- each looked up through the (object_type,
+ * object_id) index -- and entries the user wrote themselves, for staff. Newest
+ * first, bounded. The caller decides who may see them (`audit.read`).
+ */
+export async function listAuditEntriesConcerning(
+  db: Pick<Db, 'select'>,
+  subject: { actorUserId: string; objects: readonly AuditObjectRef[] },
+  limit = 10,
+): Promise<AuditEntryView[]> {
+  const bounded = Math.min(Math.max(Math.trunc(limit), 1), AUDIT_PAGE_MAX);
+  const rows = await db
+    .select()
+    .from(auditLog)
+    .where(
+      or(
+        eq(auditLog.actorUserId, subject.actorUserId),
+        ...subject.objects.map((o) => and(eq(auditLog.objectType, o.objectType), eq(auditLog.objectId, o.objectId))),
+      ),
+    )
+    .orderBy(desc(auditLog.id))
+    .limit(bounded);
+  return rows.map(toView);
 }
 
 const CSV_COLUMNS: ReadonlyArray<keyof AuditEntryView> = [

@@ -10,6 +10,8 @@ import GoSteadyPage from './pages/GoSteadyPage';
 import FavouritesPage from './pages/FavouritesPage';
 import ProfilePage from './pages/ProfilePage';
 import SubscriptionPage from './pages/SubscriptionPage';
+import SimulatedCheckoutPage from './pages/SimulatedCheckoutPage';
+import WalletPage from './pages/WalletPage';
 import ChatPage from './pages/ChatPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminShell from './admin/AdminShell';
@@ -25,6 +27,10 @@ import BannerEditorPage from './pages/admin/BannerEditorPage';
 import HomeComposerPage from './pages/admin/HomeComposerPage';
 import GenerationPage from './pages/admin/GenerationPage';
 import AdminAuditPage from './pages/admin/AdminAuditPage';
+import EconomyPage from './pages/admin/EconomyPage';
+import AdminWalletPage from './pages/admin/AdminWalletPage';
+import AdminUsersPage from './pages/admin/AdminUsersPage';
+import AdminUserDetailPage from './pages/admin/AdminUserDetailPage';
 import DiscoveryCategoriesPage from './pages/admin/DiscoveryCategoriesPage';
 import AdminCharactersPage from './pages/admin/AdminCharactersPage';
 import AdminCharacterDetailPage from './pages/admin/AdminCharacterDetailPage';
@@ -82,6 +88,18 @@ export default function App() {
             server enforces access); only LISTED in the navigation once the
             audit switch is on and the operator holds audit.read. */}
         <Route path="audit" element={<AdminAuditPage />} />
+        {/* PRD v1.2 §31, P1.4 -- the economy console. Listed in the navigation
+            for operators holding economy.manage; the server enforces it. */}
+        <Route path="economy" element={<EconomyPage />} />
+        <Route path="economy/:section" element={<EconomyPage />} />
+        {/* PRD v1.2 §34, P2.4 -- wallet support by permanent User ID. Listed for
+            operators holding users.commercial.read; the server enforces it. */}
+        <Route path="wallets" element={<AdminWalletPage />} />
+        <Route path="wallets/:userId" element={<AdminWalletPage />} />
+        {/* P2.5.1 -- Users: search and filter, then one user's read-only
+            detail. Listed for users.commercial.read; the server enforces it. */}
+        <Route path="users" element={<AdminUsersPage />} />
+        <Route path="users/:userId" element={<AdminUserDetailPage />} />
       </Route>
 
       <Route element={<AppShell />}>
@@ -109,6 +127,13 @@ export default function App() {
 
         {/* Premium / subscription placeholder (no billing) */}
         <Route path="/subscription" element={<SubscriptionPage />} />
+        {/* P9: where the payment provider's hosted checkout will be. The
+            server refuses it unless the simulated provider is selected. */}
+        <Route path="/fake-checkout/:checkoutRef" element={<SimulatedCheckoutPage />} />
+        {/* Credits is the customer-facing name (P8.1). The original path keeps
+            working so nothing already linked to it breaks. */}
+        <Route path="/credits" element={<WalletPage />} />
+        <Route path="/wallet" element={<WalletPage />} />
 
         {/* Auth */}
         <Route path="/login" element={<LoginPage />} />

@@ -59,6 +59,97 @@ export interface CommercialState {
 }
 
 /* ------------------------------------------------------------------ *
+ * The customer economy read API
+ * ------------------------------------------------------------------ */
+
+/**
+ * What every customer economy endpoint answers, with HTTP 503, while the
+ * economy is switched off. Clients render their pending/unavailable state and
+ * show nothing paid; the body carries no price, balance or plan.
+ */
+export interface EconomyUnavailableResponse {
+  error: 'economy_unavailable';
+  reason: 'economy_disabled';
+  message: string;
+}
+
+/**
+ * A published plan version in effect now, as a customer may see it.
+ * `code` is the plan's stable identity; `versionId` names the exact
+ * configuration row, which is what a later checkout must pin rather than
+ * re-resolving by time. Plan `features` are machine rules for the server's
+ * entitlement decisions and are deliberately not part of this view.
+ */
+export interface CustomerPlanOffer {
+  code: string;
+  version: number;
+  versionId: string;
+  displayName: string;
+  billingPeriodMonths: number;
+  priceMinor: number;
+  currency: string;
+  monthlyIncludedCredits: number;
+  /** False for a retired plan: still in effect, but not offered. */
+  isPurchasable: boolean;
+  /** ISO 8601, microsecond precision, UTC. */
+  effectiveFrom: string;
+}
+
+/** A published Credit pack version in effect now, in ladder order. */
+export interface CustomerPackOffer {
+  code: string;
+  version: number;
+  versionId: string;
+  displayName: string;
+  credits: number;
+  priceMinor: number;
+  currency: string;
+  sortOrder: number;
+  isBestValue: boolean;
+  isPurchasable: boolean;
+  effectiveFrom: string;
+}
+
+/** GET /api/economy/catalog: the published, in-effect catalog. */
+export interface CustomerEconomyCatalog {
+  /** The database instant the catalog was resolved at. */
+  asOf: string;
+  plans: CustomerPlanOffer[];
+  packs: CustomerPackOffer[];
+}
+
+/**
+ * A commercial fact the backend cannot state with authority -- because nothing
+ * persists it yet, or because what is stored cannot be resolved safely (a
+ * subscription naming a plan version that is not published; Credit classes
+ * that do not reconcile). Stated as absent, never as a placeholder value, and
+ * never as Premium.
+ */
+export interface CommercialFactUnavailable {
+  available: false;
+  reason:
+    | 'subscriptions_not_supported'
+    | 'wallet_not_supported'
+    | 'age_verification_not_supported'
+    | 'subscription_unresolvable'
+    | 'wallet_unresolvable';
+}
+
+/**
+ * GET /api/me/commercial-state: the signed-in customer's commercial state, to
+ * the extent the backend holds authoritative data for it. Each fact is either
+ * `{ available: true, value }` or an explicit `CommercialFactUnavailable`.
+ */
+export interface CustomerCommercialState {
+  viewer: { userId: string };
+  economyEnabled: true;
+  tier: { available: true; value: CommercialTier } | CommercialFactUnavailable;
+  subscription: { available: true; value: CommercialSubscription | null } | CommercialFactUnavailable;
+  wallet: { available: true; value: CommercialWallet } | CommercialFactUnavailable;
+  age: { available: true; value: CommercialAgeStatus } | CommercialFactUnavailable;
+}
+
+/* ------------------------------------------------------------------ *
  * Analytics event catalogue (PRD §23)
  * ------------------------------------------------------------------ */
 
@@ -120,6 +211,17 @@ export const ADMIN_PERMISSIONS = [
   'users.commercial.read',
   /** §34.1 support: a capped goodwill Credit adjustment, with a reason. */
   'users.credits.adjust',
+  /**
+   * P2.5.2: suspend or reactivate a customer account, with a reason.
+   * Administrator only: no other role lists it.
+   */
+  'users.status.manage',
+  /**
+   * P3.5: assign, change, cancel or end one user's subscription, with a
+   * reason. Administrator only: no other role lists it. (Editing the plan
+   * catalogue itself is economy.manage.)
+   */
+  'users.subscription.manage',
   /** §34.1 analyst: read and export everything in §23. */
   'analytics.read',
   'analytics.export',
@@ -173,4 +275,510 @@ export interface AuditEntryView {
   reason: string | null;
   requestId: string | null;
   metadata: Record<string, unknown>;
+}
+
+/* ------------------------------------------------------------------ *
+ * Admin wallet support (P2.4, PRD §16, §18, §34)
+ * ------------------------------------------------------------------ */
+
+export type WalletCreditClass = 'included' | 'earned' | 'purchased';
+export type WalletDirection = 'credit' | 'debit';
+export type WalletEntryType =
+  | 'grant'
+  | 'reward'
+  | 'purchase'
+  | 'paid_action'
+  | 'refund'
+  | 'reversal'
+  | 'admin_adjustment'
+  | 'hold'
+  | 'capture'
+  | 'release';
+
+/** The account being supported: enough to confirm it is the right one, nothing more. */
+export interface AdminWalletUser {
+  id: string;
+  email: string;
+  createdAt: string;
+}
+
+/** One currency's wallet. `exists: false` means the user has none yet; every figure is then zero. */
+export interface AdminWalletSummary {
+  currency: string;
+  exists: boolean;
+  /** Spendable Credits. */
+  balance: number;
+  /** Credits held for actions in flight; not spendable. */
+  held: number;
+  /** Transactions applied. */
+  version: number;
+  classes: Record<WalletCreditClass, { spendable: number; held: number }>;
+}
+
+export interface AdminAdjustmentLimit {
+  cap: number;
+  used: number;
+  remaining: number;
+}
+
+/** The signed-in operator's own daily adjustment limits in one currency (UTC day). */
+export interface AdminAdjustmentAllowance {
+  currency: string;
+  credit: AdminAdjustmentLimit;
+  debit: AdminAdjustmentLimit;
+}
+
+/** GET /admin/users/:userId/wallets */
+export interface AdminUserWallets {
+  user: AdminWalletUser;
+  /** While false, every adjustment is refused; reading is unaffected. */
+  economyEnabled: boolean;
+  wallets: AdminWalletSummary[];
+  allowances: AdminAdjustmentAllowance[];
+}
+
+/** One ledger transaction, as support sees it. Read-only. */
+export interface AdminWalletTransaction {
+  id: string;
+  sequence: number;
+  entryType: WalletEntryType;
+  direction: WalletDirection;
+  amount: number;
+  creditClass: WalletCreditClass;
+  balanceAfter: number;
+  heldAfter: number;
+  relatedTransactionId: string | null;
+  source: { type: string; id: string } | null;
+  reason: string | null;
+  actorUserId: string | null;
+  createdAt: string;
+}
+
+/** GET /admin/users/:userId/wallets/:currency/transactions -- newest first. */
+export interface AdminWalletHistory {
+  currency: string;
+  transactions: AdminWalletTransaction[];
+  /** Pass as `before` for the next, older page; null at the start of the history. */
+  nextBefore: number | null;
+}
+
+/** POST /admin/users/:userId/wallets/:currency/adjustments */
+export interface AdminWalletAdjustmentRequest {
+  direction: WalletDirection;
+  amount: number;
+  reason: string;
+  /** An optional support reference (e.g. a ticket id), recorded as the transaction's source. */
+  reference?: string | null;
+  /** One per intended adjustment: a retry with the same key applies once. */
+  idempotencyKey: string;
+}
+
+export interface AdminWalletAdjustmentResult {
+  transaction: AdminWalletTransaction;
+  /** True when this key had already been applied: nothing new was written. */
+  replayed: boolean;
+  wallet: AdminWalletSummary;
+  allowance: AdminAdjustmentAllowance;
+}
+
+/* ------------------------------------------------------------------ *
+ * Admin users read model (P2.5.1)
+ * ------------------------------------------------------------------ */
+
+/** `users.role`: authorization, never a commercial tier. `admin` is staff. */
+export type AdminUserAccountRole = 'user' | 'admin';
+
+/**
+ * `users.status` (P2.5.2): whether the account may sign in and use its
+ * sessions. Nothing commercial -- a suspended customer keeps their
+ * subscription, wallet and entitlements untouched.
+ */
+export const ACCOUNT_STATUSES = ['active', 'suspended'] as const;
+export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
+
+/**
+ * Whether THIS operator may change this account's status, decided by the
+ * server: only a customer account, never one's own, and only with
+ * `users.status.manage`.
+ */
+export type AdminAccountStatusChange =
+  | { allowed: true }
+  | { allowed: false; reason: 'own_account' | 'staff_account' | 'permission_required' };
+
+/**
+ * POST /admin/users/:userId/status. A compare-and-set: `expectedStatus` is the
+ * status the operator saw, and the change is refused (409 `status_conflict`)
+ * if the account is no longer in it.
+ */
+export interface AdminAccountStatusChangeRequest {
+  status: AccountStatus;
+  expectedStatus: AccountStatus;
+  reason: string;
+}
+
+export interface AdminAccountStatusChangeResult {
+  userId: string;
+  previousStatus: AccountStatus;
+  status: AccountStatus;
+  /** ISO 8601, microsecond precision, UTC -- the account's new `updatedAt`. */
+  changedAt: string;
+  /** Sessions ended by a suspension; 0 for a reactivation. */
+  revokedSessions: number;
+}
+
+/** One row of GET /admin/users. */
+export interface AdminUserListItem {
+  id: string;
+  email: string;
+  role: AdminUserAccountRole;
+  status: AccountStatus;
+  /** Staff roles granted, in the §34.1 order of `ADMIN_ROLES`; empty for a customer. */
+  staffRoles: AdminRoleName[];
+  /** ISO 8601, microsecond precision, UTC. */
+  createdAt: string;
+  /** The most recent session started, or null if they never signed in. */
+  lastSignInAt: string | null;
+}
+
+/** GET /admin/users -- newest accounts first. */
+export interface AdminUserList {
+  users: AdminUserListItem[];
+  /** Pass as `cursor` for the next page; null on the last page. */
+  nextCursor: string | null;
+}
+
+/** One wallet in the P0 `CommercialWallet` terms, from the P2.4 wallet read model. */
+export interface AdminUserWallet {
+  currency: string;
+  /** False when the user has no wallet in this currency: every figure is then zero. */
+  exists: boolean;
+  included: number;
+  earned: number;
+  purchased: number;
+  /** Reserved for in-flight actions; not part of `spendable`. */
+  held: number;
+  spendable: number;
+  transactions: number;
+}
+
+/** GET /admin/users/:userId -- a consolidated, read-only view of one user. */
+export interface AdminUserDetail {
+  identity: { id: string; email: string };
+  account: {
+    role: AdminUserAccountRole;
+    staffRoles: Array<{ role: AdminRoleName; grantedAt: string; grantedBy: string | null }>;
+    createdAt: string;
+    updatedAt: string;
+    status: AccountStatus;
+    statusChange: AdminAccountStatusChange;
+  };
+  activity: {
+    lastSignInAt: string | null;
+    /** Sessions not yet expired. */
+    activeSessions: number;
+    conversations: number;
+    /** When any of their conversations last changed, e.g. by a message. */
+    lastConversationAt: string | null;
+  };
+  /** From the P3.1 commercial-state resolver -- the same facts the customer is told. */
+  commercial: {
+    /** Whether the economy is switched on. The facts are resolved either way. */
+    economyEnabled: boolean;
+    tier: CustomerCommercialState['tier'];
+    subscription: CustomerCommercialState['subscription'];
+    age: CustomerCommercialState['age'];
+  };
+  wallets: AdminUserWallet[];
+  /** Recent audit entries concerning this user -- only for an operator holding `audit.read`. */
+  audit: { available: true; entries: AuditEntryView[] } | { available: false; reason: 'audit_read_required' };
+}
+
+/* ------------------------------------------------------------------ *
+ * Admin user subscription management (P3.5)
+ * ------------------------------------------------------------------ */
+
+/**
+ * What an operator can do to one user's subscription, in the P3.1 states:
+ *   assign       no subscription, or an expired one -> active on a plan, for one
+ *                billing period of that plan from now;
+ *   change_plan  a current subscription moves to another plan now; its status
+ *                and period end stay as they are (no proration is defined);
+ *   cancel       -> cancelled: Premium continues to the period end, then expires;
+ *   end          -> expired now.
+ */
+export const ADMIN_SUBSCRIPTION_ACTIONS = ['assign', 'change_plan', 'cancel', 'end'] as const;
+export type AdminSubscriptionAction = (typeof ADMIN_SUBSCRIPTION_ACTIONS)[number];
+
+/** A plan version, as the P1 catalogue defines it. */
+export interface AdminSubscriptionPlan {
+  code: string;
+  version: number;
+  versionId: string;
+  displayName: string;
+  billingPeriodMonths: number;
+  monthlyIncludedCredits: number;
+  priceMinor: number;
+  currency: string;
+}
+
+/** The user's subscription now, resolved as the customer's commercial state resolves it. */
+export interface AdminSubscriptionState {
+  /** The exact version held. `live` is false when it is no longer published: then there is no Premium. */
+  plan: AdminSubscriptionPlan & { live: boolean };
+  /** As the customer is told it (a cancelled subscription past its period end reads as expired). */
+  status: SubscriptionStatus;
+  /** As recorded. */
+  storedStatus: SubscriptionStatus;
+  /** ISO 8601. */
+  currentPeriodEnd: string;
+  premium: boolean;
+}
+
+/** One side of a recorded change. */
+export interface AdminSubscriptionSnapshot {
+  planCode: string;
+  planVersion: number;
+  status: SubscriptionStatus;
+  currentPeriodEnd: string;
+}
+
+/** One recorded change, from the append-only subscription history. */
+export interface AdminSubscriptionHistoryEntry {
+  sequence: number;
+  change: AdminSubscriptionAction;
+  source: 'admin';
+  /** When it took effect. ISO 8601. */
+  effectiveAt: string;
+  /** Null when the user had no subscription before it. */
+  from: AdminSubscriptionSnapshot | null;
+  to: AdminSubscriptionSnapshot;
+  actorUserId: string | null;
+  actorEmail: string | null;
+  reason: string | null;
+  reference: string | null;
+}
+
+/** GET /admin/users/:userId/subscription -- and the answer to a change. */
+export interface AdminUserSubscription {
+  userId: string;
+  economyEnabled: boolean;
+  /** The number of changes recorded. A change must name it as `expectedVersion`. */
+  version: number;
+  current: AdminSubscriptionState | null;
+  /** Newest first. */
+  history: AdminSubscriptionHistoryEntry[];
+  /** The plans that can be assigned now: published, in effect and purchasable. */
+  plans: AdminSubscriptionPlan[];
+  /** What the current state allows. */
+  actions: AdminSubscriptionAction[];
+  /** Whether THIS operator may make a change now, decided by the server. */
+  change: { allowed: true } | { allowed: false; reason: 'permission_required' | 'own_account' | 'economy_disabled' };
+}
+
+/** POST /admin/users/:userId/subscription. */
+export interface AdminSubscriptionChangeRequest {
+  action: AdminSubscriptionAction;
+  /** For assign and change_plan only: the plan's code; its version in effect now is used. */
+  planCode?: string;
+  expectedVersion: number;
+  reason: string;
+  reference?: string | null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Content access (P4.1, PRD §10, §32.1)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A piece of content's access state, held on its offer (the P0.8 commercial
+ * boundary). Content with no offer is `free`.
+ *   free         no condition
+ *   premium      included with a subscription (Premium)
+ *   credit       unlocked with Credits, at the offer's whole-Credit price
+ *   unavailable  cannot be accessed
+ * Whether a particular user may access it -- a subscription, an unlock, an
+ * age check -- is decided later (P4/P5/P8), never by a client.
+ */
+export const CONTENT_ACCESS_STATES = ['free', 'premium', 'credit', 'unavailable'] as const;
+export type ContentAccessState = (typeof CONTENT_ACCESS_STATES)[number];
+
+/**
+ * What the signed-in customer may do with one piece of content right now
+ * (P4.2). The server decides this; a client never derives it.
+ *
+ *   owned                they bought it and keep it, whatever their tier or
+ *                        balance is now (P8.2)
+ *   open                 it opens: free content, or Premium content for a
+ *                        subscriber
+ *   premium_required     Premium content, and this customer is not Premium
+ *   credits_required     Credit content: it can be unlocked for `creditPrice`
+ *   insufficient_credits Credit content, and their balance is below the price
+ *   age_restricted       the content has an age floor this customer has not met
+ *   unavailable          withdrawn, unknown, or not resolvable -- fails closed
+ *
+ * `owned` and `pending` arrive with unlocking (P8); until then a Credit unlock
+ * cannot be bought, so no content is ever owned.
+ */
+export type CustomerAccessDecision =
+  | 'owned'
+  | 'open'
+  | 'premium_required'
+  | 'credits_required'
+  | 'insufficient_credits'
+  | 'age_restricted'
+  | 'unavailable';
+
+/** One piece of content's access terms and this customer's decision. */
+export interface CustomerContentAccess {
+  assetId: string;
+  /** The content's own access state (P4.1). */
+  state: ContentAccessState;
+  /** Whole Credits to unlock: only for `credit` content. */
+  creditPrice: number | null;
+  /** The minimum age the content requires, or null. */
+  ageFloor: number | null;
+  decision: CustomerAccessDecision;
+}
+
+/** GET /api/content/access -- one entry per asset asked about, in the order asked. */
+export interface CustomerContentAccessResponse {
+  items: CustomerContentAccess[];
+}
+
+/**
+ * POST /api/content/:assetId/unlock -- what the customer now owns (P8.2).
+ *
+ * The same answer whether this call bought it or a previous one did: ownership
+ * is the fact, and `replayed` only says whether this particular request is what
+ * created it. No balance, ledger or wallet detail is ever included.
+ */
+export interface CustomerContentUnlock {
+  assetId: string;
+  entitlementId: string;
+  /** The content offer bought -- the durable identity ownership is recorded against. */
+  offerId: string;
+  /** Whole Credits actually paid, pinned at the time of purchase. */
+  creditPrice: number;
+  acquiredAt: string;
+  /** True when this request had already been applied: nothing was charged. */
+  replayed: boolean;
+}
+
+
+/* ------------------------------------------------------------------ *
+ * Payments (P9.1 / P9.2)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The payment method a customer picks before being sent to the provider.
+ *
+ * A HINT, NEVER AUTHORITY. Which method actually took the money is the
+ * provider's to report; a real hosted checkout may offer a different one, or
+ * the customer may change their mind on the provider's own page.
+ */
+export const PAYMENT_METHODS = ['apple_pay', 'google_pay', 'paypal'] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+
+export const PAYMENT_METHOD_LABELS: Readonly<Record<PaymentMethod, string>> = {
+  apple_pay: 'Apple Pay',
+  google_pay: 'Google Pay',
+  paypal: 'PayPal',
+};
+
+/** Where a payment stands. Mirrors the `payment_status` enum. */
+export type PaymentStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled' | 'refunded' | 'disputed';
+
+/** One payment, as its own customer may see it. No card data, ever. */
+export interface CustomerPaymentView {
+  id: string;
+  status: PaymentStatus;
+  kind: 'subscription' | 'credit_pack';
+  /** Our product identifier -- a plan code. Never the processor's. */
+  productRef: string;
+  /** Integer minor units. */
+  amountMinor: number;
+  currency: string;
+  methodHint: string | null;
+  /** Which adapter took it: `fake` while the processor is undecided (P9.D1). */
+  provider: string;
+  createdAt: string;
+  settledAt: string | null;
+}
+
+/**
+ * POST /api/payments/checkout -- a started checkout.
+ *
+ * `redirectUrl` is where the customer goes to pay. NOTHING is activated or
+ * granted by this call: the payment is `pending` until the provider confirms it.
+ */
+export interface CustomerCheckout {
+  payment: CustomerPaymentView;
+  checkoutRef: string;
+  /** Null when the checkout was already created under this key. */
+  redirectUrl: string | null;
+  replayed: boolean;
+}
+
+/** What a simulated payment is told to do. Test-only; never a real processor. */
+export const SIMULATED_OUTCOMES = ['success', 'failure', 'cancel'] as const;
+export type SimulatedOutcome = (typeof SIMULATED_OUTCOMES)[number];
+
+/** POST /api/payments/simulate -- the result of feeding one simulated provider event in. */
+export interface SimulatedPaymentResult {
+  /** `processed`, `replayed`, `rejected` or `ignored`, as the ingestion decided. */
+  status: string;
+  payment: CustomerPaymentView | null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Admin content access -- a character's Free/Premium clips (P4.D2)
+ * ------------------------------------------------------------------ */
+
+/** One clip of a character, and the access it has now. */
+export interface AdminClipAccess {
+  assetId: string;
+  /** What the clip is, as the admin content shelf states it. */
+  mediaType: string;
+  workflow: string;
+  /** Whether a customer can meet it anywhere today. */
+  live: boolean;
+  /**
+   * THE CLIP'S OWN BYTES, so an operator classifying it can SEE it.
+   *
+   * An access decision is made about a particular clip, and the only thing on
+   * this screen that identified one was the head of its uuid -- which
+   * identifies nothing to a person. This is the same opaque, id-keyed admin
+   * locator every other admin content surface uses (never a storage key and
+   * never a path), and it is null when the row has no file.
+   */
+  previewUrl: string | null;
+  /**
+   * The name the file was uploaded under, when one was recorded.
+   *
+   * RECORDED, NOT INVENTED. It is `provenance.originalName`, which an operator
+   * chose themselves; where it is absent this is null and the screen simply
+   * shows no name rather than manufacturing one.
+   */
+  fileName: string | null;
+  /** How long it runs, where generation recorded a duration. Null otherwise. */
+  durationSeconds: number | null;
+  state: ContentAccessState;
+  /** True while nothing was written for this clip: it reads its character's default. */
+  byDefault: boolean;
+  creditPrice: number | null;
+  ageFloor: number | null;
+}
+
+/**
+ * GET /admin/characters/:characterId/content-access -- and the answer to every
+ * change. `allocation.configured` is the character's opt-in: while it is true,
+ * her clips -- including ones uploaded later -- are Premium unless an offer
+ * says otherwise.
+ */
+export interface AdminCharacterContentAccess {
+  characterId: string;
+  economyEnabled: boolean;
+  allocation: { configured: boolean; freeClipCount: number | null };
+  clips: AdminClipAccess[];
+  counts: { clips: number; free: number; premium: number; credit: number };
 }

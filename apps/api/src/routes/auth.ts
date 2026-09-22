@@ -69,16 +69,22 @@ export default async function authRoutes(app: FastifyInstance, opts: { db: Db; e
     { schema: { body: credentialsBodySchema } },
     async (request, reply) => {
       const { email, password } = request.body;
-      const user = await verifyCredentials(db, email, password);
-      if (!user) {
+      const result = await verifyCredentials(db, email, password);
+      if (!result.ok && result.error === 'account_suspended') {
+        // Reached only with the right password (P2.5.2). No session is created.
+        return reply
+          .code(403)
+          .send({ error: 'account_suspended', message: 'This account is suspended. Please contact support.' });
+      }
+      if (!result.ok) {
         // Deliberately generic: does not reveal whether the email exists.
         return reply
           .code(401)
           .send({ error: 'invalid_credentials', message: 'Invalid email or password.' });
       }
-      const { rawToken, expiresAt } = await createSession(db, user.id, env.sessionTtlDays);
+      const { rawToken, expiresAt } = await createSession(db, result.user.id, env.sessionTtlDays);
       setSessionCookie(reply, rawToken, expiresAt);
-      return reply.send(user);
+      return reply.send(result.user);
     },
   );
 

@@ -157,9 +157,9 @@ export type CommerceProviderName = 'none' | 'fake';
 /**
  * Subscription and App Economy (PRD v1.2). EVERYTHING DEFAULTS OFF.
  *
- * `enabled` is the master switch for anything a user could see. In P0 nothing
- * reads it yet; it exists so every later phase lands behind one flag rather
- * than inventing its own.
+ * `enabled` is the master switch for anything a user could see. It exists so
+ * every phase lands behind one flag rather than inventing its own; the first
+ * reader is the customer economy read API, which answers 503 while it is off.
  *
  * A `fake` provider can NEVER be active in production: `loadEnv` maps it to
  * `none` unless NODE_ENV is explicitly development/test AND the process is not

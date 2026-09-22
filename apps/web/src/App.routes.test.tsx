@@ -41,12 +41,36 @@ describe('app shell + routes', () => {
     expect(html).toContain('Membership');
   });
 
-  it('renders the Subscription placeholder without any real payment surface', () => {
+  /**
+   * P9: the client now calls the server, so the first render shows nothing
+   * commercial rather than a "pending" notice. What these guard is unchanged --
+   * no price, balance or plan is ever invented in the browser.
+   */
+  it('invents no plan, price or balance on the subscription screen before the server answers', () => {
     const html = renderApp('/subscription');
-    expect(html).toContain('Go Premium');
-    expect(html).toContain('Payments are not enabled');
-    // placeholder subscribe control is disabled (no billing)
-    expect(html).toContain('disabled');
+    expect(html).toContain('Premium');
+    expect(html).not.toContain('Pricing will be shown when plans launch');
+    expect(html).not.toContain('18 Credits');
+    expect(html).not.toContain('Premium enrollment coming soon');
+    expect(html).not.toMatch(/\$\d/);
+  });
+
+  it('does not render fabricated balance or activity on the customer Credits screen', () => {
+    // Customers are told "Credits"; the original path still resolves (P8.1).
+    for (const path of ['/credits', '/wallet']) {
+      const html = renderApp(path);
+      expect(html, path).toContain('Credits');
+      expect(html, path).not.toContain('18 Credits');
+      expect(html, path).not.toMatch(/Wallet|wallet activity/i);
+    }
+  });
+
+  it('claims no plan on the profile before the server answers', () => {
+    const html = renderApp('/profile');
+    expect(html).toContain('Membership');
+    expect(html).not.toContain('Free plan');
+    expect(html).not.toContain('Premium plan');
+    expect(html).not.toContain(' Credits');
   });
 
   it('keeps the character-profile route mounted inside the shell (no crash)', () => {

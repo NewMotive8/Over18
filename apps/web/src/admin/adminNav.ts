@@ -110,7 +110,7 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
  * server regardless of what this list renders.
  * ------------------------------------------------------------------ */
 
-export type GatedAdminDestinationKey = 'audit';
+export type GatedAdminDestinationKey = 'economy' | 'users' | 'wallets' | 'audit';
 
 export interface GatedAdminDestination extends Omit<AdminDestination, 'key'> {
   key: GatedAdminDestinationKey;
@@ -122,6 +122,36 @@ export interface GatedAdminDestination extends Omit<AdminDestination, 'key'> {
 }
 
 export const GATED_ADMIN_DESTINATIONS: readonly GatedAdminDestination[] = [
+  {
+    key: 'economy',
+    label: 'Economy',
+    path: '/admin/economy',
+    matchPrefixes: ['/admin/economy'],
+    description: 'Plans, packs, costs and the economy preview',
+    status: 'available',
+    owner: 'P1.4 — Economy Admin UI (PRD v1.2 §31)',
+    requires: { permission: 'economy.manage' },
+  },
+  {
+    key: 'users',
+    label: 'Users',
+    path: '/admin/users',
+    matchPrefixes: ['/admin/users'],
+    description: 'Find a user and see their account, commercial state, wallet and activity',
+    status: 'available',
+    owner: 'P2.5.1 — User Management read model and admin list/detail',
+    requires: { permission: 'users.commercial.read' },
+  },
+  {
+    key: 'wallets',
+    label: 'Wallets',
+    path: '/admin/wallets',
+    matchPrefixes: ['/admin/wallets'],
+    description: "A user's wallets and ledger, and support Credit and Debit",
+    status: 'available',
+    owner: 'P2.4 — User Wallet and Support adjustment UI (PRD v1.2 §34)',
+    requires: { permission: 'users.commercial.read' },
+  },
   {
     key: 'audit',
     label: 'Audit',

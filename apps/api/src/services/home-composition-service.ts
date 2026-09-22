@@ -18,6 +18,7 @@ import {
 } from '../db/schema.js';
 import { homeRenderableConditions } from './app-merchandising-service.js';
 import { distributableWorkflowCondition } from './asset-distribution.js';
+import { freeFirstJoin, freeFirstOrder } from './commercial-boundary.js';
 import { resolveCharacterPortraits } from './character-portrait.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
 import { mediaTypeOf, videoAssetCondition } from './content-review-service.js';
@@ -284,12 +285,31 @@ function clipView(
  * `clipView` produces the opaque id-keyed URL, so no storage key or filesystem
  * path can reach the browser.
  *
- * Newest first: this is a feed, and a feed leads with what is new.
+ * FREE CLIPS COME FIRST, then everything else; newest first within each group.
+ *
+ * This is a product rule, not a layout choice, so it lives in the query that
+ * IS the character's collection rather than in whichever surface happens to
+ * draw it. A grid that sorted its own tiles would put the rule in one place and
+ * leave every other reader of this list -- and every future one -- without it.
+ *
+ * "Everything else" is deliberate. The group that goes second is not "Premium"
+ * but "not Free": Premium, Credit-priced, and anything a later state adds. A
+ * clip a customer cannot simply watch belongs after the ones they can, whatever
+ * the reason, and a new access state cannot silently jump the queue by not
+ * being named here.
+ *
+ * The join and the sort key are BORROWED from the commercial boundary, which
+ * owns what an offer is and which state means Free. This list decides the
+ * rule; it does not decide the vocabulary the rule is written in.
+ *
+ * Within each group: newest first, id as the tie-break -- the order this list
+ * already had, preserved exactly.
  */
 export async function listPublicCharacterClips(
   db: Db,
   characterId: string,
 ): Promise<PublicClipView[]> {
+  const freeFirst = freeFirstJoin();
   const rows = await db
     .select({
       id: characterVisualAssets.id,
@@ -300,6 +320,9 @@ export async function listPublicCharacterClips(
     })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
+    // Joined only to sort by: it decides nothing about whether a clip is
+    // listed, which stays `characterPostsCondition`'s answer alone.
+    .leftJoin(freeFirst.table, freeFirst.on)
     .where(
       and(
         eq(characterVisualAssets.characterId, characterId),
@@ -324,7 +347,7 @@ export async function listPublicCharacterClips(
         characterPostsCondition(),
       ),
     )
-    .orderBy(desc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
+    .orderBy(freeFirstOrder(), desc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
 
   return rows
     .map((row) => clipView(row, row.characterName))
