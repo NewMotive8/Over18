@@ -112,7 +112,7 @@ function AccessChoice({
     <div
       role="group"
       aria-label={`Access for clip ${clip.fileName ?? clip.assetId.slice(0, 8)}`}
-      className="inline-flex shrink-0 overflow-hidden rounded-lg border border-zinc-700"
+      className="flex w-full shrink-0 overflow-hidden rounded-lg border border-zinc-700 sm:w-auto"
     >
       {options.map((option) => {
         const selected = clip.state === option.value;
@@ -126,7 +126,7 @@ function AccessChoice({
             // row saying nothing changed.
             disabled={locked || busy || selected}
             onClick={() => onMark(clip, option.value)}
-            className={`min-h-11 px-3 text-xs font-semibold transition-colors sm:px-4 ${
+            className={`min-h-11 flex-1 px-3 text-xs font-semibold transition-colors sm:flex-none sm:px-4 ${
               selected
                 ? 'bg-rose-600 text-white'
                 : 'bg-transparent text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600 disabled:hover:bg-transparent'
@@ -146,6 +146,13 @@ function AccessChoice({
  * `min-w-0` on the middle column is what keeps the row inside the screen: it
  * lets the text column shrink below its content so `truncate` can do its job,
  * instead of the row growing wider than the phone and taking the page with it.
+ *
+ * ON A PHONE THE DECISION GETS ITS OWN LINE. Inside the admin shell a row is
+ * about 250px wide at 375px, and three columns left roughly 40px for the name:
+ * the file was shown as "m." while two buttons sat beside it, which is the
+ * failure this whole change exists to fix. `basis-full` wraps the buttons
+ * underneath so the name gets the full width; from `sm` up, where there is
+ * room, everything sits on one line as the carousel rows do.
  */
 function ClipRow({
   clip,
@@ -162,7 +169,7 @@ function ClipRow({
     <li
       data-testid="clip-access-row"
       data-state={clip.state}
-      className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2.5"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2.5"
     >
       <ClipThumb previewUrl={clip.previewUrl} mediaType={clip.mediaType} />
       <div className="min-w-0 flex-1">
@@ -186,7 +193,9 @@ function ClipRow({
         </p>
         <p className="truncate font-mono text-[10px] text-zinc-600">{clip.assetId.slice(0, 8)}</p>
       </div>
-      <AccessChoice clip={clip} busy={busy} locked={locked} onMark={onMark} />
+      <div className="basis-full sm:basis-auto">
+        <AccessChoice clip={clip} busy={busy} locked={locked} onMark={onMark} />
+      </div>
     </li>
   );
 }

@@ -273,6 +273,22 @@ describe('the order and the layout', () => {
     expect(html.match(/shrink-0/g)!.length).toBeGreaterThanOrEqual(4);
     expect(html).toContain('truncate');
   });
+
+  /**
+   * A row inside the admin shell is about 250px wide at 375px. Three columns
+   * left roughly 40px for the name -- the file rendered as "m." next to two
+   * buttons, which is the failure this change exists to fix. The decision
+   * wraps onto its own line instead, and rejoins the row from `sm` up.
+   */
+  it('gives the name the full width on a phone by stacking the decision', () => {
+    const html = panel();
+    expect(html).toContain('flex flex-wrap items-center');
+    expect(html).toContain('basis-full sm:basis-auto');
+    // Full-width buttons on that line, back to their natural size above `sm`.
+    expect(html).toContain('w-full shrink-0');
+    expect(html).toContain('sm:w-auto');
+    expect(html.match(/flex-1 px-3[^"]*sm:flex-none/g)).toHaveLength(4);
+  });
 });
 
 /**
