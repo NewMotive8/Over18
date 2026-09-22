@@ -21,19 +21,19 @@ const ECONOMY_UNAVAILABLE: EconomyUnavailableResponse = {
  * from `request.currentUser`: nothing in a path, query or body can name
  * another account, and no client-supplied price or Credit value is read.
  *
- * DARK UNTIL SWITCHED ON, WITH ONE DELIBERATE EXCEPTION. While ECONOMY_ENABLED
- * is off the catalog, the commercial state and the unlock all answer 503
- * `economy_unavailable` -- the same 503 convention as `uploads_unavailable` and
- * `ai_not_configured` -- so no price, plan or balance can reach a customer
- * before the economy is activated.
+ * MONEY IS GATED; CONTENT IS NOT. While ECONOMY_ENABLED is off the catalog,
+ * the commercial state and the unlock answer 503 `economy_unavailable` -- the
+ * same 503 convention as `uploads_unavailable` and `ai_not_configured` -- so no
+ * plan, balance or purchase can reach a customer before the economy is
+ * activated.
  *
- * `GET /api/content/access` ANSWERS EVEN THEN. An operator can mark a clip
- * Free or Premium before anything is for sale, and a classification nobody
- * enforces is not a classification. With the flag off it enforces ONLY a
- * deliberate Free/Premium decision: P4.D2's Premium-by-default is not enforced
- * (nobody chose it, and the whole live catalogue is unclassified), and Credit
- * prices are not stated (the unlock that would spend them is 503 above). It
- * charges, reserves and grants nothing either way.
+ * `GET /api/content/access` IS NOT ONE OF THEM. What a clip costs to see is a
+ * fact about the content rather than a transaction, so it answers whatever the
+ * flag says and applies the same P4.2 rules every time, P4.D2's
+ * Premium-by-default included. A customer therefore meets the same free and
+ * locked content in every environment; what an environment without a payment
+ * provider cannot do is take the money, which is the unlock's business above.
+ * This route charges, reserves and grants nothing either way.
  *
  * ONE ROUTE WRITES, AND IT IS THE UNLOCK (P8.2). Everything else is a read
  * that reserves, charges and grants nothing. The unlock takes only an asset id
@@ -80,19 +80,13 @@ export default async function customerEconomyRoutes(
   app.get<{ Querystring: { assetIds?: unknown } }>('/api/content/access', { preHandler: app.requireAuth }, async (request, reply) => {
     reply.header('cache-control', 'private, no-store');
     /**
-     * ANSWERED EVEN WITH THE ECONOMY OFF -- alone among these routes.
-     *
-     * An operator can now mark a clip Free or Premium before anything is for
-     * sale, and a classification nobody enforces is not a classification. So
-     * this reads; the flag decides WHICH TERMS COUNT rather than whether there
-     * is an answer, and with it off only a deliberate Free/Premium decision
-     * does. Nothing here charges, unlocks, subscribes or spends: the routes
-     * that do are still 503 above and below.
+     * ANSWERED WHATEVER THE FLAG SAYS -- alone among these routes, and with no
+     * mode of its own. What content costs to see is the same everywhere; only
+     * the routes that move money are gated, and they are still 503 above and
+     * below. Nothing here charges, unlocks, subscribes or spends.
      */
     try {
-      return await readContentAccess(opts.db, request.currentUser!, parseAssetIds(request.query?.assetIds), {
-        economyEnabled: opts.commerce.enabled,
-      });
+      return await readContentAccess(opts.db, request.currentUser!, parseAssetIds(request.query?.assetIds));
     } catch (error) {
       if (error instanceof ContentAccessError) return reply.code(400).send({ error: error.code, message: error.message });
       throw error;

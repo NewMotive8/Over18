@@ -2078,13 +2078,15 @@ export const economyRulesetRewards = pgTable(
  * being approved because nobody bought it, and does not become public because
  * somebody did.
  *
- * WHO READS THIS, AND WHEN. With ECONOMY_ENABLED on, the P4.2 customer
- * resolver and P8.2's ownership and unlock read every term here. With it OFF
- * -- the production default -- one read remains: GET /api/content/access
- * enforces a row that deliberately says `free` or `premium`, and ignores
- * everything else, including a Credit price. Classifying a clip is the only
- * write accepted with the flag off, and it writes no price, age floor or
- * economy reference.
+ * WHO READS THIS. The P4.2 customer resolver reads every term here, and P8.2's
+ * ownership and unlock read it to decide what someone already holds and what a
+ * purchase would cost. None of those reads consults ECONOMY_ENABLED: what
+ * content costs to see is the same in every environment.
+ *
+ * WHAT THE FLAG STILL GATES IS THE WRITING. Classifying a clip `free` or
+ * `premium` is accepted with the flag off and writes no price, age floor or
+ * economy reference; a price, an age floor, an allocation or a retirement all
+ * still require the economy.
  * ------------------------------------------------------------------ */
 
 /**

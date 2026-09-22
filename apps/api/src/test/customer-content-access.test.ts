@@ -370,20 +370,18 @@ describe('anything unknown fails closed', () => {
  * ------------------------------------------------------------------ */
 
 /**
- * WITH THE ECONOMY OFF, A DELIBERATE CLASSIFICATION IS ENFORCED -- AND NOTHING
- * ELSE IS.
+ * THE ECONOMY FLAG DOES NOT CHANGE WHAT CONTENT COSTS TO SEE.
  *
- * This endpoint used to answer 503 here. An operator can now mark a clip Free
- * or Premium before anything is for sale, and a classification nobody enforces
- * is not a classification -- so it answers, and the flag decides which TERMS
- * count rather than whether there is an answer at all.
+ * This endpoint used to answer 503 here, and then briefly enforced only what
+ * an operator had explicitly classified. Both were transitional. A clip being
+ * Premium is an editorial fact about the content, not a transaction: it needs
+ * no payment provider and no economy. So the resolver has NO MODE -- the same
+ * P4.2 rules apply whatever the flag says, P4.D2's Premium-by-default
+ * included, and a customer meets the same free and locked content in every
+ * environment.
  *
- * What is deliberately NOT enforced is the whole point. Premium-by-default is
- * what an unclassified clip MEANS, not a decision anyone took, and the entire
- * live catalogue is unclassified: enforcing it here would lock every clip in
- * production at once, with no way for any customer to obtain Premium. Credit
- * content is not enforced either, because its price is payable only through
- * the unlock, which is still 503.
+ * What an environment without a payment provider cannot do is take the money.
+ * That is the unlock's business, and it is still refused below.
  */
 describe('while the economy is off', () => {
   const darkOne = async (who: Account, id: string): Promise<CustomerContentAccess> => (await ask(who, [id], dark))[0]!;
@@ -394,6 +392,44 @@ describe('while the economy is off', () => {
     const clip = await publishedClip(operator);
     const res = await dark.app.inject({ method: 'GET', url: ACCESS([clip]), cookies: customer.cookies });
     expect(res.statusCode, res.body).toBe(200);
+  });
+
+  /**
+   * THE RULE THIS WHOLE FILE NOW TURNS ON: the same clip, the same customer,
+   * the same answer -- whatever the flag says. Staging and production differ
+   * in what they can charge for, never in what they show.
+   */
+  it('gives the identical decision with the economy on and off', async () => {
+    const operator = await account(true);
+    const customer = await account();
+    const premium = await account();
+    await makePremium(premium.id, await premiumPlanVersion());
+
+    const untouched = await publishedClip(operator);
+    const free = await publishedClip(operator);
+    const locked = await publishedClip(operator);
+    await classifyContentAccess(dark.db, { assetId: free, state: 'free' });
+    await classifyContentAccess(dark.db, { assetId: locked, state: 'premium' });
+
+    for (const who of [customer, premium]) {
+      for (const clip of [untouched, free, locked]) {
+        const on = await one(who, clip);
+        const off = await darkOne(who, clip);
+        expect(off, `${clip} for ${who.id}`).toEqual(on);
+      }
+    }
+  });
+
+  /**
+   * P4.D2 IS ENFORCED WITH THE FLAG OFF. An unclassified clip is Premium --
+   * that is what unclassified MEANS -- and a customer without Premium meets
+   * the lock, with or without a payment provider behind it.
+   */
+  it('locks an unclassified clip, because Premium by default is the rule everywhere', async () => {
+    const operator = await account(true);
+    const customer = await account();
+    const clip = await publishedClip(operator);
+    expect(await darkOne(customer, clip)).toMatchObject({ state: 'premium', decision: 'premium_required' });
   });
 
   it('opens a clip an operator marked Free', async () => {
@@ -412,7 +448,7 @@ describe('while the economy is off', () => {
     expect(await darkOne(customer, clip)).toMatchObject({ state: 'premium', decision: 'premium_required' });
   });
 
-  it('opens that same clip for a Premium customer', async () => {
+  it('opens Premium content for a Premium customer', async () => {
     const operator = await account(true);
     const premium = await account();
     await makePremium(premium.id, await premiumPlanVersion());
@@ -421,28 +457,15 @@ describe('while the economy is off', () => {
     expect(await darkOne(premium, clip)).toMatchObject({ state: 'premium', decision: 'open' });
   });
 
-  /**
-   * THE ONE THAT PROTECTS THE LIVE CATALOGUE. Every clip in production is
-   * unclassified, and every one of them must stay watchable.
-   */
-  it('leaves a clip NOBODY classified exactly as it is today: open', async () => {
-    const operator = await account(true);
-    const customer = await account();
-    const clip = await publishedClip(operator);
-    // With the economy ON the very same clip is Premium by default (P4.D2)...
-    expect((await one(customer, clip)).decision).toBe('premium_required');
-    // ...and with it OFF the default is not enforced, because nobody chose it.
-    expect(await darkOne(customer, clip)).toMatchObject({ decision: 'open', creditPrice: null });
-  });
-
-  it('does not state a price nobody can pay', async () => {
+  it('still states a Credit price, and still refuses the purchase that would pay it', async () => {
     const operator = await account(true);
     const customer = await account();
     const clip = await publishedClip(operator);
     await fund(customer.id, 500);
     await setContentOffer(dark.db, ECONOMY_ON, { assetId: clip, state: 'credit', creditPrice: 50 });
-    expect(await darkOne(customer, clip)).toMatchObject({ decision: 'open', creditPrice: null });
-    // The unlock that would spend them is still refused.
+    // The price is a fact about the content, so it is reported as usual...
+    expect(await darkOne(customer, clip)).toMatchObject({ state: 'credit', creditPrice: 50, decision: 'credits_required' });
+    // ...and paying it is what waits for a payment provider.
     const unlock = await dark.app.inject({
       method: 'POST',
       url: `/api/content/${clip}/unlock`,
@@ -460,7 +483,7 @@ describe('while the economy is off', () => {
     }
   });
 
-  it('resolves a classification without writing a single row', async () => {
+  it('resolves without writing a single row', async () => {
     const operator = await account(true);
     const customer = await account();
     const clip = await publishedClip(operator);

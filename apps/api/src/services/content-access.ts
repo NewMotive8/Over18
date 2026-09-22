@@ -4,7 +4,7 @@ import type { Db } from '../db/client.js';
 import { characterVisualAssets } from '../db/schema.js';
 import { characterPostsCondition, publiclyReachableCondition } from './asset-distribution.js';
 import type { SafeUser } from './auth-service.js';
-import { classificationOnly, describeAssetCommercial, type AssetCommercialView } from './commercial-boundary.js';
+import { describeAssetCommercial, type AssetCommercialView } from './commercial-boundary.js';
 import { readOwnedAssetIds } from './content-ownership.js';
 import { readCustomerCommercialState } from './customer-economy.js';
 
@@ -126,18 +126,17 @@ const UNAVAILABLE = (assetId: string): CustomerContentAccess => ({
 /**
  * The access decision for each asset asked about, in the order asked.
  *
- * `economyEnabled` decides WHICH TERMS COUNT, never whether an answer is
- * given. With it off, `classificationOnly` keeps a deliberate Free/Premium
- * classification and drops everything else, so an operator's decision reaches
- * customers before anything is for sale -- while a price nobody can pay, and a
- * Premium-by-default nobody chose, do not. The decision ladder below is the
- * same one either way.
+ * ONE SET OF RULES, EVERY ENVIRONMENT. This read does not consult
+ * `ECONOMY_ENABLED` and has no mode: what a clip costs to see is a fact about
+ * the content, so a customer meets the same free and locked content wherever
+ * the app runs. An environment with no payment provider simply cannot complete
+ * the purchase that would unlock something -- which is the unlock's business
+ * (P8.2), not this resolver's.
  */
 export async function readContentAccess(
   db: Db,
   user: SafeUser,
   assetIds: string[],
-  options: { economyEnabled: boolean },
 ): Promise<CustomerContentAccessResponse> {
   if (assetIds.length === 0) return { items: [] };
 
@@ -158,9 +157,8 @@ export async function readContentAccess(
   return {
     items: assetIds.map((assetId) => {
       if (!visible.has(assetId)) return UNAVAILABLE(assetId);
-      const found = terms.get(assetId);
-      if (!found) return UNAVAILABLE(assetId);
-      const asset = options.economyEnabled ? found : classificationOnly(found);
+      const asset = terms.get(assetId);
+      if (!asset) return UNAVAILABLE(assetId);
       return {
         assetId,
         state: asset.state,
