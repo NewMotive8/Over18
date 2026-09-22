@@ -40,10 +40,12 @@ import { listCharacterContent } from './content-review-service.js';
  * Nothing is charged, unlocked or granted here.
  *
  * MARKING ONE CLIP FREE OR PREMIUM WORKS WHILE THE ECONOMY IS OFF, through
- * `classifyContentAccess`: it is an editorial decision, not a sale. Everything
- * else here is still a commercial write and still does nothing while the flag
- * is off -- a Credit price (including one sent alongside `free`), the random
- * allocation and the clear-all all answer 503.
+ * `classifyContentAccess`: it is an editorial decision about the content, not
+ * a sale, and it needs no payment provider. Customers see it immediately and
+ * identically in every environment. Everything else here is still a commercial
+ * write and still does nothing while the flag is off -- a Credit price
+ * (including one sent alongside `free`), the random allocation and the
+ * clear-all all answer 503.
  */
 
 export class AdminContentAccessError extends Error {
