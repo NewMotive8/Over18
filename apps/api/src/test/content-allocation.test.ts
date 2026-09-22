@@ -690,24 +690,129 @@ describe('the customer sees the allocation through the existing access model', (
  * Dark, refusals, and the content workflow
  * ------------------------------------------------------------------ */
 
+/**
+ * CLASSIFYING IS NOT SELLING.
+ *
+ * Marking a clip Free or Premium used to be refused with everything else while
+ * `ECONOMY_ENABLED` was off, which is production -- so the Admin panel was
+ * read-only and the decision could not be made at all. It charges nobody,
+ * prices nothing and grants no entitlement, so it is now allowed on its own.
+ *
+ * The gate did not move: `assertCommercialWrite` is untouched and every other
+ * write still meets it. A NARROWER way in was added beside it, and these hold
+ * the line between the two.
+ */
 describe('while the economy is off', () => {
-  it('reading works and says so; every change is refused (503) with nothing written', async () => {
+  it('reading works and says so', async () => {
     const operator = await account([]);
-    const ids = await clips(operator, 2);
+    await clips(operator, 2);
     const page = await view(operator, LUNA.id, dark);
     expect(page).toMatchObject({ economyEnabled: false, allocation: { configured: false }, counts: { clips: 2, free: 0, premium: 2 } });
+  });
 
-    for (const res of [
-      await allocate(operator, 1, LUNA.id, dark),
-      await mark(operator, ids[0]!, 'free', LUNA.id, dark),
-      await clear(operator, LUNA.id, dark),
-    ]) {
-      expect(res.statusCode).toBe(503);
-      expect(res.json()).toMatchObject({ error: 'economy_unavailable' });
+  it('marks a clip FREE, and it stays Free', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    const res = await mark(operator, asset!, 'free', LUNA.id, dark);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(stateOf(res.json() as AdminCharacterContentAccess, asset!)).toMatchObject({ state: 'free', byDefault: false });
+    expect(stateOf(await view(operator, LUNA.id, dark), asset!)).toMatchObject({ state: 'free', byDefault: false });
+  });
+
+  it('marks a clip PREMIUM, deliberately rather than by default', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    const res = await mark(operator, asset!, 'premium', LUNA.id, dark);
+    expect(res.statusCode, res.body).toBe(200);
+    // Same state as the default, but now a decision: `byDefault` is false.
+    expect(stateOf(res.json() as AdminCharacterContentAccess, asset!)).toMatchObject({ state: 'premium', byDefault: false });
+  });
+
+  it('switches one clip back and forth, immediately', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    for (const state of ['free', 'premium', 'free'] as const) {
+      const res = await mark(operator, asset!, state, LUNA.id, dark);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(stateOf(res.json() as AdminCharacterContentAccess, asset!)!.state, state).toBe(state);
     }
-    expect(await offerCount()).toBe(0);
+    // One clip, one live offer, however many times it was flipped.
+    expect(await offerCount()).toBe(1);
+  });
+
+  it('audits the classification: who, when, which clip, and both states', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await mark(operator, asset!, 'free', LUNA.id, dark);
+    await mark(operator, asset!, 'premium', LUNA.id, dark);
+
+    const trail = await q<{ action: string; object_id: string; actor_user_id: string; before: unknown; after: unknown; occurred_at: Date }>(
+      `SELECT action, object_id, actor_user_id, before, after, occurred_at
+         FROM audit_log WHERE object_type = 'content_access' ORDER BY id`,
+    );
+    expect(trail.rows.map((r) => r.action)).toEqual(['content.access.free', 'content.access.premium']);
+    expect(trail.rows.every((r) => r.object_id === asset)).toBe(true);
+    expect(trail.rows.every((r) => r.actor_user_id === operator.id)).toBe(true);
+    expect(trail.rows.every((r) => r.occurred_at instanceof Date)).toBe(true);
+    expect(trail.rows.map((r) => (r.before as { state: string }).state)).toEqual(['premium', 'free']);
+    expect(trail.rows.map((r) => (r.after as { state: string }).state)).toEqual(['free', 'premium']);
+  });
+
+  it('leaves a clip nobody touched Premium by default, with no offer written', async () => {
+    const operator = await account([]);
+    const ids = await clips(operator, 3);
+    await mark(operator, ids[0]!, 'free', LUNA.id, dark);
+    const page = await view(operator, LUNA.id, dark);
+    expect(stateOf(page, ids[1]!)).toMatchObject({ state: 'premium', byDefault: true });
+    expect(stateOf(page, ids[2]!)).toMatchObject({ state: 'premium', byDefault: true });
+    // The default still costs no rows: one classification, one offer.
+    expect(await offerCount()).toBe(1);
+  });
+
+  /* ---- and everything else is refused exactly as before ---- */
+
+  it('refuses a Credit price, an allocation and a clear-all, writing nothing', async () => {
+    const operator = await account([]);
+    const ids = await clips(operator, 2);
+    for (const [label, res] of [
+      ['credit', await mark(operator, ids[0]!, 'credit', LUNA.id, dark, 50)],
+      // A price makes the request commercial whatever the state says.
+      ['free with a price', await mark(operator, ids[0]!, 'free', LUNA.id, dark, 50)],
+      ['allocation', await allocate(operator, 1, LUNA.id, dark)],
+      ['clear', await clear(operator, LUNA.id, dark)],
+    ] as const) {
+      expect({ label, status: res.statusCode }, label).toEqual({ label, status: 503 });
+    }
+    expect(await offerCount(), 'no offer was written').toBe(0);
     expect(await allocationRows()).toBe(0);
     expect(await accessAudits()).toEqual([]);
+  });
+
+  it('refuses an unavailable state: withdrawing content is not a classification', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    // `unavailable` is not one of the states this endpoint ever accepted.
+    expect((await mark(operator, asset!, 'unavailable', LUNA.id, dark)).statusCode).toBe(400);
+    expect(await offerCount()).toBe(0);
+  });
+
+  it('classifying activates no economy configuration of any kind', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await mark(operator, asset!, 'premium', LUNA.id, dark);
+    for (const [table, n] of [
+      ['subscriptions', 0],
+      ['wallets', 0],
+      ['wallet_transactions', 0],
+      ['payments', 0],
+      ['paid_actions', 0],
+      ['content_entitlements', 0],
+      ['character_clip_allocation', 0],
+      ['economy_rulesets', 0],
+    ] as const) {
+      const got = (await q<{ n: number }>(`SELECT count(*)::int AS n FROM ${table}`)).rows[0]!.n;
+      expect({ table, got }, table).toEqual({ table, got: n });
+    }
   });
 });
 

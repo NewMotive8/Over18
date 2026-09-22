@@ -178,7 +178,9 @@ export async function unlockContent(
 
   // 2. P4.2 decides whether this CAN be unlocked. No rule about reachability,
   //    age, tier or price is restated here.
-  const { items } = await readContentAccess(db, user, [assetId]);
+  // The economy is on by construction here -- this function refused above
+  // without it -- so the resolver sees every term, prices included.
+  const { items } = await readContentAccess(db, user, [assetId], { economyEnabled: commerce.enabled });
   const decision = items[0]!.decision;
   const refusal = REFUSALS[decision];
   if (refusal) throw new ContentUnlockError(refusal.code, refusal.message);

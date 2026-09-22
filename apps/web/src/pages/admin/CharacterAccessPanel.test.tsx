@@ -217,12 +217,33 @@ describe('the per-clip decision', () => {
     expect(html).not.toContain('data-testid="set-credit"');
   });
 
-  it('is read-only while the economy is off, and says why', () => {
+  /**
+   * CLASSIFYING IS NOT SELLING, so this panel no longer waits for the economy.
+   *
+   * It used to grey itself out whenever `ECONOMY_ENABLED` was off -- which is
+   * production -- and say clip access "cannot be changed yet". Marking a clip
+   * Free or Premium charges nobody, and the server now allows it with the flag
+   * off, so the panel simply works.
+   */
+  it('works with the economy off, and no longer says otherwise', () => {
     const html = panel({ economyEnabled: false });
-    expect(html).toContain('The economy is switched off');
-    expect(html).toContain('role="status"');
-    // Every choice on every clip.
-    expect(html.match(/disabled=""/g)).toHaveLength(4);
+    for (const gone of ['The economy is switched off', 'read-only', 'cannot be changed yet']) {
+      expect({ gone, found: html.includes(gone) }, gone).toEqual({ gone, found: false });
+    }
+    // Exactly as many disabled buttons as with the economy on: one per clip,
+    // the state it is already in -- and never because of the flag.
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
+    expect(html).toBe(panel({ economyEnabled: true }));
+  });
+
+  it('offers both choices on every clip whatever the flag says', () => {
+    for (const economyEnabled of [true, false]) {
+      const html = panel({ economyEnabled });
+      expect(html.match(/data-testid="set-free"/g), String(economyEnabled)).toHaveLength(2);
+      expect(html.match(/data-testid="set-premium"/g), String(economyEnabled)).toHaveLength(2);
+      // The pressed one is the clip's own state, not a lock.
+      expect(html.match(/aria-pressed="true"/g), String(economyEnabled)).toHaveLength(2);
+    }
   });
 
   it('says what a clip uploaded later will be when she has none yet', () => {

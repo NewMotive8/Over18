@@ -93,7 +93,17 @@ export default async function adminContentAccessRoutes(
     change,
     async (request, reply) => {
       reply.header('cache-control', 'private, no-store');
-      if (!opts.commerce.enabled) return reply.code(503).send(ACCESS_CHANGES_UNAVAILABLE);
+      /**
+       * NO FLAG GATE HERE, DELIBERATELY -- and this is the ONLY route without
+       * one. Marking a clip Free or Premium is an editorial decision that
+       * charges nobody, so it must be possible before the economy is switched
+       * on; the read-only Admin panel was the coupling this removes.
+       *
+       * The narrower gate lives one layer down, where it can tell the two
+       * requests apart: `classifyContentAccess` takes Free or Premium and no
+       * price, while anything priced still goes through `setContentOffer` and
+       * still answers 503 here, through `failed`, while the economy is off.
+       */
       try {
         return await setClipAccess(
           opts.db,

@@ -70,9 +70,20 @@ export default async function customerEconomyRoutes(
    */
   app.get<{ Querystring: { assetIds?: unknown } }>('/api/content/access', { preHandler: app.requireAuth }, async (request, reply) => {
     reply.header('cache-control', 'private, no-store');
-    if (!opts.commerce.enabled) return reply.code(503).send(ECONOMY_UNAVAILABLE);
+    /**
+     * ANSWERED EVEN WITH THE ECONOMY OFF -- alone among these routes.
+     *
+     * An operator can now mark a clip Free or Premium before anything is for
+     * sale, and a classification nobody enforces is not a classification. So
+     * this reads; the flag decides WHICH TERMS COUNT rather than whether there
+     * is an answer, and with it off only a deliberate Free/Premium decision
+     * does. Nothing here charges, unlocks, subscribes or spends: the routes
+     * that do are still 503 above and below.
+     */
     try {
-      return await readContentAccess(opts.db, request.currentUser!, parseAssetIds(request.query?.assetIds));
+      return await readContentAccess(opts.db, request.currentUser!, parseAssetIds(request.query?.assetIds), {
+        economyEnabled: opts.commerce.enabled,
+      });
     } catch (error) {
       if (error instanceof ContentAccessError) return reply.code(400).send({ error: error.code, message: error.message });
       throw error;
