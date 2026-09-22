@@ -3,7 +3,9 @@ import type { Db } from '../db/client.js';
 import { recordAudit, type AuditActor } from './audit-service.js';
 import { getCharacterForAdmin } from './character-service.js';
 import {
+  classifyContentAccess,
   describeAssetCommercial,
+  isClassifiableState,
   readClipAllocation,
   removeClipAllocation,
   retireContentOffer,
@@ -35,8 +37,13 @@ import { listCharacterContent } from './content-review-service.js';
  * Both write offers for the clips she has NOW. A clip uploaded afterwards
  * needs no write at all: her allocation already makes it Premium.
  *
- * Nothing is charged, unlocked or granted here, and -- like every commercial
- * write -- nothing at all happens while the economy is off.
+ * Nothing is charged, unlocked or granted here.
+ *
+ * MARKING ONE CLIP FREE OR PREMIUM WORKS WHILE THE ECONOMY IS OFF, through
+ * `classifyContentAccess`: it is an editorial decision, not a sale. Everything
+ * else here is still a commercial write and still does nothing while the flag
+ * is off -- a Credit price (including one sent alongside `free`), the random
+ * allocation and the clear-all all answer 503.
  */
 
 export class AdminContentAccessError extends Error {
@@ -141,11 +148,25 @@ interface ActorContext {
 /**
  * Marks ONE clip Free, Premium or Credit-priced, whatever her allocation says.
  *
- * The Credit price is passed to P4.1 exactly as the operator sent it, so one
- * rule decides what a price may be: a whole number of Credits, 1 or more, on
- * `credit` content and nothing else. A price sent with `free` or `premium` is
- * therefore refused rather than quietly dropped -- an operator who typed one
- * meant something, and silently ignoring it would price the clip at nothing.
+ * ── A STATE IS A CLASSIFICATION; A PRICE IS COMMERCE ────────────────────────
+ *
+ * Which request this is decides which capability it gets, and the test is the
+ * request itself rather than a flag:
+ *
+ *   state alone, Free or Premium   -> `classifyContentAccess`, no economy
+ *                                     needed. Nobody is charged, nothing is
+ *                                     priced, no entitlement is granted; an
+ *                                     editor is saying which side of the
+ *                                     paywall this clip belongs on.
+ *   anything else, or a PRICE      -> `setContentOffer`, which still requires
+ *                                     ECONOMY_ENABLED and answers 503 without
+ *                                     it. `credit` is here, and so is a price
+ *                                     sent alongside `free` -- carrying one at
+ *                                     all makes the request commercial.
+ *
+ * A price is therefore never quietly dropped: an operator who sent one meant
+ * something, and silently ignoring it would price the clip at nothing. With
+ * the economy on, P4.1's one rule still decides what a price may be.
  */
 export async function setClipAccess(
   db: Db,
@@ -162,10 +183,13 @@ export async function setClipAccess(
   if (!clip) throw new AdminContentAccessError('asset_not_found', 'That clip is not one of this character\'s clips.');
 
   const creditPrice = (input.creditPrice ?? null) as number | null;
+  // Carrying a price makes it a commercial write whatever the state says.
+  const classifying = creditPrice === null && isClassifiableState(state);
 
   const before = (await describeAssetCommercial(db, [clip.assetId])).get(clip.assetId)!;
   await db.transaction(async (tx) => {
-    await setContentOffer(tx, commerce, { assetId: clip.assetId, state, creditPrice });
+    if (classifying) await classifyContentAccess(tx, { assetId: clip.assetId, state });
+    else await setContentOffer(tx, commerce, { assetId: clip.assetId, state, creditPrice });
     await recordAudit(tx, {
       actor: ctx.actor,
       action: `content.access.${state}`,

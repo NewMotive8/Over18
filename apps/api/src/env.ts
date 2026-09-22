@@ -157,9 +157,15 @@ export type CommerceProviderName = 'none' | 'fake';
 /**
  * Subscription and App Economy (PRD v1.2). EVERYTHING DEFAULTS OFF.
  *
- * `enabled` is the master switch for anything a user could see. It exists so
- * every phase lands behind one flag rather than inventing its own; the first
- * reader is the customer economy read API, which answers 503 while it is off.
+ * `enabled` is the master switch for anything that costs money. It exists so
+ * every phase lands behind one flag rather than inventing its own: the economy
+ * catalog, a customer's commercial state, the unlock and every payment route
+ * answer 503 while it is off, and no commercial write is accepted.
+ *
+ * It is NOT a switch on content classification. Marking a clip Free or Premium
+ * charges nobody, so it is written and enforced with the flag off -- narrowly:
+ * see `services/commercial-boundary.ts` (`classifyContentAccess`,
+ * `classificationOnly`).
  *
  * A `fake` provider can NEVER be active in production: `loadEnv` maps it to
  * `none` unless NODE_ENV is explicitly development/test AND the process is not

@@ -5,7 +5,7 @@ import { buildApp } from '../app.js';
 import { createDb } from '../db/client.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
-import { setContentOffer } from '../services/commercial-boundary.js';
+import { classifyContentAccess, setContentOffer } from '../services/commercial-boundary.js';
 import { CONTENT_ACCESS_MAX_IDS } from '../services/content-access.js';
 import { uploadLibraryAsset } from '../services/library-upload-service.js';
 import { approveVisualAsset } from '../services/visual-asset-service.js';
@@ -140,6 +140,14 @@ const ask = async (who: Account, ids: string[], ctx: TestContext = live) => {
   return (res.json() as CustomerContentAccessResponse).items;
 };
 const one = async (who: Account, id: string): Promise<CustomerContentAccess> => (await ask(who, [id]))[0]!;
+
+/** Every row of every table, hashed per table: the strongest "nothing moved". */
+const snapshot = async (): Promise<Record<string, string>> => {
+  const tables = (await q<{ t: string }>(`SELECT table_name AS t FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1`)).rows.map((r) => r.t);
+  const out: Record<string, string> = {};
+  for (const t of tables) out[t] = (await q<{ h: string }>(`SELECT md5(coalesce(string_agg(x::text, '|' ORDER BY x::text), '')) AS h FROM "${t}" x`)).rows[0]!.h;
+  return out;
+};
 
 /* ------------------------------------------------------------------ *
  * The contract
@@ -361,15 +369,105 @@ describe('anything unknown fails closed', () => {
  * Dark, and read-only
  * ------------------------------------------------------------------ */
 
+/**
+ * WITH THE ECONOMY OFF, A DELIBERATE CLASSIFICATION IS ENFORCED -- AND NOTHING
+ * ELSE IS.
+ *
+ * This endpoint used to answer 503 here. An operator can now mark a clip Free
+ * or Premium before anything is for sale, and a classification nobody enforces
+ * is not a classification -- so it answers, and the flag decides which TERMS
+ * count rather than whether there is an answer at all.
+ *
+ * What is deliberately NOT enforced is the whole point. Premium-by-default is
+ * what an unclassified clip MEANS, not a decision anyone took, and the entire
+ * live catalogue is unclassified: enforcing it here would lock every clip in
+ * production at once, with no way for any customer to obtain Premium. Credit
+ * content is not enforced either, because its price is payable only through
+ * the unlock, which is still 503.
+ */
 describe('while the economy is off', () => {
-  it('answers 503 and resolves nothing', async () => {
+  const darkOne = async (who: Account, id: string): Promise<CustomerContentAccess> => (await ask(who, [id], dark))[0]!;
+
+  it('answers, rather than refusing the whole read', async () => {
     const operator = await account(true);
     const customer = await account();
     const clip = await publishedClip(operator);
     const res = await dark.app.inject({ method: 'GET', url: ACCESS([clip]), cookies: customer.cookies });
-    expect(res.statusCode).toBe(503);
-    expect(res.json()).toMatchObject({ error: 'economy_unavailable', reason: 'economy_disabled' });
-    expect(res.body).not.toContain(clip);
+    expect(res.statusCode, res.body).toBe(200);
+  });
+
+  it('opens a clip an operator marked Free', async () => {
+    const operator = await account(true);
+    const customer = await account();
+    const clip = await publishedClip(operator);
+    await classifyContentAccess(dark.db, { assetId: clip, state: 'free' });
+    expect(await darkOne(customer, clip)).toMatchObject({ state: 'free', decision: 'open', creditPrice: null });
+  });
+
+  it('locks a clip an operator marked Premium, for a customer without Premium', async () => {
+    const operator = await account(true);
+    const customer = await account();
+    const clip = await publishedClip(operator);
+    await classifyContentAccess(dark.db, { assetId: clip, state: 'premium' });
+    expect(await darkOne(customer, clip)).toMatchObject({ state: 'premium', decision: 'premium_required' });
+  });
+
+  it('opens that same clip for a Premium customer', async () => {
+    const operator = await account(true);
+    const premium = await account();
+    await makePremium(premium.id, await premiumPlanVersion());
+    const clip = await publishedClip(operator);
+    await classifyContentAccess(dark.db, { assetId: clip, state: 'premium' });
+    expect(await darkOne(premium, clip)).toMatchObject({ state: 'premium', decision: 'open' });
+  });
+
+  /**
+   * THE ONE THAT PROTECTS THE LIVE CATALOGUE. Every clip in production is
+   * unclassified, and every one of them must stay watchable.
+   */
+  it('leaves a clip NOBODY classified exactly as it is today: open', async () => {
+    const operator = await account(true);
+    const customer = await account();
+    const clip = await publishedClip(operator);
+    // With the economy ON the very same clip is Premium by default (P4.D2)...
+    expect((await one(customer, clip)).decision).toBe('premium_required');
+    // ...and with it OFF the default is not enforced, because nobody chose it.
+    expect(await darkOne(customer, clip)).toMatchObject({ decision: 'open', creditPrice: null });
+  });
+
+  it('does not state a price nobody can pay', async () => {
+    const operator = await account(true);
+    const customer = await account();
+    const clip = await publishedClip(operator);
+    await fund(customer.id, 500);
+    await setContentOffer(dark.db, ECONOMY_ON, { assetId: clip, state: 'credit', creditPrice: 50 });
+    expect(await darkOne(customer, clip)).toMatchObject({ decision: 'open', creditPrice: null });
+    // The unlock that would spend them is still refused.
+    const unlock = await dark.app.inject({
+      method: 'POST',
+      url: `/api/content/${clip}/unlock`,
+      cookies: customer.cookies,
+      payload: { idempotencyKey: randomUUID() },
+    });
+    expect(unlock.statusCode).toBe(503);
+  });
+
+  it('still refuses every endpoint that charges, subscribes or spends', async () => {
+    const customer = await account();
+    for (const url of ['/api/economy/catalog', '/api/me/commercial-state']) {
+      const res = await dark.app.inject({ method: 'GET', url, cookies: customer.cookies });
+      expect({ url, status: res.statusCode }, url).toEqual({ url, status: 503 });
+    }
+  });
+
+  it('resolves a classification without writing a single row', async () => {
+    const operator = await account(true);
+    const customer = await account();
+    const clip = await publishedClip(operator);
+    await classifyContentAccess(dark.db, { assetId: clip, state: 'premium' });
+    const before = await snapshot();
+    await darkOne(customer, clip);
+    expect(await snapshot()).toEqual(before);
   });
 });
 
@@ -383,12 +481,6 @@ describe('deciding changes nothing', () => {
     const credit = await publishedClip(operator);
     await setContentOffer(dark.db, ECONOMY_ON, { assetId: credit, state: 'credit', creditPrice: 50, ageFloor: 21 });
 
-    const snapshot = async () => {
-      const tables = (await q<{ t: string }>(`SELECT table_name AS t FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1`)).rows.map((r) => r.t);
-      const out: Record<string, string> = {};
-      for (const t of tables) out[t] = (await q<{ h: string }>(`SELECT md5(coalesce(string_agg(x::text, '|' ORDER BY x::text), '')) AS h FROM "${t}" x`)).rows[0]!.h;
-      return out;
-    };
     const before = await snapshot();
     await ask(customer, [free, credit, randomUUID()]);
     await ask(customer, [credit]);

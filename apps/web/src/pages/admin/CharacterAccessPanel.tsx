@@ -41,6 +41,17 @@ import { MessageList, Section } from './economy/EconomyUi';
  * Credit price and P8.2 still spends Credits against it; that is a separate
  * product decision and does not belong in the Free/Premium workflow. Nothing
  * in the database or the API was removed to take it off this screen.
+ *
+ * ── IT NO LONGER WAITS FOR THE ECONOMY ──────────────────────────────────────
+ *
+ * This panel used to grey itself out whenever `ECONOMY_ENABLED` was off, which
+ * is production, saying clip access "cannot be changed yet". That coupled an
+ * editorial decision to a commercial switch: whether a clip is Free or Premium
+ * charges nobody and prices nothing, and an editor needs to decide it long
+ * before anything is for sale. The server now separates the two -- classifying
+ * needs no economy, pricing still does -- so the panel simply works, and
+ * `page.economyEnabled` is no longer what decides whether it does. The flag is
+ * still reported, for the screens that run actual commerce.
  */
 
 export const clipStateLabel = (clip: AdminClipAccess): string =>
@@ -96,12 +107,10 @@ export function accessSummary(page: AdminCharacterContentAccess): string {
 function AccessChoice({
   clip,
   busy,
-  locked,
   onMark,
 }: {
   clip: AdminClipAccess;
   busy: boolean;
-  locked: boolean;
   onMark: (clip: AdminClipAccess, state: 'free' | 'premium') => void;
 }) {
   const options = [
@@ -124,7 +133,7 @@ function AccessChoice({
             aria-pressed={selected}
             // Re-selecting what it already is would write an offer and an audit
             // row saying nothing changed.
-            disabled={locked || busy || selected}
+            disabled={busy || selected}
             onClick={() => onMark(clip, option.value)}
             className={`min-h-11 flex-1 px-3 text-xs font-semibold transition-colors sm:flex-none sm:px-4 ${
               selected
@@ -157,12 +166,10 @@ function AccessChoice({
 function ClipRow({
   clip,
   busy,
-  locked,
   onMark,
 }: {
   clip: AdminClipAccess;
   busy: boolean;
-  locked: boolean;
   onMark: (clip: AdminClipAccess, state: 'free' | 'premium') => void;
 }) {
   return (
@@ -194,7 +201,7 @@ function ClipRow({
         <p className="truncate font-mono text-[10px] text-zinc-600">{clip.assetId.slice(0, 8)}</p>
       </div>
       <div className="basis-full sm:basis-auto">
-        <AccessChoice clip={clip} busy={busy} locked={locked} onMark={onMark} />
+        <AccessChoice clip={clip} busy={busy} onMark={onMark} />
       </div>
     </li>
   );
@@ -212,7 +219,6 @@ export function ContentAccessPanel({
   messages: string[];
   onMark: (clip: AdminClipAccess, state: 'free' | 'premium') => void;
 }) {
-  const locked = !page.economyEnabled;
   return (
     <div className="flex flex-col gap-3" data-testid="content-access-panel">
       <p className="text-sm text-zinc-300" data-testid="access-summary">
@@ -221,11 +227,6 @@ export function ContentAccessPanel({
       <p className="text-xs text-zinc-500" data-testid="access-model">
         All clips are Premium by default. Mark individual clips Free when needed.
       </p>
-      {locked && (
-        <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-          The economy is switched off: clip access cannot be changed yet. Everything below is read-only.
-        </p>
-      )}
       <MessageList messages={messages} />
 
       {page.clips.length === 0 ? (
@@ -233,7 +234,7 @@ export function ContentAccessPanel({
       ) : (
         <ul className="flex flex-col gap-2" data-testid="clip-access-list">
           {page.clips.map((clip) => (
-            <ClipRow key={clip.assetId} clip={clip} busy={busy} locked={locked} onMark={onMark} />
+            <ClipRow key={clip.assetId} clip={clip} busy={busy} onMark={onMark} />
           ))}
         </ul>
       )}

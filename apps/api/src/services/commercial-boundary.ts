@@ -37,13 +37,27 @@ import { mediaTypeOf } from './content-review-service.js';
  * it must not be expressed as an unapproval or a withdrawal. Equally, archiving
  * a clip does not refund anybody: it leaves the offer alone.
  *
- * ── NOTHING IS ON ────────────────────────────────────────────────────────────
+ * ── WHAT THE FLAG STILL GATES, AND THE ONE THING IT DOES NOT ────────────────
  *
- * The economy is dark (`ECONOMY_ENABLED`, off by default). No public route, no
- * admin screen and no read model consults an offer, and `assertCommercialWrite`
- * refuses to write one while the flag is off. Every asset without an offer is
- * `free`, which is the entire library today, so this phase changes nothing an
- * operator or a customer can see.
+ * `ECONOMY_ENABLED` is off by default and still gates every commercial write:
+ * `assertCommercialWrite` refuses prices, age floors, economy references,
+ * allocations, retirements, wallets, subscriptions, payments and entitlements
+ * while the flag is off, and every route that charges, subscribes or spends
+ * answers 503.
+ *
+ * ONE EXCEPTION, DELIBERATELY. Marking a clip FREE or PREMIUM is an editorial
+ * decision that charges nobody, so `classifyContentAccess` writes it with the
+ * flag off -- and `GET /api/content/access` reads it back, alone among the
+ * customer economy routes, because a classification nobody enforces is not a
+ * classification. `classificationOnly` (below) is what keeps that narrow:
+ * a DELIBERATE Free/Premium decision is enforced, and nothing else is.
+ *
+ * SO "no offer" IS NOT THE SAME AS "not enforced". An asset with no offer
+ * reads PREMIUM by default (P4.D2) -- which is the entire library today -- but
+ * that default is NOT enforced against customers while the flag is off,
+ * because it is what an unclassified clip means rather than a decision anyone
+ * took. Enforcing it would lock every clip in production at once, with no way
+ * for any customer to obtain Premium.
  *
  * ── WHAT P2 / P3 / P8 ATTACH HERE ────────────────────────────────────────────
  *
@@ -107,7 +121,8 @@ export class CommercialBoundaryError extends Error {
       | 'not_content'
       | 'invalid_state'
       | 'invalid_price'
-      | 'invalid_age_floor',
+      | 'invalid_age_floor'
+      | 'not_classifiable',
     message: string,
   ) {
     super(message);
@@ -280,6 +295,17 @@ export async function setContentOffer(
   input: SetContentOfferInput,
 ): Promise<ContentOfferRow> {
   assertCommercialWrite(commerce);
+  return writeOffer(db, input);
+}
+
+/**
+ * The write itself, with NO gate of its own.
+ *
+ * Private on purpose. Every exported way in applies its own gate first --
+ * `setContentOffer` the economy flag, `classifyContentAccess` the far narrower
+ * rule below -- so this function existing does not widen what anyone may write.
+ */
+async function writeOffer(db: Writer, input: SetContentOfferInput): Promise<ContentOfferRow> {
   const terms = checkTerms(input);
 
   const [row] = await db
@@ -329,6 +355,97 @@ export async function setContentOffer(
     })
     .returning();
   return created!;
+}
+
+/* ------------------------------------------------------------------ *
+ * Classification -- Free or Premium, without the economy
+ * ------------------------------------------------------------------ */
+
+/** The only two states an operator may classify content into. */
+export const CLASSIFIABLE_STATES = ['free', 'premium'] as const;
+export type ClassifiableState = (typeof CLASSIFIABLE_STATES)[number];
+
+/** Whether a state is one an operator may classify content into, with no economy. */
+export const isClassifiableState = (state: unknown): state is ClassifiableState =>
+  (CLASSIFIABLE_STATES as readonly unknown[]).includes(state);
+
+/**
+ * WHETHER A CLIP IS FREE OR PREMIUM IS AN EDITORIAL DECISION, NOT A SALE.
+ *
+ * `assertCommercialWrite` exists so nothing commercial accumulates in
+ * production before the phase that owns it is switched on, and it is right
+ * about prices, allocations, wallets, subscriptions and entitlements. It was
+ * wrong about this one write. Saying "this clip is Premium" charges nobody,
+ * prices nothing, resolves against no economy configuration and grants no
+ * entitlement -- it records which side of the paywall a piece of content will
+ * sit on, which an editor needs to decide long before anything is for sale.
+ * With the flag off the Admin panel was read-only, so that decision could not
+ * be made at all.
+ *
+ * ── WHY THIS IS A SEPARATE FUNCTION AND NOT A FLAG ──────────────────────────
+ *
+ * `assertCommercialWrite` is UNTOUCHED, and so is every caller of it. The way
+ * in is narrowed instead, by construction rather than by checking:
+ *
+ *   - it takes NO `commerce` argument, so no caller can hand it an enabled
+ *     economy and get more than this;
+ *   - `state` is typed `ClassifiableState`, so `credit` and `unavailable` do
+ *     not compile, and are refused at runtime for callers without types;
+ *   - a price, an age floor or an economy reference cannot be passed at all --
+ *     they are not parameters. A caller that HAS one must go through
+ *     `setContentOffer`, which still requires the economy.
+ *
+ * Anything beyond Free/Premium therefore keeps exactly the gate it had.
+ *
+ * ── AND WHY IT STILL WRITES AN OFFER ────────────────────────────────────────
+ *
+ * The offer is where commercial state lives and what the P4.2 customer
+ * resolver reads. A second place to record "this clip is Premium" would be a
+ * second source of truth for the same fact, and the two would disagree the
+ * first time anyone priced a clip. So this writes the same row the economy
+ * writes -- with no price, no age floor and no economy reference on it.
+ */
+export async function classifyContentAccess(
+  db: Writer,
+  input: { assetId: string; state: ClassifiableState },
+): Promise<ContentOfferRow> {
+  if (!isClassifiableState(input.state)) {
+    throw new CommercialBoundaryError(
+      'not_classifiable',
+      `Only ${CLASSIFIABLE_STATES.join(' and ')} content can be classified; anything priced needs the economy.`,
+    );
+  }
+  return writeOffer(db, { assetId: input.assetId, state: input.state, creditPrice: null, ageFloor: null, economyRef: null });
+}
+
+/**
+ * THE TERMS THAT APPLY WHILE THE ECONOMY IS OFF.
+ *
+ * A deliberate Free/Premium classification is kept; everything else reads as
+ * content with no terms at all, which is what it had before any of this
+ * existed. So with the flag off:
+ *
+ *   marked Free       -> Free            an operator decided it
+ *   marked Premium    -> Premium         an operator decided it
+ *   nobody decided    -> no terms        including P4.D2's Premium-by-default
+ *   priced in Credits -> no terms        there is no way to spend Credits
+ *   withdrawn         -> no terms        only the economy could have set it
+ *
+ * WHY THE DEFAULT IS NOT ENFORCED. Premium-by-default is what an unclassified
+ * clip MEANS, not a decision anyone took, and the whole live catalogue is
+ * unclassified. Enforcing it with the economy off would lock every clip in
+ * production at once, with no way for any customer to obtain Premium -- a
+ * paywall with no gate. An operator who wants a clip locked marks it Premium,
+ * and then it is.
+ *
+ * WHY CREDIT CONTENT IS NOT ENFORCED EITHER. Its price is payable only through
+ * the unlock, which answers 503 while the economy is off. Stating a price
+ * nobody can pay is worse than stating nothing.
+ *
+ * The economy on, this is the identity function: every term applies.
+ */
+export function classificationOnly(terms: AssetCommercialView): AssetCommercialView {
+  return !terms.implicit && isClassifiableState(terms.state) ? terms : IMPLICIT_FREE;
 }
 
 /**

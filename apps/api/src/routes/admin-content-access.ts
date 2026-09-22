@@ -24,10 +24,14 @@ const ACCESS_CHANGES_UNAVAILABLE: EconomyUnavailableResponse = {
  * STAFF ONLY, BY PERMISSION: `access.manage` (§32: per-asset access states and
  * Credit prices), through the existing `requirePermission`.
  *
- * READING IS ALWAYS AVAILABLE; CHANGING IS NOT. Like every other commercial
- * write, a change answers 503 while the economy is off, before anything is
- * read or written. Nothing here uploads, approves, releases or deletes
- * content: the content workflow is untouched.
+ * READING IS ALWAYS AVAILABLE. So is CLASSIFYING one clip Free or Premium:
+ * that charges nobody and needs no economy, and the clip PUT below is the only
+ * route here without the flag gate. Every other change -- a Credit price, the
+ * allocation, the clear-all -- still answers 503 while the economy is off,
+ * before anything is read or written.
+ *
+ * Nothing here uploads, approves, releases or deletes content: the content
+ * workflow is untouched.
  */
 export default async function adminContentAccessRoutes(
   app: FastifyInstance,
@@ -93,7 +97,17 @@ export default async function adminContentAccessRoutes(
     change,
     async (request, reply) => {
       reply.header('cache-control', 'private, no-store');
-      if (!opts.commerce.enabled) return reply.code(503).send(ACCESS_CHANGES_UNAVAILABLE);
+      /**
+       * NO FLAG GATE HERE, DELIBERATELY -- and this is the ONLY route without
+       * one. Marking a clip Free or Premium is an editorial decision that
+       * charges nobody, so it must be possible before the economy is switched
+       * on; the read-only Admin panel was the coupling this removes.
+       *
+       * The narrower gate lives one layer down, where it can tell the two
+       * requests apart: `classifyContentAccess` takes Free or Premium and no
+       * price, while anything priced still goes through `setContentOffer` and
+       * still answers 503 here, through `failed`, while the economy is off.
+       */
       try {
         return await setClipAccess(
           opts.db,
