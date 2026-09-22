@@ -511,6 +511,70 @@ describe('the order a customer meets her clips in', () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Recognising the clip, and the order an operator manages them in
+ * ------------------------------------------------------------------ */
+
+describe('what the operator is given to identify a clip by', () => {
+  /**
+   * AN ACCESS DECISION IS MADE ABOUT A PARTICULAR CLIP. The read used to carry
+   * nothing an operator could recognise one by, so the screen showed the head
+   * of a uuid. These are the facts the content shelf already held.
+   */
+  it('reports the clip\'s own preview, its file name and its media type', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    const clip = stateOf(await view(operator), asset!)!;
+
+    // The same opaque, id-keyed admin locator every other admin surface uses --
+    // never a storage key and never a filesystem path.
+    expect(clip.previewUrl).toBe(`/admin/content/assets/${asset}/file`);
+    expect(clip.previewUrl).not.toContain('/uploads/');
+    expect(clip.mediaType).toBe('image');
+    // The name it was uploaded under, reported and not derived.
+    expect(clip.fileName).toBe('clip.png');
+    // Nothing recorded a duration for an upload, and none is invented.
+    expect(clip.durationSeconds).toBeNull();
+  });
+
+  it('serves those bytes to an operator, so the preview is a real one', async () => {
+    const operator = await account(['administrator']);
+    const [asset] = await clips(operator, 1);
+    const clip = stateOf(await view(operator), asset!)!;
+    const res = await live.app.inject({ method: 'GET', url: clip.previewUrl!, cookies: operator.cookies });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.headers['content-type']).toContain('image/png');
+  });
+
+  /**
+   * THE ADMIN LIST IS HER CONTENT ORDER, NOT THE CUSTOMER'S.
+   *
+   * A customer meets the Free clips first (the rule above). An operator is
+   * looking for one particular clip, and a list that re-sorted itself the
+   * instant they classified one would move every other row out from under
+   * them -- so this read stays in the shelf's order, newest first, whatever
+   * each clip costs.
+   */
+  it('keeps her existing content order while the customer list puts Free first', async () => {
+    const operator = await account([]);
+    const ids = await clips(operator, 3);
+    const newestFirst = [...ids].reverse();
+    expect((await view(operator)).clips.map((clip) => clip.assetId)).toEqual(newestFirst);
+
+    // The OLDEST clip -- last in the admin list -- becomes the Free one.
+    await applied(await mark(operator, ids[0]!, 'free'));
+
+    const admin = await view(operator);
+    expect(admin.clips.map((clip) => clip.assetId), 'the admin order did not move').toEqual(newestFirst);
+    expect(admin.clips.at(-1)!.state).toBe('free');
+
+    // The same clip leads the list the app reads.
+    const res = await live.app.inject({ method: 'GET', url: `/api/characters/${LUNA.id}/clips` });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((res.json() as { clips: { id: string }[] }).clips.map((clip) => clip.id)[0]).toBe(ids[0]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * Classifying without a typed reason
  * ------------------------------------------------------------------ */
 

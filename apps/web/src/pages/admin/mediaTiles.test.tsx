@@ -157,3 +157,47 @@ describe('both admin content grids', () => {
     }
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * The clip-access thumbnail
+ *
+ * Clip access became a media screen -- an operator classifies a clip they can
+ * see -- and the one thing it must not do is grow a second way of drawing an
+ * asset. These pin that the panel renders through the shared thumbnail, and
+ * that the thumbnail is built from the same two constants as every tile above.
+ * ------------------------------------------------------------------ */
+
+describe('the clip-access thumbnail', () => {
+  const thumb = sourceOf('../../admin/ClipThumb.tsx');
+  const panel = sourceOf('./CharacterAccessPanel.tsx');
+
+  it('is built from the shared tile rules', () => {
+    expect(thumb).toContain("from '../lib/mediaTile'");
+    expect(thumb).toContain('TILE_MEDIA_CLASS');
+    expect(thumb).toContain('tileFrameClass(true)');
+    expect(thumb).not.toContain('object-cover');
+    expect(thumb).not.toContain('h-full w-full object-');
+  });
+
+  /**
+   * A still, deliberately: a character's shelf is a dozen clips, and a dozen
+   * autoplaying loops fetches a dozen whole files to answer "which clip is
+   * this?" -- which one frame answers.
+   */
+  it('shows a frame rather than playing the video', () => {
+    expect(thumb).toContain('preload="metadata"');
+    expect(thumb).toContain('#t=0.1');
+    // The autoplay/loop set is NAMED in its doc comment (to say why it is not
+    // used here) but never spread, which is the thing that would start playback.
+    expect(thumb).not.toContain('{...TILE_VIDEO_PLAYBACK}');
+  });
+
+  it('is the panel\'s only way of drawing an asset', () => {
+    expect(panel).toContain("import ClipThumb from '../../admin/ClipThumb'");
+    expect(panel).toContain('<ClipThumb');
+    // No private copy: the panel itself renders no media element at all.
+    expect(panel).not.toContain('<img');
+    expect(panel).not.toContain('<video');
+    expect(panel).not.toContain('TILE_MEDIA_CLASS');
+  });
+});

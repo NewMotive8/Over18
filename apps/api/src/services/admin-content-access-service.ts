@@ -75,7 +75,15 @@ async function requireCharacter(db: Db, characterId: string): Promise<string> {
   return characterId;
 }
 
-/** Her clips: the content assets her own admin shelf lists, in the order it lists them. */
+/**
+ * Her clips: the content assets her own admin shelf lists, IN THE ORDER IT
+ * LISTS THEM -- newest first, the character's existing content order.
+ *
+ * Deliberately NOT the customer's Free-before-Premium order. That order exists
+ * so a visitor meets the free content first; an operator is looking for a
+ * particular clip, and a list that re-sorts itself the moment they classify one
+ * moves every other row under their cursor.
+ */
 async function clipsOf(db: Db, characterId: string) {
   const { assets } = await listCharacterContent(db, characterId);
   return assets.filter((asset) => asset.role === 'content');
@@ -98,6 +106,11 @@ export async function readCharacterContentAccess(
       mediaType: clip.mediaType,
       workflow: clip.workflow,
       live: clip.distribution.liveAnywhere,
+      // What the clip IS, from the shelf that already knew: an operator
+      // classifies the clip they can see, not an id they have to trust.
+      previewUrl: clip.previewUrl,
+      fileName: clip.fileName,
+      durationSeconds: clip.durationSeconds,
       state: view.state,
       /** True while nothing was written for this clip: it reads its character's default. */
       byDefault: view.implicit,

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AdminCharacterContentAccess, AdminClipAccess } from '@over18/shared';
+import ClipThumb from '../../admin/ClipThumb';
+import { statusLabel } from '../../admin/characterContent';
 import { serverMessages } from '../../admin/economyConfig';
+import type { AssetLifecycle } from '../../lib/api';
 import { adminContentAccessApi } from '../../lib/api';
 import { MessageList, Section } from './economy/EconomyUi';
 
@@ -11,6 +14,21 @@ import { MessageList, Section } from './economy/EconomyUi';
  * marks individual clips Free. There is no setup step, no activation, no
  * character-level mode to be in, and clips uploaded later are Premium without
  * anyone doing anything.
+ *
+ * ── THE CLIP IS THE THUMBNAIL ────────────────────────────────────────────────
+ *
+ * This was a table whose first column was `f71be6a9` -- the head of a uuid. An
+ * operator cannot classify a clip they cannot recognise, so the decision was
+ * being made against a row rather than against content. It is now the same
+ * media row the Home composer's carousel uses: a still of the clip, what is
+ * known about it, and the two buttons.
+ *
+ * IT IS THE CHARACTER'S OWN CONTENT ORDER, newest first -- deliberately NOT the
+ * customer's Free-before-Premium order. A visitor should meet the free content
+ * first; an operator is looking for one particular clip, and a list that
+ * re-sorts itself the instant they classify something moves every other row out
+ * from under them. The customer ordering rule is untouched and lives in the
+ * clip list the app reads.
  *
  * WHAT THIS PANEL DELIBERATELY NO LONGER HAS. It carried a required reason
  * field, a free-clip count, a random allocation, a clear-all, and a per-clip
@@ -28,6 +46,33 @@ import { MessageList, Section } from './economy/EconomyUi';
 export const clipStateLabel = (clip: AdminClipAccess): string =>
   clip.state === 'free' ? 'Free' : clip.state === 'premium' ? 'Premium' : clip.state === 'credit' ? `${clip.creditPrice ?? '—'} Credits` : 'Unavailable';
 
+/** `0:05`. Minutes and seconds, because a clip is seconds long. */
+export function clipDurationLabel(seconds: number | null): string | null {
+  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return null;
+  const whole = Math.round(seconds);
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
+/**
+ * The secondary line: what the thumbnail cannot say.
+ *
+ * ONLY WHAT THE DATA HOLDS. A duration appears where one was recorded and is
+ * absent otherwise; there is no placeholder, no "unknown" and no invented clip
+ * name anywhere -- the name shown elsewhere is the file's own, and a clip
+ * without one shows none. The asset id comes LAST and small: it is the
+ * technical handle for a support conversation, not the thing an operator
+ * recognises the clip by.
+ */
+export function clipDetails(clip: AdminClipAccess): string[] {
+  const parts = [clip.mediaType === 'video' ? 'Video' : clip.mediaType === 'image' ? 'Image' : clip.mediaType];
+  const duration = clipDurationLabel(clip.durationSeconds);
+  if (duration) parts.push(duration);
+  // Where a customer can meet it, which is not the same question as whether it
+  // passed review -- so the review state is named when it is not simply live.
+  parts.push(clip.live ? 'Live' : statusLabel({ workflow: clip.workflow as AssetLifecycle['workflow'], isPrimary: false }));
+  return parts;
+}
+
 /**
  * Where this character stands, in one line.
  *
@@ -41,7 +86,13 @@ export function accessSummary(page: AdminCharacterContentAccess): string {
   return `${counts.premium} of ${counts.clips} Premium, ${counts.free} Free${priced}.`;
 }
 
-/** Free or Premium, for one clip. The selected one is filled; the other is the action. */
+/**
+ * Free or Premium, for one clip. The selected one is filled; the other is the
+ * action.
+ *
+ * `min-h-11` is 44px -- the touch target this has to keep on a phone, where the
+ * operator is holding the device in one hand.
+ */
 function AccessChoice({
   clip,
   busy,
@@ -60,8 +111,8 @@ function AccessChoice({
   return (
     <div
       role="group"
-      aria-label={`Access for clip ${clip.assetId.slice(0, 8)}`}
-      className="inline-flex overflow-hidden rounded-lg border border-zinc-700"
+      aria-label={`Access for clip ${clip.fileName ?? clip.assetId.slice(0, 8)}`}
+      className="inline-flex shrink-0 overflow-hidden rounded-lg border border-zinc-700"
     >
       {options.map((option) => {
         const selected = clip.state === option.value;
@@ -75,7 +126,7 @@ function AccessChoice({
             // row saying nothing changed.
             disabled={locked || busy || selected}
             onClick={() => onMark(clip, option.value)}
-            className={`min-h-9 px-4 py-1.5 text-xs font-semibold transition-colors ${
+            className={`min-h-11 px-3 text-xs font-semibold transition-colors sm:px-4 ${
               selected
                 ? 'bg-rose-600 text-white'
                 : 'bg-transparent text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600 disabled:hover:bg-transparent'
@@ -86,6 +137,57 @@ function AccessChoice({
         );
       })}
     </div>
+  );
+}
+
+/**
+ * One clip: what it is, then the decision.
+ *
+ * `min-w-0` on the middle column is what keeps the row inside the screen: it
+ * lets the text column shrink below its content so `truncate` can do its job,
+ * instead of the row growing wider than the phone and taking the page with it.
+ */
+function ClipRow({
+  clip,
+  busy,
+  locked,
+  onMark,
+}: {
+  clip: AdminClipAccess;
+  busy: boolean;
+  locked: boolean;
+  onMark: (clip: AdminClipAccess, state: 'free' | 'premium') => void;
+}) {
+  return (
+    <li
+      data-testid="clip-access-row"
+      data-state={clip.state}
+      className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2.5"
+    >
+      <ClipThumb previewUrl={clip.previewUrl} mediaType={clip.mediaType} />
+      <div className="min-w-0 flex-1">
+        {clip.fileName && (
+          <p className="truncate text-sm text-zinc-200" data-testid="clip-name">
+            {clip.fileName}
+          </p>
+        )}
+        <p className="flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-400">
+          {clipDetails(clip).map((part) => (
+            <span key={part}>{part}</span>
+          ))}
+          {/* A state neither button represents -- a Credit price set
+              elsewhere -- is named rather than silently unselected. */}
+          {clip.state !== 'free' && clip.state !== 'premium' && (
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-300">
+              {clipStateLabel(clip)}
+            </span>
+          )}
+          {clip.byDefault && <span className="text-zinc-500">Premium by default</span>}
+        </p>
+        <p className="truncate font-mono text-[10px] text-zinc-600">{clip.assetId.slice(0, 8)}</p>
+      </div>
+      <AccessChoice clip={clip} busy={busy} locked={locked} onMark={onMark} />
+    </li>
   );
 }
 
@@ -120,38 +222,11 @@ export function ContentAccessPanel({
       {page.clips.length === 0 ? (
         <p className="text-sm text-zinc-500">No clips yet. Anything uploaded is Premium.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[26rem] text-left text-sm">
-            <thead className="text-xs text-zinc-500">
-              <tr>
-                <th className="py-1">Clip</th>
-                <th>Where</th>
-                <th className="text-right">Access</th>
-              </tr>
-            </thead>
-            <tbody className="text-zinc-300">
-              {page.clips.map((clip) => (
-                <tr key={clip.assetId} data-testid="clip-access-row" data-state={clip.state}>
-                  <td className="py-1.5 font-mono text-[11px] text-zinc-500">{clip.assetId.slice(0, 8)}</td>
-                  <td className="text-xs text-zinc-400">{clip.live ? 'Live' : clip.workflow}</td>
-                  <td className="py-1.5 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      {/* A state neither button represents -- a Credit price set
-                          elsewhere -- is named rather than silently unselected. */}
-                      {clip.state !== 'free' && clip.state !== 'premium' && (
-                        <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
-                          {clipStateLabel(clip)}
-                        </span>
-                      )}
-                      {clip.byDefault && <span className="text-[11px] text-zinc-500">by default</span>}
-                      <AccessChoice clip={clip} busy={busy} locked={locked} onMark={onMark} />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ul className="flex flex-col gap-2" data-testid="clip-access-list">
+          {page.clips.map((clip) => (
+            <ClipRow key={clip.assetId} clip={clip} busy={busy} locked={locked} onMark={onMark} />
+          ))}
+        </ul>
       )}
     </div>
   );

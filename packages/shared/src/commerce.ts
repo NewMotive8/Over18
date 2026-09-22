@@ -742,6 +742,26 @@ export interface AdminClipAccess {
   workflow: string;
   /** Whether a customer can meet it anywhere today. */
   live: boolean;
+  /**
+   * THE CLIP'S OWN BYTES, so an operator classifying it can SEE it.
+   *
+   * An access decision is made about a particular clip, and the only thing on
+   * this screen that identified one was the head of its uuid -- which
+   * identifies nothing to a person. This is the same opaque, id-keyed admin
+   * locator every other admin content surface uses (never a storage key and
+   * never a path), and it is null when the row has no file.
+   */
+  previewUrl: string | null;
+  /**
+   * The name the file was uploaded under, when one was recorded.
+   *
+   * RECORDED, NOT INVENTED. It is `provenance.originalName`, which an operator
+   * chose themselves; where it is absent this is null and the screen simply
+   * shows no name rather than manufacturing one.
+   */
+  fileName: string | null;
+  /** How long it runs, where generation recorded a duration. Null otherwise. */
+  durationSeconds: number | null;
   state: ContentAccessState;
   /** True while nothing was written for this clip: it reads its character's default. */
   byDefault: boolean;
