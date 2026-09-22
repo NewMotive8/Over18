@@ -93,7 +93,11 @@ export function accessFor(state: ContentAccessState, assetId: string): CustomerC
  * What a card shows -- pure, from the server's decision only
  * ------------------------------------------------------------------ */
 
-export type ContentCardState = CustomerContentAccess['decision'] | 'unknown';
+/**
+ * `pending` is the answer not being back yet; `unknown` is there being no
+ * answer to come. They look different on a tile and must not be conflated.
+ */
+export type ContentCardState = CustomerContentAccess['decision'] | 'unknown' | 'pending';
 
 export interface ContentCardCta {
   label: string;
@@ -121,6 +125,22 @@ export interface ContentCardView {
 const OPEN_VIEW: ContentCardView = { state: 'unknown', revealed: true, badge: null, message: null, cta: null };
 
 /**
+ * WHILE THE ANSWER IS IN FLIGHT, NOTHING IS REVEALED.
+ *
+ * The tiles render before the access request resolves, and with no answer yet
+ * every one of them used to fall through to `OPEN_VIEW` -- so a grid of
+ * Premium content played in the clear for as long as the round trip took, then
+ * snapped shut. That is the paywall leaking, briefly, on every single page
+ * load, and the customer plainly saw it.
+ *
+ * So a pending tile shows the media blurred and says nothing: no lock, no
+ * badge, no message, no button. It reads as "not ready" rather than "locked",
+ * which matters because a Free clip resolves a moment later and a lock would
+ * have flashed on it for nothing.
+ */
+const PENDING_VIEW: ContentCardView = { state: 'pending', revealed: false, badge: null, message: null, cta: null };
+
+/**
  * Premium and Credits are never the same offer: rose for one, amber for the
  * other.
  *
@@ -131,9 +151,10 @@ const OPEN_VIEW: ContentCardView = { state: 'unknown', revealed: true, badge: nu
  */
 export function contentCardView(
   access: CustomerContentAccess | null,
-  options: { canUnlock?: boolean } = {},
+  options: { canUnlock?: boolean; pending?: boolean } = {},
 ): ContentCardView {
-  if (!access) return OPEN_VIEW;
+  // No answer YET is not the same as no answer coming: only the latter opens.
+  if (!access) return options.pending ? PENDING_VIEW : OPEN_VIEW;
   switch (access.decision) {
     case 'owned':
       return {
@@ -225,6 +246,8 @@ function creditLabel(price: number | null): string {
 /** What assistive technology is told about a tile. */
 export function contentCardLabel(view: ContentCardView, title: string): string {
   if (view.revealed) return title;
+  // A tile still waiting is not locked, and must not announce that it is.
+  if (view.state === 'pending') return `${title} — checking access`;
   return `${title} — locked. ${view.message ?? ''}`.trim();
 }
 

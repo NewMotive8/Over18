@@ -106,7 +106,7 @@ export default function PostsTab({
           const item = accessFor(state, clip.id);
           // This tab can carry an unlock through, so a Credit-priced tile
           // offers one rather than saying it is coming.
-          const view = contentCardView(item, { canUnlock: true });
+          const view = contentCardView(item, { canUnlock: true, pending: state.status === 'loading' });
           const title = `Post ${index + 1}`;
           return (
             <LockedContentCard

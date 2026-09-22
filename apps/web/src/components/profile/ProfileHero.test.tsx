@@ -115,3 +115,26 @@ describe('the header deck keeps its existing paging behaviour', () => {
     expect(html.match(/<video/g)).toHaveLength(2);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * The control that did nothing
+ * ------------------------------------------------------------------ */
+
+/**
+ * A three-dot "More options" button was drawn here with the rest of the US-29
+ * design and never wired to anything -- no handler, no menu, no reference to
+ * it anywhere. It sat in the tab order announcing itself to a screen reader
+ * and then doing nothing, which reads as a broken app rather than an
+ * unfinished one. If a menu is built later the control returns WITH it.
+ */
+describe('the header offers only controls that work', () => {
+  const markup = () => render(characterHeaderItems(character(), [clip('v1')], null));
+
+  it('has no "More options" button', () => {
+    expect(markup()).not.toContain('More options');
+  });
+
+  it('keeps Back, which does work', () => {
+    expect(markup()).toContain('aria-label="Back"');
+  });
+});

@@ -1,17 +1,24 @@
 import { useRef, useState } from 'react';
 import type { CharacterMediaItem } from '../../lib/media';
 import HeroMedia from '../HeroMedia';
-import { ChevronLeftIcon, CrownIcon, MoreIcon } from '../icons';
+import { ChevronLeftIcon, CrownIcon } from '../icons';
 
 /**
  * Persona profile hero media player (US-29 / brief §2).
  *
  * A dominant, near-square media player that loops the character's REAL video
- * clips. Floating Back + More controls, pagination dots that track the clip in
- * view, and an overlaid identity block (circular avatar, name, adult age, and a
+ * clips. A floating Back control, pagination dots that track the clip in view,
+ * and an overlaid identity block (circular avatar, name, adult age, and a
  * premium identity badge). Native scroll-snap paging; tapping opens the
  * full-screen viewer. Falls back cleanly to a single image item if a character
  * has no video.
+ *
+ * THERE IS NO "MORE" BUTTON. One was drawn here with the rest of the US-29
+ * design and never given anything to do: no handler, no menu, nothing in the
+ * codebase referring to it. It sat in the tab order announcing "More options"
+ * to a screen reader and then doing nothing, which reads as broken rather than
+ * unfinished. If a menu is built later -- Report, Block, Share are the obvious
+ * candidates -- the control comes back WITH it.
  */
 export default function ProfileHero({
   items,
@@ -63,7 +70,7 @@ export default function ProfileHero({
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent" />
 
       {/* Floating top controls */}
-      <div className="absolute inset-x-0 top-0 flex items-center justify-between p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+      <div className="absolute inset-x-0 top-0 flex items-center p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
         <button
           type="button"
           onClick={onBack}
@@ -71,13 +78,6 @@ export default function ProfileHero({
           className="flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur transition-colors hover:bg-black/60"
         >
           <ChevronLeftIcon className="h-5 w-5" />
-        </button>
-        <button
-          type="button"
-          aria-label="More options"
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur transition-colors hover:bg-black/60"
-        >
-          <MoreIcon className="h-5 w-5" />
         </button>
       </div>
 

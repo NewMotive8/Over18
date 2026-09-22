@@ -33,6 +33,16 @@ const render = (clips: PublicClip[], access?: ContentAccessState) =>
 
 const decided = (items: CustomerContentAccess[]): ContentAccessState => contentAccessStateFromResponse({ items });
 
+/**
+ * "The server said these are open." The presentation tests below are about the
+ * REVEALED tile -- its playback, its frame, its heart -- so they say so
+ * explicitly rather than relying on a default. Before the access answer
+ * arrives nothing is revealed at all (see the in-flight tests at the bottom),
+ * which is what stopped the paywall flashing open on every page load.
+ */
+const allOpen = (ids: string[]): ContentAccessState =>
+  decided(ids.map((assetId) => ({ assetId, state: 'free', creditPrice: null, ageFloor: null, decision: 'open' })));
+
 describe('the Posts tab renders the real collection', () => {
   it('renders one tile per returned asset — twelve means twelve', () => {
     const clips = Array.from({ length: 12 }, (_, i) => clip(`a${i}`));
@@ -77,7 +87,7 @@ describe('the Posts tab renders the real collection', () => {
   });
 
   it('uses the shared clip playback for video: autoplay, muted, loop, playsInline', () => {
-    const markup = render([clip('vid', 'video')]);
+    const markup = render([clip('vid', 'video')], allOpen(['vid']));
     expect(markup).toContain('<video');
     expect(markup).toContain('autoplay');
     expect(markup).toContain('muted');
@@ -93,7 +103,7 @@ describe('the Posts tab renders the real collection', () => {
 
   it('keeps the approved tile presentation', () => {
     // Same grid, same frame, same gradient as the approved design.
-    const markup = render([clip('a'), clip('b')]);
+    const markup = render([clip('a'), clip('b')], allOpen(['a', 'b']));
     expect(markup).toContain('grid grid-cols-2 gap-3');
     expect(markup).toContain(
       'group relative block aspect-[3/4] w-full overflow-hidden rounded-2xl border border-white/5 bg-zinc-900',
@@ -117,7 +127,7 @@ describe('the Posts tile keeps the approved heart mark and no fake count', () =>
   const badges = (markup: string) => [...markup.matchAll(BADGE)];
 
   it('renders the heart on every tile, in the approved position and styling', () => {
-    const markup = render([clip('a'), clip('b'), clip('c')]);
+    const markup = render([clip('a'), clip('b'), clip('c')], allOpen(['a', 'b', 'c']));
     const found = badges(markup);
     expect(found).toHaveLength(3);
     for (const [, className] of found) {
@@ -173,11 +183,20 @@ describe('the Posts tab renders the access the server decided', () => {
     ...over,
   });
 
-  it('is exactly the tab it is today while no access is known -- the production default', () => {
+  /**
+   * REWRITTEN. This used to assert that with no access known the tab was
+   * "exactly the tab it is today" -- every tile playing. That was true when
+   * the economy being off meant nothing was ever locked, and it is exactly
+   * what made the paywall flash open for a round trip once content access
+   * became real. Not knowing yet now means showing nothing yet.
+   */
+  it('claims nothing about access it has not been given', () => {
     const markup = render([clip('a'), clip('b')]);
-    expect(markup).not.toContain('locked-content-card');
+    // Nothing revealed...
+    expect(markup).not.toContain('aria-label="Post 1"');
+    // ...and nothing asserted either: no state, price or tier is named.
     expect(markup).not.toMatch(/Premium|Credits|Unavailable/);
-    // No balance either: the pill renders nothing, and its row collapses.
+    // No balance: the pill renders nothing, and its row collapses.
     expect(markup).toContain('flex justify-end empty:hidden');
     expect(markup).not.toContain('Credits</span>');
   });
@@ -287,5 +306,56 @@ describe('the tab offers the unlock, and shows what the server decided', () => {
     const markup = render([clip('a1')]);
     expect(markup).not.toMatch(/Unlock ·|Credits/);
     expect(markup).not.toContain('data-testid="unlock-sheet"');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The flash of unlocked content
+ * ------------------------------------------------------------------ */
+
+/**
+ * REPORTED FROM THE REAL APP: opening a character's Posts showed the Premium
+ * clips playing for about half a second, then they locked.
+ *
+ * The tiles render from the clip list; the access decision arrives on a second
+ * request. With no answer yet every tile used to fall through to the open
+ * view, so the paywall leaked for one round trip on every page load.
+ */
+describe('while the access answer is still in flight', () => {
+  const loading: ContentAccessState = { status: 'loading' };
+  const decidedPremium = (assetId: string): CustomerContentAccess => ({
+    assetId,
+    state: 'premium',
+    creditPrice: null,
+    ageFloor: null,
+    decision: 'premium_required',
+  });
+
+  it('reveals no tile at all', () => {
+    const markup = render([clip('a'), clip('b'), clip('c')], loading);
+    expect(markup.match(/data-testid="locked-content-card"/g)).toHaveLength(3);
+    expect(markup).not.toContain('aria-label="Post 1"');
+  });
+
+  it('never autoplays the media it is hiding', () => {
+    expect(render([clip('a')], loading)).not.toContain('autoplay');
+  });
+
+  it('shows no lock, badge, message or button while it waits', () => {
+    const markup = render([clip('a')], loading);
+    expect(markup).toContain('data-state="pending"');
+    for (const furniture of ['Premium', 'Credits', '<button']) {
+      expect({ furniture, found: markup.includes(furniture) }, furniture).toEqual({ furniture, found: false });
+    }
+  });
+
+  it('announces the tile as checking rather than locked', () => {
+    expect(render([clip('a')], loading)).toContain('Post 1 — checking access');
+  });
+
+  it('locks only once the server has actually said so', () => {
+    const markup = render([clip('a')], decided([decidedPremium('a')]));
+    expect(markup).toContain('data-state="premium_required"');
+    expect(markup).not.toContain('data-state="pending"');
   });
 });
