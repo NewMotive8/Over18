@@ -21,10 +21,19 @@ const ECONOMY_UNAVAILABLE: EconomyUnavailableResponse = {
  * from `request.currentUser`: nothing in a path, query or body can name
  * another account, and no client-supplied price or Credit value is read.
  *
- * DARK UNTIL SWITCHED ON. While ECONOMY_ENABLED is off every route answers 503
+ * DARK UNTIL SWITCHED ON, WITH ONE DELIBERATE EXCEPTION. While ECONOMY_ENABLED
+ * is off the catalog, the commercial state and the unlock all answer 503
  * `economy_unavailable` -- the same 503 convention as `uploads_unavailable` and
- * `ai_not_configured` -- and reads nothing, so no price, plan or balance can
- * reach a customer before the economy is activated.
+ * `ai_not_configured` -- so no price, plan or balance can reach a customer
+ * before the economy is activated.
+ *
+ * `GET /api/content/access` ANSWERS EVEN THEN. An operator can mark a clip
+ * Free or Premium before anything is for sale, and a classification nobody
+ * enforces is not a classification. With the flag off it enforces ONLY a
+ * deliberate Free/Premium decision: P4.D2's Premium-by-default is not enforced
+ * (nobody chose it, and the whole live catalogue is unclassified), and Credit
+ * prices are not stated (the unlock that would spend them is 503 above). It
+ * charges, reserves and grants nothing either way.
  *
  * ONE ROUTE WRITES, AND IT IS THE UNLOCK (P8.2). Everything else is a read
  * that reserves, charges and grants nothing. The unlock takes only an asset id

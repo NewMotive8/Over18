@@ -37,13 +37,27 @@ import { mediaTypeOf } from './content-review-service.js';
  * it must not be expressed as an unapproval or a withdrawal. Equally, archiving
  * a clip does not refund anybody: it leaves the offer alone.
  *
- * ── NOTHING IS ON ────────────────────────────────────────────────────────────
+ * ── WHAT THE FLAG STILL GATES, AND THE ONE THING IT DOES NOT ────────────────
  *
- * The economy is dark (`ECONOMY_ENABLED`, off by default). No public route, no
- * admin screen and no read model consults an offer, and `assertCommercialWrite`
- * refuses to write one while the flag is off. Every asset without an offer is
- * `free`, which is the entire library today, so this phase changes nothing an
- * operator or a customer can see.
+ * `ECONOMY_ENABLED` is off by default and still gates every commercial write:
+ * `assertCommercialWrite` refuses prices, age floors, economy references,
+ * allocations, retirements, wallets, subscriptions, payments and entitlements
+ * while the flag is off, and every route that charges, subscribes or spends
+ * answers 503.
+ *
+ * ONE EXCEPTION, DELIBERATELY. Marking a clip FREE or PREMIUM is an editorial
+ * decision that charges nobody, so `classifyContentAccess` writes it with the
+ * flag off -- and `GET /api/content/access` reads it back, alone among the
+ * customer economy routes, because a classification nobody enforces is not a
+ * classification. `classificationOnly` (below) is what keeps that narrow:
+ * a DELIBERATE Free/Premium decision is enforced, and nothing else is.
+ *
+ * SO "no offer" IS NOT THE SAME AS "not enforced". An asset with no offer
+ * reads PREMIUM by default (P4.D2) -- which is the entire library today -- but
+ * that default is NOT enforced against customers while the flag is off,
+ * because it is what an unclassified clip means rather than a decision anyone
+ * took. Enforcing it would lock every clip in production at once, with no way
+ * for any customer to obtain Premium.
  *
  * ── WHAT P2 / P3 / P8 ATTACH HERE ────────────────────────────────────────────
  *

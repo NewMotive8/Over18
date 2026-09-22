@@ -37,8 +37,13 @@ import { listCharacterContent } from './content-review-service.js';
  * Both write offers for the clips she has NOW. A clip uploaded afterwards
  * needs no write at all: her allocation already makes it Premium.
  *
- * Nothing is charged, unlocked or granted here, and -- like every commercial
- * write -- nothing at all happens while the economy is off.
+ * Nothing is charged, unlocked or granted here.
+ *
+ * MARKING ONE CLIP FREE OR PREMIUM WORKS WHILE THE ECONOMY IS OFF, through
+ * `classifyContentAccess`: it is an editorial decision, not a sale. Everything
+ * else here is still a commercial write and still does nothing while the flag
+ * is off -- a Credit price (including one sent alongside `free`), the random
+ * allocation and the clear-all all answer 503.
  */
 
 export class AdminContentAccessError extends Error {

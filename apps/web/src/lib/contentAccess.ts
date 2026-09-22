@@ -41,12 +41,18 @@ export function createHttpContentAccessClient(endpoints: Pick<typeof contentAcce
 /**
  * THE PRODUCTION DEFAULT IS NOW THE HTTP CLIENT (P9).
  *
- * It was `pending` while no endpoint existed. The endpoints exist, and the
- * gate that matters is the SERVER's: every one of them answers 503 while
- * ECONOMY_ENABLED is off, which is the production default. A pending client on
- * top of that gated nothing extra and made the purchase flow impossible to
- * build or review -- so the real client is used, and the server stays the only
- * thing deciding whether anyone may see or buy anything.
+ * It was `pending` while no endpoint existed. The endpoint exists, and the
+ * gate that matters is the SERVER's. A pending client on top of that gated
+ * nothing extra and made the purchase flow impossible to build or review -- so
+ * the real client is used, and the server stays the only thing deciding
+ * whether anyone may see or buy anything.
+ *
+ * THIS ENDPOINT ANSWERS WITH THE ECONOMY OFF, unlike the unlock and the
+ * economy reads beside it. An operator can mark a clip Free or Premium before
+ * anything is for sale, and the server enforces exactly that decision and
+ * nothing else -- so `unavailable` below now means a session problem or a
+ * failure, rather than the production default. Nothing here decides access:
+ * the server's answer is rendered as given.
  */
 export const contentAccessClient: ContentAccessClient = createHttpContentAccessClient();
 

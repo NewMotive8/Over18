@@ -2078,9 +2078,13 @@ export const economyRulesetRewards = pgTable(
  * being approved because nobody bought it, and does not become public because
  * somebody did.
  *
- * NOTHING READS THIS YET. No route, no public surface and no admin screen
- * consults an offer; the economy is dark (ECONOMY_ENABLED, off by default) and
- * P1/P8 switch it on. What exists here is the shape those phases attach to.
+ * WHO READS THIS, AND WHEN. With ECONOMY_ENABLED on, the P4.2 customer
+ * resolver and P8.2's ownership and unlock read every term here. With it OFF
+ * -- the production default -- one read remains: GET /api/content/access
+ * enforces a row that deliberately says `free` or `premium`, and ignores
+ * everything else, including a Credit price. Classifying a clip is the only
+ * write accepted with the flag off, and it writes no price, age floor or
+ * economy reference.
  * ------------------------------------------------------------------ */
 
 /**
