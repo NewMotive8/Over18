@@ -1422,11 +1422,15 @@ export const adminContentAccessApi = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
-  /** `creditPrice` belongs to `credit` alone; the server refuses it anywhere else. */
+  /**
+   * `creditPrice` belongs to `credit` alone; the server refuses it anywhere
+   * else. `reason` is optional: classifying one clip is audited by who, when,
+   * which clip and both states, without anyone typing a sentence.
+   */
   markClip: (
     characterId: string,
     assetId: string,
-    body: { state: 'free' | 'premium' | 'credit'; creditPrice?: number; reason: string },
+    body: { state: 'free' | 'premium' | 'credit'; creditPrice?: number; reason?: string },
   ) =>
     request<AdminCharacterContentAccess>(
       `/admin/characters/${encodeURIComponent(characterId)}/content-access/clips/${encodeURIComponent(assetId)}`,

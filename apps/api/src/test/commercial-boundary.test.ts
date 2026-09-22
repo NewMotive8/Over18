@@ -102,16 +102,24 @@ describe('the economy stays dark', () => {
     expect(await on.db.select().from(contentOffers)).toEqual([]);
   });
 
-  it('answers FREE for content nobody priced -- which is the whole library today', async () => {
+  /**
+   * P4.D2: content nobody classified is PREMIUM. `DEFAULT_COMMERCIAL_STATE` is
+   * still `free` and still the column default -- it is what an offer written
+   * with no terms says. The default for an asset with NO offer is a different
+   * question, and content answers Premium to it.
+   */
+  it('answers PREMIUM for content nobody classified, with no offer written', async () => {
     const clip = await approvedClip();
     expect(await getAssetCommercial(on.db, clip.id)).toEqual({
       offerId: null,
-      state: DEFAULT_COMMERCIAL_STATE,
+      state: 'premium',
       creditPrice: null,
       ageFloor: null,
       implicit: true,
       economyRef: null,
     });
+    expect(await on.db.select().from(contentOffers), 'the default costs no rows').toEqual([]);
+    // The column default is unchanged; it is simply a different thing.
     expect(DEFAULT_COMMERCIAL_STATE).toBe('free');
   });
 
@@ -153,6 +161,9 @@ describe('the economy stays dark', () => {
       'services/content-access.ts',
       'services/content-ownership.ts',
       'services/content-unlock-service.ts',
+      // Borrows `freeFirstJoin`/`freeFirstOrder` to sort a character's clips
+      // Free-first. It reads no commercial state of its own.
+      'services/home-composition-service.ts',
     ]);
   });
 });
@@ -236,7 +247,8 @@ describe('an offer is the only place commercial state lives', () => {
     expect(retired).toMatchObject({ id: original.id, state: 'credit', creditPrice: 50 });
     expect(retired!.retiredAt).not.toBeNull();
     expect(await liveOfferFor(on.db, clip.id)).toBeNull();
-    expect(await getAssetCommercial(on.db, clip.id)).toMatchObject({ state: 'free', implicit: true });
+    // Retiring removes the operator's decision; what is left is the default.
+    expect(await getAssetCommercial(on.db, clip.id)).toMatchObject({ state: 'premium', implicit: true });
 
     const replacement = await setContentOffer(on.db, ECONOMY_ON, { assetId: clip.id, state: 'premium' });
     expect(replacement.id).not.toBe(original.id);
@@ -254,12 +266,13 @@ describe('an offer is the only place commercial state lives', () => {
   });
 
   it('describes many assets at once, defaulting the ones without offers', async () => {
-    const priced = await approvedClip();
-    const free = await approvedClip();
-    await setContentOffer(on.db, ECONOMY_ON, { assetId: priced.id, state: 'premium' });
-    const described = await describeAssetCommercial(on.db, [priced.id, free.id]);
-    expect(described.get(priced.id)).toMatchObject({ state: 'premium', implicit: false });
-    expect(described.get(free.id)).toMatchObject({ state: 'free', implicit: true });
+    const decided = await approvedClip();
+    const untouched = await approvedClip();
+    await setContentOffer(on.db, ECONOMY_ON, { assetId: decided.id, state: 'free' });
+    const described = await describeAssetCommercial(on.db, [decided.id, untouched.id]);
+    // The same state means different things: one was decided, one is the default.
+    expect(described.get(decided.id)).toMatchObject({ state: 'free', implicit: false });
+    expect(described.get(untouched.id)).toMatchObject({ state: 'premium', implicit: true });
   });
 });
 

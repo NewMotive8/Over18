@@ -57,14 +57,14 @@ describe('the card shows exactly what the server decided', () => {
     expect(view).toMatchObject({ revealed: true, badge: { label: 'Included', tone: 'premium' }, cta: null });
   });
 
-  it('Premium content sends a free customer to Premium, and never to Credits', () => {
+  it('Premium content is named and locked, and offers no call to action', () => {
     const view = contentCardView(access({ state: 'premium', decision: 'premium_required' }));
-    expect(view).toMatchObject({
+    expect(view).toEqual({
       state: 'premium_required',
       revealed: false,
       badge: { label: 'Premium', tone: 'premium' },
       message: 'Included with Premium.',
-      cta: { label: 'See Premium', to: '/subscription', disabled: false, hint: null },
+      cta: null,
     });
   });
 
@@ -89,8 +89,9 @@ describe('the card shows exactly what the server decided', () => {
   });
 
   it('only Credit content becomes an action: Premium and age keep exactly what they had', () => {
+    // Premium has no CTA to turn into an action, with or without `canUnlock`.
     const premium = contentCardView(access({ state: 'premium', decision: 'premium_required' }), { canUnlock: true });
-    expect(premium.cta).toEqual({ label: 'See Premium', to: '/subscription', action: null, disabled: false, hint: null });
+    expect(premium.cta).toBeNull();
     const age = contentCardView(access({ ageFloor: 21, decision: 'age_restricted' }), { canUnlock: true });
     expect(age.cta?.action).toBeNull();
     expect(age.cta?.disabled).toBe(true);

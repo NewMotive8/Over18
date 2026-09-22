@@ -442,6 +442,133 @@ describe('pricing one clip in Credits', () => {
   });
 });
 
+/* ------------------------------------------------------------------ *
+ * Free before Premium
+ * ------------------------------------------------------------------ */
+
+describe('the order a customer meets her clips in', () => {
+  /**
+   * A PRODUCT RULE, NOT A LAYOUT CHOICE: Free clips come first, then
+   * everything else, and the order inside each group is the one the list
+   * already had. It is enforced by the query that IS her collection, so every
+   * surface reading that list gets it -- a grid that sorted its own tiles would
+   * leave every other reader without the rule.
+   */
+  const listed = async (characterId = LUNA.id): Promise<string[]> => {
+    const res = await live.app.inject({ method: 'GET', url: `/api/characters/${characterId}/clips` });
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json() as { clips: { id: string }[] }).clips.map((clip) => clip.id);
+  };
+
+  it('puts Free clips before Premium ones, wherever they were before', async () => {
+    const operator = await account([]);
+    const ids = await clips(operator, 5);
+    // The middle and the last become Free; everything else is Premium.
+    await applied(await mark(operator, ids[2]!, 'free'));
+    await applied(await mark(operator, ids[4]!, 'free'));
+
+    const order = await listed();
+    const positions = order.map((id) => (id === ids[2] || id === ids[4] ? 'free' : 'premium'));
+    expect(positions).toEqual(['free', 'free', 'premium', 'premium', 'premium']);
+  });
+
+  it('keeps the relative order inside each group exactly as it was', async () => {
+    const operator = await account([]);
+    const ids = await clips(operator, 5);
+    const before = await listed();
+
+    await applied(await mark(operator, ids[1]!, 'free'));
+    await applied(await mark(operator, ids[3]!, 'free'));
+    const after = await listed();
+
+    const freed = [ids[1]!, ids[3]!];
+    const keepOrder = (list: string[], group: string[]) => list.filter((id) => group.includes(id));
+    const premium = ids.filter((id) => !freed.includes(id));
+
+    expect(keepOrder(after, freed), 'the Free group keeps its order').toEqual(keepOrder(before, freed));
+    expect(keepOrder(after, premium), 'the Premium group keeps its order').toEqual(keepOrder(before, premium));
+    // Same clips, only regrouped -- nothing added, dropped or shuffled.
+    expect([...after].sort()).toEqual([...before].sort());
+  });
+
+  it('lists an unclassified character as it always did: all Premium, newest first', async () => {
+    const operator = await account([]);
+    const ids = await clips(operator, 3);
+    // Nothing classified, so the whole list is one group in its existing order.
+    expect(await listed()).toEqual([...ids].reverse());
+  });
+
+  it('sorts a Credit-priced clip with the locked ones, not with the Free ones', async () => {
+    const operator = await account([]);
+    const ids = await clips(operator, 3);
+    await applied(await mark(operator, ids[0]!, 'free'));
+    await applied(await mark(operator, ids[1]!, 'credit', LUNA.id, live, 50));
+
+    const order = await listed();
+    expect(order[0], 'the only Free clip leads').toBe(ids[0]);
+    expect(order.slice(1).sort()).toEqual([ids[1]!, ids[2]!].sort());
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Classifying without a typed reason
+ * ------------------------------------------------------------------ */
+
+describe('marking a clip needs no typed reason', () => {
+  const markWithoutReason = (who: Account, assetId: string, state: string, characterId = LUNA.id) =>
+    live.app.inject({
+      method: 'PUT',
+      url: `${ACCESS(characterId)}/clips/${assetId}`,
+      cookies: who.cookies,
+      payload: { state },
+    });
+
+  it('accepts the change with no reason at all', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    const res = await markWithoutReason(operator, asset!, 'free');
+    expect(res.statusCode, res.body).toBe(200);
+    expect(stateOf(res.json() as AdminCharacterContentAccess, asset!)).toMatchObject({ state: 'free', byDefault: false });
+  });
+
+  /**
+   * THE AUDIT DOES NOT WEAKEN. Who, when, which clip, and both states are all
+   * still recorded; only the sentence an operator used to type is absent.
+   */
+  it('still records who changed what, and from which state to which', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    await markWithoutReason(operator, asset!, 'free');
+    await markWithoutReason(operator, asset!, 'premium');
+
+    const trail = await q<{ action: string; object_id: string; reason: string | null; actor_user_id: string; request_id: string | null; before: unknown; after: unknown; occurred_at: Date }>(
+      `SELECT action, object_id, reason, actor_user_id, request_id, before, after, occurred_at
+         FROM audit_log WHERE object_type = 'content_access' ORDER BY id`,
+    );
+    expect(trail.rows.map((row) => row.action)).toEqual(['content.access.free', 'content.access.premium']);
+    expect(trail.rows.every((row) => row.object_id === asset)).toBe(true);
+    expect(trail.rows.every((row) => row.actor_user_id === operator.id), 'the acting operator').toBe(true);
+    expect(trail.rows.every((row) => row.occurred_at instanceof Date), 'a timestamp').toBe(true);
+    expect(trail.rows.every((row) => typeof row.request_id === 'string' && row.request_id.length > 0), 'the request id').toBe(true);
+    expect(trail.rows.map((row) => (row.before as { state: string }).state)).toEqual(['premium', 'free']);
+    expect(trail.rows.map((row) => (row.after as { state: string }).state)).toEqual(['free', 'premium']);
+    // The one thing that is gone.
+    expect(trail.rows.map((row) => row.reason)).toEqual([null, null]);
+  });
+
+  it('refuses a reason that is not text, rather than ignoring it', async () => {
+    const operator = await account([]);
+    const [asset] = await clips(operator, 1);
+    const res = await live.app.inject({
+      method: 'PUT',
+      url: `${ACCESS(LUNA.id)}/clips/${asset}`,
+      cookies: operator.cookies,
+      payload: { state: 'free', reason: 42 },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
 describe('taking a character back out', () => {
   it('clears the allocation and retires the offers: her clips return to Premium by default', async () => {
     const operator = await account([]);

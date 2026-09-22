@@ -465,3 +465,44 @@ export async function removeClipAllocation(db: Writer, commerce: { enabled: bool
   const removed = await db.delete(characterClipAllocation).where(eq(characterClipAllocation.characterId, characterId)).returning();
   return removed.length > 0;
 }
+
+/* ------------------------------------------------------------------ *
+ * Ordering Free content first
+ * ------------------------------------------------------------------ */
+
+/**
+ * FREE CONTENT FIRST, for any list built over `character_visual_assets`.
+ *
+ * The product rule -- a character's Free clips come before the ones a customer
+ * cannot simply watch -- belongs to whoever builds the list. WHICH offer row is
+ * the live one, and which state means "free", belong here: they are the same
+ * two facts every other read in this module is built on, and a list that
+ * decided them for itself would be a second opinion on commercial state.
+ *
+ * So a caller borrows both and names neither the table nor the state:
+ *
+ *   const offer = freeFirstJoin();
+ *   ...
+ *   .leftJoin(offer.table, offer.on)
+ *   .orderBy(freeFirstOrder(), <the order the list already had>)
+ *
+ * The join is scoped to the live offer, of which there is at most one per asset
+ * (`content_offers_live_asset_idx`), so it cannot duplicate a row. An asset
+ * with no offer sorts with the second group, which is what P4.D2's
+ * Premium-by-default means.
+ *
+ * The second group is "not Free" rather than "Premium" on purpose: Premium,
+ * Credit-priced and any state added later all sort after the content a
+ * customer can simply watch, without this having to be revisited.
+ */
+export function freeFirstJoin(): { table: typeof contentOffers; on: ReturnType<typeof and> } {
+  return {
+    table: contentOffers,
+    on: and(eq(contentOffers.assetId, characterVisualAssets.id), isNull(contentOffers.retiredAt)),
+  };
+}
+
+/** The sort key to use with `freeFirstJoin`: Free first, everything else after. */
+export function freeFirstOrder() {
+  return sql`case when ${contentOffers.state} = 'free' then 0 else 1 end`;
+}

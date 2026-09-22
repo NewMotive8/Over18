@@ -83,12 +83,21 @@ describe('locked content', () => {
     expect(card({ state: 'premium', decision: 'premium_required' })).toContain('aria-label="Post 1 — locked. Included with Premium."');
   });
 
-  it('Premium: a rose Premium chip and one link to Premium', () => {
+  /**
+   * PREMIUM CARRIES NO CTA. The chip, the lock and the line say what it is; the
+   * tile does not also ask. Credit content keeps its button because that button
+   * names a price, which is information nothing else on the tile carries.
+   */
+  it('Premium: a rose Premium chip, the line, and no button anywhere', () => {
     const html = card({ state: 'premium', decision: 'premium_required' });
     expect(html).toContain('Premium');
-    expect(html).toContain('href="/subscription"');
+    expect(html).toContain('Included with Premium.');
     expect(html).toContain('rose');
+    expect(html).not.toContain('See Premium');
+    expect(html).not.toContain('href="/subscription"');
     expect(html).not.toContain('href="/credits"');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('<a ');
   });
 
   it('Credit: an amber chip with the price, and an unlock that is not open yet', () => {

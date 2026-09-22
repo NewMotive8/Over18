@@ -143,7 +143,7 @@ export async function setClipAccess(
   const id = await requireCharacter(db, input.characterId);
   if (!CLIP_STATES.includes(input.state as ContentAccessState)) invalid(`state must be one of: ${CLIP_STATES.join(', ')}.`);
   const state = input.state as ContentAccessState;
-  const reason = requireReason(input.reason);
+  const reason = optionalReason(input.reason);
   const clips = await clipsOf(db, id);
   const clip = clips.find((candidate) => candidate.assetId === input.assetId);
   if (!clip) throw new AdminContentAccessError('asset_not_found', 'That clip is not one of this character\'s clips.');
@@ -248,6 +248,29 @@ export async function clearContentAccess(
     });
   });
   return readCharacterContentAccess(db, id, { economyEnabled: commerce.enabled });
+}
+
+/**
+ * A reason, when one was given.
+ *
+ * MARKING A CLIP FREE OR PREMIUM NO LONGER NEEDS ONE. It is a two-state
+ * classification, and the audit already records who did it, when, to which
+ * clip, and both states -- which is the whole story a reason would have
+ * paraphrased. Requiring one made an operator type something to change a
+ * toggle, and what got typed was rarely worth reading.
+ *
+ * The allocation and clear actions still require one: those change many clips
+ * at once, and "why did every clip change?" is a question the states alone do
+ * not answer. `reason` is nullable in `audit_log`, so an entry without one is
+ * an ordinary row, not a gap.
+ */
+function optionalReason(reason: unknown): string | null {
+  if (reason === undefined || reason === null) return null;
+  if (typeof reason !== 'string') invalid('A reason must be text.');
+  const trimmed = reason.trim();
+  if (trimmed === '') return null;
+  if (trimmed.length > 500) invalid('The reason must be at most 500 characters.');
+  return trimmed;
 }
 
 function requireReason(reason: unknown): string {

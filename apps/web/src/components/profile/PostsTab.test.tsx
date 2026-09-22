@@ -201,8 +201,10 @@ describe('the Posts tab renders the access the server decided', () => {
     // The free tile still plays, and every tile still shows its own media.
     expect(markup).toContain('<button type="button" aria-label="Post 1"');
     for (const id of ['free', 'prem', 'cost', 'poor', 'age', 'gone']) expect(markup, id).toContain(`/api/media/assets/${id}/file`);
-    // Premium and Credits are told apart, and the price is the server's.
-    expect(markup).toContain('href="/subscription"');
+    // Premium and Credits are told apart: Premium is labelled and left alone,
+    // and only the Credit routes lead anywhere, at the server's price.
+    expect(markup).toContain('Included with Premium.');
+    expect(markup).not.toContain('href="/subscription"');
     expect(markup).toContain('href="/credits"');
     expect(markup).toContain('50 Credits');
   });
@@ -262,9 +264,10 @@ describe('the tab offers the unlock, and shows what the server decided', () => {
     expect(markup).not.toContain('Unlock · 50 Credits');
   });
 
-  it('keeps Premium and Credits apart: a Premium tile still sends them to Premium', () => {
+  it('keeps Premium and Credits apart: a Premium tile offers neither route, only the label', () => {
     const markup = render([clip('a1')], decided([priced('a1', { state: 'premium', creditPrice: null, decision: 'premium_required' })]));
-    expect(markup).toContain('href="/subscription"');
+    expect(markup).toContain('Included with Premium.');
+    expect(markup).not.toContain('href="/subscription"');
     expect(markup).not.toContain('href="/credits"');
     expect(markup).not.toMatch(/Unlock ·/);
   });

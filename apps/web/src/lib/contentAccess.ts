@@ -148,13 +148,30 @@ export function contentCardView(
         message: null,
         cta: null,
       };
+    /**
+     * PREMIUM CONTENT CARRIES NO BUTTON.
+     *
+     * The tile still says everything it needs to: the real preview behind the
+     * lock, the Premium chip, and one line naming what would open it. What it
+     * no longer does is ask. A grid where most tiles are Premium -- which is
+     * what P4.D2's default makes it -- turned into a wall of identical rose
+     * buttons all pointing at the same page, which reads as pressure rather
+     * than information.
+     *
+     * Premium stays reachable the way it always was: the Profile hub, the
+     * Credits pill, and the character's own Premium action. Nothing here
+     * removes a route to it; this removes the nagging.
+     *
+     * Credit content keeps its CTA, and deliberately: its button names a PRICE,
+     * which is information the customer cannot get anywhere else on the tile.
+     */
     case 'premium_required':
       return {
         state: 'premium_required',
         revealed: false,
         badge: { label: 'Premium', tone: 'premium' },
         message: 'Included with Premium.',
-        cta: { label: 'See Premium', to: '/subscription', action: null, disabled: false, hint: null },
+        cta: null,
       };
     case 'credits_required': {
       const unlock = `Unlock · ${creditLabel(access.creditPrice)}`;
