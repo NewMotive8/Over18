@@ -195,3 +195,40 @@ describe('reading access from the server', () => {
     expect(client.kind).toBe('http');
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * Before the answer arrives
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE PAYWALL USED TO LEAK ON EVERY PAGE LOAD. Tiles render from the clip
+ * list; the access decision arrives on a second request. With no answer yet
+ * every tile fell through to the open view, so Premium content played in the
+ * clear for one round trip and then snapped shut -- plainly visible, and
+ * reported from the real app.
+ */
+describe('a tile whose access is still being fetched', () => {
+  it('reveals nothing', () => {
+    const view = contentCardView(null, { pending: true });
+    expect(view.revealed).toBe(false);
+    expect(view.state).toBe('pending');
+  });
+
+  it('says nothing either: no lock, no badge, no message, no button', () => {
+    const view = contentCardView(null, { pending: true });
+    expect(view.badge).toBeNull();
+    expect(view.message).toBeNull();
+    expect(view.cta).toBeNull();
+  });
+
+  /** It may be about to turn out free, so it must not claim to be locked. */
+  it('is announced as checking, not as locked', () => {
+    expect(contentCardLabel(contentCardView(null, { pending: true }), 'Post 1')).toBe('Post 1 — checking access');
+  });
+
+  it('leaves the no-answer-at-all case exactly as it was', () => {
+    // `unavailable` / an error still render the app as it is today.
+    expect(contentCardView(null).revealed).toBe(true);
+    expect(contentCardView(null, { pending: false }).revealed).toBe(true);
+  });
+});

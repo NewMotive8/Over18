@@ -98,9 +98,13 @@ export default function LockedContentCard({
       {view.badge && <span className="absolute left-2 top-2">{<Badge badge={view.badge} />}</span>}
 
       <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-2 px-3 pb-3 text-center">
-        <span aria-hidden className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/50 text-white">
-          <LockIcon className="h-4 w-4" />
-        </span>
+        {/* A tile whose answer has not arrived is blurred and silent -- no lock,
+            because it may be about to turn out to be free. */}
+        {view.state !== 'pending' && (
+          <span aria-hidden className="flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-black/50 text-white">
+            <LockIcon className="h-4 w-4" />
+          </span>
+        )}
         {view.message && <p className="text-[12px] font-medium leading-snug text-zinc-100">{view.message}</p>}
         {view.cta &&
           (view.cta.action === 'unlock' && !view.cta.disabled ? (
