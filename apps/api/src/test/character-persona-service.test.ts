@@ -234,6 +234,57 @@ describe('regenerateCharacterPersona', () => {
     expect(row.editedFields).toEqual(['occupation']);
   });
 
+  /**
+   * GENERATING REPLACES HER PERSONA; IT DOES NOT MERGE INTO IT.
+   *
+   * Regeneration used to start from the existing persona and overlay whatever
+   * the model returned, so a field the model DID NOT mention kept its old
+   * text for ever. Regenerating against a NEW reference photo therefore left
+   * fragments of the previous one behind, with nothing on screen to say which
+   * line came from which image and no way to remove them.
+   */
+  it('REPLACES: a field the new generation omits does not survive it', async () => {
+    const characterId = await characterWithAvatar();
+    await regenerateCharacterPersona(
+      ctx.db,
+      { displayName: 'Nova' },
+      characterId,
+      stubGenerator({ occupation: 'from the first photo', humorStyle: 'dry' }),
+    );
+
+    // The second generation says nothing about humorStyle.
+    const { row } = await regenerateCharacterPersona(
+      ctx.db,
+      { displayName: 'Nova' },
+      characterId,
+      stubGenerator({ occupation: 'from the second photo' }),
+    );
+    expect(row.persona.occupation).toBe('from the second photo');
+    expect(row.persona.humorStyle, 'the first photo must leave nothing behind').toBeUndefined();
+  });
+
+  it('REPLACES, but never the operator: a pinned field still survives', async () => {
+    const characterId = await characterWithAvatar();
+    await regenerateCharacterPersona(
+      ctx.db,
+      { displayName: 'Nova' },
+      characterId,
+      stubGenerator({ occupation: 'generated', humorStyle: 'dry' }),
+    );
+    await saveCharacterPersona(ctx.db, characterId, { humorStyle: 'hand-written' });
+
+    const { row } = await regenerateCharacterPersona(
+      ctx.db,
+      { displayName: 'Nova' },
+      characterId,
+      // Mentions neither field the operator cares about.
+      stubGenerator({ occupation: 'regenerated' }),
+    );
+    expect(row.persona.humorStyle, "the operator's own edit is kept").toBe('hand-written');
+    expect(row.persona.occupation, 'everything else is the new generation').toBe('regenerated');
+    expect(row.editedFields).toEqual(['humorStyle']);
+  });
+
   it('skips references with no readable file and uses the first one that has bytes', async () => {
     // The real-world shape this was found in: a seeded placeholder reference
     // (external locator, no file on disk, explicit position so it sorts

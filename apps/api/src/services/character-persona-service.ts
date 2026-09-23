@@ -348,10 +348,25 @@ export async function regenerateCharacterPersona(
 
   const existing = await getCharacterPersona(db, characterId);
   const editedFields = existing?.editedFields ?? [];
-  const merged: CharacterPersona = { ...(existing?.persona ?? {}) };
-  for (const [key, value] of Object.entries(result.persona)) {
-    if (editedFields.includes(key)) continue; // admin edit wins, always
-    (merged as Record<string, unknown>)[key] = value;
+
+  /**
+   * GENERATING REPLACES HER PERSONA; IT DOES NOT MERGE INTO IT.
+   *
+   * This used to start from the existing persona and overlay whatever the
+   * model returned, which meant a field the model DID NOT mention this time
+   * kept its previous text for ever. Regenerating against a new reference
+   * photo therefore left fragments of the old one behind, invisibly, with no
+   * way to tell which lines came from which image and no way to clear them.
+   *
+   * The new generation is now the whole persona. What survives it is the
+   * operator's OWN edits, and only those: `editedFields` is re-applied on top
+   * afterwards, which is the same promise the panel makes in as many words --
+   * "anything you type in here is yours". Nothing else carries over.
+   */
+  const merged: CharacterPersona = { ...result.persona };
+  for (const key of editedFields) {
+    const kept = (existing?.persona as Record<string, unknown> | undefined)?.[key];
+    if (kept !== undefined) (merged as Record<string, unknown>)[key] = kept;
   }
 
   const [row] = await db

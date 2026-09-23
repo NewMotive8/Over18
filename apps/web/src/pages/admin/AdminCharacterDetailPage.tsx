@@ -119,10 +119,6 @@ export default function AdminCharacterDetailPage() {
   const [personaOpen, setPersonaOpen] = useState(false);
   const [personaDraft, setPersonaDraft] = useState({ displayName: '', shortBio: '', personality: '', conversationStyle: '', systemPrompt: '' });
   const [interestsText, setInterestsText] = useState('');
-  // Autofill state is separate from `busy`: it is a proposal, not a save, and
-  // it must never make the page look like something was written to the server.
-  const [autofilling, setAutofilling] = useState(false);
-  const [autofilled, setAutofilled] = useState(false);
 
   // Phase 2 — avatar-derived persona.
   const [avatarPersona, setAvatarPersona] = useState<CharacterPersonaView | null>(null);
@@ -266,7 +262,6 @@ export default function AdminCharacterDetailPage() {
           systemPrompt: next.character.systemPrompt,
         });
         setInterestsText(next.character.interests.join(', '));
-        setAutofilled(false);
       })
       .then(() => adminCharactersApi.content(characterId))
       .then((res) => {
@@ -465,36 +460,6 @@ export default function AdminCharacterDetailPage() {
       setActionError(err instanceof ApiRequestError ? err.message : failure);
     } finally {
       setBusy(false);
-    }
-  }
-
-  /**
-   * Asks the server to PROPOSE a persona. Nothing is saved: the result lands in
-   * the open editor for the operator to change or discard, and only "Save
-   * persona" writes it. Running it again simply proposes a different one.
-   */
-  async function handleAutofill(characterId: string) {
-    if (autofilling) return;
-    setAutofilling(true);
-    setActionError(null);
-    try {
-      const { draft } = await adminCharactersApi.autofill(characterId);
-      setPersonaDraft({
-        displayName: draft.displayName,
-        shortBio: draft.shortBio,
-        personality: draft.personality,
-        conversationStyle: draft.conversationStyle,
-        systemPrompt: draft.systemPrompt,
-      });
-      setInterestsText(draft.interests.join(', '));
-      setPersonaOpen(true);
-      setAutofilled(true);
-    } catch (err) {
-      setActionError(
-        err instanceof ApiRequestError ? err.message : "Couldn't write a profile just now.",
-      );
-    } finally {
-      setAutofilling(false);
     }
   }
 
@@ -738,6 +703,115 @@ export default function AdminCharacterDetailPage() {
 
       <CharacterEligibilityPanel readiness={detail.readiness} />
 
+      {/* ---------------- Primary references (persona source) ---------------- */}
+      <section className="mb-10">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+            Primary references
+          </h2>
+          {activeIdentity && (
+            <>
+              <input
+                ref={fileInput}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  void run(
+                    () => adminCharactersApi.uploadReference(activeIdentity.id, file),
+                    "Couldn't upload that reference.",
+                  );
+                }}
+              />
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => fileInput.current?.click()}
+                className="text-sm text-rose-400 hover:text-rose-300 disabled:opacity-50"
+              >
+                Add reference
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* WHY THIS IS AT THE TOP NOW. A reference photo is what the
+            persona generator reads, so it belongs beside the identity it
+            describes rather than at the foot of the page under the
+            content shelves. It is also the one thing an operator has to
+            add BEFORE "Life details from her photo" can do anything. */}
+        <p className="mb-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-400">
+          The photo her AI persona is written from. Optional: a character
+          without one works exactly as she does today, and nothing here is
+          generated automatically — uploading a reference only makes
+          &ldquo;Life details from her photo&rdquo; below available to run.
+        </p>
+
+        {!activeIdentity ? (
+          <div className="rounded-lg border border-dashed border-zinc-800 px-6 py-10 text-center text-sm text-zinc-500">
+            Activate a visual identity version first — references belong to a version.
+          </div>
+        ) : (
+          <>
+            <p className="mb-3 text-xs text-zinc-500">
+              Attached to v{activeIdentity.version}. These are what users see and what generation
+              will match against.
+            </p>
+            {primaryReferences.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-zinc-800 px-6 py-10 text-center text-sm text-zinc-500">
+                No primary references yet — add one.
+              </div>
+            ) : (
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {primaryReferences.map((reference) => (
+                  <li key={reference.assetId} className="overflow-hidden rounded-lg border border-zinc-800">
+                    <div className="relative aspect-[3/4] bg-zinc-900">
+                      {reference.fileUrl &&
+                        (reference.mediaType === 'video' ? (
+                          <video
+                            src={`${API_URL}${reference.fileUrl}`}
+                            {...TILE_VIDEO_PLAYBACK}
+                            preload="metadata"
+                            className="h-full w-full object-contain"
+                          />
+                        ) : (
+                          <img
+                            src={`${API_URL}${reference.fileUrl}`}
+                            alt=""
+                            loading="lazy"
+                            className="h-full w-full object-contain"
+                          />
+                        ))}
+                    </div>
+                    <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+                      <span className="text-[10px] uppercase tracking-wide text-emerald-400">
+                        Primary
+                      </span>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          run(
+                            () => adminCharactersApi.removePrimary(reference.assetId),
+                            "Couldn't remove that reference.",
+                          )
+                        }
+                        className="text-[10px] uppercase tracking-wide text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </section>
+
       {actionError && (
         <p role="alert" className="mb-4 rounded-lg border border-red-900 bg-red-950/60 px-3 py-2 text-sm text-red-300">
           {actionError}
@@ -749,14 +823,6 @@ export default function AdminCharacterDetailPage() {
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">Persona</h2>
           <div className="flex items-center gap-4">
-            <button
-              type="button"
-              disabled={autofilling}
-              onClick={() => void handleAutofill(character.id)}
-              className="text-sm text-rose-400 hover:text-rose-300 disabled:opacity-50"
-            >
-              {autofilling ? 'Writing…' : character.profileComplete ? 'Autofill again' : 'Autofill'}
-            </button>
             <button
               type="button"
               onClick={() => setPersonaOpen((o) => !o)}
@@ -774,14 +840,8 @@ export default function AdminCharacterDetailPage() {
               ` (${character.missingProfileFields.length} field${
                 character.missingProfileFields.length === 1 ? '' : 's'
               } empty)`}
-            . Write it yourself, or use Autofill and edit what it suggests.
-          </p>
-        )}
-
-        {autofilled && personaOpen && (
-          <p className="mb-3 rounded-lg border border-zinc-700 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300">
-            This is a suggestion — nothing has been saved. Edit anything you like, then press Save
-            persona. Autofill again for a different take.
+            . Write it yourself, or add a reference photo above and let
+            &ldquo;Life details from her photo&rdquo; propose one.
           </p>
         )}
 
@@ -832,7 +892,6 @@ export default function AdminCharacterDetailPage() {
                       .filter(Boolean),
                   });
                   setPersonaOpen(false);
-                  setAutofilled(false);
                 }, "Couldn't save the character.")
               }
               className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-500 disabled:opacity-50"
@@ -1701,102 +1760,6 @@ export default function AdminCharacterDetailPage() {
         </section>
       )}
 
-      {/* ---------------- Primary references ---------------- */}
-      <section>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
-            Primary references
-          </h2>
-          {activeIdentity && (
-            <>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (!file) return;
-                  void run(
-                    () => adminCharactersApi.uploadReference(activeIdentity.id, file),
-                    "Couldn't upload that reference.",
-                  );
-                }}
-              />
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => fileInput.current?.click()}
-                className="text-sm text-rose-400 hover:text-rose-300 disabled:opacity-50"
-              >
-                Add reference
-              </button>
-            </>
-          )}
-        </div>
-
-        {!activeIdentity ? (
-          <div className="rounded-lg border border-dashed border-zinc-800 px-6 py-10 text-center text-sm text-zinc-500">
-            Activate a visual identity version first — references belong to a version.
-          </div>
-        ) : (
-          <>
-            <p className="mb-3 text-xs text-zinc-500">
-              Attached to v{activeIdentity.version}. These are what users see and what generation
-              will match against.
-            </p>
-            {primaryReferences.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-zinc-800 px-6 py-10 text-center text-sm text-zinc-500">
-                No primary references yet — add one.
-              </div>
-            ) : (
-              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {primaryReferences.map((reference) => (
-                  <li key={reference.assetId} className="overflow-hidden rounded-lg border border-zinc-800">
-                    <div className="relative aspect-[3/4] bg-zinc-900">
-                      {reference.fileUrl &&
-                        (reference.mediaType === 'video' ? (
-                          <video
-                            src={`${API_URL}${reference.fileUrl}`}
-                            {...TILE_VIDEO_PLAYBACK}
-                            preload="metadata"
-                            className="h-full w-full object-contain"
-                          />
-                        ) : (
-                          <img
-                            src={`${API_URL}${reference.fileUrl}`}
-                            alt=""
-                            loading="lazy"
-                            className="h-full w-full object-contain"
-                          />
-                        ))}
-                    </div>
-                    <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-                      <span className="text-[10px] uppercase tracking-wide text-emerald-400">
-                        Primary
-                      </span>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() =>
-                          run(
-                            () => adminCharactersApi.removePrimary(reference.assetId),
-                            "Couldn't remove that reference.",
-                          )
-                        }
-                        className="text-[10px] uppercase tracking-wide text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        )}
-      </section>
     </div>
   );
 }
