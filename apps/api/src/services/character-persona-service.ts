@@ -254,7 +254,9 @@ export class CharacterPersonaRegenerationError extends Error {
 
 /**
  * Re-runs the generator against the character's current canonical reference
- * image and merges the result into her persona.
+ * image. The generator is given that image and her display name; nothing she
+ * already has — profile, persona, or a previous generation — is part of the
+ * request (see PersonaGeneratorInput).
  *
  * FAILURE NEVER TOUCHES THE DATABASE. If resolving the source image fails, or
  * the generator itself throws (PersonaGeneratorError), this rethrows
@@ -271,17 +273,19 @@ export class CharacterPersonaRegenerationError extends Error {
 export async function regenerateCharacterPersona(
   db: Db,
   /**
-   * Her established profile. Passed to the generator so the persona it
-   * writes stays consistent with a bio an operator already wrote, rather
-   * than inventing a second, contradictory life — see
-   * PersonaGeneratorInput's note on why conflict is prevented here.
+   * HER NAME, AND NOTHING ELSE ABOUT HER.
+   *
+   * This parameter used to carry shortBio, personality and interests through
+   * to the generator. It no longer can, and the narrowing is the safeguard:
+   * the compiler now rejects any caller that tries to hand her stored profile
+   * to a photo analysis. See PersonaGeneratorInput for why that turned out to
+   * matter more than the consistency it was buying.
+   *
+   * A name is not profile text — it is the label on the thing being
+   * described, and the model needs it only so the prose it writes is about
+   * someone rather than "the woman in the image".
    */
-  character: {
-    displayName: string;
-    shortBio?: string;
-    personality?: string;
-    interests?: string[];
-  },
+  character: { displayName: string },
   characterId: string,
   generator: PersonaGenerator,
 ): Promise<{ row: CharacterPersonaRow; proposedProfile?: ProposedCharacterProfile }> {
@@ -337,11 +341,14 @@ export async function regenerateCharacterPersona(
   // ordering above (resolve -> read -> THEN generate) is that neither of
   // those steps has written anything, so a generator failure leaves nothing
   // to undo.
+  /**
+   * THE WHOLE GENERATION REQUEST. Three values, all of them either the image
+   * or the label on it. Her persona row is read AFTERWARDS, below, and only
+   * to honour the operator's own pinned edits — never to inform the
+   * generation itself.
+   */
   const result = await generator({
     displayName: character.displayName,
-    shortBio: character.shortBio,
-    personality: character.personality,
-    interests: character.interests,
     imageBytes,
     imageMimeType: uploadedMimeTypeOf(asset),
   });

@@ -116,30 +116,85 @@ function userTextOf(messages: ReturnType<typeof buildPersonaPrompt>): string {
   )!.text!;
 }
 
-describe('the photo outranks her existing profile', () => {
-  it('supplies the current profile, but names the PHOTO as the authority', () => {
-    const userText = userTextOf(
-      buildPersonaPrompt({
-        ...INPUT,
-        shortBio: 'Night-owl astronomy grad student.',
-        personality: 'Dreamy, curious, quietly affectionate.',
-        interests: ['astronomy', 'lo-fi music'],
-      }),
-    );
-    // She is described to the model, so usable detail can be kept...
-    expect(userText).toContain('Night-owl astronomy grad student.');
-    expect(userText).toContain('Dreamy, curious, quietly affectionate.');
-    expect(userText).toContain('astronomy, lo-fi music');
-    // ...but the image decides when the two disagree.
-    expect(userText).toContain('THE PHOTO IS THE AUTHORITY');
-    expect(userText).toMatch(/keep everything here that fits the photo/i);
+/**
+ * THE PHOTO IS THE ONLY THING THE MODEL IS TOLD ABOUT HER.
+ *
+ * These replace an earlier pair of tests that asserted the opposite -- that
+ * her bio, personality and interests WERE described to the model, with the
+ * photo named as the tie-breaker. That is the behaviour Objective 2 removes:
+ * a "FROM HER PHOTO" result computed while looking at last week's paragraph
+ * is anchored to the paragraph, whatever the instructions say, and nobody
+ * reading the output can tell the difference.
+ *
+ * The sentinels below are the point. They are strings no vision model could
+ * produce from any image, placed where her profile used to enter the prompt,
+ * so the assertion is not "the prompt looks right" but "this specific text
+ * cannot reach the model". `buildPersonaPrompt` no longer has a parameter to
+ * put them in -- the casts are what let the test prove that at runtime rather
+ * than trusting the compiler to have caught every caller.
+ */
+describe('the prompt describes her photo and nothing else about her', () => {
+  const SENTINELS = {
+    shortBio: 'ZZZ-SENTINEL-BIO-NEVER-IN-A-PROMPT',
+    personality: 'ZZZ-SENTINEL-PERSONALITY-NEVER-IN-A-PROMPT',
+    interests: ['ZZZ-SENTINEL-INTEREST-NEVER-IN-A-PROMPT'],
+    persona: { occupation: 'ZZZ-SENTINEL-PERSONA-NEVER-IN-A-PROMPT' },
+    conversationStyle: 'ZZZ-SENTINEL-STYLE-NEVER-IN-A-PROMPT',
+    systemPrompt: 'ZZZ-SENTINEL-SYSTEM-PROMPT-NEVER-IN-A-PROMPT',
+  };
+
+  it('carries her name and her image \u2014 and no profile field, even one forced in', () => {
+    // Every field that used to be accepted here, plus several that never
+    // were, pushed through the type. If any of them can still be rendered,
+    // this fails.
+    const messages = buildPersonaPrompt({
+      ...INPUT,
+      ...SENTINELS,
+    } as unknown as Parameters<typeof buildPersonaPrompt>[0]);
+
+    const serialised = JSON.stringify(messages);
+    expect(serialised, 'her name is the one thing about her that is sent').toContain('Nova');
+    for (const sentinel of [
+      SENTINELS.shortBio,
+      SENTINELS.personality,
+      SENTINELS.interests[0]!,
+      SENTINELS.persona.occupation,
+      SENTINELS.conversationStyle,
+      SENTINELS.systemPrompt,
+    ]) {
+      expect(serialised, `${sentinel} reached the model`).not.toContain(sentinel);
+    }
   });
 
-  it('says nothing about a current profile when she has none yet', () => {
-    const userText = userTextOf(
-      buildPersonaPrompt({ ...INPUT, shortBio: '', personality: '  ', interests: [] }),
-    );
+  /**
+   * The prompt is two messages: instructions, then her name + the image. The
+   * only per-character values in the whole thing are the display name and the
+   * data URL. Pinning that shape is what stops a future edit reintroducing a
+   * profile block without anyone noticing.
+   */
+  it('contains exactly two per-character values: the name and the image', () => {
+    const messages = buildPersonaPrompt(INPUT);
+    const userText = userTextOf(messages);
+    expect(userText).toContain('"Nova"');
+    expect(userText).toContain('This photo is the only thing you know about her');
+
+    // The instruction message is character-independent: byte-identical for
+    // two different characters.
+    const other = buildPersonaPrompt({ ...INPUT, displayName: 'Mazal' });
+    expect(other[0]!.content).toBe(messages[0]!.content);
+    expect(userTextOf(other)).toBe(userText.replace('"Nova"', '"Mazal"'));
+  });
+
+  /** Asked for unconditionally now, not only when a profile existed. */
+  it('asks for the everyday texture for a character with nothing written yet', () => {
+    const userText = userTextOf(buildPersonaPrompt(INPUT));
+    expect(userText).toMatch(/her routine, what she worries about, how she jokes/);
+  });
+
+  it('no longer claims the photo merely OUTRANKS a profile it never sees', () => {
+    const userText = userTextOf(buildPersonaPrompt(INPUT));
     expect(userText).not.toContain('THE PHOTO IS THE AUTHORITY');
+    expect(userText).not.toMatch(/currently reads as follows/i);
   });
 });
 

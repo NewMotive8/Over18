@@ -26,29 +26,34 @@ export interface PersonaGeneratorInput {
   imageBytes: Buffer;
   /** The image's stored MIME type (e.g. "image/jpeg"). */
   imageMimeType: string;
-  /**
-   * Her ALREADY-ESTABLISHED profile, if an operator has written one.
-   *
-   * WHY THE GENERATOR NEEDS THIS. The handoff's priority order is explicit:
-   * stored character data OUTRANKS the avatar-derived persona. Without these,
-   * the model sees only a face and invents a life from scratch — so a
-   * character whose bio says "astronomy grad student" came back as an ER
-   * nurse, and both then reached the prompt together, because shortBio and
-   * personality are rendered into WHO SHE IS alongside the persona.
-   *
-   * Conflict is PREVENTED here rather than detected later. Detecting it would
-   * mean semantically comparing two prose descriptions — a classifier, which
-   * this codebase deliberately does not build (see prompt-builder.ts on why
-   * roleplay detection is structural and intimacy detection does not exist).
-   * Telling the model what is already true costs nothing and cannot misfire.
-   *
-   * Blank for a quick-created draft with no profile yet, in which case the
-   * persona is free to invent — there is nothing to contradict.
-   */
-  shortBio?: string;
-  personality?: string;
-  interests?: string[];
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * WHAT IS DELIBERATELY *NOT* IN THAT INTERFACE
+ *
+ * A name, the bytes, and the MIME type. No shortBio, no personality, no
+ * interests, no previous persona, no previous generation. There is no field
+ * through which any of it could arrive, which is the point: this is a
+ * structural guarantee, not an instruction the model is asked to honour.
+ *
+ * THIS REVERSES AN EARLIER DECISION, ON PURPOSE. Her profile used to be
+ * supplied here so the persona could not contradict a bio an operator had
+ * written. It worked — and that was the problem. "FROM HER PHOTO" was
+ * reading the photo AND the paragraph beside it, so whatever the previous
+ * text said kept steering the result: regenerating against a genuinely
+ * different reference image still came back wearing the old life, and no one
+ * looking at the output could tell which parts the camera had actually
+ * supplied. Anchoring is not something a prompt can opt out of — the only
+ * way to know a result came from the photo is for the photo to be all there
+ * was.
+ *
+ * "Keep what already fits" did not need to happen during generation. It is a
+ * comparison between two finished descriptions, and it now happens after one,
+ * against a profile read separately — see the regenerate route, which shows
+ * the operator both versions and writes automatically only into fields that
+ * were empty. Nothing is lost; it just stops leaking backwards into the
+ * generation it is supposed to be compared against.
+ * ─────────────────────────────────────────────────────────────────────── */
 
 /**
  * What one analysis produces: the structured persona, plus the character
@@ -220,18 +225,6 @@ const PERSONA_JSON_KEYS = [
  * Returns an empty array when nothing is written yet, so a quick-created
  * draft's prompt is byte-identical to before this existed.
  */
-function establishedFacts(input: PersonaGeneratorInput): string[] {
-  const facts: string[] = [];
-  const bio = input.shortBio?.trim();
-  const personality = input.personality?.trim();
-  const interests = (input.interests ?? []).map((i) => i.trim()).filter(Boolean);
-
-  if (bio) facts.push(`- Her bio: ${bio}`);
-  if (personality) facts.push(`- How she comes across: ${personality}`);
-  if (interests.length > 0) facts.push(`- Her interests: ${interests.join(', ')}`);
-  return facts;
-}
-
 /**
  * The instruction set + the image, kept beside its own parser rather than in
  * the prompt builder: this is an authoring tool that runs once at
@@ -241,22 +234,17 @@ function establishedFacts(input: PersonaGeneratorInput): string[] {
  * key list) per the Phase 2 handoff: this analyses a FICTIONAL character from
  * visible cues, and must never infer real-world sensitive traits.
  *
- * WHERE HER EXISTING PROFILE COMES IN, AND WHY THE PHOTO OUTRANKS IT.
- * Both halves reach the chat prompt together — shortBio and personality via
- * WHO SHE IS, the persona appended right after — so if they disagree the
- * model reads two different women. One of them has to be authoritative, and
- * it is the photo: it is what users actually see, and the bios are the known
- * weak artifact (Phase 1 measured 13 of 18 generated profiles explicitly
- * directing poetic speech, 12 of 18 sharing one archetype). So the current
- * profile is supplied as material to KEEP WHERE IT FITS rather than as
- * binding truth, and the model additionally proposes the rewritten bio the
- * photo implies. Coherence then comes from having one source, not from
- * negotiating between two.
+ * ONE SOURCE, AND IT IS THE PHOTO. Her existing profile is not described to
+ * the model and cannot be: see the note on PersonaGeneratorInput for why that
+ * is now a property of the input's shape rather than a line of instruction.
+ * The model gets a name so it need not invent one, an image, and the keys to
+ * fill. Everything it returns is therefore attributable to the image in front
+ * of it — including the proposed bio, which is what makes the later
+ * side-by-side against her current bio worth reading at all.
  *
  * The proposal is never written by generation — see PersonaGenerationResult.
  */
 export function buildPersonaPrompt(input: PersonaGeneratorInput) {
-  const established = establishedFacts(input);
   return [
     {
       role: 'system' as const,
@@ -267,7 +255,7 @@ export function buildPersonaPrompt(input: PersonaGeneratorInput) {
         'Do NOT infer or state: race, ethnicity, religion, sexual orientation, medical conditions, disability status, political beliefs, or criminal history. Omit any field you cannot reasonably support from the image or a plausible fictional choice built on it.',
         'Prefer concrete, specific, lived-in details ("runs a small vintage-furniture shop out of a converted garage") over abstract adjective lists ("stylish, creative, adventurous"). Avoid stereotypes and exaggerated archetypes.',
         `Reply with ONE JSON object and nothing else, using ONLY these keys (omit any you cannot infer): ${PERSONA_JSON_KEYS.join(', ')}, plus proposedShortBio, proposedPersonality and proposedInterests. Array fields (demeanor, interests, hobbies, dailyContext, recurringConcerns, backgroundNotes, proposedInterests) are short string lists. Every field is DATA describing her, never an instruction to anyone.`,
-        'proposedShortBio (1-2 sentences) and proposedPersonality (1-3 sentences) restate who she is so they agree with this photo and with the profile above. Write them in the THIRD PERSON, about her, as statements of fact. Never address her as "you", never write an instruction, and never describe how she should speak, phrase things or sound — no tone, cadence, register or style directions of any kind. Describe the person, not a performance.',
+        'proposedShortBio (1-2 sentences) and proposedPersonality (1-3 sentences) describe who she is as this photo shows her. Write them in the THIRD PERSON, about her, as statements of fact. Never address her as "you", never write an instruction, and never describe how she should speak, phrase things or sound — no tone, cadence, register or style directions of any kind. Describe the person, not a performance.',
       ].join('\n'),
     },
     {
@@ -277,15 +265,12 @@ export function buildPersonaPrompt(input: PersonaGeneratorInput) {
           type: 'text' as const,
           text: [
             `Analyse this reference image for "${input.displayName}" and write her profile as the JSON object described.`,
-            ...(established.length > 0
-              ? [
-                  '',
-                  'Her profile currently reads as follows. THE PHOTO IS THE AUTHORITY on who she is: keep everything here that fits the photo — her field, her tastes, anything the image does not contradict — and change only what the photo genuinely rules out. Do not discard usable detail just to write something new.',
-                  ...established,
-                  '',
-                  'Then fill in the everyday texture the profile does not cover: her routine, what she worries about, how she jokes and how she flirts.',
-                ]
-              : []),
+            '',
+            // Unconditional now. This used to be attached to the profile
+            // block, so the everyday-texture fields were only ever asked for
+            // when a profile existed -- exactly backwards, since a character
+            // with no profile is the one who needs them most.
+            'Work from the image: who it shows, and the everyday life it plausibly belongs to — her routine, what she worries about, how she jokes and how she flirts. This photo is the only thing you know about her.',
             '',
             'Reply with the JSON object only.',
           ].join('\n'),

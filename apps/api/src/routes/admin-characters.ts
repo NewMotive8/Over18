@@ -594,14 +594,13 @@ export default async function adminCharacterRoutes(
       if (!character) return notFound(reply);
 
       try {
+        /**
+         * Her name is all that goes in. `character` is loaded above for the
+         * 404 and for the comparison below — the generation cannot see it.
+         */
         const { row, proposedProfile } = await regenerateCharacterPersona(
           opts.db,
-          {
-            displayName: character.displayName,
-            shortBio: character.shortBio,
-            personality: character.personality,
-            interests: character.interests,
-          },
+          { displayName: character.displayName },
           characterId,
           personaGenerator,
         );
@@ -624,6 +623,12 @@ export default async function adminCharacterRoutes(
          * therefore fully automatic, and a hand-written one still gets a
          * side-by-side comparison — from the same code path, decided one
          * field at a time.
+         *
+         * AND THIS IS WHERE HER CURRENT PROFILE IS FINALLY READ. Not before:
+         * `proposedProfile` was written by a model that had only her photo,
+         * so the two sides of the comparison below are genuinely independent.
+         * That is what makes "her photo suggests a different profile" a real
+         * observation instead of a restatement of the text it is compared to.
          */
         const applied: Record<string, unknown> = {};
         const needsReview: Record<string, unknown> = {};

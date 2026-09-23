@@ -60,7 +60,7 @@ let ctx: TestContext;
 
 beforeAll(async () => {
   migrateTestDb();
-  ctx = await createTestContext();
+  ctx = await createTestContext({ personaGenerator: capturingGenerator });
 });
 
 afterAll(async () => {
@@ -68,18 +68,29 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  lastGeneratorInput = null;
   await truncateAll(ctx);
   await seedCharacters(ctx.db);
 });
 
+/**
+ * The operator's session. Callable more than once per test: this used to
+ * register unconditionally, so the second call in a test collided on the fixed
+ * email and returned an undefined cookie -- and since characterWithAvatar()
+ * calls it too, "more than once" is the normal case, not the exception.
+ */
 async function adminCookie(): Promise<string> {
-  const res = await ctx.app.inject({
+  const credentials = { email: 'op@example.com', password: 'correct horse battery staple' };
+  let res = await ctx.app.inject({
     method: 'POST',
     url: '/api/auth/register',
-    payload: { email: 'op@example.com', password: 'correct horse battery staple' },
+    payload: credentials,
   });
+  if (res.statusCode >= 400) {
+    res = await ctx.app.inject({ method: 'POST', url: '/api/auth/login', payload: credentials });
+  }
   const c = extractSessionCookie(res)!;
-  await ctx.db.update(users).set({ role: 'admin' }).where(eq(users.email, 'op@example.com'));
+  await ctx.db.update(users).set({ role: 'admin' }).where(eq(users.email, credentials.email));
   return `${c.name}=${c.value}`;
 }
 
@@ -107,6 +118,49 @@ async function characterWithAvatar(): Promise<string> {
 }
 
 const stubGenerator = (persona: CharacterPersona): PersonaGenerator => async () => ({ persona });
+
+/**
+ * THE INSTRUMENT FOR THE SENTINEL TESTS BELOW.
+ *
+ * Every other stub here ignores its input, which is exactly why none of them
+ * could ever have caught her profile being handed to the model. This one keeps
+ * it, so a test can assert on the REQUEST rather than on the result \u2014 the only
+ * place the guarantee actually lives.
+ *
+ * It is wired into the app in beforeAll, so the HTTP test below observes what
+ * the real route passed, not what a test re-assembled.
+ */
+let lastGeneratorInput: Record<string, unknown> | null = null;
+const capturingGenerator: PersonaGenerator = async (input) => {
+  lastGeneratorInput = input as unknown as Record<string, unknown>;
+  return {
+    persona: { occupation: 'from the photo' },
+    profile: {
+      shortBio: 'A bio the photo implies.',
+      personality: 'A personality the photo implies.',
+      interests: ['something visible'],
+    },
+  };
+};
+
+/** Placed where her profile used to enter the generation request. */
+const SENTINEL = {
+  shortBio: 'ZZZ-SENTINEL-BIO-NOT-FROM-ANY-PHOTO',
+  personality: 'ZZZ-SENTINEL-PERSONALITY-NOT-FROM-ANY-PHOTO',
+  interests: ['ZZZ-SENTINEL-INTEREST-NOT-FROM-ANY-PHOTO'],
+  conversationStyle: 'ZZZ-SENTINEL-STYLE-NOT-FROM-ANY-PHOTO',
+  systemPrompt: 'ZZZ-SENTINEL-SYSTEM-PROMPT-NOT-FROM-ANY-PHOTO',
+  persona: { occupation: 'ZZZ-SENTINEL-PERSONA-NOT-FROM-ANY-PHOTO' },
+};
+
+const ALL_SENTINEL_TEXT = [
+  SENTINEL.shortBio,
+  SENTINEL.personality,
+  SENTINEL.interests[0]!,
+  SENTINEL.conversationStyle,
+  SENTINEL.systemPrompt,
+  SENTINEL.persona.occupation,
+];
 const throwingGenerator = (error: PersonaGeneratorError): PersonaGenerator => async () => {
   throw error;
 };
@@ -285,6 +339,67 @@ describe('regenerateCharacterPersona', () => {
     expect(row.editedFields).toEqual(['humorStyle']);
   });
 
+  /* \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+   * WHAT THE GENERATOR IS ALLOWED TO SEE
+   *
+   * "From her photo" has to mean from her photo. Her stored profile used to be
+   * part of the request, and while the prompt told the model the photo was
+   * authoritative, the text still anchored the result: a regeneration against
+   * a genuinely different reference came back wearing the previous life.
+   *
+   * These tests assert on the REQUEST, not the output, because the output
+   * cannot distinguish "invented from the image" from "echoed from the bio".
+   * The sentinels are strings no image could produce, so any appearance in the
+   * request is proof of a leak and nothing else.
+   * \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+  it('receives ONLY displayName, imageBytes and imageMimeType', async () => {
+    const characterId = await characterWithAvatar();
+    await regenerateCharacterPersona(
+      ctx.db,
+      { displayName: 'Nova' },
+      characterId,
+      capturingGenerator,
+    );
+    expect(Object.keys(lastGeneratorInput!).sort()).toEqual([
+      'displayName',
+      'imageBytes',
+      'imageMimeType',
+    ]);
+    expect(lastGeneratorInput!.displayName).toBe('Nova');
+    expect(Buffer.isBuffer(lastGeneratorInput!.imageBytes)).toBe(true);
+    expect(lastGeneratorInput!.imageMimeType).toBe('image/png');
+  });
+
+  it('passes no profile field even when a caller forces one in', async () => {
+    const characterId = await characterWithAvatar();
+    await regenerateCharacterPersona(
+      ctx.db,
+      // The narrowed parameter is the safeguard; this is the runtime proof
+      // that the service, not just the compiler, is the barrier.
+      { displayName: 'Nova', ...SENTINEL } as unknown as { displayName: string },
+      characterId,
+      capturingGenerator,
+    );
+    const serialised = JSON.stringify(lastGeneratorInput);
+    for (const sentinel of ALL_SENTINEL_TEXT) {
+      expect(serialised, `${sentinel} reached the generator`).not.toContain(sentinel);
+    }
+  });
+
+  it('does not read her stored persona into the request either', async () => {
+    const characterId = await characterWithAvatar();
+    await saveCharacterPersona(ctx.db, characterId, SENTINEL.persona);
+
+    await regenerateCharacterPersona(
+      ctx.db,
+      { displayName: 'Nova' },
+      characterId,
+      capturingGenerator,
+    );
+    expect(JSON.stringify(lastGeneratorInput)).not.toContain(SENTINEL.persona.occupation);
+  });
+
   it('skips references with no readable file and uses the first one that has bytes', async () => {
     // The real-world shape this was found in: a seeded placeholder reference
     // (external locator, no file on disk, explicit position so it sorts
@@ -375,5 +490,122 @@ describe('character_personas cleanup', () => {
       .from(characterPersonas)
       .where(eq(characterPersonas.characterId, characterId));
     expect(row).toBeUndefined();
+  });
+});
+
+
+/* \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+ * OVER HTTP, THROUGH THE ROUTE THE ADMIN BUTTON ACTUALLY CALLS
+ *
+ * The service tests above prove the service passes nothing extra. This proves
+ * the route does not either -- it is the route that loads the full character
+ * (it needs it for the 404 and for the comparison), so it is the route that
+ * has the profile in hand at the moment it calls the generator. That is the
+ * one place a leak would be easiest to reintroduce and hardest to notice.
+ * \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+describe('POST /admin/characters/:id/persona/regenerate sends only the photo', () => {
+  /** A character with a readable avatar AND a fully written-out profile. */
+  async function characterWithAvatarAndProfile(): Promise<string> {
+    const characterId = await characterWithAvatar();
+    await ctx.db
+      .update(characters)
+      .set({
+        shortBio: SENTINEL.shortBio,
+        personality: SENTINEL.personality,
+        interests: SENTINEL.interests,
+        conversationStyle: SENTINEL.conversationStyle,
+        systemPrompt: SENTINEL.systemPrompt,
+      })
+      .where(eq(characters.id, characterId));
+    await saveCharacterPersona(ctx.db, characterId, SENTINEL.persona);
+    return characterId;
+  }
+
+  it('hands the generator her name and image only, with a full profile on file', async () => {
+    const characterId = await characterWithAvatarAndProfile();
+    const cookie = await adminCookie();
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/admin/characters/${characterId}/persona/regenerate`,
+      headers: { cookie },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+
+    expect(lastGeneratorInput, 'the route must have called the generator').not.toBeNull();
+    expect(Object.keys(lastGeneratorInput!).sort()).toEqual([
+      'displayName',
+      'imageBytes',
+      'imageMimeType',
+    ]);
+    const serialised = JSON.stringify(lastGeneratorInput);
+    for (const sentinel of ALL_SENTINEL_TEXT) {
+      expect(serialised, `${sentinel} reached the generator`).not.toContain(sentinel);
+    }
+  });
+
+  /**
+   * The comparison is the reason her profile is loaded at all, so removing it
+   * from the REQUEST must not remove it from the RESPONSE. It now compares two
+   * independently written descriptions, which is the only way the phrase "her
+   * photo suggests a different profile" is true of anything.
+   */
+  it('still offers the photo-vs-profile comparison, computed after generation', async () => {
+    const characterId = await characterWithAvatarAndProfile();
+    const cookie = await adminCookie();
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/admin/characters/${characterId}/persona/regenerate`,
+      headers: { cookie },
+      payload: {},
+    });
+    const body = res.json() as {
+      proposedProfile: Record<string, unknown> | null;
+      appliedProfileFields: string[];
+      persona: Record<string, unknown>;
+    };
+
+    // Her fields all had text, so all three wait for a human.
+    expect(body.proposedProfile).toMatchObject({
+      shortBio: 'A bio the photo implies.',
+      personality: 'A personality the photo implies.',
+      interests: ['something visible'],
+    });
+    expect(body.appliedProfileFields).toEqual([]);
+
+    // And nothing was written over her profile behind the operator's back.
+    const [row] = await ctx.db.select().from(characters).where(eq(characters.id, characterId));
+    expect(row!.shortBio).toBe(SENTINEL.shortBio);
+    expect(row!.personality).toBe(SENTINEL.personality);
+
+    // The sentinel persona was written through saveCharacterPersona, which
+    // PINS the field -- so it correctly outlives the regeneration (the Task 5
+    // promise: "anything you type in here is yours"). What matters here is
+    // that surviving in the row is not the same as being fed back in: the
+    // test above proves it never reached the generator.
+    expect(body.persona.occupation).toBe(SENTINEL.persona.occupation);
+  });
+
+  /** Blank fields still fill themselves in; that behaviour is unchanged. */
+  it('still auto-applies into fields that were empty', async () => {
+    const characterId = await characterWithAvatar();
+    await ctx.db
+      .update(characters)
+      .set({ shortBio: '', personality: '', interests: [] })
+      .where(eq(characters.id, characterId));
+    const cookie = await adminCookie();
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/admin/characters/${characterId}/persona/regenerate`,
+      headers: { cookie },
+      payload: {},
+    });
+    const body = res.json() as {
+      proposedProfile: unknown;
+      appliedProfileFields: string[];
+    };
+    expect(body.appliedProfileFields.sort()).toEqual(['interests', 'personality', 'shortBio']);
+    expect(body.proposedProfile).toBeNull();
   });
 });
