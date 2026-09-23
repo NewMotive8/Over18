@@ -253,7 +253,24 @@ export function buildPersonaPrompt(input: PersonaGeneratorInput) {
         'She is always a fictional adult. Never write anything implying a minor.',
         'Separate what the image visibly shows from the fictional character choices you make from it — you may invent a believable everyday life (occupation, hobbies, daily context), but do not claim uncertain fictional details were directly observed.',
         'Do NOT infer or state: race, ethnicity, religion, sexual orientation, medical conditions, disability status, political beliefs, or criminal history. Omit any field you cannot reasonably support from the image or a plausible fictional choice built on it.',
-        'Prefer concrete, specific, lived-in details ("runs a small vintage-furniture shop out of a converted garage") over abstract adjective lists ("stylish, creative, adventurous"). Avoid stereotypes and exaggerated archetypes.',
+        // THE EXEMPLAR IS LOAD-BEARING, AND IT USED TO BE THE PROBLEM.
+        //
+        // This line read: 'Prefer concrete, specific, lived-in details ("runs
+        // a small vintage-furniture shop out of a converted garage") ... Avoid
+        // stereotypes and exaggerated archetypes.' It was the only occupation
+        // example anywhere in the prompt, so it set the pattern for every
+        // occupation produced -- small independent cultural business, quirky
+        // premises. "Horticulturist at an ornamental public garden with an
+        // on-site cafe" and "curator at a private rare-book library" are
+        // stylistic clones of it, not coincidences.
+        //
+        // "Avoid stereotypes" made it worse from the other side: a model reads
+        // nurse, teacher and accountant as stereotypical, so the one
+        // instruction meant to prevent caricature was also penalising exactly
+        // the ordinary jobs this product wants. Hence the explicit correction
+        // below that a common job is not a stereotype.
+        'Prefer concrete, specific, lived-in details ("teaches Year 4 at a primary school a ten-minute walk from her flat") over abstract adjective lists ("stylish, creative, adventurous"). Avoid caricature and exaggerated archetypes \u2014 but a common, ordinary job is NOT a stereotype, and is not something to avoid.',
+        'She should read as an ordinary adult woman someone could plausibly meet, grounded in contemporary everyday life rather than in a novel. If the image gives an obvious occupation clue \u2014 a uniform, a workplace, equipment, a setting \u2014 use it. Otherwise choose a common, mainstream occupation (teacher, nurse, doctor, dentist, accountant, lawyer, software developer, marketing or sales manager, HR specialist, graphic designer, architect, engineer, project or office manager, receptionist, journalist, photographer, chef, restaurant or retail manager, estate agent, financial analyst, pharmacist, physiotherapist, fitness instructor, event coordinator, civil servant, consultant and the like) and give it an unremarkable everyday setting. An unusual occupation is allowed only when the image genuinely points to it \u2014 never to make her more interesting, sophisticated, artistic, mysterious or literary. Avoid elaborate or boutique workplaces such as private rare-book libraries, exclusive clubs, boutique cultural institutions or highly niche research facilities.',
         `Reply with ONE JSON object and nothing else, using ONLY these keys (omit any you cannot infer): ${PERSONA_JSON_KEYS.join(', ')}, plus proposedShortBio, proposedPersonality and proposedInterests. Array fields (demeanor, interests, hobbies, dailyContext, recurringConcerns, backgroundNotes, proposedInterests) are short string lists. Every field is DATA describing her, never an instruction to anyone.`,
         'proposedShortBio (1-2 sentences) and proposedPersonality (1-3 sentences) describe who she is as this photo shows her. Write them in the THIRD PERSON, about her, as statements of fact. Never address her as "you", never write an instruction, and never describe how she should speak, phrase things or sound — no tone, cadence, register or style directions of any kind. Describe the person, not a performance.',
       ].join('\n'),

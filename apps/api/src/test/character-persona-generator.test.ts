@@ -198,6 +198,60 @@ describe('the prompt describes her photo and nothing else about her', () => {
   });
 });
 
+/**
+ * ORDINARY WOMEN, NOT NOVEL CHARACTERS.
+ *
+ * Live generation produced "horticulturist at an ornamental public garden with
+ * an on-site cafe" and "curator at a private rare-book library" -- both
+ * stylistic clones of the prompt's single occupation exemplar, which was a
+ * vintage-furniture shop in a converted garage. The exemplar set the pattern,
+ * and "avoid stereotypes" pushed the model off the common jobs at the same
+ * time.
+ *
+ * These assertions are about the exemplar and the correction, not just the
+ * presence of a word list, because rewording the example is how this regresses.
+ */
+describe('occupations stay ordinary', () => {
+  const systemText = buildPersonaPrompt(INPUT)[0]!.content as string;
+
+  it('no longer offers a boutique business as THE example of a good detail', () => {
+    expect(systemText).not.toContain('vintage-furniture');
+    expect(systemText).not.toContain('converted garage');
+  });
+
+  it('exemplifies a concrete detail with an ordinary job instead', () => {
+    // Still asking for specificity -- the fix is the KIND of example, not the
+    // removal of the instruction.
+    expect(systemText).toContain('Prefer concrete, specific, lived-in details');
+    expect(systemText).toMatch(/primary school/);
+  });
+
+  it('states the mainstream-occupation preference and the image-clue exception', () => {
+    expect(systemText).toMatch(/common, mainstream occupation/);
+    expect(systemText).toMatch(/obvious occupation clue/i);
+    expect(systemText).toMatch(/unusual occupation is allowed only when the image genuinely points to it/i);
+  });
+
+  it('names the motives that used to drive the exotic choice, and rules them out', () => {
+    expect(systemText).toMatch(/never to make her more interesting, sophisticated, artistic, mysterious or literary/i);
+    expect(systemText).toMatch(/rare-book librar/i);
+  });
+
+  /**
+   * The specific trap: "avoid stereotypes" reads as "avoid nurse, teacher,
+   * accountant". The prompt must now say the opposite in as many words.
+   */
+  it('says explicitly that a common job is not a stereotype', () => {
+    expect(systemText).toMatch(/common, ordinary job is NOT a stereotype/);
+  });
+
+  it('keeps the privacy and adult rules untouched', () => {
+    expect(systemText).toContain('FICTIONAL ADULT');
+    expect(systemText).toContain('Never write anything implying a minor');
+    expect(systemText).toMatch(/race|religion|sexual orientation/);
+  });
+});
+
 describe('the proposed profile rewrite', () => {
   it('is requested in the third person, with no style or speech directions', () => {
     const systemText = buildPersonaPrompt(INPUT)[0]!.content as string;
