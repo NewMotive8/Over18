@@ -17,7 +17,7 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { VisualDna } from '@over18/shared';
+import type { CharacterPersona, VisualDna } from '@over18/shared';
 
 /**
  * users — one row per registered account.
@@ -102,6 +102,42 @@ export const characters = pgTable(
   },
   (table) => [index('characters_status_idx').on(table.status)],
 );
+
+/**
+ * character_personas — the Phase 2 avatar-derived identity layer (one row per
+ * character, 1:1 with `characters`).
+ *
+ * `persona` holds the CURRENT structured identity — generated fields and any
+ * admin edits on top of them, already merged. `editedFields` names which keys
+ * of `persona` an admin has explicitly written, so a later regeneration knows
+ * which fields to leave alone rather than silently overwriting a human's work
+ * (Phase 2 handoff §11: "prefer preserving user edits").
+ *
+ * `sourceAssetId` records WHICH canonical reference image produced the
+ * current generated content, purely for admin display ("generated from this
+ * photo"); ON DELETE SET NULL because losing that reference must never take
+ * the persona itself down. `generatedAt` is null until the generator has run
+ * at least once — a character can exist with an admin-authored persona and no
+ * generation history at all.
+ *
+ * Same allow-list discipline as `characters.system_prompt`: `persona` is
+ * internal prompt material, rendered into WHO SHE IS / HER VOICE only via the
+ * deterministic compiler (character-persona-compiler.ts), and is never
+ * returned by any public wire mapper.
+ */
+export const characterPersonas = pgTable('character_personas', {
+  characterId: uuid('character_id')
+    .primaryKey()
+    .references(() => characters.id, { onDelete: 'cascade' }),
+  persona: jsonb('persona').$type<CharacterPersona>().notNull().default({}),
+  editedFields: text('edited_fields').array().notNull().default([]),
+  sourceAssetId: uuid('source_asset_id').references(() => characterVisualAssets.id, {
+    onDelete: 'set null',
+  }),
+  generatedAt: timestamp('generated_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 /**
  * conversations — one persistent conversation per (user, character) pair.
@@ -2931,6 +2967,7 @@ export const paymentEvents = pgTable(
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type CharacterRow = typeof characters.$inferSelect;
+export type CharacterPersonaRow = typeof characterPersonas.$inferSelect;
 export type ConversationRow = typeof conversations.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type CharacterVisualIdentityRow = typeof characterVisualIdentities.$inferSelect;
