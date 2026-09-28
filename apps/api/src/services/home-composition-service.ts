@@ -495,6 +495,28 @@ export async function representativeClips(
         // VIDEO ONLY — the rule the JavaScript loop used to apply after the
         // fact, moved into the query so the database can pick the winner.
         videoAssetCondition(),
+        /**
+         * AND NOT AN EXPLICIT ONE. Same predicate the category rails use, so
+         * "explicit video is not front-page content" is one rule and not two.
+         *
+         * WHY IT BELONGS IN THE `where` AND NOT AFTER THE QUERY. This is a
+         * `distinct on (character_id)` ordered newest-first: the database picks
+         * ONE row per character and discards the rest. Filtering the winners
+         * afterwards would drop a character whose newest video happens to be
+         * explicit, even when she has ten ordinary ones — her card would
+         * vanish because of the ORDER of her content rather than its contents.
+         * Filtering inside the `where` means the explicit rows never enter the
+         * ranking, so the newest ELIGIBLE video wins and she keeps her card.
+         *
+         * A CHARACTER WITH ONLY EXPLICIT VIDEO IS DROPPED, and that is the
+         * existing rule for a character with no eligible video rather than a
+         * new one: this rail is video-or-nothing by design ("an honest rail is
+         * shorter than a dishonest one"), it has no image fallback to fall back
+         * to, and substituting her explicit video is the one thing that must
+         * not happen. Favourites keeps her row and renders no tile, which is
+         * the graceful degradation that already existed for this case.
+         */
+        notExplicitVideoCondition(),
         // No storage key means no public locator, which `clipView` expressed by
         // returning null. Such a row could never be the representative clip, so
         // it must not be allowed to win the `distinct on`.

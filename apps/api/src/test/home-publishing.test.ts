@@ -680,6 +680,132 @@ describe('explicit video is excluded from Home categories', () => {
   });
 });
 
+/* ------------------------------------------------------------------ *
+ * Explicit video is never a representative clip
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE SECOND PATH ONTO HOME, AND THE ONE THAT WAS STILL OPEN.
+ *
+ * The category rails read editorial PLACEMENT; Play with me, the character grid
+ * and the Hero fallback read `representativeClips`, which asks about PUBLICATION
+ * instead. Found live on Staging: a released explicit clip had become a
+ * character's Play with me card because that query picks her NEWEST video and
+ * hers was the newest.
+ *
+ * ORDER IS WHAT THESE TESTS ARE REALLY ABOUT. `distinct on (character_id)`
+ * newest-first means the winner is decided in the database, so the fix has to
+ * keep explicit rows out of the RANKING. Filtering the winners afterwards would
+ * drop a character whose newest video happens to be explicit even when she has
+ * ten ordinary ones -- losing her card because of the order of her content
+ * rather than its contents. Every test below therefore makes the explicit clip
+ * the NEWEST one.
+ */
+describe('explicit video is never a Home representative clip', () => {
+  /** Newest-last: each call to these helpers creates a strictly later row. */
+  async function releasedVideo(characterId: string, rating: 'sfw' | 'explicit') {
+    const asset = await makeApprovedVideoAsset(characterId, rating);
+    await releaseToPosts(asset.id);
+    return asset;
+  }
+
+  it('picks her ordinary video even when the explicit one is NEWER', async () => {
+    const sfw = await releasedVideo(LUNA.id, 'sfw');
+    const explicit = await releasedVideo(LUNA.id, 'explicit');
+
+    const card = (await api.home())
+      .json()
+      .playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(card, 'she must not lose her card to her own newer explicit clip').toBeTruthy();
+    expect(card.clip.id, 'the newest ELIGIBLE video wins').toBe(sfw.id);
+    expect(card.clip.id).not.toBe(explicit.id);
+  });
+
+  it('drops her from Play with me rather than substituting her explicit video', async () => {
+    const explicit = await releasedVideo(LUNA.id, 'explicit');
+
+    const rail = (await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string } | null;
+    }>;
+    // Video-or-nothing is this rail's existing rule -- a character with no
+    // eligible video has never been rendered as a portrait or a placeholder
+    // ("an honest rail is shorter than a dishonest one"). What must NOT happen
+    // is her explicit clip being used instead.
+    expect(rail.find((c) => c.id === LUNA.id)).toBeUndefined();
+    expect(
+      rail.map((c) => c.clip?.id).filter(Boolean),
+      'her explicit clip must not appear on anyone else\'s card either',
+    ).not.toContain(explicit.id);
+  });
+
+  /**
+   * THE FALLBACK THAT ALREADY EXISTS, AND WHERE IT EXISTS.
+   *
+   * The character grid keeps a card whose clip is null and resolves her
+   * CANONICAL portrait for it, so her Home presence survives with no video at
+   * all. No new fallback mechanism was invented: Play with me has none by
+   * design, the grid has this one, and the difference is deliberate.
+   */
+  it('keeps her in the character grid, with her portrait and no clip', async () => {
+    await releasedVideo(LUNA.id, 'explicit');
+
+    const grid = (await on.app.inject({ method: 'GET', url: '/api/browse/characters' }))
+      .json()
+      .characters as Array<{ id: string; clip: unknown; image: string | null }>;
+    const luna = grid.find((c) => c.id === LUNA.id);
+    expect(luna, 'she is still on Home, just not with a video').toBeTruthy();
+    expect(luna!.clip, 'and certainly not with the explicit one').toBeNull();
+  });
+
+  it('never lets an explicit clip reach the Hero fallback', async () => {
+    const explicit = await releasedVideo(LUNA.id, 'explicit');
+
+    const home = (await api.home()).json();
+    // No Hero is assigned in this fixture, so Home is showing the fallback.
+    expect(home.hero.map((c: { id: string }) => c.id)).not.toContain(explicit.id);
+  });
+
+  /** The clip is refused by Home, not taken away from her. */
+  it('leaves the explicit clip on her Posts tab and fetchable', async () => {
+    const explicit = await releasedVideo(LUNA.id, 'explicit');
+
+    const posts = (
+      await on.app.inject({ method: 'GET', url: `/api/characters/${LUNA.id}/clips` })
+    ).json().clips.map((c: { id: string }) => c.id);
+    expect(posts).toContain(explicit.id);
+    expect((await api.media(explicit.id)).statusCode).toBe(200);
+  });
+
+  /**
+   * The ordering rule this change had to preserve: among ELIGIBLE videos the
+   * newest still wins. Without this, "filter explicit" could have been
+   * implemented as "take the oldest" and the tests above would still pass.
+   */
+  it('still picks the NEWEST among several ordinary videos', async () => {
+    await releasedVideo(LUNA.id, 'sfw');
+    const newerSfw = await releasedVideo(LUNA.id, 'sfw');
+    await releasedVideo(LUNA.id, 'explicit');
+
+    const card = (await api.home())
+      .json()
+      .playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(card.clip.id).toBe(newerSfw.id);
+  });
+
+  /** One character's rating must not affect another's card. */
+  it('does not disturb another character\'s card', async () => {
+    await releasedVideo(LUNA.id, 'explicit');
+    const emberSfw = await releasedVideo(EMBER.id, 'sfw');
+
+    const rail = (await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string } | null;
+    }>;
+    expect(rail.find((c) => c.id === EMBER.id)?.clip?.id).toBe(emberSfw.id);
+  });
+});
+
 describe('public media security', () => {
   it('no storage path or filesystem key appears anywhere in the Home payload', async () => {
     const category = await makeCategory();
