@@ -21,7 +21,11 @@ import { distributableWorkflowCondition } from './asset-distribution.js';
 import { freeFirstJoin, freeFirstOrder } from './commercial-boundary.js';
 import { resolveCharacterPortraits } from './character-portrait.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
-import { mediaTypeOf, videoAssetCondition } from './content-review-service.js';
+import {
+  mediaTypeOf,
+  notExplicitVideoCondition,
+  videoAssetCondition,
+} from './content-review-service.js';
 import { renderValue } from './visual-read-service.js';
 import {
   characterPostsCondition,
@@ -118,6 +122,19 @@ export interface PublicClipView {
   url: string;
   characterId: string;
   characterName: string;
+  /**
+   * How an operator classified this clip, where the surface needs to know.
+   *
+   * OPTIONAL BECAUSE ONLY ONE SURFACE ASKS. Home's lists are already filtered
+   * server-side -- an explicit video never reaches them -- so they have no
+   * decision left to make and do not select this column. Her OWN page is the
+   * one place where both kinds are legitimately present and a client has to
+   * tell them apart: Posts lists everything she has released, and the header
+   * carousel must not play the explicit ones. `listPublicCharacterClips`
+   * populates it; treat `undefined` as "this surface was not told", never as
+   * "sfw".
+   */
+  contentRating?: 'sfw' | 'explicit';
 }
 
 export interface PublicCharacterCardView {
@@ -241,7 +258,8 @@ export interface PublicHomeView {
 }
 
 function clipView(
-  asset: Pick<CharacterVisualAssetRow, 'id' | 'characterId' | 'storageKey' | 'provenance'>,
+  asset: Pick<CharacterVisualAssetRow, 'id' | 'characterId' | 'storageKey' | 'provenance'> &
+    Partial<Pick<CharacterVisualAssetRow, 'contentRating'>>,
   characterName: string,
 ): PublicClipView | null {
   const url = publicAssetUrl(asset.id, asset.storageKey);
@@ -252,6 +270,9 @@ function clipView(
     url,
     characterId: asset.characterId,
     characterName,
+    // Passed through only when the caller's query selected it -- see the field's
+    // note on why every Home surface deliberately leaves it out.
+    ...(asset.contentRating === undefined ? {} : { contentRating: asset.contentRating }),
   };
 }
 
@@ -317,6 +338,11 @@ export async function listPublicCharacterClips(
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // HER PAGE IS THE ONE SURFACE THAT HAS TO TELL THEM APART. Everything
+      // listed here is hers and released; the header carousel may show only the
+      // ordinary ones, and Posts shows all of them. Selected here and nowhere
+      // else, because nowhere else has that decision to make.
+      contentRating: characterVisualAssets.contentRating,
     })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
@@ -491,6 +517,28 @@ export async function representativeClips(
         // VIDEO ONLY — the rule the JavaScript loop used to apply after the
         // fact, moved into the query so the database can pick the winner.
         videoAssetCondition(),
+        /**
+         * AND NOT AN EXPLICIT ONE. Same predicate the category rails use, so
+         * "explicit video is not front-page content" is one rule and not two.
+         *
+         * WHY IT BELONGS IN THE `where` AND NOT AFTER THE QUERY. This is a
+         * `distinct on (character_id)` ordered newest-first: the database picks
+         * ONE row per character and discards the rest. Filtering the winners
+         * afterwards would drop a character whose newest video happens to be
+         * explicit, even when she has ten ordinary ones — her card would
+         * vanish because of the ORDER of her content rather than its contents.
+         * Filtering inside the `where` means the explicit rows never enter the
+         * ranking, so the newest ELIGIBLE video wins and she keeps her card.
+         *
+         * A CHARACTER WITH ONLY EXPLICIT VIDEO IS DROPPED, and that is the
+         * existing rule for a character with no eligible video rather than a
+         * new one: this rail is video-or-nothing by design ("an honest rail is
+         * shorter than a dishonest one"), it has no image fallback to fall back
+         * to, and substituting her explicit video is the one thing that must
+         * not happen. Favourites keeps her row and renders no tile, which is
+         * the graceful degradation that already existed for this case.
+         */
+        notExplicitVideoCondition(),
         // No storage key means no public locator, which `clipView` expressed by
         // returning null. Such a row could never be the representative clip, so
         // it must not be allowed to win the `distinct on`.
@@ -1357,6 +1405,11 @@ export async function browsePublicClips(
     inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
     publiclyReachableCondition(),
     videoAssetCondition(),
+    // Home's own rule. This grid IS a Home surface -- it is the lobby's results
+    // grid, it is what the category pills filter, and `composeHome` embeds its
+    // first page -- so an explicit clip excluded from the rails must not be
+    // reachable by picking a pill or by searching instead.
+    notExplicitVideoCondition(),
     sql`${characterVisualAssets.storageKey} is not null and ${characterVisualAssets.storageKey} <> ''`,
   ];
 

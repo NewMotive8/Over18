@@ -868,6 +868,13 @@ export const homeBannersApi = {
 export interface PublicClip {
   id: string;
   mediaType: 'image' | 'video';
+  /**
+   * Present on her own collection (`/api/characters/:id/clips`), which is the
+   * only endpoint that needs it: Home's lists are filtered server-side, so
+   * nothing explicit ever reaches them. Undefined means "not reported", never
+   * "sfw" -- see PublicClipView on the server.
+   */
+  contentRating?: 'sfw' | 'explicit';
   /** Opaque, id-keyed route. Never a storage key or path. */
   url: string;
   characterId: string;

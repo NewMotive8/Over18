@@ -13,6 +13,7 @@ import {
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
 import { createVisualAsset } from '../services/visual-asset-service.js';
+import { listPublishableCategoryAssets } from '../services/app-merchandising-service.js';
 import { getActiveVisualIdentity } from '../services/visual-identity-service.js';
 import {
   createTestContext,
@@ -93,14 +94,17 @@ async function register(email: string, role: 'admin' | 'user') {
 }
 
 /** An approved asset whose bytes really exist inside the storage root. */
-async function makeApprovedAsset(characterId = LUNA.id) {
+async function makeApprovedAsset(
+  characterId = LUNA.id,
+  contentRating: 'sfw' | 'explicit' = 'sfw',
+) {
   const identity = (await getActiveVisualIdentity(on.db, characterId))!;
   const asset = await createVisualAsset(on.db, {
     characterId,
     visualIdentityId: identity.id,
     kind: 'generated',
     status: 'approved',
-    contentRating: 'sfw',
+    contentRating,
   });
   const path = join(testEnv.media.storageDir, 'home-test', `${asset.id}.png`);
   mkdirSync(dirname(path), { recursive: true });
@@ -120,14 +124,17 @@ async function makeApprovedAsset(characterId = LUNA.id) {
  * `makeApprovedAsset` writes a .png and is, correctly, never chosen by
  * `representativeClips`.
  */
-async function makeApprovedVideoAsset(characterId = LUNA.id) {
+async function makeApprovedVideoAsset(
+  characterId = LUNA.id,
+  contentRating: 'sfw' | 'explicit' = 'sfw',
+) {
   const identity = (await getActiveVisualIdentity(on.db, characterId))!;
   const asset = await createVisualAsset(on.db, {
     characterId,
     visualIdentityId: identity.id,
     kind: 'generated',
     status: 'approved',
-    contentRating: 'sfw',
+    contentRating,
   });
   const path = join(testEnv.media.storageDir, 'home-test', `${asset.id}.webm`);
   mkdirSync(dirname(path), { recursive: true });
@@ -511,6 +518,339 @@ describe('the public surface shows approved content only', () => {
 /* ------------------------------------------------------------------ *
  * 4. Media security
  * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * Explicit video is not front-page content
+ * ------------------------------------------------------------------ */
+
+/**
+ * HER EXPLICIT CLIPS BELONG TO HER, NOT TO HOME.
+ *
+ * The rule is narrow on purpose and these tests pin all three of its edges:
+ * only EXPLICIT, only VIDEO, and only on HOME'S CATEGORY SURFACES. An explicit
+ * still image is untouched (image visibility is deliberately not part of this),
+ * a non-explicit video is untouched, and her own Posts tab keeps serving the
+ * very clip Home refuses.
+ *
+ * Every test shows the sfw counterpart arriving through the SAME path in the
+ * same assertion. Without that, a filter bug that emptied the surface entirely
+ * would pass every one of them.
+ */
+describe('explicit video is excluded from Home categories', () => {
+  it('a category rail drops the explicit video and keeps the ordinary one', async () => {
+    const category = await makeCategory();
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    const explicit = await makeApprovedVideoAsset(LUNA.id, 'explicit');
+    await assign(category.id, [sfw.id, explicit.id]);
+    await api.publish(category.id, true);
+
+    const ids = (await api.home()).json().categories[0].clips.map((c: { id: string }) => c.id);
+    expect(ids, 'the ordinary video is still merchandised').toContain(sfw.id);
+    expect(ids, 'the explicit video must not reach a rail').not.toContain(explicit.id);
+  });
+
+  /**
+   * The rule is about the INTERSECTION. An explicit image is still an explicit
+   * asset, and it stays on Home -- the brief is explicit that image visibility
+   * does not change, and a predicate that caught it would be over-reaching.
+   */
+  it('an explicit IMAGE is untouched', async () => {
+    const category = await makeCategory();
+    const explicitImage = await makeApprovedAsset(LUNA.id, 'explicit');
+    await assign(category.id, [explicitImage.id]);
+    await api.publish(category.id, true);
+
+    const ids = (await api.home()).json().categories[0].clips.map((c: { id: string }) => c.id);
+    expect(ids).toContain(explicitImage.id);
+  });
+
+  it('the Home clip grid, the category pill and search all refuse it', async () => {
+    const category = await makeCategory();
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    const explicit = await makeApprovedVideoAsset(LUNA.id, 'explicit');
+    await assign(category.id, [sfw.id, explicit.id]);
+    await api.publish(category.id, true);
+
+    // a) the grid embedded in /api/home
+    const grid = (await api.home()).json().browseClips.map((c: { id: string }) => c.id);
+    expect(grid).toContain(sfw.id);
+    expect(grid).not.toContain(explicit.id);
+
+    // b) the same grid asked for directly, unfiltered
+    const all = (await api.browseClips()).json().clips.map((c: { id: string }) => c.id);
+    expect(all).toContain(sfw.id);
+    expect(all).not.toContain(explicit.id);
+
+    // c) filtered by the category pill -- the alternate route to the same rows
+    const pill = (await api.browseClips(`?category=${category.slug}`)).json().clips.map(
+      (c: { id: string }) => c.id,
+    );
+    expect(pill).toContain(sfw.id);
+    expect(pill).not.toContain(explicit.id);
+
+    // d) reached by searching her name instead of picking a category
+    const searched = (await api.browseClips(`?q=${encodeURIComponent(LUNA.displayName)}`))
+      .json()
+      .clips.map((c: { id: string }) => c.id);
+    expect(searched).toContain(sfw.id);
+    expect(searched).not.toContain(explicit.id);
+  });
+
+  /**
+   * PAGINATION IS WHERE THIS WOULD HAVE LEAKED. Discovery pages by `total`, and
+   * `total` is a separate `count(*)` over the same `where`. Filtering the mapped
+   * rows instead of the query would have left `total` counting clips nobody can
+   * page to -- a short last page, or a page that renders empty.
+   */
+  it('the discovery strip excludes it from the rows AND from the total', async () => {
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    const explicit = await makeApprovedVideoAsset(LUNA.id, 'explicit');
+    // Same shape as 'discovery clips are approved-only' above: the category's
+    // slug comes from its NAME, so the name is what the query must match.
+    await api.setAssetKeywords(sfw.id, ['nightshift']);
+    await api.setAssetKeywords(explicit.id, ['nightshift']);
+    await api.createDiscovery({ name: 'Nightshift', keywords: ['nightshift'] });
+
+    const body = (await api.clips('?category=nightshift')).json();
+    const ids = body.clips.map((c: { id: string }) => c.id);
+    expect(ids).toContain(sfw.id);
+    expect(ids).not.toContain(explicit.id);
+    expect(body.total, 'total must count only what can actually be paged to').toBe(
+      body.clips.length,
+    );
+  });
+
+  /**
+   * THE WHOLE POINT OF SCOPING IT TO HOME. The clip Home refuses is the same
+   * row, still approved, still hers, and still served on her page.
+   */
+  it('her Posts tab still serves the very clip Home refused', async () => {
+    const category = await makeCategory();
+    const explicit = await makeApprovedVideoAsset(LUNA.id, 'explicit');
+    await assign(category.id, [explicit.id]);
+    await api.publish(category.id, true);
+    await releaseToPosts(explicit.id);
+
+    const railIds = (await api.home()).json().categories[0].clips.map((c: { id: string }) => c.id);
+    expect(railIds).not.toContain(explicit.id);
+
+    const posts = (
+      await on.app.inject({ method: 'GET', url: `/api/characters/${LUNA.id}/clips` })
+    ).json().clips.map((c: { id: string }) => c.id);
+    expect(posts, 'her own page is where explicit content belongs').toContain(explicit.id);
+
+    // And the bytes are still fetchable -- this changed reachability nowhere.
+    expect((await api.media(explicit.id)).statusCode).toBe(200);
+  });
+
+  /**
+   * The Admin count exists so it "cannot answer differently about the same
+   * category" as the rail. It reads `homeRenderableConditions`, which is why
+   * the exclusion went there rather than into the rail query.
+   */
+  it('the Admin publishable count agrees with the rail', async () => {
+    const category = await makeCategory();
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    const explicit = await makeApprovedVideoAsset(LUNA.id, 'explicit');
+    await assign(category.id, [sfw.id, explicit.id]);
+    await api.publish(category.id, true);
+
+    const publishable = (await listPublishableCategoryAssets(on.db, category.id)).map(
+      (a) => a.assetId,
+    );
+    const railIds = (await api.home()).json().categories[0].clips.map((c: { id: string }) => c.id);
+    expect(publishable.slice().sort()).toEqual(railIds.slice().sort());
+    expect(publishable).not.toContain(explicit.id);
+  });
+
+  /** The rules that were already there must still be the rules. */
+  it('leaves the existing approval and publication gates exactly as they were', async () => {
+    const category = await makeCategory();
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    const pending = await makeUnapprovedAsset();
+    await assign(category.id, [sfw.id, pending.id]);
+
+    // Unpublished category: nothing on Home at all, explicit or otherwise.
+    expect((await api.home()).json().categories).toHaveLength(0);
+
+    await api.publish(category.id, true);
+    const ids = (await api.home()).json().categories[0].clips.map((c: { id: string }) => c.id);
+    expect(ids).toContain(sfw.id);
+    expect(ids, 'approval is still required').not.toContain(pending.id);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Explicit video is never a representative clip
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE SECOND PATH ONTO HOME, AND THE ONE THAT WAS STILL OPEN.
+ *
+ * The category rails read editorial PLACEMENT; Play with me, the character grid
+ * and the Hero fallback read `representativeClips`, which asks about PUBLICATION
+ * instead. Found live on Staging: a released explicit clip had become a
+ * character's Play with me card because that query picks her NEWEST video and
+ * hers was the newest.
+ *
+ * ORDER IS WHAT THESE TESTS ARE REALLY ABOUT. `distinct on (character_id)`
+ * newest-first means the winner is decided in the database, so the fix has to
+ * keep explicit rows out of the RANKING. Filtering the winners afterwards would
+ * drop a character whose newest video happens to be explicit even when she has
+ * ten ordinary ones -- losing her card because of the order of her content
+ * rather than its contents. Every test below therefore makes the explicit clip
+ * the NEWEST one.
+ */
+describe('explicit video is never a Home representative clip', () => {
+  /** Newest-last: each call to these helpers creates a strictly later row. */
+  async function releasedVideo(characterId: string, rating: 'sfw' | 'explicit') {
+    const asset = await makeApprovedVideoAsset(characterId, rating);
+    await releaseToPosts(asset.id);
+    return asset;
+  }
+
+  it('picks her ordinary video even when the explicit one is NEWER', async () => {
+    const sfw = await releasedVideo(LUNA.id, 'sfw');
+    const explicit = await releasedVideo(LUNA.id, 'explicit');
+
+    const card = (await api.home())
+      .json()
+      .playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(card, 'she must not lose her card to her own newer explicit clip').toBeTruthy();
+    expect(card.clip.id, 'the newest ELIGIBLE video wins').toBe(sfw.id);
+    expect(card.clip.id).not.toBe(explicit.id);
+  });
+
+  it('drops her from Play with me rather than substituting her explicit video', async () => {
+    const explicit = await releasedVideo(LUNA.id, 'explicit');
+
+    const rail = (await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string } | null;
+    }>;
+    // Video-or-nothing is this rail's existing rule -- a character with no
+    // eligible video has never been rendered as a portrait or a placeholder
+    // ("an honest rail is shorter than a dishonest one"). What must NOT happen
+    // is her explicit clip being used instead.
+    expect(rail.find((c) => c.id === LUNA.id)).toBeUndefined();
+    expect(
+      rail.map((c) => c.clip?.id).filter(Boolean),
+      'her explicit clip must not appear on anyone else\'s card either',
+    ).not.toContain(explicit.id);
+  });
+
+  /**
+   * THE FALLBACK THAT ALREADY EXISTS, AND WHERE IT EXISTS.
+   *
+   * The character grid keeps a card whose clip is null and resolves her
+   * CANONICAL portrait for it, so her Home presence survives with no video at
+   * all. No new fallback mechanism was invented: Play with me has none by
+   * design, the grid has this one, and the difference is deliberate.
+   */
+  it('keeps her in the character grid, with her portrait and no clip', async () => {
+    await releasedVideo(LUNA.id, 'explicit');
+
+    const grid = (await on.app.inject({ method: 'GET', url: '/api/browse/characters' }))
+      .json()
+      .characters as Array<{ id: string; clip: unknown; image: string | null }>;
+    const luna = grid.find((c) => c.id === LUNA.id);
+    expect(luna, 'she is still on Home, just not with a video').toBeTruthy();
+    expect(luna!.clip, 'and certainly not with the explicit one').toBeNull();
+  });
+
+  it('never lets an explicit clip reach the Hero fallback', async () => {
+    const explicit = await releasedVideo(LUNA.id, 'explicit');
+
+    const home = (await api.home()).json();
+    // No Hero is assigned in this fixture, so Home is showing the fallback.
+    expect(home.hero.map((c: { id: string }) => c.id)).not.toContain(explicit.id);
+  });
+
+  /** The clip is refused by Home, not taken away from her. */
+  it('leaves the explicit clip on her Posts tab and fetchable', async () => {
+    const explicit = await releasedVideo(LUNA.id, 'explicit');
+
+    const posts = (
+      await on.app.inject({ method: 'GET', url: `/api/characters/${LUNA.id}/clips` })
+    ).json().clips.map((c: { id: string }) => c.id);
+    expect(posts).toContain(explicit.id);
+    expect((await api.media(explicit.id)).statusCode).toBe(200);
+  });
+
+  /**
+   * The ordering rule this change had to preserve: among ELIGIBLE videos the
+   * newest still wins. Without this, "filter explicit" could have been
+   * implemented as "take the oldest" and the tests above would still pass.
+   */
+  it('still picks the NEWEST among several ordinary videos', async () => {
+    await releasedVideo(LUNA.id, 'sfw');
+    const newerSfw = await releasedVideo(LUNA.id, 'sfw');
+    await releasedVideo(LUNA.id, 'explicit');
+
+    const card = (await api.home())
+      .json()
+      .playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(card.clip.id).toBe(newerSfw.id);
+  });
+
+  /** One character's rating must not affect another's card. */
+  it('does not disturb another character\'s card', async () => {
+    await releasedVideo(LUNA.id, 'explicit');
+    const emberSfw = await releasedVideo(EMBER.id, 'sfw');
+
+    const rail = (await api.home()).json().playWithMe as Array<{
+      id: string;
+      clip: { id: string } | null;
+    }>;
+    expect(rail.find((c) => c.id === EMBER.id)?.clip?.id).toBe(emberSfw.id);
+  });
+});
+
+/**
+ * HER PAGE IS THE ONE SURFACE THAT IS TOLD THE RATING.
+ *
+ * Posts must keep listing every released clip, and the header carousel must not
+ * play the explicit ones. Both read the same endpoint, so the endpoint has to
+ * report which is which -- and no Home list does, because nothing explicit
+ * reaches them in the first place.
+ */
+describe("her own collection reports each clip's rating", () => {
+  it('lists explicit and ordinary clips together, each labelled', async () => {
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    const explicit = await makeApprovedVideoAsset(LUNA.id, 'explicit');
+    await releaseToPosts(sfw.id);
+    await releaseToPosts(explicit.id);
+
+    const clips = (
+      await on.app.inject({ method: 'GET', url: `/api/characters/${LUNA.id}/clips` })
+    ).json().clips as Array<{ id: string; contentRating?: string }>;
+
+    const byId = new Map(clips.map((c) => [c.id, c.contentRating]));
+    expect(byId.get(sfw.id), 'Posts still lists the ordinary clip').toBe('sfw');
+    expect(byId.get(explicit.id), 'Posts still lists the explicit clip').toBe('explicit');
+  });
+
+  /**
+   * The Home surfaces are filtered server-side, so they have no decision left
+   * to make and deliberately do not select the column. Pinning that keeps the
+   * field from quietly becoming something every query has to carry.
+   */
+  it('does NOT report a rating on the Home surfaces', async () => {
+    const category = await makeCategory();
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    await assign(category.id, [sfw.id]);
+    await api.publish(category.id, true);
+    await releaseToPosts(sfw.id);
+
+    const home = (await api.home()).json();
+    const railClip = home.categories[0].clips.find((c: { id: string }) => c.id === sfw.id);
+    expect(railClip, 'the fixture must actually reach the rail').toBeTruthy();
+    expect(railClip.contentRating).toBeUndefined();
+
+    const card = home.playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(card?.clip?.contentRating).toBeUndefined();
+  });
+});
 
 describe('public media security', () => {
   it('no storage path or filesystem key appears anywhere in the Home payload', async () => {

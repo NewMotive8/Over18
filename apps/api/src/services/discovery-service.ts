@@ -10,7 +10,7 @@ import {
 } from '../db/schema.js';
 import { assetPreviewUrl } from './app-merchandising-service.js';
 import { distributableWorkflowCondition } from './asset-distribution.js';
-import { mediaTypeOf } from './content-review-service.js';
+import { mediaTypeOf, notExplicitVideoCondition } from './content-review-service.js';
 import { publicAssetUrl, publiclyReachableCondition } from './public-media-service.js';
 
 /**
@@ -571,7 +571,14 @@ export async function listDiscoveryClips(
 
   // ONE definition of public. Using the same predicate the media route enforces
   // is what stops this list from advertising clips whose bytes then 404.
-  const conditions = [publiclyReachableCondition()];
+  //
+  // Plus Home's explicit-video rule: this strip renders on Home under discovery
+  // categories, so it is a Home category surface like the rails. It matters
+  // that the condition joins `where` HERE rather than filtering the mapped
+  // rows, because `where` is shared with the `count(*)` above -- a later filter
+  // would have left `total` counting rows the caller can never page to, and the
+  // client pages by that total.
+  const conditions = [publiclyReachableCondition(), notExplicitVideoCondition()];
 
   if (options.categorySlug) {
     const slug = discoverySlugFromName(options.categorySlug);

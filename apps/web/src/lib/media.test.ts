@@ -322,10 +322,12 @@ describe('the OTHER surfaces keep their image behaviour', () => {
 const headerClip = (
   id: string,
   mediaType: 'image' | 'video' = 'video',
+  contentRating?: 'sfw' | 'explicit',
 ): CharacterClipRef => ({
   id,
   mediaType,
   url: `/api/media/assets/${id}/file`,
+  ...(contentRating ? { contentRating } : {}),
 });
 
 describe('the Character header plays her own videos', () => {
@@ -394,6 +396,79 @@ describe('the Character header plays her own videos', () => {
  * The ids below are the REAL production asset ids, so these tests describe the
  * situation that was actually observed rather than an invented one.
  * ------------------------------------------------------------------ */
+
+/**
+ * THE HEADER AUTOPLAYS; POSTS DOES NOT.
+ *
+ * Her page shows the same collection twice: the header carousel plays it on
+ * arrival, and Posts lists it for a visitor to choose from. That makes the
+ * header the one surface on her own page nobody opted into, so her explicit
+ * clips are skipped there and kept in Posts.
+ *
+ * The rating is OPTIONAL on a clip ref, and these tests pin that an absent
+ * rating behaves exactly as before -- the filter tests for 'explicit', not for
+ * "not sfw", so a caller that never supplies one is unaffected.
+ */
+describe('the Character header skips her explicit clips', () => {
+  const cms = () => character({ name: 'not-in-manifest' });
+
+  it('plays the ordinary clips and leaves the explicit ones out', () => {
+    const items = characterHeaderItems(
+      cms(),
+      [headerClip('x1', 'video', 'explicit'), headerClip('v1', 'video', 'sfw')],
+      null,
+    );
+    expect(items).toHaveLength(1);
+    const only = items[0]!.media;
+    expect(only.kind === 'video' && only.src).toContain('v1');
+    expect(JSON.stringify(items)).not.toContain('x1');
+  });
+
+  it('keeps the deck order of the remaining clips', () => {
+    const items = characterHeaderItems(
+      cms(),
+      [
+        headerClip('v1', 'video', 'sfw'),
+        headerClip('x1', 'video', 'explicit'),
+        headerClip('v2', 'video', 'sfw'),
+      ],
+      null,
+    );
+    expect(items.map((i) => i.id)).toEqual(['v1', 'v2']);
+  });
+
+  /**
+   * The existing fallback, reached for a new reason. A character whose every
+   * video is explicit has no header clip, which is the same situation as a
+   * character with no video at all -- so she gets her identity still, exactly
+   * as that case already did. No new fallback was added.
+   */
+  it('falls back to her identity still when every video is explicit', () => {
+    const items = characterHeaderItems(
+      cms(),
+      [headerClip('x1', 'video', 'explicit'), headerClip('x2', 'video', 'explicit')],
+      null,
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0]!.id).toBe('hero');
+    expect(items[0]!.media.kind).not.toBe('video');
+  });
+
+  it('is unaffected when a caller reports no rating at all', () => {
+    // Absent must not be read as explicit, or every existing caller breaks.
+    const items = characterHeaderItems(cms(), [headerClip('v1'), headerClip('v2')], null);
+    expect(items.map((i) => i.id)).toEqual(['v1', 'v2']);
+  });
+
+  it('still ignores an explicit IMAGE the same way it ignores any image', () => {
+    const items = characterHeaderItems(
+      cms(),
+      [headerClip('img', 'image', 'explicit'), headerClip('v1', 'video', 'sfw')],
+      null,
+    );
+    expect(items.map((i) => i.id)).toEqual(['v1']);
+  });
+});
 
 describe('a real CMS video beats the bundled manifest', () => {
   const PRODUCTION: Record<string, { clips: string[]; manifestHero: string }> = {

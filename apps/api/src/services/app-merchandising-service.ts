@@ -7,7 +7,7 @@ import {
   characterVisualAssets,
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
-import { mediaTypeOf } from './content-review-service.js';
+import { mediaTypeOf, notExplicitVideoCondition } from './content-review-service.js';
 import {
   DISTRIBUTABLE_STATUS,
   distributableAssetConditions,
@@ -85,7 +85,22 @@ export const PUBLISHABLE_STATUS = DISTRIBUTABLE_STATUS;
  * derivable from the other.
  */
 export function homeRenderableConditions() {
-  return distributableConditions();
+  /**
+   * THE DISTRIBUTION GATE, PLUS THE ONE RULE THAT IS ABOUT HOME SPECIFICALLY.
+   *
+   * Explicit video is legitimate content — it belongs to the character and her
+   * profile still shows it. It just may not be merchandised onto the front
+   * page, so the rule lives here, on the Home condition, and NOT in
+   * `distributableConditions`, which the Posts tab and the media route also
+   * use.
+   *
+   * Adding it here rather than in the rail query is what keeps
+   * `listPublishableCategoryAssets` honest: that function exists so the Admin
+   * count and the rail "cannot answer differently about the same category",
+   * and it would have started over-reporting the moment the rail filtered
+   * something it did not.
+   */
+  return [...distributableConditions(), notExplicitVideoCondition()];
 }
 
 /**
