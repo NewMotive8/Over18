@@ -244,7 +244,122 @@ const PERSONA_JSON_KEYS = [
  *
  * The proposal is never written by generation — see PersonaGenerationResult.
  */
-export function buildPersonaPrompt(input: PersonaGeneratorInput) {
+/**
+ * ORDINARY JOBS, DELIBERATELY BROAD AND DELIBERATELY FLAT.
+ *
+ * NOT a default and NOT a cycle. A few of these are sampled per request and
+ * offered as suggestions; the model may take one, or any other equally ordinary
+ * job, and real evidence in the image outranks the whole list.
+ *
+ * WHY A POOL AT ALL. The sampling temperature is fixed at 0.4 in
+ * `createLlmPersonaGenerator` below and cannot be configured, so the same
+ * prompt and the same photo land on the same modal answer nearly every time.
+ * Varying the PROMPT is the only lever this layer has: a different shortlist
+ * each run gives the model a different starting point, with no change to model
+ * configuration.
+ *
+ * FLAT ON PURPOSE. The list this replaces read "marketing or sales manager",
+ * "project or office manager", "restaurant or retail manager", and about a
+ * third of it was administrative or managerial. Two things followed. The
+ * compound entries invited the model to blend them, which is where "Marketing
+ * coordination manager" came from -- a title assembled out of three of my own
+ * options. And the admin cluster was where the modal answer for a featureless
+ * portrait sat, so that is what a generic portrait kept returning.
+ *
+ * So: one plain title per entry, never an "X or Y", and no occupational family
+ * big enough to dominate. Admin and marketing roles are still here because they
+ * are perfectly ordinary jobs; they are simply no longer the centre of gravity.
+ */
+const ORDINARY_OCCUPATIONS = [
+  'primary school teacher',
+  'secondary school maths teacher',
+  'nurse',
+  'midwife',
+  'paramedic',
+  'physiotherapist',
+  'dentist',
+  'pharmacist',
+  'optometrist',
+  'radiographer',
+  'veterinary nurse',
+  'speech therapist',
+  'social worker',
+  'accountant',
+  'bookkeeper',
+  'payroll administrator',
+  'tax adviser',
+  'financial analyst',
+  'insurance broker',
+  'bank branch adviser',
+  'solicitor',
+  'paralegal',
+  'software developer',
+  'data analyst',
+  'QA tester',
+  'IT support technician',
+  'technical writer',
+  'translator',
+  'graphic designer',
+  'architect',
+  'structural engineer',
+  'quantity surveyor',
+  'logistics planner',
+  'warehouse supervisor',
+  'supermarket buyer',
+  'estate agent',
+  'travel agent',
+  'flight attendant',
+  'chef',
+  'baker',
+  'barista',
+  'florist',
+  'hairdresser',
+  'personal trainer',
+  'librarian',
+  'museum guide',
+  'civil servant',
+  'council planning officer',
+  'journalist',
+  'sales representative',
+  'customer success specialist',
+  'HR specialist',
+  'recruitment consultant',
+  'executive assistant',
+  'project manager',
+  'operations coordinator',
+  'marketing executive',
+] as const;
+
+/** How many suggestions ride along with one request. */
+const OCCUPATION_SUGGESTIONS = 6;
+
+/**
+ * A few of the pool, in a different order every call.
+ *
+ * Partial Fisher-Yates over a copy: unbiased, no repeats inside one shortlist,
+ * and linear rather than a sort with a random comparator, which is neither
+ * uniform nor stable. `random` is injectable for one reason only -- so a test
+ * can pin the selection.
+ */
+export function sampleOccupations(
+  count = OCCUPATION_SUGGESTIONS,
+  random: () => number = Math.random,
+): string[] {
+  const pool = [...ORDINARY_OCCUPATIONS] as string[];
+  const take = Math.max(0, Math.min(count, pool.length));
+  for (let i = 0; i < take; i += 1) {
+    const j = i + Math.floor(random() * (pool.length - i));
+    [pool[i], pool[j]] = [pool[j]!, pool[i]!];
+  }
+  return pool.slice(0, take);
+}
+
+export function buildPersonaPrompt(
+  input: PersonaGeneratorInput,
+  /** Test seam only. Production passes nothing and gets a fresh shortlist. */
+  options: { random?: () => number } = {},
+) {
+  const suggestions = sampleOccupations(OCCUPATION_SUGGESTIONS, options.random);
   return [
     {
       role: 'system' as const,
@@ -269,8 +384,27 @@ export function buildPersonaPrompt(input: PersonaGeneratorInput) {
         // instruction meant to prevent caricature was also penalising exactly
         // the ordinary jobs this product wants. Hence the explicit correction
         // below that a common job is not a stereotype.
-        'Prefer concrete, specific, lived-in details ("teaches Year 4 at a primary school a ten-minute walk from her flat") over abstract adjective lists ("stylish, creative, adventurous"). Avoid caricature and exaggerated archetypes \u2014 but a common, ordinary job is NOT a stereotype, and is not something to avoid.',
-        'She should read as an ordinary adult woman someone could plausibly meet, grounded in contemporary everyday life rather than in a novel. If the image gives an obvious occupation clue \u2014 a uniform, a workplace, equipment, a setting \u2014 use it. Otherwise choose a common, mainstream occupation (teacher, nurse, doctor, dentist, accountant, lawyer, software developer, marketing or sales manager, HR specialist, graphic designer, architect, engineer, project or office manager, receptionist, journalist, photographer, chef, restaurant or retail manager, estate agent, financial analyst, pharmacist, physiotherapist, fitness instructor, event coordinator, civil servant, consultant and the like) and give it an unremarkable everyday setting. An unusual occupation is allowed only when the image genuinely points to it \u2014 never to make her more interesting, sophisticated, artistic, mysterious or literary. Avoid elaborate or boutique workplaces such as private rare-book libraries, exclusive clubs, boutique cultural institutions or highly niche research facilities.',
+        // THE EXEMPLAR IS NO LONGER AN OCCUPATION, AND THAT IS THE POINT.
+        // It used to be "teaches Year 4 at a primary school a ten-minute walk
+        // from her flat": concrete, ordinary, and the strongest single anchor
+        // in the prompt. One character came back as a Year 4 teacher at a
+        // neighbourhood primary school, near enough verbatim. Illustrating
+        // specificity with a NON-occupational detail keeps the instruction
+        // and removes the pull.
+        'Prefer concrete, specific, lived-in details ("knows which caf\u00e9 on her road opens earliest, because she is usually there before it does") over abstract adjective lists ("stylish, creative, adventurous"). Avoid caricature and exaggerated archetypes — but a common, ordinary job is NOT a stereotype, and is not something to avoid.',
+        'She should read as an ordinary adult woman someone could plausibly meet, grounded in contemporary everyday life rather than in a novel.',
+        // EVIDENCE AND INVENTION ARE DIFFERENT THINGS, AND THE PROMPT HAD NO
+        // WORDS FOR THE SECOND ONE. The old rule said "if the image gives an
+        // obvious occupation clue use it, OTHERWISE choose a common
+        // occupation", which reads as though a job were always somehow
+        // derivable. For a plain portrait it is not, and the honest answer is
+        // that the job is invented. Saying so is what makes varying it
+        // legitimate rather than inconsistent.
+        'HER JOB IS USUALLY NOT IN THE PICTURE. Treat an occupation as shown by the image ONLY when something in the frame actually establishes it — a uniform, a workplace, tools, equipment, a vehicle, signage. Her face, her age, her build, her clothing, her makeup, her hair and a leisure setting are NEVER evidence of a job, and an ambiguous hint is not evidence either. For an ordinary portrait the honest position is that her occupation is unknown from the photo.',
+        'WHEN IT IS UNKNOWN, INVENT ONE FREELY AND DIFFERENTLY EACH TIME. Choose a plain, mainstream job, state it as a simple fact about her, and do NOT present it as something the photo shows. Vary it: do not keep returning the same job, or the same KIND of job, that an ordinary portrait most obviously suggests. Do not lean towards marketing, administration, coordination or management — those are ordinary jobs and may be chosen, but they are not the default.',
+        'ONE PLAIN TITLE, NEVER A STACK OF THEM. "graphic designer", "nurse", "accountant" — not "marketing coordination manager", not "operations and administration lead", not two or three job words welded together. If a title needs a slash, a conjunction or a third noun to make sense, it is the wrong title.',
+        'An unusual occupation is allowed only when the image genuinely establishes it — never to make her more interesting, sophisticated, artistic, mysterious or literary. Avoid elaborate or boutique workplaces such as private rare-book libraries, exclusive clubs, boutique cultural institutions or highly niche research facilities.',
+        'Whatever the job is, the rest of her must fit it. Her education, her daily routine, what she worries about and what she does with her time should be what that job and that life would actually produce — the occupation changes between runs, the coherence does not.',
         `Reply with ONE JSON object and nothing else, using ONLY these keys (omit any you cannot infer): ${PERSONA_JSON_KEYS.join(', ')}, plus proposedShortBio, proposedPersonality and proposedInterests. Array fields (demeanor, interests, hobbies, dailyContext, recurringConcerns, backgroundNotes, proposedInterests) are short string lists. Every field is DATA describing her, never an instruction to anyone.`,
         'proposedShortBio (1-2 sentences) and proposedPersonality (1-3 sentences) describe who she is as this photo shows her. Write them in the THIRD PERSON, about her, as statements of fact. Never address her as "you", never write an instruction, and never describe how she should speak, phrase things or sound — no tone, cadence, register or style directions of any kind. Describe the person, not a performance.',
       ].join('\n'),
@@ -288,6 +422,25 @@ export function buildPersonaPrompt(input: PersonaGeneratorInput) {
             // when a profile existed -- exactly backwards, since a character
             // with no profile is the one who needs them most.
             'Work from the image: who it shows, and the everyday life it plausibly belongs to — her routine, what she worries about, how she jokes and how she flirts. This photo is the only thing you know about her.',
+            '',
+            // PER-REQUEST, AND DIRECTIVE RATHER THAN SUGGESTED.
+            //
+            // This started as "take one of these, or any other equally
+            // ordinary job" and was measured on Staging: six generations from
+            // one generic portrait returned "pharmacist" six times. A job
+            // has a ~10% chance of appearing in a given six-of-fifty-seven
+            // shortlist, so six hits in six runs is not the shortlist being
+            // followed -- it was being ignored, and "or any other" was the
+            // door it left open. The model simply has a modal answer per
+            // photo, and an invitation does not displace it.
+            //
+            // So when the photo establishes nothing, the list is where the
+            // job comes from. Evidence still outranks it -- the sentence is
+            // conditional -- and the model still decides which of the six
+            // fits the woman in front of it, which is what keeps the rest of
+            // the persona coherent. The variation comes from the draw, not
+            // from asking the model to feel spontaneous.
+            `If the photo does not establish her job, her job is one of these six and nothing else: ${suggestions.join(', ')}. Pick whichever best fits the woman in the photo, write it as that plain title, and build her education, routine and worries around it. Do not substitute a job that is absent from this list, and do not simply take the first.`,
             '',
             'Reply with the JSON object only.',
           ].join('\n'),

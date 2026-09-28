@@ -5,6 +5,7 @@ import {
   PersonaGeneratorError,
   buildPersonaPrompt,
   createLlmPersonaGenerator,
+  sampleOccupations,
   extractJsonObject,
   toPersonaGeneratorDraft,
   toProposedProfile,
@@ -173,14 +174,18 @@ describe('the prompt describes her photo and nothing else about her', () => {
    * profile block without anyone noticing.
    */
   it('contains exactly two per-character values: the name and the image', () => {
-    const messages = buildPersonaPrompt(INPUT);
+    // The occupation shortlist varies per REQUEST by design, so it is pinned
+    // here -- otherwise this test would be measuring that variation instead of
+    // what it is about, which is that nothing CHARACTER-specific leaks in.
+    const fixed = { random: () => 0 };
+    const messages = buildPersonaPrompt(INPUT, fixed);
     const userText = userTextOf(messages);
     expect(userText).toContain('"Nova"');
     expect(userText).toContain('This photo is the only thing you know about her');
 
     // The instruction message is character-independent: byte-identical for
     // two different characters.
-    const other = buildPersonaPrompt({ ...INPUT, displayName: 'Mazal' });
+    const other = buildPersonaPrompt({ ...INPUT, displayName: 'Mazal' }, fixed);
     expect(other[0]!.content).toBe(messages[0]!.content);
     expect(userTextOf(other)).toBe(userText.replace('"Nova"', '"Mazal"'));
   });
@@ -219,19 +224,59 @@ describe('occupations stay ordinary', () => {
     expect(systemText).not.toContain('converted garage');
   });
 
-  it('exemplifies a concrete detail with an ordinary job instead', () => {
-    // Still asking for specificity -- the fix is the KIND of example, not the
-    // removal of the instruction.
+  /**
+   * THE EXEMPLAR IS NO LONGER AN OCCUPATION AT ALL.
+   *
+   * It was "teaches Year 4 at a primary school...", and one character came back
+   * as a Year 4 teacher at a neighbourhood primary school. An occupational
+   * example anchors the occupation however carefully it is chosen, so the
+   * example now illustrates specificity with something that is not a job.
+   */
+  it('illustrates specificity WITHOUT naming a job', () => {
     expect(systemText).toContain('Prefer concrete, specific, lived-in details');
-    expect(systemText).toMatch(/primary school/);
+    expect(systemText).toMatch(/opens earliest/);
+    expect(systemText, 'the old anchor must be gone').not.toMatch(/teaches Year 4/);
+    expect(systemText).not.toMatch(/primary school a ten-minute walk/);
   });
 
-  it('states the mainstream-occupation preference and the image-clue exception', () => {
-    expect(systemText).toMatch(/common, mainstream occupation/);
-    expect(systemText).toMatch(/obvious occupation clue/i);
-    expect(systemText).toMatch(/unusual occupation is allowed only when the image genuinely points to it/i);
+  it('separates what the image ESTABLISHES from what is invented', () => {
+    // The old wording ("obvious occupation clue ... otherwise choose") implied a
+    // job was always derivable from a photo. These two lines replace it.
+    expect(systemText).toMatch(/HER JOB IS USUALLY NOT IN THE PICTURE/);
+    expect(systemText).toMatch(/uniform, a workplace, tools, equipment, a vehicle, signage/);
+    expect(systemText).toMatch(/WHEN IT IS UNKNOWN, INVENT ONE FREELY AND DIFFERENTLY EACH TIME/);
+    expect(systemText).toMatch(/unusual occupation is allowed only when the image genuinely establishes it/i);
   });
 
+  /** Appearance is not a job. This is the rule the reported defect broke. */
+  it('rules out inferring a job from how she looks', () => {
+    expect(systemText).toMatch(
+      /face, her age, her build, her clothing, her makeup, her hair and a leisure setting are NEVER evidence of a job/,
+    );
+    expect(systemText).toMatch(/ambiguous hint is not evidence/);
+  });
+
+  /** The reported title was a hybrid, so hybrids are banned by name. */
+  it('bans stacked job titles, naming the one that was reported', () => {
+    expect(systemText).toMatch(/ONE PLAIN TITLE, NEVER A STACK OF THEM/);
+    expect(systemText).toContain('marketing coordination manager');
+    expect(systemText).toMatch(/needs a slash, a conjunction or a third noun/);
+  });
+
+  /** And the family it kept landing in is named as not-the-default. */
+  it('tells the model not to default to marketing or admin roles', () => {
+    expect(systemText).toMatch(
+      /Do not lean towards marketing, administration, coordination or management/,
+    );
+  });
+
+  /** Variety must not cost coherence -- requirement C. */
+  it('requires the rest of her to fit whichever job it picked', () => {
+    expect(systemText).toMatch(
+      /education, her daily routine, what she worries about .* should be what that job and that life would actually produce/,
+    );
+    expect(systemText).toMatch(/the occupation changes between runs, the coherence does not/);
+  });
   it('names the motives that used to drive the exotic choice, and rules them out', () => {
     expect(systemText).toMatch(/never to make her more interesting, sophisticated, artistic, mysterious or literary/i);
     expect(systemText).toMatch(/rare-book librar/i);
@@ -250,6 +295,102 @@ describe('occupations stay ordinary', () => {
     expect(systemText).toContain('Never write anything implying a minor');
     expect(systemText).toMatch(/race|religion|sexual orientation/);
   });
+});
+
+
+/**
+ * THE MECHANISM THAT ACTUALLY BREAKS THE REPETITION.
+ *
+ * Every instruction in the prompt is identical run to run, and the sampling
+ * temperature is fixed at 0.4 in `createLlmPersonaGenerator`, so wording alone
+ * cannot make the model choose differently. The shortlist is the only part of
+ * the request that changes, which is why it exists and why these tests are
+ * about the SHORTLIST rather than about the model.
+ *
+ * None of this proves the model varies its answer. That is measured against the
+ * real endpoint, not here.
+ */
+describe('the occupation shortlist varies per request', () => {
+  it('offers a different shortlist on successive calls', () => {
+    const line = (m: ReturnType<typeof buildPersonaPrompt>) =>
+      userTextOf(m).split('\n').find((l) => l.startsWith('If the photo does not establish'))!;
+
+    const seen = new Set<string>();
+    for (let i = 0; i < 12; i += 1) seen.add(line(buildPersonaPrompt(INPUT)));
+    // 6 drawn from 57 -- twelve identical draws would be a broken sampler, not
+    // bad luck. Loose on purpose so this can never flake.
+    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  /**
+   * DIRECTIVE, BECAUSE SUGGESTED DID NOT WORK. Framed as "take one of these, or
+   * any other equally ordinary job", six Staging runs from one generic portrait
+   * returned "pharmacist" six times -- a ~10%-per-draw job appearing in all six
+   * shortlists is not the list being followed. The escape clause is gone.
+   */
+  it('makes the list the source of the job, not a suggestion', () => {
+    const text = userTextOf(buildPersonaPrompt(INPUT));
+    expect(text).toMatch(/her job is one of these six and nothing else/);
+    expect(text).toMatch(/Do not substitute a job that is absent from this list/);
+    expect(text, 'the old escape clause must be gone').not.toMatch(/or any other equally ordinary job/);
+  });
+
+  /** Evidence still outranks the list: the whole sentence is conditional. */
+  it('still lets the photo override the list', () => {
+    const text = userTextOf(buildPersonaPrompt(INPUT));
+    expect(text).toMatch(/If the photo does not establish her job/);
+  });
+
+  /** Variety must not cost coherence: the list-driven job still has to fit. */
+  it('requires the persona to be built around whichever it picks', () => {
+    const text = userTextOf(buildPersonaPrompt(INPUT));
+    expect(text).toMatch(/build her education, routine and worries around it/);
+    expect(text).toMatch(/best fits the woman in the photo/);
+  });
+
+  it('draws without repeats inside one shortlist', () => {
+    for (let i = 0; i < 20; i += 1) {
+      const picked = sampleOccupations();
+      expect(new Set(picked).size).toBe(picked.length);
+    }
+  });
+
+  it('can reach far more than one corner of the pool', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i += 1) for (const o of sampleOccupations()) seen.add(o);
+    // A sampler stuck on the head of the list would show a handful.
+    expect(seen.size).toBeGreaterThan(30);
+  });
+
+  /**
+   * The pool is the thing that used to cause the defect, so its SHAPE is
+   * pinned: no compound titles (they were blended into hybrids) and no
+   * single occupational family big enough to be the default answer.
+   */
+  it('offers no compound titles for the model to blend', () => {
+    const all = sampleOccupations(200);
+    for (const job of all) {
+      expect(job, `"${job}" invites a hybrid title`).not.toMatch(/ or |\//);
+    }
+  });
+
+  it('is not dominated by marketing, admin or management roles', () => {
+    const all = sampleOccupations(200);
+    const adminish = all.filter((j) =>
+      /marketing|admin|coordinat|manager|executive assistant/i.test(j),
+    );
+    expect(all.length).toBeGreaterThan(40);
+    // Present, because they are ordinary jobs -- but nowhere near the centre.
+    expect(adminish.length).toBeGreaterThan(0);
+    expect(adminish.length / all.length).toBeLessThan(0.2);
+  });
+
+  it('pins the selection when a test supplies its own random', () => {
+    const a = sampleOccupations(6, () => 0);
+    const b = sampleOccupations(6, () => 0);
+    expect(a).toEqual(b);
+  });
+
 });
 
 describe('the proposed profile rewrite', () => {
