@@ -119,6 +119,40 @@ export function clipDurationSecondsOf(provenance?: Record<string, unknown> | nul
  * still classified by `mediaTypeOf`, so a disagreement could only ever cost a
  * row, never mislabel one. The agreement is pinned by tests.
  */
+/**
+ * NOT AN EXPLICIT VIDEO — the Home category rule, in SQL.
+ *
+ * Home's categories must not show a character's explicit clips; her own profile
+ * still does. That makes this a CHANNEL rule, which is why it is a composable
+ * condition rather than anything added to `distributableConditions` — the Posts
+ * tab and the media route share that gate and must keep serving explicit video.
+ *
+ * BUILT FROM THE TWO EXISTING SOURCES OF TRUTH, DEFINING NEITHER. "Explicit" is
+ * `content_rating`, the column an operator sets in Admin; "video" is
+ * `videoAssetCondition` above, already the SQL mirror of `mediaTypeOf`. A
+ * second rating flag or a second media-type test would be a definition that
+ * could drift, so there is neither.
+ *
+ * ONLY THE INTERSECTION IS EXCLUDED. An explicit IMAGE is untouched, because
+ * image visibility is deliberately not part of this rule, and a non-explicit
+ * video is untouched whatever else is true of it.
+ *
+ * THE COALESCE IS LOAD-BEARING, NOT DEFENSIVE NOISE. `videoAssetCondition`
+ * yields NULL for a row whose `storage_key` is NULL and whose provenance records
+ * no media type — `null like '%.mp4'` is NULL. Without the coalesce,
+ * `not ('explicit' and NULL)` is NULL, so such a row would be dropped by this
+ * predicate. It is reachable: `publiclyReachableCondition` does NOT test the
+ * storage key, so keyless rows do arrive here and are meant to be discarded
+ * later by `publicAssetUrl` returning null — not silently by a rating rule.
+ * Coalescing to false keeps this predicate about explicit video and nothing else.
+ */
+export function notExplicitVideoCondition() {
+  return sql`not (
+    ${characterVisualAssets.contentRating} = 'explicit'
+    and coalesce(${videoAssetCondition()}, false)
+  )`;
+}
+
 export function videoAssetCondition() {
   const recorded = sql`${characterVisualAssets.provenance} ->> 'mediaType'`;
   const key = sql`lower(${characterVisualAssets.storageKey})`;

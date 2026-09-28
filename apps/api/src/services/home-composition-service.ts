@@ -21,7 +21,11 @@ import { distributableWorkflowCondition } from './asset-distribution.js';
 import { freeFirstJoin, freeFirstOrder } from './commercial-boundary.js';
 import { resolveCharacterPortraits } from './character-portrait.js';
 import { PUBLIC_CONTENT_KINDS } from './asset-kinds.js';
-import { mediaTypeOf, videoAssetCondition } from './content-review-service.js';
+import {
+  mediaTypeOf,
+  notExplicitVideoCondition,
+  videoAssetCondition,
+} from './content-review-service.js';
 import { renderValue } from './visual-read-service.js';
 import {
   characterPostsCondition,
@@ -1357,6 +1361,11 @@ export async function browsePublicClips(
     inArray(characterVisualAssets.kind, [...PUBLIC_CONTENT_KINDS]),
     publiclyReachableCondition(),
     videoAssetCondition(),
+    // Home's own rule. This grid IS a Home surface -- it is the lobby's results
+    // grid, it is what the category pills filter, and `composeHome` embeds its
+    // first page -- so an explicit clip excluded from the rails must not be
+    // reachable by picking a pill or by searching instead.
+    notExplicitVideoCondition(),
     sql`${characterVisualAssets.storageKey} is not null and ${characterVisualAssets.storageKey} <> ''`,
   ];
 
