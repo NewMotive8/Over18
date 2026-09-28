@@ -122,6 +122,19 @@ export interface PublicClipView {
   url: string;
   characterId: string;
   characterName: string;
+  /**
+   * How an operator classified this clip, where the surface needs to know.
+   *
+   * OPTIONAL BECAUSE ONLY ONE SURFACE ASKS. Home's lists are already filtered
+   * server-side -- an explicit video never reaches them -- so they have no
+   * decision left to make and do not select this column. Her OWN page is the
+   * one place where both kinds are legitimately present and a client has to
+   * tell them apart: Posts lists everything she has released, and the header
+   * carousel must not play the explicit ones. `listPublicCharacterClips`
+   * populates it; treat `undefined` as "this surface was not told", never as
+   * "sfw".
+   */
+  contentRating?: 'sfw' | 'explicit';
 }
 
 export interface PublicCharacterCardView {
@@ -245,7 +258,8 @@ export interface PublicHomeView {
 }
 
 function clipView(
-  asset: Pick<CharacterVisualAssetRow, 'id' | 'characterId' | 'storageKey' | 'provenance'>,
+  asset: Pick<CharacterVisualAssetRow, 'id' | 'characterId' | 'storageKey' | 'provenance'> &
+    Partial<Pick<CharacterVisualAssetRow, 'contentRating'>>,
   characterName: string,
 ): PublicClipView | null {
   const url = publicAssetUrl(asset.id, asset.storageKey);
@@ -256,6 +270,9 @@ function clipView(
     url,
     characterId: asset.characterId,
     characterName,
+    // Passed through only when the caller's query selected it -- see the field's
+    // note on why every Home surface deliberately leaves it out.
+    ...(asset.contentRating === undefined ? {} : { contentRating: asset.contentRating }),
   };
 }
 
@@ -321,6 +338,11 @@ export async function listPublicCharacterClips(
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // HER PAGE IS THE ONE SURFACE THAT HAS TO TELL THEM APART. Everything
+      // listed here is hers and released; the header carousel may show only the
+      // ordinary ones, and Posts shows all of them. Selected here and nowhere
+      // else, because nowhere else has that decision to make.
+      contentRating: characterVisualAssets.contentRating,
     })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))

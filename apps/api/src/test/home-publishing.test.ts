@@ -806,6 +806,52 @@ describe('explicit video is never a Home representative clip', () => {
   });
 });
 
+/**
+ * HER PAGE IS THE ONE SURFACE THAT IS TOLD THE RATING.
+ *
+ * Posts must keep listing every released clip, and the header carousel must not
+ * play the explicit ones. Both read the same endpoint, so the endpoint has to
+ * report which is which -- and no Home list does, because nothing explicit
+ * reaches them in the first place.
+ */
+describe("her own collection reports each clip's rating", () => {
+  it('lists explicit and ordinary clips together, each labelled', async () => {
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    const explicit = await makeApprovedVideoAsset(LUNA.id, 'explicit');
+    await releaseToPosts(sfw.id);
+    await releaseToPosts(explicit.id);
+
+    const clips = (
+      await on.app.inject({ method: 'GET', url: `/api/characters/${LUNA.id}/clips` })
+    ).json().clips as Array<{ id: string; contentRating?: string }>;
+
+    const byId = new Map(clips.map((c) => [c.id, c.contentRating]));
+    expect(byId.get(sfw.id), 'Posts still lists the ordinary clip').toBe('sfw');
+    expect(byId.get(explicit.id), 'Posts still lists the explicit clip').toBe('explicit');
+  });
+
+  /**
+   * The Home surfaces are filtered server-side, so they have no decision left
+   * to make and deliberately do not select the column. Pinning that keeps the
+   * field from quietly becoming something every query has to carry.
+   */
+  it('does NOT report a rating on the Home surfaces', async () => {
+    const category = await makeCategory();
+    const sfw = await makeApprovedVideoAsset(LUNA.id, 'sfw');
+    await assign(category.id, [sfw.id]);
+    await api.publish(category.id, true);
+    await releaseToPosts(sfw.id);
+
+    const home = (await api.home()).json();
+    const railClip = home.categories[0].clips.find((c: { id: string }) => c.id === sfw.id);
+    expect(railClip, 'the fixture must actually reach the rail').toBeTruthy();
+    expect(railClip.contentRating).toBeUndefined();
+
+    const card = home.playWithMe.find((c: { id: string }) => c.id === LUNA.id);
+    expect(card?.clip?.contentRating).toBeUndefined();
+  });
+});
+
 describe('public media security', () => {
   it('no storage path or filesystem key appears anywhere in the Home payload', async () => {
     const category = await makeCategory();

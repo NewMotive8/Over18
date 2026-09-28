@@ -254,6 +254,12 @@ export interface CharacterClipRef {
   /** API-relative opaque locator — never a storage key or a path. */
   url: string;
   mediaType: 'image' | 'video';
+  /**
+   * Reported by her own collection. Absent is NOT the same as 'sfw': a caller
+   * that does not supply it gets the old behaviour, which is why the filter
+   * below tests for 'explicit' rather than for "not sfw".
+   */
+  contentRating?: 'sfw' | 'explicit';
 }
 
 /**
@@ -306,6 +312,17 @@ export interface CharacterClipRef {
  * VIDEO ONLY. An image clip is not a header clip; the fallback below is the one
  * place a still may appear, and it is the still the design already used.
  *
+ * AND ORDINARY ONLY. The header autoplays the moment her page opens, so it is
+ * the one surface on her page a visitor does not choose to look at. Her explicit
+ * clips stay in Posts, where opening one is a decision; they are skipped here.
+ *
+ * WHY THE FILTER IS HERE AND NOT IN THE ENDPOINT. `clips` is her collection, and
+ * Posts must keep showing all of it -- the same list feeds both surfaces, so the
+ * only place the two can legitimately differ is the function that builds one of
+ * them. A character whose every video is explicit therefore falls through to the
+ * identity still below, which is the fallback that already existed for a
+ * character with no video at all.
+ *
  * ALWAYS AT LEAST ONE ITEM, so the header can never render an empty deck.
  */
 export function characterHeaderItems(
@@ -318,6 +335,7 @@ export function characterHeaderItems(
   const videos: CharacterMediaItem[] = [];
   for (const clip of clips) {
     if (clip.mediaType !== 'video') continue;
+    if (clip.contentRating === 'explicit') continue;
     const src = absoluteMediaUrl(clip.url);
     if (!src) continue;
     videos.push({ id: clip.id, media: { kind: 'video', src }, premium: false });
