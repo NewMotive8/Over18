@@ -322,11 +322,30 @@ describe('the occupation shortlist varies per request', () => {
     expect(seen.size).toBeGreaterThan(1);
   });
 
-  it('is a suggestion, never an instruction to use the list', () => {
+  /**
+   * DIRECTIVE, BECAUSE SUGGESTED DID NOT WORK. Framed as "take one of these, or
+   * any other equally ordinary job", six Staging runs from one generic portrait
+   * returned "pharmacist" six times -- a ~10%-per-draw job appearing in all six
+   * shortlists is not the list being followed. The escape clause is gone.
+   */
+  it('makes the list the source of the job, not a suggestion', () => {
     const text = userTextOf(buildPersonaPrompt(INPUT));
-    expect(text).toMatch(/or any other equally ordinary job that is not on this list/);
-    // Evidence still outranks the list: the sentence is conditional.
+    expect(text).toMatch(/her job is one of these six and nothing else/);
+    expect(text).toMatch(/Do not substitute a job that is absent from this list/);
+    expect(text, 'the old escape clause must be gone').not.toMatch(/or any other equally ordinary job/);
+  });
+
+  /** Evidence still outranks the list: the whole sentence is conditional. */
+  it('still lets the photo override the list', () => {
+    const text = userTextOf(buildPersonaPrompt(INPUT));
     expect(text).toMatch(/If the photo does not establish her job/);
+  });
+
+  /** Variety must not cost coherence: the list-driven job still has to fit. */
+  it('requires the persona to be built around whichever it picks', () => {
+    const text = userTextOf(buildPersonaPrompt(INPUT));
+    expect(text).toMatch(/build her education, routine and worries around it/);
+    expect(text).toMatch(/best fits the woman in the photo/);
   });
 
   it('draws without repeats inside one shortlist', () => {

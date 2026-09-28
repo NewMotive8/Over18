@@ -423,12 +423,24 @@ export function buildPersonaPrompt(
             // with no profile is the one who needs them most.
             'Work from the image: who it shows, and the everyday life it plausibly belongs to — her routine, what she worries about, how she jokes and how she flirts. This photo is the only thing you know about her.',
             '',
-            // PER-REQUEST, and the reason repetition breaks at a fixed
-            // temperature: every instruction above is identical run to run,
-            // so the shortlist is the only thing that differs. Suggestions
-            // only -- "or any other" is load-bearing, and evidence still
-            // outranks it.
-            `If the photo does not establish her job, take one of these, or any other equally ordinary job that is not on this list: ${suggestions.join(', ')}.`,
+            // PER-REQUEST, AND DIRECTIVE RATHER THAN SUGGESTED.
+            //
+            // This started as "take one of these, or any other equally
+            // ordinary job" and was measured on Staging: six generations from
+            // one generic portrait returned "pharmacist" six times. A job
+            // has a ~10% chance of appearing in a given six-of-fifty-seven
+            // shortlist, so six hits in six runs is not the shortlist being
+            // followed -- it was being ignored, and "or any other" was the
+            // door it left open. The model simply has a modal answer per
+            // photo, and an invitation does not displace it.
+            //
+            // So when the photo establishes nothing, the list is where the
+            // job comes from. Evidence still outranks it -- the sentence is
+            // conditional -- and the model still decides which of the six
+            // fits the woman in front of it, which is what keeps the rest of
+            // the persona coherent. The variation comes from the draw, not
+            // from asking the model to feel spontaneous.
+            `If the photo does not establish her job, her job is one of these six and nothing else: ${suggestions.join(', ')}. Pick whichever best fits the woman in the photo, write it as that plain title, and build her education, routine and worries around it. Do not substitute a job that is absent from this list, and do not simply take the first.`,
             '',
             'Reply with the JSON object only.',
           ].join('\n'),
