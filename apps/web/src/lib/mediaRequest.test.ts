@@ -600,3 +600,81 @@ describe('the specified phrasings all resolve', () => {
     expect(detectMediaRequest(text, AFTER_VIDEO)).toBeNull();
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * Carrying the request forward: "now a clip"
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE PRODUCTION MISS THESE PIN SHUT.
+ *
+ * A customer received a photo and replied "now a clip, i promise to tell you
+ * why afterwards". It names a media noun and is plainly a request, but it has
+ * no cue verb -- "promise" is not one -- and "now" was in no follow-up list, so
+ * nothing was detected. The server never learned she had been asked, ran no
+ * selection, and handed the model an ordinary turn with no media guidance at
+ * all. It answered "I'm not sending clips or videos. That's not really my
+ * thing" -- a standing refusal, from a character who had videos to send, now
+ * stored in the history and replayed into every later turn.
+ *
+ * The miss was in detection, so these tests live here.
+ */
+describe('a continuation carries the request forward', () => {
+  it('detects the exact message that failed in production', () => {
+    expect(
+      detectMediaRequest('now a clip, i promise to tell you why afterwards', AFTER_IMAGE),
+    ).toBe('video');
+  });
+
+  it.each([
+    ['now a clip', 'video'],
+    ['ok a video then', 'video'],
+    ['and a pic?', 'image'],
+    ['so a video now', 'video'],
+    ['next a selfie', 'image'],
+    ['alright a photo', 'image'],
+  ])('continues after an image: %s -> %s', (text, expected) => {
+    expect(detectMediaRequest(text, AFTER_IMAGE)).toBe(expected);
+  });
+
+  /** The noun still wins over the context, so switching kinds works both ways. */
+  it('switches back from video to image', () => {
+    expect(detectMediaRequest('now a pic', AFTER_VIDEO)).toBe('image');
+  });
+
+  /**
+   * ONLY AT THE START. These words are ordinary grammar mid-sentence, and an
+   * unanchored list would turn a story about a beach into a request.
+   */
+  it.each([
+    'we went to the beach and I took a photo',
+    'I watched a video and then went to bed',
+    'that was fun, also the photo was nice',
+    'she showed up and now the video makes sense',
+  ])('mid-sentence is not a request: %s', (text) => {
+    expect(detectMediaRequest(text, AFTER_IMAGE)).toBeNull();
+    expect(detectMediaRequest(text, AFTER_VIDEO)).toBeNull();
+  });
+
+  /**
+   * SCOPED TO THE FOLLOW-UP WINDOW, like every other follow-up rule. With no
+   * recent media exchange there is nothing to carry forward, and "now" is just
+   * a word.
+   */
+  it.each(['now a clip', 'ok a video then', 'and a pic?'])(
+    'needs a recent media exchange: %s',
+    (text) => {
+      expect(detectMediaRequest(text, NO_CONTEXT)).toBeNull();
+      expect(detectMediaRequest(text)).toBeNull();
+    },
+  );
+
+  it('still needs a media noun', () => {
+    expect(detectMediaRequest('now tell me about your day', AFTER_IMAGE)).toBeNull();
+    expect(detectMediaRequest('ok what next?', AFTER_IMAGE)).toBeNull();
+  });
+
+  it('is still beaten by a negation', () => {
+    expect(detectMediaRequest('now stop sending pics', AFTER_IMAGE)).toBeNull();
+  });
+});

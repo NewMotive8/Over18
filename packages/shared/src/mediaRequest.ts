@@ -101,9 +101,17 @@ const REQUEST_CUE = /\b(send|show|share|give|post|want|wanna|need|gimme)\b/i;
  * KEPT IN STEP WITH `REQUEST_CUE`. Every verb that can open a request has to be
  * negatable, or widening the cue list quietly turns "I don't need a picture"
  * into one. The two lists are the same set and must stay that way.
+ *
+ * THE -ing FORMS ARE NOT DECORATION. `REQUEST_CUE` needs only the bare verb,
+ * because "send me a pic" is how a request is phrased. A REFUSAL is phrased the
+ * other way -- "stop sending pics", "never showing photos" -- so a negation
+ * list limited to bare verbs matches nothing a person actually writes. It went
+ * unnoticed while "stop sending pics" failed the cue test anyway and came back
+ * null by accident; once CONTINUATION_CUE admitted "now stop sending pics",
+ * the accident stopped covering for it.
  */
 const NEGATED_REQUEST =
-  /\b(?:don'?t|do not|never|stop|quit|no)\s+(?:send|show|share|give|post|want|wanna|need|gimme|more)\b/i;
+  /\b(?:don'?t|do not|never|stop|quit|no)\s+(?:send(?:ing)?|show(?:ing)?|shar(?:e|ing)|giv(?:e|ing)|post(?:ing)?|want(?:ing)?|wanna|need(?:ing)?|gimme|more)\b/i;
 
 /**
  * The nouns, as alternation SOURCE rather than finished regexes, because three
@@ -195,6 +203,48 @@ const FOLLOW_UP_CUE =
   /\b(another|one more|any more|some more|different|what about|how about|instead)\b/i;
 
 /**
+ * CONTINUATION — "now a clip", "ok a video then", "and a pic?".
+ *
+ * THE GAP THIS CLOSES, observed in production. After a character sent a photo,
+ * a customer asked "now a clip, i promise to tell you why afterwards". It has a
+ * media noun and it is plainly a request, but it carries no cue verb --
+ * "promise" is not one -- and no FOLLOW_UP_CUE, because "now" was not in that
+ * list. So nothing was detected, no selection ran, and the server never learned
+ * she had been asked. The model was handed an ordinary turn with no media
+ * guidance at all and invented "I'm not sending clips or videos. That's not
+ * really my thing" -- exactly the standing refusal that
+ * `requestedMediaUnavailable` exists to prevent, from a character who had
+ * videos available to send.
+ *
+ * The miss was in detection, so the fix is in detection. These are the words
+ * that carry a request forward from the turn before rather than opening one,
+ * which is why the cue list could never have held them: on their own they ask
+ * for nothing.
+ *
+ * SAFE ONLY BECAUSE IT IS SCOPED TWICE OVER. Like every rule below it, this one
+ * is reachable only INSIDE the follow-up window -- the conversation must have
+ * been doing media within the last few messages -- and it still requires a
+ * media noun. Outside that window "now" is just a word, and "now I need a
+ * picture of the situation" cannot reach the media path.
+ *
+ * ANCHORED TO THE START, which is the whole reason these words can be trusted
+ * at all. A continuation word carries the previous turn forward from the front
+ * of the sentence -- "now a clip", "ok a video then", "and a pic?". The same
+ * words in the middle of a sentence are ordinary grammar, and an unanchored
+ * list would have made "we went to the beach and I took a photo" a request for
+ * one. Anchoring is what separates the two, and it costs nothing: nobody opens
+ * a follow-up request with the conjunction buried mid-clause.
+ *
+ * The residual risk is a remark that genuinely opens with one of these words
+ * and names a media noun, inside the window ("now that clip was funny"). That
+ * costs one unwanted picture. The failure it replaces costs a refusal that is
+ * stored forever and replayed into every later turn, so the asymmetry is what
+ * decides the trade.
+ */
+const CONTINUATION_CUE =
+  /^\s*(?:so|ok|okay|alright|and|now|next|then|also)\b/i;
+
+/**
  * Stands in for the noun itself — "another one", with no picture/video said.
  * Narrower than FOLLOW_UP_CUE because there is no noun to disambiguate: this
  * is the only path where the type comes from context rather than the words.
@@ -261,9 +311,15 @@ export function detectMediaRequest(
   // Everything below is follow-up territory and needs a recent media exchange.
   if (!withinFollowUpWindow(context)) return null;
 
-  // 2. Follow-up naming the kind: "what about a video?", "another picture?".
-  //    The noun wins over the context, which is what makes switching work.
-  if (noun && (FOLLOW_UP_CUE.test(normalized) || REQUEST_CUE.test(normalized))) {
+  // 2. Follow-up naming the kind: "what about a video?", "another picture?",
+  //    "now a clip". The noun wins over the context, which is what makes
+  //    switching from a photo to a video work.
+  if (
+    noun &&
+    (FOLLOW_UP_CUE.test(normalized) ||
+      REQUEST_CUE.test(normalized) ||
+      CONTINUATION_CUE.test(normalized))
+  ) {
     return noun;
   }
 
