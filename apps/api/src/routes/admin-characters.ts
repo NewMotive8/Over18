@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import multipart from '@fastify/multipart';
+import { compareProfileAndPersona } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import {
   CharacterNameTakenError,
@@ -21,6 +22,7 @@ import {
   CharacterPersonaRegenerationError,
   CharacterPersonaValidationError,
   getCharacterPersona,
+  listCharacterPersonas,
   regenerateCharacterPersona,
   releaseCharacterPersonaField,
   saveCharacterPersona,
@@ -161,6 +163,19 @@ export default async function adminCharacterRoutes(
 
   app.get('/admin/characters', adminOnly, async () => {
     const characters = await listAllCharacters(opts.db);
+    /**
+     * WHETHER HER PAGE AND HER CHAT STILL DESCRIBE THE SAME WORK.
+     *
+     * Derived on every read from the two records themselves -- there is no
+     * stored verdict, so nothing here can be stale or need clearing. One
+     * batched query for the whole list rather than one per row, and the SAME
+     * shared comparison the detail view uses, so the list and the record it
+     * links to cannot disagree.
+     */
+    const personas = await listCharacterPersonas(
+      opts.db,
+      characters.map((c) => c.id),
+    );
     // Each row carries its identity summary so the list can show readiness
     // without the UI making N follow-up requests.
     return Promise.all(
@@ -175,6 +190,11 @@ export default async function adminCharacterRoutes(
           activeIdentityVersion: active?.version ?? null,
           identityVersionCount: versions.length,
           primaryReferenceCount: primaryCount,
+          profileDivergence: compareProfileAndPersona({
+            shortBio: character.shortBio,
+            personality: character.personality,
+            personaOccupation: personas.get(character.id)?.persona?.occupation ?? null,
+          }).status,
         };
       }),
     );

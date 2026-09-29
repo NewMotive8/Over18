@@ -1664,10 +1664,18 @@ export interface AdminCharacterView {
   missingProfileFields: string[];
 }
 
+import type { ProfileDivergenceStatus } from '@over18/shared';
+
 export interface AdminCharacterListItem extends AdminCharacterView {
   activeIdentityVersion: number | null;
   identityVersionCount: number;
   primaryReferenceCount: number;
+  /**
+   * Whether her public profile and her chat persona still describe the same
+   * work. DERIVED by the server on every read from the two records themselves,
+   * so it can never be stale -- there is no stored verdict to clear.
+   */
+  profileDivergence: ProfileDivergenceStatus;
 }
 
 export interface VisualIdentityView {

@@ -511,3 +511,4 @@ export function audienceMatches(audience: BannerAudience, viewer: BannerViewer):
   if (audience === 'everyone') return true;
   return audience === 'returning_users' ? viewer.isReturning : !viewer.isReturning;
 }
+export * from './profileDivergence.js';

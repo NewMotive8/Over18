@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type { CharacterPersona, ProposedCharacterProfile } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { characterPersonas, type CharacterPersonaRow } from '../db/schema.js';
@@ -168,6 +168,32 @@ export async function getCharacterPersona(
     .where(eq(characterPersonas.characterId, characterId))
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * Every listed character's persona, in ONE query.
+ *
+ * The Admin list already costs a handful of per-character reads; adding a
+ * per-character persona lookup would have made that worse for a column. `inArray`
+ * fetches the lot and the caller indexes it, so the list gains one query rather
+ * than one per row.
+ *
+ * Returns a Map so a character with no persona is simply absent -- the caller
+ * distinguishes "no persona" from "persona with nothing to compare", and those
+ * are different answers on screen.
+ */
+export async function listCharacterPersonas(
+  db: Db,
+  characterIds: string[],
+): Promise<Map<string, CharacterPersonaRow>> {
+  const found = new Map<string, CharacterPersonaRow>();
+  if (characterIds.length === 0) return found;
+  const rows = await db
+    .select()
+    .from(characterPersonas)
+    .where(inArray(characterPersonas.characterId, characterIds));
+  for (const row of rows) found.set(row.characterId, row);
+  return found;
 }
 
 /**

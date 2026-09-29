@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
-import AdminCharactersPage, { profileNoteOf, readinessOf, slugify } from './AdminCharactersPage';
+import AdminCharactersPage, {
+  divergenceHintOf,
+  profileNoteOf,
+  readinessOf,
+  slugify,
+} from './AdminCharactersPage';
 import { ADMIN_DESTINATIONS } from '../../admin/adminNav';
 import type { AdminCharacterListItem } from '../../lib/api';
 
@@ -23,6 +28,9 @@ import type { AdminCharacterListItem } from '../../lib/api';
  */
 
 const base: AdminCharacterListItem = {
+  // Derived by the server; 'consistent' keeps every pre-existing case here
+  // about what it was already about.
+  profileDivergence: 'consistent',
   id: 'c1',
   name: 'nova',
   displayName: 'Nova',
@@ -41,6 +49,28 @@ const base: AdminCharacterListItem = {
   identityVersionCount: 0,
   primaryReferenceCount: 0,
 };
+
+/**
+ * THE DIVERGENCE HINT. Deliberately separate from readiness: readiness means
+ * "cannot publish", and a character whose page and chat describe different work
+ * is publishable -- she just wants a human to look.
+ */
+describe('the profile / chat persona divergence hint', () => {
+  it('states the difference in words rather than implying it with a colour', () => {
+    expect(divergenceHintOf({ ...base, profileDivergence: 'diverged' })).toBe(
+      'Profile and chat persona describe different work',
+    );
+  });
+
+  it('says nothing when no divergence was found', () => {
+    expect(divergenceHintOf({ ...base, profileDivergence: 'consistent' })).toBeNull();
+  });
+
+  /** Nothing to disagree with is not a disagreement. */
+  it('says nothing when there was not enough to compare', () => {
+    expect(divergenceHintOf({ ...base, profileDivergence: 'incomplete' })).toBeNull();
+  });
+});
 
 describe('Characters is no longer a placeholder', () => {
   it('the admin navigation lists Characters as available', () => {

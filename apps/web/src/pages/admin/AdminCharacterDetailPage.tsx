@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 import CharacterEligibilityPanel from '../../admin/CharacterEligibilityPanel';
+import ProfileDivergencePanel from '../../admin/ProfileDivergencePanel';
 import CharacterAccessSection from './CharacterAccessPanel';
 import {
   addKeywords,
@@ -920,6 +921,22 @@ export default function AdminCharacterDetailPage() {
           </dl>
         )}
       </section>
+
+      {/* ---------------- Profile vs chat persona ----------------
+       *
+       * BETWEEN THE TWO THINGS IT COMPARES. Persona above holds her public
+       * profile; "Life details from her photo" below holds the chat persona.
+       * The comparison belongs where an operator can look up at one and down at
+       * the other without leaving the answer behind.
+       *
+       * Read-only by construction: it takes the data the page already has and
+       * renders it. Nothing here writes, and nothing offers to sync the two --
+       * a difference can be deliberate.
+       */}
+      <ProfileDivergencePanel
+        character={character}
+        persona={avatarPersona?.persona ?? null}
+      />
 
       {/* ---------------- Life details from her photo (Phase 2) ----------------
        *
