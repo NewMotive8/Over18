@@ -101,6 +101,36 @@ describe('the Posts tab renders the real collection', () => {
     expect(markup).toContain('/api/media/assets/pic/file');
   });
 
+  /**
+   * THE WHOLE FRAME, AS ADMIN SHOWS IT.
+   *
+   * Admin previews a clip as `object-contain` inside a 3/4 frame; these tiles
+   * defaulted to `object-cover`, so the same clip was cropped for a visitor and
+   * letterboxed for the operator who approved it. These pin the fix and, just as
+   * importantly, its SCOPE: video only, because `className` reaches the `<img>`
+   * too and image framing is deliberately untouched.
+   */
+  it('shows a VIDEO post whole, not cropped', () => {
+    const markup = render([clip('a', 'video')], allOpen(['a']));
+    expect(markup).toContain('<video');
+    expect(markup).toContain('object-contain');
+    expect(markup, 'the cropping fit must be gone from a video tile').not.toContain('object-cover');
+  });
+
+  it('leaves an IMAGE post framed exactly as before', () => {
+    const markup = render([clip('pic', 'image')], allOpen(['pic']));
+    expect(markup).toContain('<img');
+    expect(markup, 'images keep the component default').toContain('object-cover');
+    expect(markup).not.toContain('object-contain');
+  });
+
+  /** The letterbox bars are the frame's own background, so the frame matters. */
+  it('keeps the 3/4 frame and its dark background for the letterboxing', () => {
+    const markup = render([clip('a', 'video')], allOpen(['a']));
+    expect(markup).toContain('aspect-[3/4]');
+    expect(markup).toContain('bg-zinc-900');
+  });
+
   it('keeps the approved tile presentation', () => {
     // Same grid, same frame, same gradient as the approved design.
     const markup = render([clip('a'), clip('b')], allOpen(['a', 'b']));
