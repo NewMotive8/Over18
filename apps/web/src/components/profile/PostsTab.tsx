@@ -115,7 +115,36 @@ export default function PostsTab({
               title={title}
               onOpen={() => onOpenClip(index)}
               onUnlock={() => unlock.open({ assetId: clip.id, title, creditPrice: item?.creditPrice ?? null })}
-              media={<ClipMedia clip={clip} autoPlay={view.revealed} />}
+              media={
+                <ClipMedia
+                  clip={clip}
+                  autoPlay={view.revealed}
+                  /**
+                   * THE WHOLE FRAME, THE WAY ADMIN SHOWS IT.
+                   *
+                   * `ClipMedia` defaults to `object-cover`, which fills the 3/4
+                   * tile and discards whatever hangs outside it. Admin's preview
+                   * is `object-contain` in a 3/4 frame, so an operator approving
+                   * a clip and a visitor opening the same clip were looking at
+                   * different crops of it. This is the one class that difference
+                   * came down to; the frame and its `bg-zinc-900` already match
+                   * Admin's, so the letterboxing looks the same on both.
+                   *
+                   * VIDEO ONLY, and that is why this branches rather than being
+                   * passed unconditionally: `className` reaches the `<img>` too,
+                   * and image framing is deliberately left alone. `undefined`
+                   * gives an image the component's own default, unchanged.
+                   *
+                   * NOT changed in `ClipMedia` itself: the lobby rails, the clip
+                   * grid and the Hero all share it and all still want to fill
+                   * their frames. FeedView already opts into `contain` the same
+                   * way, so this follows a path that exists.
+                   */
+                  className={
+                    clip.mediaType === 'video' ? 'h-full w-full object-contain' : undefined
+                  }
+                />
+              }
               footer={
                 /* Approved mark, unchanged position and styling. Decorative: it
                    states nothing, so it is hidden from assistive technology. */
