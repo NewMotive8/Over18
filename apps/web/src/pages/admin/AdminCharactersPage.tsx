@@ -45,6 +45,24 @@ export function readinessOf(character: AdminCharacterListItem): string {
 }
 
 /**
+ * Says, in words, that her page and her chat describe different work.
+ *
+ * DELIBERATELY NOT PART OF `readinessOf`. Readiness means "cannot publish", and
+ * a divergence is a judgement call: she is perfectly publishable, and the
+ * difference may well be intentional. Conflating them would block a release on
+ * an editorial choice.
+ *
+ * Null for every other status, including 'incomplete' -- a character with no
+ * persona has nothing to disagree with, and saying so in the list would be
+ * noise on a screen that already carries readiness.
+ */
+export function divergenceHintOf(character: AdminCharacterListItem): string | null {
+  return character.profileDivergence === 'diverged'
+    ? 'Profile and chat persona describe different work'
+    : null;
+}
+
+/**
  * Says, in words, that the persona still needs writing. Separate from visual
  * readiness because they are different blockers with different fixes: one is
  * solved on the identity section, the other by writing (or generating) text.
@@ -253,6 +271,21 @@ export default function AdminCharactersPage() {
                     <span className="text-zinc-500">/ {character.name}</span>
                   </p>
                   <p className="truncate text-xs text-zinc-500">{readinessOf(character)}</p>
+                  {/*
+                    HER PAGE AND HER CHAT DISAGREE ABOUT HER WORK.
+                    Deliberately NOT part of `readinessOf`: readiness means
+                    "cannot publish", and a divergence is a judgement call, not
+                    a blocker. Shown here so an operator can find the characters
+                    worth a look without opening all forty.
+                  */}
+                  {divergenceHintOf(character) && (
+                    <p
+                      data-testid="divergence-hint"
+                      className="truncate text-xs text-amber-400/90"
+                    >
+                      {divergenceHintOf(character)}
+                    </p>
+                  )}
                   {profileNoteOf(character) && (
                     <p className="truncate text-xs text-amber-500/80">{profileNoteOf(character)}</p>
                   )}
