@@ -15,6 +15,7 @@ export default function MediaViewer({
   label,
   onClose,
   fit = 'cover',
+  videoFit,
 }: {
   items: CharacterMediaItem[];
   startIndex: number;
@@ -29,6 +30,20 @@ export default function MediaViewer({
    * deliberately sent has to be seen whole, at its own aspect ratio.
    */
   fit?: 'cover' | 'contain';
+  /**
+   * How VIDEO is fitted, when that should differ from `fit`.
+   *
+   * WHY A SECOND PROP RATHER THAN `fit="contain"`. A character's Posts gallery
+   * mixes images and videos in one viewer, and it pages between them in here --
+   * the caller never learns which item is on screen, so it cannot decide per
+   * item. Passing `fit="contain"` would have moved her IMAGES out of their 4/5
+   * frame too, which is a change nobody asked for.
+   *
+   * Undefined means "whatever `fit` says", so every existing caller -- chat
+   * included, which passes `fit="contain"` for its own reasons -- renders
+   * exactly as it did.
+   */
+  videoFit?: 'cover' | 'contain';
 }) {
   const [index, setIndex] = useState(startIndex);
   const clamped = Math.max(0, Math.min(index, items.length - 1));
@@ -45,6 +60,17 @@ export default function MediaViewer({
   }, [items.length, onClose]);
 
   if (!item) return null;
+
+  /**
+   * THE FIT THAT ACTUALLY APPLIES TO WHAT IS ON SCREEN.
+   *
+   * Used for BOTH the container and the media, and that pairing is the whole
+   * point: the two `fit` branches below are different boxes, not just different
+   * `object-fit` values. `contain` media inside the `cover` box would still be
+   * cropped -- the box is a fixed 4/5 with `overflow-hidden` -- so honouring
+   * this in one place and not the other would look like the fix had not worked.
+   */
+  const effectiveFit = item.media.kind === 'video' ? (videoFit ?? fit) : fit;
 
   return (
     <div
@@ -65,7 +91,7 @@ export default function MediaViewer({
 
       <div
         className={
-          fit === 'contain'
+          effectiveFit === 'contain'
             ? // A DEFINITE height, not max-h: HeroMedia's inner element is
               // `h-full`, which only resolves against a definite parent. With
               // max-h alone the height is indefinite, h-full collapses to auto
@@ -77,7 +103,7 @@ export default function MediaViewer({
         }
         onClick={(e) => e.stopPropagation()}
       >
-        <HeroMedia media={item.media} alt={label} fit={fit} />
+        <HeroMedia media={item.media} alt={label} fit={effectiveFit} />
       </div>
 
       {items.length > 1 && (

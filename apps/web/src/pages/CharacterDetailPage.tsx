@@ -278,6 +278,15 @@ export default function CharacterDetailPage() {
           startIndex={viewer.index}
           label={character.displayName}
           onClose={() => setViewer(null)}
+          /**
+           * Her clips open WHOLE, the way the Posts tile and Admin show them.
+           *
+           * Without this the enlarged view put a video in a fixed 4/5 box and
+           * cropped it, so tapping a tile that had just been fixed to show the
+           * whole frame cropped it again. Video only: her IMAGES keep the 4/5
+           * frame this viewer has always given them.
+           */
+          videoFit="contain"
         />
       )}
       {gateOpen && <PremiumGate name={character.displayName} onClose={() => setGateOpen(false)} />}
