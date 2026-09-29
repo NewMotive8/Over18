@@ -71,12 +71,39 @@ describe('a character WITH an eligible header video', () => {
     expect(html).not.toContain('/app/var/media');
   });
 
-  it('keeps the approved header treatment exactly — crop, snap and gradients', () => {
+  it('keeps the approved header treatment exactly — frame, snap and gradients', () => {
     const html = markup();
     expect(html).toContain('aspect-[4/5]');
     expect(html).toContain('snap-center');
     expect(html).toContain('rounded-b-3xl');
     expect(html).toContain('bg-gradient-to-t from-zinc-950');
+    // Scroll-snap paging is untouched by the framing change.
+    expect(html).toContain('snap-x snap-mandatory overflow-x-auto');
+  });
+
+  /**
+   * HER HEAD WAS BEING CUT OFF.
+   *
+   * Every production clip is portrait -- 9:16, 640x1152, 544x960, 768x1168 --
+   * and this frame is 4/5 = 0.8, wider than all of them. `object-cover` filled
+   * the width and discarded about 30% of a 9:16 clip's height, and the default
+   * `center` anchor split that evenly, so roughly 15% came off the top.
+   *
+   * `contain` fits the whole clip instead. The frame does NOT change, so the
+   * cost is a dark bar down each side -- which is why the slide needs a
+   * background of its own, and why that is asserted here rather than left to
+   * whatever sits behind the carousel.
+   */
+  it('shows a VIDEO whole instead of cropping it', () => {
+    const html = markup();
+    expect(html).toContain('<video');
+    expect(html).toContain('object-contain');
+    expect(html, 'the cropping fit must be gone for video').not.toContain('object-cover');
+  });
+
+  it('gives the slide its own dark background for the letterboxing', () => {
+    const html = markup();
+    expect(html).toContain('aspect-[4/5] w-full shrink-0 snap-center bg-zinc-900');
   });
 });
 
@@ -99,6 +126,26 @@ describe('a character with NO eligible header video', () => {
   it('does not turn an image clip into a video', () => {
     const html = render(characterHeaderItems(character(), [clip('i1', 'image')], null));
     expect(html).not.toContain('<video');
+  });
+
+  /**
+   * THE FRAMING CHANGE IS VIDEO-ONLY. An image still fills the 4/5 frame, so
+   * the header is unchanged for a character who has no video -- and the dark
+   * background is simply never seen behind a covered image.
+   */
+  it('keeps her still IMAGE covering the frame, exactly as before', () => {
+    const items = characterHeaderItems(character({ profileImage: 'https://img/aria.png' }), [], null);
+    const html = render(items);
+    expect(html).toContain('<img');
+    expect(html).toContain('object-cover');
+    expect(html, 'an image must not be letterboxed').not.toContain('object-contain');
+    // The frame itself is the same one a video gets.
+    expect(html).toContain('aspect-[4/5]');
+  });
+
+  it('keeps the initial-letter PLACEHOLDER covering the frame', () => {
+    const html = render(characterHeaderItems(character(), [], null));
+    expect(html).not.toContain('object-contain');
   });
 });
 
