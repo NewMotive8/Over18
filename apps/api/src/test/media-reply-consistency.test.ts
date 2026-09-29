@@ -10,7 +10,12 @@ import { createVisualAsset } from '../services/visual-asset-service.js';
 import { getActiveVisualIdentity } from '../services/visual-identity-service.js';
 import type { ReplyContext } from '../services/character-reply.js';
 import { createLlmReplyProvider } from '../services/llm-reply-provider.js';
-import { buildLlmMessages, createPromptBuilder } from '../services/prompt-builder.js';
+import {
+  SENT_PHOTO_MARKER,
+  SENT_VIDEO_MARKER,
+  buildLlmMessages,
+  createPromptBuilder,
+} from '../services/prompt-builder.js';
 import type { LlmClient, LlmMessage, LlmRequest } from '../llm/types.js';
 import {
   createTestContext,
@@ -475,5 +480,117 @@ describe('where the per-turn instruction sits in the prompt', () => {
     expect(content).toMatch(/do not refuse, deny, dodge/i);
     // ...while leaving the character's manner entirely their own.
     expect(content).toContain('Shy, teasing, playful, reluctant, smug, quiet');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * She can see what she already sent
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE SECOND PRODUCTION DEFECT IN THIS FILE, and a close relative of the first.
+ *
+ * The one above was about a refusal outranking the instruction on the SAME
+ * turn. This one is about LATER turns: a character sent a photo and then a
+ * clip, and a few exchanges afterwards told the same person "I'm not sending
+ * clips to strangers".
+ *
+ * She was reasoning correctly from a broken record. A refusal is a sentence, so
+ * it survived in the history and was replayed into every later prompt; an
+ * attachment was a database column the prompt never read. The asymmetry had a
+ * direction -- turn after turn, the only evidence left was of her saying no.
+ *
+ * These tests go through the real HTTP route, the real join, the real history
+ * conversion and the real prompt builder, and assert on the bytes the client
+ * would have sent to the model.
+ */
+describe('history tells her what she already sent', () => {
+  it('a photo she sent earlier appears in a LATER prompt as a sent photo', async () => {
+    await makeAsset('image');
+    const user = await setupUser('sees.photo@example.com');
+
+    // Turn 1: she actually sends a photo.
+    const sent = await send(user, 'send me a pic', 'image');
+    expect(sent.json().characterMessage.media?.type).toBe('image');
+
+    // Turn 2: an ordinary message. THIS is the prompt under test.
+    await send(user, 'what are you up to?');
+
+    const later = captured.at(-1)!;
+    const assistantTurns = later.messages.filter((m) => m.role === 'assistant');
+    expect(assistantTurns.some((m) => m.content.includes(SENT_PHOTO_MARKER))).toBe(true);
+    expect(assistantTurns.some((m) => m.content.includes(SENT_VIDEO_MARKER))).toBe(false);
+  });
+
+  it('a video she sent earlier appears in a LATER prompt as a sent video', async () => {
+    await makeAsset('video');
+    const user = await setupUser('sees.video@example.com');
+
+    const sent = await send(user, 'send me a clip', 'video');
+    expect(sent.json().characterMessage.media?.type).toBe('video');
+
+    await send(user, 'nice, thanks');
+
+    const later = captured.at(-1)!;
+    const assistantTurns = later.messages.filter((m) => m.role === 'assistant');
+    expect(assistantTurns.some((m) => m.content.includes(SENT_VIDEO_MARKER))).toBe(true);
+  });
+
+  /** An ordinary exchange must be byte-identical to what it was before. */
+  it('adds nothing to a conversation that never carried media', async () => {
+    const user = await setupUser('sees.nothing@example.com');
+    await send(user, 'hello');
+    await send(user, 'how are you?');
+
+    const later = captured.at(-1)!;
+    for (const message of later.messages) {
+      expect(message.content).not.toContain('You sent a photo');
+      expect(message.content).not.toContain('You sent a video');
+    }
+  });
+
+  /** HIS turns are his. The marker belongs to the turn that carried the asset. */
+  it('never marks his messages', async () => {
+    await makeAsset('image');
+    const user = await setupUser('sees.userturn@example.com');
+    await send(user, 'send me a pic', 'image');
+    await send(user, 'did you like that photo?');
+
+    const later = captured.at(-1)!;
+    for (const message of later.messages.filter((m) => m.role === 'user')) {
+      expect(message.content).not.toContain('You sent');
+    }
+  });
+
+  /**
+   * PROMPT ONLY. The marker exists to stop her contradicting herself; a
+   * customer must never read it. The wire response and the stored row are
+   * built from their own rows and are untouched.
+   */
+  it('never leaks into the API response, the transcript, or the database', async () => {
+    await makeAsset('image');
+    const user = await setupUser('sees.noleak@example.com');
+
+    const sent = await send(user, 'send me a pic', 'image');
+    expect(JSON.stringify(sent.json())).not.toContain('You sent a photo');
+
+    await send(user, 'what are you up to?');
+
+    // The full history the client renders.
+    const history = await on.app.inject({
+      method: 'GET',
+      url: `/api/conversations/${user.conversationId}/messages`,
+      cookies: user.cookies,
+    });
+    expect(history.statusCode).toBe(200);
+    expect(JSON.stringify(history.json())).not.toContain('You sent a photo');
+    expect(JSON.stringify(history.json())).not.toContain('You sent a video');
+
+    // ...and nothing was written into the stored text either.
+    const rows = await on.db
+      .select({ content: messages.content })
+      .from(messages)
+      .where(eq(messages.conversationId, user.conversationId));
+    for (const row of rows) expect(row.content).not.toContain('You sent');
   });
 });

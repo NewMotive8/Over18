@@ -407,6 +407,48 @@ export const DEFAULT_CONTEXT_WINDOW: ContextWindowOptions = {
  * either included verbatim or dropped entirely, so truncation can never
  * alter or leak content. Same inputs always produce the same window.
  */
+/**
+ * WHAT SHE ALREADY SENT, WRITTEN INTO HER OWN TRANSCRIPT.
+ *
+ * A refusal is a sentence, so it survives in the history and is replayed into
+ * every later prompt. An attachment was a database column, so it survived
+ * nowhere the model could see. The two are not symmetrical, and the asymmetry
+ * has a direction: turn after turn, the only evidence left was of her saying
+ * no. A character sent a clip and, a few turns later, told the same person she
+ * does not send clips -- reasoning correctly from a record missing half of what
+ * happened.
+ *
+ * So a turn that went out with media now says so, in one short line, in the
+ * assistant message itself. Not a system note: it belongs to the turn it
+ * describes, and moves and ages out of the window with it.
+ *
+ * STATED AS FACT, NOT AS INSTRUCTION. It reports what happened and asks for
+ * nothing. `buildTurnMediaInstruction` is the layer that tells her how to
+ * behave, and only about the turn being written now; this one only stops her
+ * contradicting her own past.
+ *
+ * PROMPT ONLY. The wire response is built from its own rows in message-service,
+ * so no marker can reach the client's transcript.
+ */
+export const SENT_PHOTO_MARKER = '(You sent a photo with this message.)';
+export const SENT_VIDEO_MARKER = '(You sent a video with this message.)';
+
+/**
+ * One history turn as the model should read it.
+ *
+ * ONLY HER OWN TURNS, and only when the stored row actually carried an asset.
+ * A message is never marked for talking ABOUT a photo -- "did you see that
+ * picture?" is not a photo -- and a user's turn is never marked at all, because
+ * he is not the one who sent it.
+ */
+export function historyContent(message: ChatMessage): string {
+  if (message.sender !== 'character' || !message.media) return message.content;
+  const marker = message.media.type === 'video' ? SENT_VIDEO_MARKER : SENT_PHOTO_MARKER;
+  // Trailing, on its own line: the caption stays the character's own words and
+  // the fact sits after them rather than interrupting.
+  return message.content ? `${message.content}\n${marker}` : marker;
+}
+
 export function selectContextWindow(
   history: ChatMessage[],
   options: ContextWindowOptions = DEFAULT_CONTEXT_WINDOW,
@@ -474,10 +516,13 @@ export function createPromptBuilder(
           memories: selectMemoriesForPrompt(context.memories ?? [], memoryOptions),
         }),
       },
+      // The window is selected on the stored text, exactly as before, and the
+      // marker is added afterwards -- so which turns survive trimming is
+      // unchanged by this.
       ...selectContextWindow(context.history, windowOptions).map(
         (message): LlmMessage => ({
           role: message.sender === 'user' ? 'user' : 'assistant',
-          content: message.content,
+          content: historyContent(message),
         }),
       ),
     ];
