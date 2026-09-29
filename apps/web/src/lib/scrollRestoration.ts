@@ -12,15 +12,24 @@
  * all; `AppShell` keeps only the wiring, which is the part a DOM test would
  * have covered.
  *
- * ── WHY THE WINDOW IS NOT INVOLVED ───────────────────────────────────────────
+ * ── WHAT ACTUALLY SCROLLS ────────────────────────────────────────────────────
  *
- * `AppShell` renders its routes inside `<main class="… overflow-y-auto">`, and
- * the shell is not remounted between routes, so that element is the same DOM
- * node before and after a navigation and its `scrollTop` survives. That is the
- * whole bug: tapping a clip 800px down Home opened the character page into a
- * container already scrolled to 800px. `window.scrollTo(0, 0)` would have
- * appeared to do nothing, because the window is not what scrolls -- the same
- * trap `chatScroll.ts` documents for `scrollIntoView`.
+ * The DOCUMENT, not `<main>`. `AppShell` renders its routes inside
+ * `<main class="… overflow-y-auto">`, which reads like the scroll container and
+ * is not one: `min-h-dvh` on the shell is a MINIMUM, so the shell grows past the
+ * viewport, `flex-1` then sizes `<main>` to its content, and the overflow never
+ * engages. Measured on the running lobby:
+ *
+ *   main      scrollHeight 5979 === clientHeight 5979   -> cannot scroll
+ *   document  scrollHeight 6078 vs  clientHeight  768   -> scrolls
+ *
+ * THE FIRST ATTEMPT RESET `<main>` AND DID NOTHING, because its `scrollTop` is
+ * permanently 0. Recorded here because the class list is genuinely misleading,
+ * and reading it was how the wrong element got picked in the first place.
+ *
+ * The document keeps its offset across a client-side navigation, which is the
+ * bug: window 1400 on Home became window 909 on the character page -- clamped
+ * only because her page is shorter, not reset.
  */
 
 /** The only part of an element this module needs, so a test can pass an object. */

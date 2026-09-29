@@ -28,15 +28,24 @@ export default function AppShell() {
   /* ------------------------------------------------------------------ *
    * Scroll position, per history entry
    *
-   * `<main>` below is the app's only vertical scroll container and it is NOT
-   * remounted between routes, so its `scrollTop` carries from one screen to the
-   * next. Left alone, tapping a clip part-way down Home opened the character
-   * page already scrolled to that offset.
+   * THE DOCUMENT SCROLLS, NOT `<main>`, AND THAT WAS WORTH MEASURING. `<main>`
+   * below carries `overflow-y-auto`, which reads like the scroll container and
+   * is not one: `min-h-dvh` on the shell is a MINIMUM, so the shell grows past
+   * the viewport, `flex-1` then sizes `<main>` to its content, and the overflow
+   * never engages. Measured on the running lobby:
+   *
+   *   main      scrollHeight 5979 === clientHeight 5979   -> cannot scroll
+   *   document  scrollHeight 6078 vs  clientHeight  768   -> scrolls
+   *
+   * A first attempt reset `<main>` and did nothing at all, because its
+   * `scrollTop` is permanently 0. The window is what carries a position from one
+   * screen to the next, which is why tapping a clip part-way down Home opened
+   * the character page already scrolled -- reproduced at window 1400 on Home
+   * becoming window 909 on her page.
    *
    * The decision itself lives in `lib/scrollRestoration` so it can be tested:
    * this suite runs in node with no DOM, so nothing here executes under test.
    * ------------------------------------------------------------------ */
-  const mainRef = useRef<HTMLElement>(null);
   const positions = useRef(new Map<string, number>());
   const currentKey = useRef(location.key);
   const previousPathname = useRef<string | null>(null);
@@ -51,15 +60,16 @@ export default function AppShell() {
    * records the truth while it is still true.
    */
   useEffect(() => {
-    const el = mainRef.current;
-    if (!el) return;
-    const onScroll = () => positions.current.set(currentKey.current, el.scrollTop);
-    el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
+    const onScroll = () => {
+      const el = document.scrollingElement;
+      if (el) positions.current.set(currentKey.current, el.scrollTop);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
   useEffect(() => {
-    const el = mainRef.current;
+    const el = document.scrollingElement;
     if (!el) return;
 
     const action = scrollActionFor({
@@ -133,10 +143,7 @@ export default function AppShell() {
           staging build. */}
       <StagingBanner />
 
-      <main
-        ref={mainRef}
-        className={`flex flex-1 flex-col overflow-y-auto ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}
-      >
+      <main className={`flex flex-1 flex-col overflow-y-auto ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}>
         <Outlet />
       </main>
 
