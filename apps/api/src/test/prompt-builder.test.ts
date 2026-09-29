@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { PublicCharacter } from '@over18/shared';
+import type { ChatMessage, PublicCharacter } from '@over18/shared';
 import type { ReplyContext } from '../services/character-reply.js';
 import {
   OPENING_INSTRUCTION,
+  SENT_PHOTO_MARKER,
+  SENT_VIDEO_MARKER,
   buildCharacterSystemPrompt,
   buildLlmMessages,
   buildOpeningMessages,
+  historyContent,
   invitesRoleplay,
 } from '../services/prompt-builder.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
@@ -430,5 +433,106 @@ describe('the opening turn', () => {
     expect(OPENING_INSTRUCTION).toMatch(/has not said anything yet/);
     expect(OPENING_INSTRUCTION).toMatch(/Do not welcome him to an app/);
     expect(OPENING_INSTRUCTION).toMatch(/You are not a service/);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * She can see what she already sent
+ * ------------------------------------------------------------------ */
+
+/**
+ * THE PRODUCTION FAILURE THESE PIN SHUT.
+ *
+ * A character sent a photo, then a clip, and several turns later told the same
+ * person "I'm not sending clips to strangers". She was not being difficult: the
+ * history handed to the model was text-only, so a refusal survived as a whole
+ * sentence while an attachment survived nowhere she could see it. The evidence
+ * she reasoned from drifted, every turn, toward never having sent anything.
+ */
+const msg = (
+  sender: 'user' | 'character',
+  content: string,
+  media?: 'image' | 'video',
+): ChatMessage => ({
+  id: `${sender}-${content.slice(0, 6)}`,
+  sender,
+  content,
+  createdAt: '2026-09-29T10:00:00.000Z',
+  ...(media ? { media: { type: media, url: '/api/x' } } : {}),
+});
+
+describe('a turn that carried media says so', () => {
+  it('marks a photo she sent', () => {
+    const line = historyContent(msg('character', 'Here you go.', 'image'));
+    expect(line).toBe(`Here you go.
+${SENT_PHOTO_MARKER}`);
+    expect(line).toContain('You sent a photo');
+  });
+
+  it('marks a video she sent', () => {
+    const line = historyContent(msg('character', "Okay, one clip.", 'video'));
+    expect(line).toBe(`Okay, one clip.
+${SENT_VIDEO_MARKER}`);
+    expect(line).toContain('You sent a video');
+  });
+
+  it('leaves an ordinary turn of hers exactly as written', () => {
+    const plain = msg('character', 'I was reading on the balcony.');
+    expect(historyContent(plain)).toBe('I was reading on the balcony.');
+  });
+
+  /**
+   * TALKING ABOUT A PHOTO IS NOT SENDING ONE. The marker comes from the stored
+   * row, never from the words -- otherwise the model would be told it had sent
+   * something every time the subject came up.
+   */
+  it('does not mark a turn that merely mentions a photo', () => {
+    const talk = msg('character', 'I love that photo of the harbour you described.');
+    expect(historyContent(talk)).toBe('I love that photo of the harbour you described.');
+    expect(historyContent(talk)).not.toContain('You sent');
+  });
+
+  /** HE is not the one who sent it, even on a row that somehow carried media. */
+  it('never marks a user turn', () => {
+    expect(historyContent(msg('user', 'send me a pic'))).toBe('send me a pic');
+    expect(historyContent(msg('user', 'here is mine', 'image'))).toBe('here is mine');
+  });
+});
+
+describe('the marker reaches the actual model input', () => {
+  const history = [
+    msg('user', 'send me a pic'),
+    msg('character', 'Here you go.', 'image'),
+    msg('user', 'now a clip'),
+    msg('character', 'Fine — one clip.', 'video'),
+    msg('user', 'thanks'),
+    msg('character', 'Any time.'),
+  ];
+
+  const built = buildLlmMessages(contextFor(LUNA, { history, userMessage: 'you never send anything' }));
+
+  it('carries both facts into the assistant turns', () => {
+    const assistant = built.filter((m) => m.role === 'assistant').map((m) => m.content);
+    expect(assistant[0]).toContain(SENT_PHOTO_MARKER);
+    expect(assistant[1]).toContain(SENT_VIDEO_MARKER);
+    // ...and the plain turn is still plain.
+    expect(assistant[2]).toBe('Any time.');
+  });
+
+  it('leaves his turns untouched', () => {
+    const user = built.filter((m) => m.role === 'user').map((m) => m.content);
+    for (const line of user) expect(line).not.toContain('You sent');
+  });
+
+  it('keeps her own words, and adds the fact after them', () => {
+    const first = built.filter((m) => m.role === 'assistant')[0]!.content;
+    expect(first).toContain('Here you go.');
+    expect(first.indexOf('Here you go.')).toBeLessThan(first.indexOf(SENT_PHOTO_MARKER));
+  });
+
+  it('still emits only role and content — no wire shape leaks in', () => {
+    for (const message of built) {
+      expect(Object.keys(message).sort()).toEqual(['content', 'role']);
+    }
   });
 });

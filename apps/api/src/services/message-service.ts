@@ -157,11 +157,27 @@ export async function sendMessage(
      */
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${openingLockKey(conversationId)}, 0))`);
 
-    // Full prior history (oldest first) — the LLM provider needs it, and its
-    // length doubles as the deterministic provider's message counter.
+    /**
+     * Full prior history (oldest first) — the LLM provider needs it, and its
+     * length doubles as the deterministic provider's message counter.
+     *
+     * LEFT JOINED for the media type, exactly as `listMessages` does, and for
+     * the same reason it does: a message whose asset was later deleted must
+     * still contribute its text. Media can never make a turn disappear.
+     *
+     * WHY THE JOIN IS HERE AT ALL. Without it this query cannot tell a photo
+     * from a video, and the history handed to the model was text-only -- so a
+     * character had no record of ever having sent anything. She sent a clip,
+     * and several turns later told the same person she does not send clips,
+     * because the only trace of the send was a caption and the only trace of
+     * her earlier refusal was a whole sentence. Refusals are text and survive;
+     * attachments were invisible. The evidence she reasoned from drifted, every
+     * turn, toward never sending.
+     */
     const historyRows = await tx
-      .select()
+      .select({ message: messages, asset: characterVisualAssets })
       .from(messages)
+      .leftJoin(characterVisualAssets, eq(characterVisualAssets.id, messages.mediaAssetId))
       .where(eq(messages.conversationId, conversationId))
       .orderBy(asc(messages.seq));
 
@@ -225,8 +241,17 @@ export async function sendMessage(
       persona: avatarPersonaRow?.persona ?? null,
       // Explicit arrow, NOT a point-free `.map(toChatMessage)`: map passes the
       // index as the second argument, which is the media-type parameter.
-      // The model's history is text-only.
-      history: historyRows.map((row) => toChatMessage(row)),
+      //
+      // The history now CARRIES its media type, so a turn that went out with a
+      // photo or a video says so. The prompt builder turns that into one short
+      // factual line; nothing here reaches the wire, which is built separately
+      // from its own rows below.
+      history: historyRows.map((row) =>
+        toChatMessage(
+          row.message,
+          row.asset ? mediaTypeOf(row.asset.storageKey, row.asset.provenance) : null,
+        ),
+      ),
       priorMessageCount: historyRows.length,
       userMessage: content,
       memories: rememberedFacts,
