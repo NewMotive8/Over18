@@ -191,25 +191,131 @@ describe('what the warning always carries', () => {
   });
 
   /**
-   * THE HONEST LIMIT. Synonyms defeat a word comparison, and pretending
-   * otherwise would be worse than documenting it: a "consistent" result means
-   * no contradiction was DETECTED, never that the two agree.
+   * THE LIMIT THAT REMAINS. The synonym table is deliberately small, so a pair
+   * outside it still reads as divergence. Asserted rather than hidden: a longer
+   * table of half-true equivalences would quietly start excusing real
+   * contradictions, which is worse than a false alarm an operator can dismiss.
    */
-  it('cannot see through synonyms, and this is asserted rather than hidden', () => {
+  it('still reads an unlisted synonym as divergence', () => {
     const r = compare({
-      shortBio: 'Melanie is a solicitor in the city.',
+      shortBio: 'She is a realtor downtown.',
       personality: '',
-      personaOccupation: 'lawyer',
+      personaOccupation: 'estate agent',
     });
-    expect(r.status, 'a synonym reads as divergence -- a known false positive').toBe('diverged');
+    expect(r.status, 'realtor/estate agent is not in the table').toBe('diverged');
   });
+});
 
-  it('can be fooled by a shared generic job word', () => {
+/* ------------------------------------------------------------------ *
+ * Generic role nouns prove nothing
+ * ------------------------------------------------------------------ */
+
+/**
+ * "manager" is load-bearing for grammar and empty for identity. The first
+ * version of this counted any shared significant word, so a marketing manager
+ * and a hotel manager came back consistent -- the defect these pin shut.
+ */
+describe('a shared generic role noun is not agreement', () => {
+  it('does not call a marketing manager and a hotel manager consistent', () => {
     const r = compare({
       shortBio: 'She is a hotel manager.',
       personality: '',
       personaOccupation: 'marketing manager',
     });
-    expect(r.status, 'a shared "manager" hides a real difference').toBe('consistent');
+    expect(r.status, 'sharing only "manager" cannot confirm agreement').toBe('incomplete');
+    expect(r.summary).toMatch(/agree on nothing more specific/);
+    expect(r.summary, 'the operator is told to look').toMatch(/Worth checking by eye/);
+  });
+
+  /**
+   * AND IT DOES NOT CLAIM A CONFLICT EITHER. A bio saying only "designer" is
+   * perfectly compatible with "graphic designer". This case and the one above
+   * are indistinguishable from here, which is precisely why neither gets a
+   * verdict.
+   */
+  it('does not call a graphic designer and a designer a contradiction', () => {
+    const r = compare({
+      shortBio: 'She is a designer.',
+      personality: '',
+      personaOccupation: 'graphic designer',
+    });
+    expect(r.status).toBe('incomplete');
+    expect(r.status).not.toBe('diverged');
+  });
+
+  it('still confirms when the specific half matches too', () => {
+    const r = compare({
+      shortBio: 'She is a marketing manager at a drinks brand.',
+      personality: '',
+      personaOccupation: 'marketing manager',
+    });
+    expect(r.status).toBe('consistent');
+    expect(r.sharedWords).toContain('marketing');
+  });
+
+  it('still diverges when nothing overlaps at all', () => {
+    const r = compare({
+      shortBio: 'Mika is a 38-year-old Banker.',
+      personality: '',
+      personaOccupation: 'marketing manager',
+    });
+    expect(r.status).toBe('diverged');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Synonyms
+ * ------------------------------------------------------------------ */
+
+describe('a small, explicit set of synonyms', () => {
+  it('treats a solicitor and a lawyer as the same job', () => {
+    const r = compare({
+      shortBio: 'Melanie is a solicitor in the city.',
+      personality: '',
+      personaOccupation: 'lawyer',
+    });
+    expect(r.status).toBe('consistent');
+    // Reports the word in HER PROFILE, which is what the operator is reading.
+    expect(r.sharedWords).toContain('solicitor');
+  });
+
+  it('matches a chef against a cook', () => {
+    expect(
+      compare({ shortBio: 'She cooks in a busy kitchen as a cook.', personality: '', personaOccupation: 'chef' })
+        .status,
+    ).toBe('consistent');
+  });
+
+  it('matches a developer against a programmer', () => {
+    expect(
+      compare({ shortBio: 'She is a programmer.', personality: '', personaOccupation: 'developer' }).status,
+    ).toBe('consistent');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Word matching, not letter matching
+ * ------------------------------------------------------------------ */
+
+describe('words are matched as words', () => {
+  /** `includes` made "head" match "ahead" and "lead" match "leading". */
+  it('does not match a role noun buried inside another word', () => {
+    const r = compare({
+      shortBio: 'She looked ahead, leading the way through the crowd.',
+      personality: '',
+      personaOccupation: 'head of operations',
+    });
+    expect(r.status, '"ahead" and "leading" are not job titles').toBe('diverged');
+  });
+
+  /** Plurals and inflections still match, without a stemmer. */
+  it('matches a plural or inflected form of a longer word', () => {
+    const r = compare({
+      shortBio: 'She designs ornamental gardens for the council.',
+      personality: '',
+      personaOccupation: 'garden designer',
+    });
+    expect(r.status).toBe('consistent');
+    expect(r.sharedWords).toContain('gardens');
   });
 });

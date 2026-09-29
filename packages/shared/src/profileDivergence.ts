@@ -74,6 +74,51 @@ const IGNORED = new Set([
   'home', 'most', 'days', 'weekdays', 'year', 'years', 'old',
 ]);
 
+/**
+ * ROLE NOUNS THAT CARRY NO IDENTITY ON THEIR OWN.
+ *
+ * "manager" is load-bearing for grammar and empty for identity: a marketing
+ * manager and a hotel manager share it and do different jobs. Treating that
+ * overlap as agreement is exactly how the first version of this reported
+ * "marketing manager" and "hotel manager" as consistent.
+ *
+ * DELIBERATELY ABSENT: teacher, nurse, chef, baker, dentist, pharmacist. Those
+ * name a profession by themselves, and listing them here would make them
+ * permanently unconfirmable -- every teacher would read as ambiguous forever.
+ */
+const GENERIC_ROLE_NOUNS = new Set([
+  'manager', 'director', 'coordinator', 'specialist', 'consultant', 'assistant',
+  'officer', 'executive', 'associate', 'representative', 'supervisor',
+  'administrator', 'adviser', 'advisor', 'agent', 'designer', 'analyst',
+  'engineer', 'technician', 'operator', 'planner', 'lead', 'head',
+  'professional', 'worker', 'staff',
+]);
+
+/**
+ * Occupations that are the same job under different words.
+ *
+ * SMALL ON PURPOSE. Every entry here excuses a difference, so a long list of
+ * half-true equivalences would quietly start hiding real contradictions -- worse
+ * than a false alarm, which an operator can dismiss by looking. These six are
+ * the ones where the two words genuinely name one job.
+ */
+const SYNONYM_GROUPS: readonly (readonly string[])[] = [
+  ['lawyer', 'solicitor', 'barrister', 'attorney'],
+  ['doctor', 'physician'],
+  ['chef', 'cook'],
+  ['hairdresser', 'hairstylist'],
+  ['developer', 'programmer'],
+  ['physiotherapist', 'physio'],
+];
+
+const SYNONYMS = new Map<string, readonly string[]>();
+for (const group of SYNONYM_GROUPS) for (const word of group) SYNONYMS.set(word, group);
+
+/** The word itself, plus anything that means the same job. */
+function equivalents(word: string): readonly string[] {
+  return SYNONYMS.get(word) ?? [word];
+}
+
 /** The employer clause is not the job: "nurse at a big hospital" is about nurse. */
 const EMPLOYER_CLAUSE = / at | for | with | in | of | working | based /;
 
@@ -95,6 +140,29 @@ function significantWords(raw: string): string[] {
  */
 function occupationWords(occupation: string): string[] {
   return significantWords(occupation.split(EMPLOYER_CLAUSE)[0] ?? occupation);
+}
+
+/**
+ * WORDS, NOT SUBSTRINGS. The first version asked `text.includes(word)`, which
+ * makes "head" match "ahead" and "lead" match "leading" -- nonsense agreements
+ * from words that happen to share letters.
+ *
+ * The `startsWith` arm is deliberate and bounded: it lets "garden" match
+ * "gardens" and "event" match "events" without a stemmer, and the five-character
+ * floor keeps short words from reaching across meanings.
+ */
+function tokensOf(text: string): string[] {
+  return text.toLowerCase().replace(/[^a-z\s-]/g, ' ').split(/[\s-]+/).filter(Boolean);
+}
+
+function findTerm(tokens: readonly string[], word: string): string | null {
+  for (const candidate of equivalents(word)) {
+    const hit = tokens.find(
+      (token) => token === candidate || (candidate.length >= 5 && token.startsWith(candidate)),
+    );
+    if (hit) return hit;
+  }
+  return null;
 }
 
 const blank = (value: string | null | undefined): boolean => !value || value.trim() === '';
@@ -146,7 +214,7 @@ export function compareProfileAndPersona(input: {
   }
 
   const words = occupationWords(occupation);
-  const haystack = publicText.toLowerCase();
+  const tokens = tokensOf(publicText);
 
   // An occupation made entirely of ignored words leaves nothing to test.
   if (words.length === 0) {
@@ -161,16 +229,62 @@ export function compareProfileAndPersona(input: {
     };
   }
 
-  const shared = words.filter((word) => haystack.includes(word));
+  /**
+   * THE TWO CLASSES DECIDE DIFFERENT THINGS.
+   *
+   * A specific word is evidence about WHO SHE IS: "marketing", "hotel",
+   * "physiotherapist". A generic role noun is evidence about sentence shape and
+   * nothing else. So a specific match can confirm agreement, and a generic match
+   * can only fail to rule it out.
+   */
+  const specific = words.filter((word) => !GENERIC_ROLE_NOUNS.has(word));
+  const generic = words.filter((word) => GENERIC_ROLE_NOUNS.has(word));
 
-  if (shared.length > 0) {
+  // Report the word found in HER PROFILE, not the persona's -- with synonyms the
+  // two differ, and the operator is reading the profile.
+  const matchedSpecific = specific
+    .map((word) => findTerm(tokens, word))
+    .filter((hit): hit is string => hit !== null);
+
+  if (matchedSpecific.length > 0) {
     return {
       status: 'consistent',
       personaOccupation: occupation,
       publicText,
       publicFields: fields,
-      sharedWords: shared,
-      summary: `Her public profile mentions ${shared.join(', ')}, which matches her chat persona.`,
+      sharedWords: matchedSpecific,
+      summary: `Her public profile mentions ${matchedSpecific.join(', ')}, which matches her chat persona.`,
+    };
+  }
+
+  const matchedGeneric = generic
+    .map((word) => findTerm(tokens, word))
+    .filter((hit): hit is string => hit !== null);
+
+  /**
+   * AMBIGUOUS, AND SAID SO RATHER THAN GUESSED.
+   *
+   * Both sides use the same role noun and agree on nothing else: "marketing
+   * manager" against "hotel manager", or "graphic designer" against a bio that
+   * just says "designer". The first is a real difference and the second is not,
+   * and from here they are indistinguishable -- proving the first would mean
+   * parsing which qualifier belongs to which noun, which is a great deal of
+   * machinery to get wrong in a feature whose only value is being trusted.
+   *
+   * So it reports neither agreement nor conflict, and asks for a human. That is
+   * the honest answer and it is also the useful one: the operator sees both
+   * values either way, and only the badge differs.
+   */
+  if (matchedGeneric.length > 0) {
+    return {
+      status: 'incomplete',
+      personaOccupation: occupation,
+      publicText,
+      publicFields: fields,
+      sharedWords: matchedGeneric,
+      summary:
+        `Both describe her as a ${matchedGeneric.join(', ')}, but agree on nothing more specific. ` +
+        `Her chat persona says ${occupation}. Worth checking by eye.`,
     };
   }
 
