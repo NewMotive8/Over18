@@ -6,6 +6,10 @@ import type { ReplyProvider } from '../services/character-reply.js';
 import type { MemoryExtractor } from '../services/memory-extractor.js';
 import type { MediaSelector } from '../services/message-media-service.js';
 import { listMessages, sendMessage } from '../services/message-service.js';
+import {
+  OpeningMessageError,
+  ensureOpeningMessage,
+} from '../services/conversation-opening-service.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -49,6 +53,11 @@ export default async function messageRoutes(
      * Null is the structural kill switch — see app.ts.
      */
     mediaSelector: MediaSelector | null;
+    /**
+     * Generates her opening line. It differs from `replyProvider` only in the
+     * prompt it builds -- same client, same model, same limits.
+     */
+    openingProvider: ReplyProvider;
   },
 ) {
   app.get<{ Params: { conversationId: string } }>(
@@ -64,6 +73,74 @@ export default async function messageRoutes(
         return reply.code(404).send({ error: 'not_found', message: 'Conversation not found.' });
       }
       return history;
+    },
+  );
+
+  /**
+   * SHE OPENS THE CONVERSATION.
+   *
+   * POST because it writes, and idempotent by construction rather than by
+   * header: the service greets only a conversation that has no messages, decided
+   * under a per-conversation advisory lock. Calling it twice, from two tabs, or
+   * again after a response was lost in transit all end at the same single
+   * message.
+   *
+   * IT FAILS QUIETLY. A greeting is a courtesy, not what the visitor came for,
+   * so a provider outage answers 200 with `created: false` and leaves the chat
+   * completely usable -- unlike the send path, which must tell him his own
+   * message did not get through. The client shows nothing and may try again.
+   *
+   * The one thing that is NOT quiet is somebody else's conversation: that is a
+   * 404, exactly like every other read of one.
+   */
+  app.post<{ Params: { conversationId: string } }>(
+    '/api/conversations/:conversationId/opening',
+    { preHandler: app.requireAuth },
+    async (request, reply) => {
+      const { conversationId } = request.params;
+      if (!UUID_RE.test(conversationId)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Conversation not found.' });
+      }
+      let outcome;
+      try {
+        outcome = await ensureOpeningMessage(
+          opts.db,
+          request.currentUser!.id,
+          conversationId,
+          opts.openingProvider,
+        );
+      } catch (error) {
+        /**
+         * QUIET FOR THE EXPECTED FAILURE, LOUD FOR A BUG.
+         *
+         * `OpeningMessageError` means generation failed -- a timeout, an outage,
+         * an empty completion. That is a missing courtesy, so it is swallowed.
+         *
+         * Anything else is rethrown, because a swallowed database error would
+         * report success while writing nothing and leave no trace. It costs the
+         * visitor nothing either way (the client shows no greeting in both
+         * cases), so there is no reason to hide it.
+         */
+        if (!(error instanceof OpeningMessageError)) throw error;
+        // Kind and status only -- never a provider body, prompt, or key, the
+        // same discipline the send path below follows.
+        const cause = error.cause;
+        request.log.warn(
+          {
+            openingErrorKind: cause instanceof LlmError ? cause.kind : 'unexpected',
+            openingErrorStatus: cause instanceof LlmError ? cause.status : undefined,
+          },
+          'opening message generation failed (chat unaffected)',
+        );
+        return { created: false, message: null };
+      }
+      if (outcome === null) {
+        return reply.code(404).send({ error: 'not_found', message: 'Conversation not found.' });
+      }
+      return {
+        created: outcome.status === 'created',
+        message: outcome.status === 'created' ? outcome.message : null,
+      };
     },
   );
 

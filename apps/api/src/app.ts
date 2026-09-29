@@ -54,6 +54,12 @@ export interface BuildAppOptions {
   /** Reply provider for chat messages. Defaults to the deterministic fallback. */
   replyProvider?: ReplyProvider;
   /**
+   * Provider for a character's opening message. Defaults to the same
+   * deterministic fallback as `replyProvider`, whose first template already
+   * reads as a greeting. server.ts injects the env-selected one.
+   */
+  openingProvider?: ReplyProvider;
+  /**
    * US-12 memory extractor. Defaults to noop so existing tests/behavior are
    * unchanged unless one is injected (server.ts selects from the env).
    */
@@ -247,6 +253,8 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   await app.register(messageRoutes, {
     db,
     replyProvider: options.replyProvider ?? deterministicReplyProvider,
+    openingProvider:
+      options.openingProvider ?? options.replyProvider ?? deterministicReplyProvider,
     memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
     memoryMaxStored: env.memory.maxStored,
     mediaSelector,

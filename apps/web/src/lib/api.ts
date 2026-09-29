@@ -23,6 +23,7 @@ import type {
   HomeBannerSlot,
   ChatMessage,
   CharacterVisualIdentityResponse,
+  ConversationOpeningResult,
   ConversationSummary,
   CustomerCommercialState,
   CustomerContentAccessResponse,
@@ -134,6 +135,21 @@ export const conversationsApi = {
   get(conversationId: string): Promise<ConversationSummary> {
     return request<ConversationSummary>(
       `/api/conversations/${encodeURIComponent(conversationId)}`,
+    );
+  },
+  /**
+   * Asks the character to speak first, in a conversation nobody has spoken in.
+   *
+   * Safe to call whenever a conversation opens: the server greets ONLY an empty
+   * conversation, decided under a lock, so a second call, a second tab or a
+   * retry all answer `created: false` rather than adding another greeting. It
+   * does not reject when generation fails -- the answer is simply that there is
+   * no greeting to show.
+   */
+  opening(conversationId: string): Promise<ConversationOpeningResult> {
+    return request<ConversationOpeningResult>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/opening`,
+      { method: 'POST' },
     );
   },
 };
