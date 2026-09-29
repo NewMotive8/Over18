@@ -58,9 +58,39 @@ export default function ProfileHero({
             type="button"
             onClick={() => onOpen(i)}
             aria-label={`View ${name} media ${i + 1}`}
-            className="relative aspect-[4/5] w-full shrink-0 snap-center"
+            /**
+             * `bg-zinc-900` IS THE LETTERBOX, not decoration. A contained video
+             * does not fill this 4/5 box, and the slide had no background of its
+             * own -- so without this the bars would show whatever happened to be
+             * behind the carousel. Same background Admin's tile and
+             * LockedContentCard use, so the three surfaces letterbox alike. It
+             * is inert for an image: a covered image fills the box and this is
+             * never visible.
+             */
+            className="relative aspect-[4/5] w-full shrink-0 snap-center bg-zinc-900"
           >
-            <HeroMedia media={item.media} alt={name} />
+            {/*
+              HER CLIPS ARE PORTRAIT AND THIS FRAME IS NOT.
+              Measured in production (see HeroMedia's FOCAL_CLASS note): 9:16,
+              640x1152, 544x960, 768x1168 -- every one narrower than 4/5 = 0.8.
+              Filling this frame's width therefore threw away about 30% of a
+              9:16 clip's height, and `center` split that evenly, so ~15% came
+              off the top. That is where a head is, and heads were being cut.
+
+              `contain` fits the whole clip inside the frame instead, so nothing
+              is cropped; the cost is a dark bar down each side, which is the
+              trade the 4/5 frame requires and which the background above
+              provides.
+
+              IMAGES AND PLACEHOLDERS KEEP `cover` -- stated rather than left to
+              the default, so the difference between the two is visible here
+              rather than inferred from HeroMedia.
+            */}
+            <HeroMedia
+              media={item.media}
+              alt={name}
+              fit={item.media.kind === 'video' ? 'contain' : 'cover'}
+            />
           </button>
         ))}
       </div>
