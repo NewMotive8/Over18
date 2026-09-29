@@ -2,7 +2,12 @@ import { LlmError, type LlmClient } from '../llm/types.js';
 import type { Env } from '../env.js';
 import { createOpenAiCompatibleClient } from '../llm/openai-compatible.js';
 import { deterministicReplyProvider, type ReplyContext, type ReplyProvider } from './character-reply.js';
-import { buildLlmMessages, createPromptBuilder, type PromptBuilder } from './prompt-builder.js';
+import {
+  buildLlmMessages,
+  buildOpeningMessages,
+  createPromptBuilder,
+  type PromptBuilder,
+} from './prompt-builder.js';
 
 export interface LlmReplyOptions {
   maxTokens: number;
@@ -68,6 +73,34 @@ export function selectReplyProvider(env: Env): ReplyProvider {
           maxMemoryChars: env.memory.maxInjectedChars,
         },
       ),
+    );
+  }
+  return env.isProduction ? unconfiguredReplyProvider : deterministicReplyProvider;
+}
+
+/**
+ * The provider that writes her opening line.
+ *
+ * Same client, same model, same token and temperature limits as an ordinary
+ * reply -- the ONLY difference is the prompt builder, which ends with an
+ * instruction instead of a user turn. Anything else (a cheaper model, a lower
+ * limit) would make her first sentence sound unlike every sentence after it,
+ * and the first sentence is the one that decides whether he keeps talking.
+ *
+ * The fallbacks are deliberately the same too:
+ * - unset, development → the deterministic provider, whose first template is
+ *   already a greeting, so an unconfigured dev environment still demonstrates
+ *   the feature.
+ * - unset, production  → throws `not_configured`, which the route turns into a
+ *   quiet "no greeting". Never a fake one: the rule that the fallback must not
+ *   impersonate AI applies to her first words most of all.
+ */
+export function selectOpeningProvider(env: Env): ReplyProvider {
+  if (env.llm) {
+    return createLlmReplyProvider(
+      createOpenAiCompatibleClient(env.llm),
+      { maxTokens: env.llm.maxTokens, temperature: env.llm.temperature },
+      buildOpeningMessages,
     );
   }
   return env.isProduction ? unconfiguredReplyProvider : deterministicReplyProvider;

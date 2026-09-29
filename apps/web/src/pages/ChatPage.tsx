@@ -14,6 +14,7 @@ import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '.
 import { createPacedSend } from '../lib/chatPacing';
 import { createScrollFollower } from '../lib/chatScroll';
 import { createViewportAnchor, type ViewportAnchor } from '../lib/chatViewport';
+import { mergeOpeningMessage, shouldRequestOpening } from '../lib/chatOpening';
 import MessageMedia from '../components/MessageMedia';
 import { CreditBalance, PaidActionButton } from '../components/CustomerEconomy';
 import { getAction, useCustomerEconomy } from '../lib/customerEconomy';
@@ -57,16 +58,59 @@ export default function ChatPage() {
   const [send, setSend] = useState<ChatSendState>(IDLE_SEND_STATE);
   const { pending, showTyping, sending } = send;
 
+  /**
+   * SHE SPEAKS FIRST, in a conversation nobody has spoken in yet.
+   *
+   * 'waiting' means a greeting has been asked for and the typing indicator is
+   * up. It is display state only -- the promise that at most one greeting is
+   * ever created belongs to the server, under a per-conversation lock, because
+   * two tabs and a mid-flight refresh are races no client state can settle.
+   */
+  const [greeting, setGreeting] = useState<'idle' | 'waiting'>('idle');
+  /**
+   * One request per (conversation, load attempt). Purely to avoid paying for a
+   * generation twice when React double-invokes this effect in development --
+   * NOT the duplicate guarantee, which the server already holds. Keyed on the
+   * attempt so Retry after a failed load is still allowed to ask again.
+   */
+  const openingRequestedFor = useRef<string | null>(null);
+
   // Load the conversation and its full history together.
   useEffect(() => {
     if (!conversationId) return;
     let cancelled = false;
     setState({ status: 'loading' });
+    setGreeting('idle');
     Promise.all([conversationsApi.get(conversationId), messagesApi.list(conversationId)])
       .then(([conversation, history]) => {
         if (cancelled) return;
         setMessages(history);
         setState({ status: 'ready', conversation });
+        if (!shouldRequestOpening(history)) return;
+
+        const key = `${conversationId}:${attempt}`;
+        if (openingRequestedFor.current === key) return;
+        openingRequestedFor.current = key;
+
+        setGreeting('waiting');
+        conversationsApi
+          .opening(conversationId)
+          .then((result) => {
+            // `created: false` is the ordinary answer when somebody had already
+            // spoken, another tab got there first, or generation failed. There
+            // is simply nothing to show, and nothing to say about it.
+            const opening = result.message;
+            if (cancelled || !result.created || !opening) return;
+            setMessages((prev) => mergeOpeningMessage(prev, opening));
+          })
+          // A GREETING IS NEVER AN ERROR HE SEES. Unlike a message he sent
+          // himself, nothing of his was lost, and an error banner over an empty
+          // chat would invent a problem out of a missing courtesy. The screen
+          // simply looks like it did before the feature existed.
+          .catch(() => {})
+          .finally(() => {
+            if (!cancelled) setGreeting('idle');
+          });
       })
       .catch((err) => {
         if (cancelled) return;
@@ -113,7 +157,7 @@ export default function ChatPage() {
   // path as resizes, so nothing competes to move the viewport.
   useEffect(() => {
     anchor.current?.pin();
-  }, [messages.length, pending, showTyping]);
+  }, [messages.length, pending, showTyping, greeting]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
@@ -301,7 +345,7 @@ export default function ChatPage() {
           listener now lives on the element that really scrolls — see
           chatViewport.createViewportAnchor. */}
       <div ref={listRef} className="flex-1 overflow-y-auto py-4">
-        {messages.length === 0 && pending === null ? (
+        {messages.length === 0 && pending === null && greeting === 'idle' ? (
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <p className="text-sm text-zinc-400">
               This is the beginning of your conversation with {character.displayName}.
@@ -336,7 +380,7 @@ export default function ChatPage() {
                 {pending}
               </li>
             )}
-            {showTyping && (
+            {(showTyping || greeting === 'waiting') && (
               /* The SAME indicator element as before — same bubble, position and
                  aria-live — with the ellipsis replaced by three animating dots.
                  Tailwind's animate-bounce is already used elsewhere in the app,

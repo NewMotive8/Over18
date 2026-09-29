@@ -495,5 +495,43 @@ export function createPromptBuilder(
   };
 }
 
+/**
+ * SHE SPEAKS FIRST.
+ *
+ * The ordinary builder ends every request with the user's turn, because there
+ * always is one. An opening message has none: the conversation is empty and
+ * nobody has said anything yet. So this ends with an INSTRUCTION instead, and
+ * that is the only difference -- the system prompt above it is built by the
+ * same `buildCharacterSystemPrompt`, from the same persona and the same rules,
+ * so she opens as the person the rest of the product already describes.
+ *
+ * NO SYNTHETIC USER TURN. Inventing "hi" to reply to would put words in the
+ * visitor's mouth, and if it were ever stored it would appear in her history as
+ * something he said. The instruction is a system message: it steers the turn
+ * and is not part of the conversation.
+ *
+ * NO HISTORY AND NO MEMORIES, because by construction there are none -- this
+ * runs only when the conversation is empty. Passing them would be dead code
+ * pretending to be a feature.
+ */
+export const OPENING_INSTRUCTION = [
+  'Open the conversation. He has just arrived on your chat and has not said anything yet.',
+  'Say the first thing YOU would say -- short, warm, and in your own words, the way you would greet someone who just walked in.',
+  'Do not welcome him to an app, do not introduce yourself with a summary of who you are, and do not ask what you can help with. You are not a service.',
+  'One or two sentences. End with something he can easily answer.',
+].join('\n');
+
+/**
+ * The opening turn's messages: her system prompt, then the instruction.
+ *
+ * Deliberately a `PromptBuilder`, so `createLlmReplyProvider` takes it with no
+ * change at all -- the provider, the client, the model and the token limits are
+ * the ones ordinary replies already use.
+ */
+export const buildOpeningMessages: PromptBuilder = (context) => [
+  { role: 'system', content: buildCharacterSystemPrompt({ ...context, memories: [] }) },
+  { role: 'system', content: OPENING_INSTRUCTION },
+];
+
 /** Default prompt builder: default context window applied. */
 export const buildLlmMessages: PromptBuilder = createPromptBuilder();

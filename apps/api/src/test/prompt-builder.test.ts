@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { PublicCharacter } from '@over18/shared';
 import type { ReplyContext } from '../services/character-reply.js';
 import {
+  OPENING_INSTRUCTION,
   buildCharacterSystemPrompt,
   buildLlmMessages,
+  buildOpeningMessages,
   invitesRoleplay,
 } from '../services/prompt-builder.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
@@ -365,5 +367,68 @@ describe('buildLlmMessages', () => {
     for (const message of messages) {
       expect(Object.keys(message).sort()).toEqual(['content', 'role']);
     }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * She speaks first
+ * ------------------------------------------------------------------ */
+
+/**
+ * The opening turn has no user message to answer, which is the whole
+ * difficulty: every other prompt in this file ends with something he said.
+ */
+describe('the opening turn', () => {
+  it('is her own system prompt followed by an instruction, and nothing else', () => {
+    const messages = buildOpeningMessages(contextFor(LUNA, { userMessage: '' }));
+
+    expect(messages.map((m) => m.role)).toEqual(['system', 'system']);
+    expect(messages[0]!.content).toContain('Her name is Luna.');
+    expect(messages[1]!.content).toBe(OPENING_INSTRUCTION);
+  });
+
+  /**
+   * NO SYNTHETIC USER TURN. A fabricated "hi" for her to answer would put words
+   * in his mouth; as a system message the instruction steers the turn without
+   * joining the conversation.
+   */
+  it('never sends a user turn, even when one is present in the context', () => {
+    // `userMessage` is required by ReplyContext, so it may be non-empty by
+    // accident. It must still never reach the model.
+    const messages = buildOpeningMessages(contextFor(LUNA, { userMessage: 'Hello there!' }));
+
+    expect(messages.some((m) => m.role === 'user')).toBe(false);
+    expect(messages.map((m) => m.content).join(' ')).not.toContain('Hello there!');
+  });
+
+  it('carries no history and no memories, because by construction there are none', () => {
+    const messages = buildOpeningMessages(
+      contextFor(LUNA, {
+        history: [
+          { id: '1', sender: 'user', content: 'stale history', createdAt: '2026-01-01T00:00:00Z' },
+        ],
+        memories: ['he has a sister called Dana'],
+      }),
+    );
+
+    expect(messages).toHaveLength(2);
+    const all = messages.map((m) => m.content).join(' ');
+    expect(all).not.toContain('stale history');
+    expect(all).not.toContain('Dana');
+  });
+
+  /** The same identity layer as every other turn — she opens as herself. */
+  it('describes her with the same system prompt an ordinary turn uses', () => {
+    const context = contextFor(EMBER, { userMessage: '' });
+
+    expect(buildOpeningMessages(context)[0]!.content).toBe(
+      buildLlmMessages(context)[0]!.content,
+    );
+  });
+
+  it('tells her to greet him rather than to introduce a service', () => {
+    expect(OPENING_INSTRUCTION).toMatch(/has not said anything yet/);
+    expect(OPENING_INSTRUCTION).toMatch(/Do not welcome him to an app/);
+    expect(OPENING_INSTRUCTION).toMatch(/You are not a service/);
   });
 });

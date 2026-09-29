@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import type { ChatMediaType, ChatMessage, SendMessageResult } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import {
@@ -16,6 +16,7 @@ import {
   type SelectedMedia,
 } from './message-media-service.js';
 import { getConversationForUser } from './conversation-service.js';
+import { openingLockKey } from './conversation-opening-service.js';
 import { deterministicReplyProvider, type ReplyProvider } from './character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './memory-extractor.js';
 import { DEFAULT_MEMORY_MAX_STORED, listMemories, storeMemories } from './memory-service.js';
@@ -140,6 +141,22 @@ export async function sendMessage(
   if (!conversation) return null;
 
   const result = await db.transaction(async (tx) => {
+    /**
+     * ORDER WITH THE OPENING MESSAGE, AND NOTHING ELSE.
+     *
+     * `conversation-opening-service` writes her greeting under this same key.
+     * Without the lock the two can interleave: the greeting re-reads an empty
+     * conversation, this transaction inserts the visitor's first message, and
+     * the greeting then lands AFTER something he said -- she says hello to a
+     * conversation already in progress.
+     *
+     * Taken first, and by nothing else in this transaction, so it cannot
+     * deadlock. Held across the model call because the visitor's message is
+     * inserted before it: releasing early would reopen the same gap. A greeting
+     * that arrives meanwhile waits, sees his message, and discards itself.
+     */
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${openingLockKey(conversationId)}, 0))`);
+
     // Full prior history (oldest first) — the LLM provider needs it, and its
     // length doubles as the deterministic provider's message counter.
     const historyRows = await tx

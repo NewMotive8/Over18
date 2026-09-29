@@ -1,7 +1,7 @@
 import { buildApp } from './app.js';
 import { createDb } from './db/client.js';
 import { loadEnv } from './env.js';
-import { selectReplyProvider } from './services/llm-reply-provider.js';
+import { selectOpeningProvider, selectReplyProvider } from './services/llm-reply-provider.js';
 import { selectMemoryExtractor } from './services/memory-extractor.js';
 import { selectMediaProviders } from './services/media-providers.js';
 import { selectProfileAuthor } from './services/character-profile-service.js';
@@ -14,6 +14,7 @@ const { db } = createDb(env.databaseUrl);
 
 const app = await buildApp(env, db, {
   replyProvider: selectReplyProvider(env),
+  openingProvider: selectOpeningProvider(env),
   memoryExtractor: selectMemoryExtractor(env),
   mediaProviders: selectMediaProviders(env),
   profileAuthor: selectProfileAuthor(env),

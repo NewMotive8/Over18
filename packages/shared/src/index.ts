@@ -198,6 +198,20 @@ export interface SendMessageResult {
   characterMessage: ChatMessage;
 }
 
+/**
+ * Result of asking a character to open the conversation.
+ *
+ * `created: false` with `message: null` is the ORDINARY answer, not an error:
+ * somebody had already spoken here, another tab got there first, or generation
+ * failed and nothing should be shown. Only `created: true` carries a message,
+ * and that message is always the FIRST in the conversation -- the server
+ * creates one only while the conversation is empty.
+ */
+export interface ConversationOpeningResult {
+  created: boolean;
+  message: ChatMessage | null;
+}
+
 /** Message content limits shared by client- and server-side validation. */
 export const MESSAGE_MAX_LENGTH = 2000;
 
