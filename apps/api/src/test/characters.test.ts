@@ -39,6 +39,7 @@ describe('characters schema / migration', () => {
       'display_name',
       'id',
       'interests',
+      'live_call_voice',
       'name',
       'personality',
       'profile_image',
@@ -51,6 +52,9 @@ describe('characters schema / migration', () => {
     expect(columns.interests.data_type).toBe('ARRAY');
     expect(columns.status.data_type).toBe('USER-DEFINED'); // character_status enum
     expect(columns.profile_image.is_nullable).toBe('YES');
+    // Nullable by design: null means "use the server default voice", so a
+    // character needs no configuration to be callable.
+    expect(columns.live_call_voice.is_nullable).toBe('YES');
     expect(columns.system_prompt.is_nullable).toBe('NO');
   });
 

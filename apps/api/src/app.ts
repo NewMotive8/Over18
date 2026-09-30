@@ -20,6 +20,7 @@ import adminContentAccessRoutes from './routes/admin-content-access.js';
 import adminUserRoutes from './routes/admin-users.js';
 import favouriteRoutes from './routes/favourites.js';
 import messageRoutes from './routes/messages.js';
+import callRoutes from './routes/calls.js';
 import conversationMediaRoutes from './routes/conversation-media.js';
 import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
@@ -49,6 +50,8 @@ import {
   type PersonaGenerator,
 } from './services/character-persona-generator.js';
 import type { MediaProviders } from './media-pipeline/types.js';
+import { createSpicyApiProvider } from './voice/spicyapi.js';
+import { unconfiguredVoiceProvider, type VoiceSessionProvider } from './voice/types.js';
 
 export interface BuildAppOptions {
   /** Reply provider for chat messages. Defaults to the deterministic fallback. */
@@ -75,6 +78,11 @@ export interface BuildAppOptions {
    * env.chatMedia.enabled — injecting one cannot switch the feature on.
    */
   mediaSelector?: MediaSelector;
+  /**
+   * Live-voice session provider override, for tests. Still gated by
+   * env.voiceCalls.enabled -- injecting one cannot switch the feature on.
+   */
+  voiceProvider?: VoiceSessionProvider;
   /**
    * Character profile Autofill. Defaults to the unconfigured author, which
    * reports Autofill as unavailable rather than inventing a profile — the same
@@ -258,6 +266,34 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
     memoryMaxStored: env.memory.maxStored,
     mediaSelector,
+  });
+
+  /**
+   * Live voice calls (Phase 1: session lifecycle only).
+   *
+   * TWO INDEPENDENT CONDITIONS, both required. A provider must be configured
+   * AND calls must be switched on. They are separate because this phase ships
+   * the lifecycle with no relay and no billing: the key can be present in an
+   * environment and the feature must still be unreachable.
+   *
+   * Registered unconditionally so the routes exist and answer 503 rather than
+   * 404 -- an operator switching this on should not also have to wonder
+   * whether the code shipped.
+   */
+  const voiceProvider = env.voice
+    ? (options.voiceProvider ??
+      createSpicyApiProvider({
+        apiKey: env.voice.apiKey,
+        timeoutMs: env.voice.timeoutMs,
+        maxSeconds: env.voice.maxSeconds,
+      }))
+    : (options.voiceProvider ?? unconfiguredVoiceProvider);
+
+  await app.register(callRoutes, {
+    db,
+    provider: voiceProvider,
+    enabled: env.voiceCalls.enabled && env.voice !== null,
+    maxSeconds: env.voice?.maxSeconds ?? 780,
   });
 
   // Character Media Messages (commit 1) — serves the media attached to a

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "call_sessions_user_live_idx" ON "call_sessions" USING btree ("user_id") WHERE "call_sessions"."status" in ('pending', 'active');

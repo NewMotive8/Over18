@@ -96,6 +96,20 @@ export const characters = pgTable(
     interests: text('interests').array().notNull().default([]),
     conversationStyle: text('conversation_style').notNull(),
     systemPrompt: text('system_prompt').notNull(),
+    /**
+     * Which SpicyAPI live-call voice she speaks with, or null for the server
+     * default.
+     *
+     * DELIBERATELY NOT a general "voice" column. This names a provider voice
+     * for REAL-TIME CALLS only; a future prerecorded-TTS voice is a different
+     * setting with a different catalogue and must get its own column rather
+     * than overloading this one.
+     *
+     * Validated server-side against the published catalogue on every use --
+     * see VOICE_CATALOGUE. A value that is no longer offered falls back to the
+     * default rather than failing a call.
+     */
+    liveCallVoice: text('live_call_voice'),
     status: characterStatus('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -3009,8 +3023,120 @@ export type ContentOfferRow = typeof contentOffers.$inferSelect;
 export type WalletCurrencyRow = typeof walletCurrencies.$inferSelect;
 export type WalletRow = typeof wallets.$inferSelect;
 export type WalletTransactionRow = typeof walletTransactions.$inferSelect;
+
+/* ------------------------------------------------------------------ *
+ * Live voice calls (Phase 1: session lifecycle only)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Where a call is in its life.
+ *
+ * `pending` exists because a provider session is created over the network and
+ * that call can fail. The row is written FIRST, so a provider session can never
+ * come into existence without a record of it; it becomes `active` only once the
+ * provider has confirmed, and `failed` if it did not.
+ *
+ * `expired` is the one nothing has to do: a call that reached its deadline
+ * without anyone ending it. Phase 1 has no relay watching the socket, so
+ * without this a crashed browser would leave a row reading `active` for ever.
+ */
+export const callSessionStatus = pgEnum('call_session_status', [
+  'pending',
+  'active',
+  'ended',
+  'failed',
+  'expired',
+]);
+
+/**
+ * call_sessions -- one row per attempted live voice call.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. No API key, no client secret, no provider
+ * WebSocket URL, no audio, and no compiled persona. The secret and the URL are
+ * short-lived credentials that grant a live session; the persona is internal
+ * prompt material that Phase 0 proved the provider will hand back to any
+ * connected client. None of it belongs in a durable row, and an operator
+ * reading this table must not be able to reconstruct a session from it.
+ *
+ * `provider_session_id` IS kept: it is an opaque correlation handle, useful for
+ * a support conversation with the provider, and it grants nothing on its own.
+ */
+export const callSessions = pgTable(
+  'call_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    /** Denormalised from the conversation so history survives a re-point. */
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'restrict' }),
+    /** The vendor, named rather than assumed: a second one is foreseeable. */
+    provider: text('provider').notNull(),
+    /** Opaque provider handle (`rt_...`), null while pending or if creation failed. */
+    providerSessionId: text('provider_session_id'),
+    /** Resolved server-side from the character or the default -- never from the client. */
+    voice: text('voice').notNull(),
+    status: callSessionStatus('status').notNull().default('pending'),
+    /** The ceiling this call was created under, in seconds. */
+    maxSeconds: integer('max_seconds').notNull(),
+    /** Set when the provider confirmed; null if it never did. */
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    /** Whole seconds, written at termination. Null while the call is open. */
+    durationSeconds: integer('duration_seconds'),
+    /**
+     * Why it stopped, as a SHORT CODE -- `user_ended`, `expired`,
+     * `provider_error`, `content_blocked`. Never a provider message body,
+     * which can echo the request and therefore the persona.
+     */
+    terminationReason: text('termination_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * ONE LIVE CALL PER CONVERSATION, enforced by the database.
+     *
+     * Partial, so only `pending` and `active` rows contend: a conversation may
+     * have any number of finished calls behind it. Modelled on
+     * `content_entitlements_live_idx`, which solves the same shape of problem.
+     */
+    uniqueIndex('call_sessions_live_idx')
+      .on(t.conversationId)
+      .where(sql`${t.status} in ('pending', 'active')`),
+    /**
+     * ONE LIVE CALL PER PERSON, across every conversation they have.
+     *
+     * The per-conversation index above cannot express this: a customer with
+     * twenty characters could hold twenty simultaneous calls, each one legal on
+     * its own. That is twenty concurrent provider sessions for one person, and
+     * once billing exists, twenty meters running at once.
+     *
+     * In the DATABASE rather than in a check-then-insert, because two requests
+     * that read "no active call" at the same moment would both pass an
+     * application check and both insert. Only a constraint decides a race.
+     */
+    uniqueIndex('call_sessions_user_live_idx')
+      .on(t.userId)
+      .where(sql`${t.status} in ('pending', 'active')`),
+    /** A customer's call history, newest first. */
+    index('call_sessions_user_idx').on(t.userId, t.createdAt),
+    /** For sweeping sessions that outlived their deadline. */
+    index('call_sessions_status_idx').on(t.status, t.startedAt),
+    /** A duration is only meaningful once, and only forwards. */
+    check('call_sessions_duration_nonneg', sql`${t.durationSeconds} is null or ${t.durationSeconds} >= 0`),
+    check('call_sessions_max_seconds_positive', sql`${t.maxSeconds} > 0`),
+  ],
+);
+
 export type SubscriptionRow = typeof subscriptions.$inferSelect;
 export type PaidActionRow = typeof paidActions.$inferSelect;
 export type ContentEntitlementRow = typeof contentEntitlements.$inferSelect;
 export type PaymentRow = typeof payments.$inferSelect;
 export type PaymentEventRow = typeof paymentEvents.$inferSelect;
+export type CallSessionRow = typeof callSessions.$inferSelect;
