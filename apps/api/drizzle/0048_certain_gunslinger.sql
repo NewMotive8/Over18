@@ -1,0 +1,1 @@
+ALTER TABLE "call_sessions" ADD COLUMN "connect_claimed_at" timestamp with time zone;

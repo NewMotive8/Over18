@@ -1,20 +1,33 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
 import { callSessions, characterPersonas, characters, type CallSessionRow } from '../db/schema.js';
 import { getConversationForUser } from './conversation-service.js';
+import { toPublicCharacter } from './character-service.js';
 import { buildCharacterSystemPrompt } from './prompt-builder.js';
 import { resolveVoice } from '../voice/voice-catalogue.js';
-import { VoiceProviderError, type VoiceSession, type VoiceSessionProvider } from '../voice/types.js';
+import { VoiceProviderError, type VoiceSessionProvider } from '../voice/types.js';
 
 /**
  * Live voice-call sessions -- Phase 1: lifecycle only.
  *
  * ── WHAT THIS PHASE DOES AND DOES NOT DO ─────────────────────────────────────
  *
- * It creates a provider session and records it. It does NOT open the provider
- * WebSocket, relay audio, persist transcripts, or charge anything. Those are
- * later phases, and until they exist the whole path is held shut by
- * `env.voiceCalls.enabled`, which is off unless explicitly switched on.
+ * `startCall` CLAIMS a call and stops there. It creates no provider session,
+ * because nothing could use one: the provider's URL and client secret are
+ * credentials with a sixty-second life, and a browser that has not yet opened
+ * its socket cannot be given them. So the provider session is created by the
+ * relay, at the moment a socket connects -- see `beginConnect` and
+ * `activateConnected` below.
+ *
+ * THAT ORDERING IS WHY THERE ARE NO ORPHANS ANY MORE. Phase 1 created the
+ * provider session at POST time and then threw the credentials away, so every
+ * successful start left a paid session upstream that nothing would ever use or
+ * close. Creating it only when somebody is on the other end removes that
+ * entire class of problem rather than mitigating it.
+ *
+ * It still does NOT persist transcripts or charge anything, and the whole path
+ * is held shut by `env.voiceCalls.enabled`, which is off unless explicitly
+ * switched on.
  *
  * ── THE ROW IS WRITTEN BEFORE THE PROVIDER IS CALLED ─────────────────────────
  *
@@ -113,15 +126,11 @@ export type StartCallFailure =
 export type StartCallResult =
   | {
       ok: true;
-      /** The durable record. Safe to return to the owner. */
-      session: PublicCallSession;
       /**
-       * Live credentials, held IN MEMORY for the caller that created them.
-       * Never persisted and never returned to a browser: Phase 0 established
-       * that a client holding these can read the persona back from the
-       * provider. Phase 2's relay consumes them in-process.
+       * The claimed record, `pending`. It becomes `active` only once a relay
+       * has a live provider socket -- see `activateConnected`.
        */
-      credentials: Pick<VoiceSession, 'url' | 'clientSecret' | 'clientSecretExpiresAt'>;
+      session: PublicCallSession;
     }
   | StartCallFailure;
 
@@ -288,12 +297,6 @@ export async function startCall(
     .limit(1);
   if (!characterRow) return { ok: false, reason: 'not_found' };
 
-  const [personaRow] = await db
-    .select({ persona: characterPersonas.persona })
-    .from(characterPersonas)
-    .where(eq(characterPersonas.characterId, characterRow.id))
-    .limit(1);
-
   const voice = resolveVoice(characterRow.liveCallVoice);
 
   // 5. Claim the row FIRST. The unique index is what makes two simultaneous
@@ -339,84 +342,203 @@ export async function startCall(
       : { ok: false, reason: 'provider_error', kind: 'claim_failed' };
   }
 
-  // 6. The network call. The persona is built here and goes no further.
+  // 6. That is all. No provider session exists yet, and none should: nothing
+  //    can hold its credentials until a socket is open. The relay creates it.
+  return { ok: true, session: toPublicCallSession(claimed) };
+}
+
+/* ------------------------------------------------------------------ *
+ * The relay's half of the lifecycle
+ * ------------------------------------------------------------------ */
+
+export type BeginConnectOutcome =
+  /** This socket won the claim and must now create the provider session. */
+  | { status: 'claimed'; row: CallSessionRow }
+  /** Not the caller's, or gone. Reads as 404 upstream. */
+  | { status: 'not_found' }
+  /** Another socket is already connecting, or the call is no longer pending. */
+  | { status: 'unavailable'; reason: 'already_connecting' | 'not_pending' };
+
+/**
+ * Claims the right to establish the provider connection for a call.
+ *
+ * ONE SOCKET, ONE PROVIDER SESSION. Two browser tabs can open a socket for the
+ * same call session at the same moment, and without this both would create a
+ * provider session -- two paid sessions for one call, one of them untracked.
+ * The conditional update lets exactly one win: it matches only while the row is
+ * `pending` AND unclaimed, so the loser's update touches nothing.
+ *
+ * The row stays `pending` throughout, which matters: `pending` is inside the
+ * two partial unique indexes, so a connecting call still blocks a second call
+ * from being started for the same conversation or the same person.
+ */
+export async function beginConnect(
+  db: Db,
+  userId: string,
+  callSessionId: string,
+  now = new Date(),
+): Promise<BeginConnectOutcome> {
+  const existing = await getCallSessionForUser(db, userId, callSessionId);
+  if (!existing) return { status: 'not_found' };
+  if (existing.status !== 'pending') return { status: 'unavailable', reason: 'not_pending' };
+
+  const [claimed] = await db
+    .update(callSessions)
+    .set({ connectClaimedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(callSessions.id, callSessionId),
+        eq(callSessions.status, 'pending'),
+        isNull(callSessions.connectClaimedAt),
+      ),
+    )
+    .returning();
+
+  if (!claimed) return { status: 'unavailable', reason: 'already_connecting' };
+  return { status: 'claimed', row: claimed };
+}
+
+/**
+ * Everything the provider is told, compiled from the server's own records.
+ *
+ * LIVES HERE, NOT IN THE RELAY. The persona is internal prompt material; the
+ * fewer places that hold it the better, and this is already the module that
+ * owns what a call knows about its character. The relay receives the finished
+ * string, hands it to the adapter, and never stores or logs it.
+ *
+ * Null when the character has vanished underneath the call -- the caller must
+ * treat that as a failure rather than calling the provider with an empty
+ * persona.
+ */
+export async function buildProviderSessionRequest(
+  db: Db,
+  row: CallSessionRow,
+): Promise<{ instructions: string; voice: string; userRef: string } | null> {
+  const [characterRow] = await db
+    .select()
+    .from(characters)
+    .where(eq(characters.id, row.characterId))
+    .limit(1);
+  if (!characterRow) return null;
+
+  const [personaRow] = await db
+    .select({ persona: characterPersonas.persona })
+    .from(characterPersonas)
+    .where(eq(characterPersonas.characterId, characterRow.id))
+    .limit(1);
+
+  return {
+    instructions: buildCharacterSystemPrompt({
+      character: toPublicCharacter(characterRow, null),
+      systemPrompt: characterRow.systemPrompt,
+      persona: personaRow?.persona ?? null,
+      history: [],
+      priorMessageCount: 0,
+      userMessage: '',
+      memories: [],
+    }),
+    // The voice resolved when the call was claimed, so a change to the
+    // character mid-call cannot swap her voice underneath the caller.
+    voice: row.voice,
+    // The call session's own id: opaque, rotates per call, and tells the
+    // provider nothing about the person. Never the raw user id.
+    userRef: row.id,
+  };
+}
+
+/**
+ * Records the provider handle as soon as it exists, before anything else.
+ *
+ * Separated from activation so that a crash between the two leaves a row that
+ * still identifies the upstream session. The reverse order leaves an orphan
+ * nobody can name.
+ */
+export async function recordProviderSession(
+  db: Db,
+  callSessionId: string,
+  providerSessionId: string,
+): Promise<void> {
+  await db
+    .update(callSessions)
+    .set({ providerSessionId, updatedAt: new Date() })
+    .where(eq(callSessions.id, callSessionId));
+}
+
+/**
+ * Marks the call `active` -- and ONLY once the upstream socket is open.
+ *
+ * Returns null when the row is no longer `pending`, which means it was ended or
+ * swept while the connection was being made. The caller must then tear the
+ * upstream socket down rather than report a live call.
+ */
+export async function activateConnected(
+  db: Db,
+  callSessionId: string,
+  maxSeconds: number,
+  now = new Date(),
+): Promise<CallSessionRow | null> {
+  const [activated] = await db
+    .update(callSessions)
+    .set({ status: 'active', maxSeconds, startedAt: now, updatedAt: now })
+    .where(and(eq(callSessions.id, callSessionId), eq(callSessions.status, 'pending')))
+    .returning();
+  return activated ?? null;
+}
+
+/** How a live call finished. Each is a distinct fact, not a shade of failure. */
+export type SettleStatus = 'ended' | 'failed' | 'expired';
+
+/**
+ * Settles a live call with the state that actually describes what happened.
+ *
+ * THE DISTINCTION IS NOT COSMETIC. A call that ran its full thirteen minutes
+ * and a call whose provider refused to connect are different events, and
+ * recording both as `failed` would make the table useless for the very
+ * questions it exists to answer -- how many calls completed, how many broke.
+ * A browser hanging up after a good conversation is `ended`; reaching the
+ * ceiling is `expired`; never getting connected is `failed`.
+ *
+ * Guarded like every other settle: only a live row moves, so a session already
+ * ended by its owner is not overwritten, and a failure to write is swallowed so
+ * it cannot throw over the reason the call is ending.
+ */
+export async function settleCall(
+  db: Db,
+  callSessionId: string,
+  status: SettleStatus,
+  reason: string,
+): Promise<void> {
   try {
-    const session = await deps.provider.createSession({
-      instructions: buildCharacterSystemPrompt({
-        character: conversation.character,
-        systemPrompt: characterRow.systemPrompt,
-        persona: personaRow?.persona ?? null,
-        history: [],
-        priorMessageCount: 0,
-        userMessage: '',
-        memories: [],
-      }),
-      voice,
-      // The call session's own id: opaque, rotates per call, and tells the
-      // provider nothing about the person. Never the raw user id.
-      userRef: claimed.id,
-    });
-
-    /**
-     * THE HANDLE IS WRITTEN FIRST, ON ITS OWN.
-     *
-     * From here a provider session exists. If the process died before anything
-     * was recorded, nobody could ever identify it again -- so the id is
-     * persisted in its own statement, while the row is still `pending`, before
-     * any decision about whether the call may proceed. A crash between these
-     * two writes leaves a pending row that carries the handle, which is
-     * recoverable; the other order leaves an unidentifiable orphan.
-     */
-    try {
-      await db
-        .update(callSessions)
-        .set({ providerSessionId: session.providerSessionId, updatedAt: new Date() })
-        .where(eq(callSessions.id, claimed.id));
-    } catch (writeError) {
-      // The handle could not be stored. The session upstream is real and is now
-      // unidentifiable, so this is reported as an orphan risk rather than a
-      // plain failure -- and NOT as a live call.
-      await settleFailed(db, claimed.id, 'orphan_risk_handle_unwritten');
-      throw writeError;
-    }
-
+    const [row] = await db
+      .select()
+      .from(callSessions)
+      .where(eq(callSessions.id, callSessionId))
+      .limit(1);
+    if (!row) return;
     const now = new Date();
-    const [activated] = await db
+    await db
       .update(callSessions)
       .set({
-        status: 'active',
-        maxSeconds: session.maxSeconds,
-        startedAt: now,
+        status,
+        endedAt: now,
+        durationSeconds: secondsBetween(row.startedAt ?? row.createdAt, now),
+        terminationReason: reason,
         updatedAt: now,
       })
-      .where(and(eq(callSessions.id, claimed.id), eq(callSessions.status, 'pending')))
-      .returning();
-
-    if (!activated) {
-      /**
-       * The row left `pending` underneath us -- ended, or swept as overdue.
-       * A provider session exists and this call is NOT active. The handle was
-       * written above, so it is at least identifiable.
-       */
-      return { ok: false, reason: 'provider_error', kind: 'session_gone' };
-    }
-
-    return {
-      ok: true,
-      session: toPublicCallSession(activated),
-      credentials: {
-        url: session.url,
-        clientSecret: session.clientSecret,
-        clientSecretExpiresAt: session.clientSecretExpiresAt,
-      },
-    };
-  } catch (error) {
-    // 7. The claim must never survive a failed creation -- and the attempt to
-    //    settle it must never replace the reason it failed.
-    const kind = error instanceof VoiceProviderError ? error.kind : 'unexpected';
-    await settleFailed(db, claimed.id, terminationReasonFor(error));
-    return { ok: false, reason: 'provider_error', kind };
+      .where(and(eq(callSessions.id, callSessionId), sql`${callSessions.status} in ('pending', 'active')`));
+  } catch {
+    // Left live on purpose; the deadline sweep settles it.
   }
+}
+
+/**
+ * Settles a call that never got connected.
+ *
+ * Kept as its own name because "failed to connect" is the common case and
+ * reads better at the call site than `settleCall(db, id, 'failed', ...)`.
+ */
+export async function failConnect(db: Db, callSessionId: string, reason: string): Promise<void> {
+  await settleFailed(db, callSessionId, reason);
 }
 
 /**

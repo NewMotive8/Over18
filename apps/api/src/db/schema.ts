@@ -3084,6 +3084,23 @@ export const callSessions = pgTable(
     status: callSessionStatus('status').notNull().default('pending'),
     /** The ceiling this call was created under, in seconds. */
     maxSeconds: integer('max_seconds').notNull(),
+    /**
+     * When a WebSocket claimed this session and began establishing the
+     * provider connection.
+     *
+     * THE ATOMIC GUARD AGAINST TWO SOCKETS, ONE CALL. A row stays `pending`
+     * from the moment `POST /call` claims it until the upstream connection is
+     * live, which means two browser sockets could otherwise each decide to
+     * create a provider session for it. A conditional update that sets this
+     * column only while it is null lets exactly one of them win, and the loser
+     * is refused -- the same "let the database decide the race" rule the two
+     * unique indexes below follow.
+     *
+     * Kept OUT of the status enum on purpose. Connecting is still live, so the
+     * row must remain `pending` and stay inside the partial unique indexes; a
+     * separate status would fall out of them and let a second call start.
+     */
+    connectClaimedAt: timestamp('connect_claimed_at', { withTimezone: true }),
     /** Set when the provider confirmed; null if it never did. */
     startedAt: timestamp('started_at', { withTimezone: true }),
     endedAt: timestamp('ended_at', { withTimezone: true }),

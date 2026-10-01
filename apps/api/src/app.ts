@@ -21,6 +21,7 @@ import adminUserRoutes from './routes/admin-users.js';
 import favouriteRoutes from './routes/favourites.js';
 import messageRoutes from './routes/messages.js';
 import callRoutes from './routes/calls.js';
+import callSocketRoutes from './routes/call-socket.js';
 import conversationMediaRoutes from './routes/conversation-media.js';
 import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
@@ -50,7 +51,9 @@ import {
   type PersonaGenerator,
 } from './services/character-persona-generator.js';
 import type { MediaProviders } from './media-pipeline/types.js';
+import fastifyWebsocket from '@fastify/websocket';
 import { createSpicyApiProvider } from './voice/spicyapi.js';
+import { MAX_CLIENT_FRAME_BYTES } from './voice/relay-protocol.js';
 import { unconfiguredVoiceProvider, type VoiceSessionProvider } from './voice/types.js';
 
 export interface BuildAppOptions {
@@ -289,11 +292,39 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
       }))
     : (options.voiceProvider ?? unconfiguredVoiceProvider);
 
+  const voiceEnabled = env.voiceCalls.enabled && env.voice !== null;
+
   await app.register(callRoutes, {
     db,
     provider: voiceProvider,
-    enabled: env.voiceCalls.enabled && env.voice !== null,
+    enabled: voiceEnabled,
     maxSeconds: env.voice?.maxSeconds ?? 780,
+  });
+
+  /**
+   * The voice relay (Phase 2A).
+   *
+   * The WebSocket plugin is registered in the same scope as the route that
+   * uses it, and nowhere else -- no other part of the API speaks WebSocket, and
+   * registering it globally would expose an upgrade path from every route.
+   *
+   * `maxPayload` is the transport's hard backstop and sits deliberately ABOVE
+   * the relay's own limit. The relay's check is the policy -- it refuses an
+   * over-limit frame and closes cleanly, so the client learns why. The plugin's
+   * is the thing that stops a genuinely abusive frame from ever being buffered,
+   * at the cost of an abrupt close. Setting them equal would mean the polite
+   * path could never run.
+   */
+  await app.register(async (voiceScope) => {
+    await voiceScope.register(fastifyWebsocket, {
+      options: { maxPayload: MAX_CLIENT_FRAME_BYTES * 2 },
+    });
+    await voiceScope.register(callSocketRoutes, {
+      db,
+      provider: voiceProvider,
+      enabled: voiceEnabled,
+      allowedOrigin: env.corsOrigin,
+    });
   });
 
   // Character Media Messages (commit 1) — serves the media attached to a

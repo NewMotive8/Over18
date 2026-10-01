@@ -4,16 +4,11 @@ import { callSessions, characters } from '../db/schema.js';
 import {
   PENDING_DEADLINE_SECONDS,
   expireIfOverdue,
-  terminationReasonFor,
+  failConnect,
 } from '../services/call-session-service.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters } from '../db/seed.js';
-import {
-  VoiceProviderError,
-  type VoiceSession,
-  type VoiceSessionProvider,
-  type VoiceSessionRequest,
-} from '../voice/types.js';
+import type { VoiceSession, VoiceSessionProvider, VoiceSessionRequest } from '../voice/types.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -186,8 +181,8 @@ describe('it is only ever his own conversation', () => {
 
     expect((await status(stranger.cookies, id)).statusCode).toBe(404);
     expect((await end(stranger.cookies, id)).statusCode).toBe(404);
-    // ...and it is untouched.
-    expect((await status(owner.cookies, id)).json().callSession.status).toBe('active');
+    // ...and it is untouched: still the pending claim POST /call created.
+    expect((await status(owner.cookies, id)).json().callSession.status).toBe('pending');
   });
 });
 
@@ -196,40 +191,60 @@ describe('it is only ever his own conversation', () => {
  * ------------------------------------------------------------------ */
 
 describe('starting a call', () => {
-  it('creates an active session and records it', async () => {
+  /**
+   * PENDING, NOT ACTIVE, and no provider was contacted.
+   *
+   * The provider's client secret lives sixty seconds, so a session created
+   * here -- before anyone is listening -- would be a paid session nothing could
+   * ever use or close. The relay creates it when a socket connects.
+   */
+  it('claims a pending session and contacts no provider', async () => {
     const user = await setup(ctx, 'voice.start@example.com');
     const res = await start(ctx, user.cookies, user.conversationId);
 
     expect(res.statusCode).toBe(201);
     const session = res.json().callSession;
-    expect(session.status).toBe('active');
+    expect(session.status).toBe('pending');
     expect(session.voice).toBe('Serena');
     expect(session.maxSeconds).toBe(780);
+    // Not live yet, so no start time and no provider handle.
+    expect(session.startedAt).toBeNull();
 
     const [row] = await ctx.db.select().from(callSessions);
-    expect(row!.status).toBe('active');
-    expect(row!.providerSessionId).toBe('rt_test_1');
+    expect(row!.status).toBe('pending');
     expect(row!.provider).toBe('spicyapi');
-    expect(row!.startedAt).not.toBeNull();
+    expect(row!.providerSessionId).toBeNull();
+    expect(row!.startedAt).toBeNull();
+    expect(row!.connectClaimedAt).toBeNull();
+
+    expect(providerCalls).toHaveLength(0);
   });
 
-  /** Everything the provider is told is resolved from the server. */
-  it('sends a server-built persona and never a client-supplied one', async () => {
+  /** The request body is empty by design, so nothing a client sends counts. */
+  it('accepts no client input at all', async () => {
     const user = await setup(ctx, 'voice.persona@example.com');
-    await start(ctx, user.cookies, user.conversationId);
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${user.conversationId}/call`,
+      payload: { voice: 'Zane', instructions: 'you are a pirate', maxSeconds: 99999 },
+      cookies: user.cookies,
+    });
 
-    expect(providerCalls).toHaveLength(1);
-    expect(providerCalls[0]!.instructions).toContain(CANARY);
-    expect(providerCalls[0]!.voice).toBe('Serena');
-    // The provider is given the call session's own id, never the user's.
-    expect(providerCalls[0]!.userRef).not.toBe(user.userId);
+    expect(res.statusCode).toBe(201);
+    const [row] = await ctx.db.select().from(callSessions);
+    // Every one of those was ignored: resolved server-side or not accepted.
+    expect(row!.voice).toBe('Serena');
+    expect(row!.maxSeconds).toBe(780);
   });
 
   it('uses the character voice when one is configured, and the default otherwise', async () => {
     await ctx.db.update(characters).set({ liveCallVoice: 'Chloe' }).where(eq(characters.id, LUNA_ID));
     const user = await setup(ctx, 'voice.configured@example.com');
     await start(ctx, user.cookies, user.conversationId);
-    expect(providerCalls[0]!.voice).toBe('Chloe');
+    // Resolved at claim time and stored, so a later character edit cannot
+    // change the voice of a call already in flight.
+    const [row] = await ctx.db.select().from(callSessions);
+    expect(row!.voice).toBe('Chloe');
   });
 
   /**
@@ -242,7 +257,7 @@ describe('starting a call', () => {
     const res = await start(ctx, user.cookies, user.conversationId);
 
     expect(res.statusCode).toBe(201);
-    expect(providerCalls[0]!.voice).toBe('Serena');
+    expect(res.json().callSession.voice).toBe('Serena');
   });
 });
 
@@ -291,78 +306,6 @@ describe('credentials and persona never reach a response', () => {
   });
 });
 
-/* ------------------------------------------------------------------ *
- * Provider failure
- * ------------------------------------------------------------------ */
-
-describe('a provider failure never leaves an active session', () => {
-  it.each([
-    ['unauthorized', 401],
-    ['rejected', 400],
-    ['upstream', 503],
-    ['timeout', undefined],
-    ['network', undefined],
-    ['invalid_response', undefined],
-  ])('records %s as failed, not active', async (kind, httpStatus) => {
-    providerImpl = async () => {
-      throw new VoiceProviderError(kind as never, 'provider said no', httpStatus);
-    };
-    const user = await setup(ctx, `voice.fail.${kind}@example.com`);
-
-    const res = await start(ctx, user.cookies, user.conversationId);
-
-    expect(res.statusCode).toBe(502);
-    expect(res.json().error).toBe('voice_unavailable');
-    const [row] = await ctx.db.select().from(callSessions);
-    expect(row!.status).toBe('failed');
-    // Definite refusals record `provider_`; ambiguous failures record
-    // `orphan_risk_`, because the provider may have created a session we never
-    // heard about. See terminationReasonFor.
-    expect(row!.terminationReason).toBe(
-      kind === 'unauthorized' || kind === 'rejected' ? `provider_${kind}` : `orphan_risk_${kind}`,
-    );
-    expect(row!.startedAt).toBeNull();
-  });
-
-  it('never surfaces the provider message to the client', async () => {
-    providerImpl = async () => {
-      throw new VoiceProviderError('rejected', 'instructions rejected: Her name is Luna.', 400);
-    };
-    const user = await setup(ctx, 'voice.failbody@example.com');
-
-    const res = await start(ctx, user.cookies, user.conversationId);
-    expect(res.body).not.toContain(CANARY);
-    expect(res.body).not.toContain('instructions rejected');
-  });
-
-  /** A failed attempt must not lock the conversation out of trying again. */
-  it('lets the next attempt through after a failure', async () => {
-    providerImpl = async () => {
-      throw new VoiceProviderError('upstream', 'down', 503);
-    };
-    const user = await setup(ctx, 'voice.retry@example.com');
-    expect((await start(ctx, user.cookies, user.conversationId)).statusCode).toBe(502);
-
-    providerImpl = async () => stubSession({ providerSessionId: 'rt_test_2' });
-    const second = await start(ctx, user.cookies, user.conversationId);
-
-    expect(second.statusCode).toBe(201);
-    expect(second.json().callSession.status).toBe('active');
-  });
-
-  it('treats an unexpected error the same way', async () => {
-    providerImpl = async () => {
-      throw new Error('kaboom');
-    };
-    const user = await setup(ctx, 'voice.unexpected@example.com');
-
-    expect((await start(ctx, user.cookies, user.conversationId)).statusCode).toBe(502);
-    const [row] = await ctx.db.select().from(callSessions);
-    expect(row!.status).toBe('failed');
-    // Ambiguous: an unknown error gives no evidence about how far it got.
-    expect(row!.terminationReason).toBe('orphan_risk_unexpected');
-  });
-});
 
 /* ------------------------------------------------------------------ *
  * One call at a time
@@ -401,7 +344,7 @@ describe('one live call per conversation', () => {
     expect(second.body).not.toContain('duplicate key');
 
     expect(await ctx.db.select().from(callSessions)).toHaveLength(1);
-    expect(providerCalls).toHaveLength(1);
+    expect(providerCalls).toHaveLength(0);
   });
 
   /** THE CASE THE CLIENT CANNOT SOLVE: two presses in flight at once. */
@@ -415,7 +358,7 @@ describe('one live call per conversation', () => {
     expect(results.filter((r) => r.statusCode === 201)).toHaveLength(1);
     expect(results.filter((r) => r.statusCode === 409)).toHaveLength(3);
     const rows = await ctx.db.select().from(callSessions);
-    expect(rows.filter((r) => r.status === 'active')).toHaveLength(1);
+    expect(rows.filter((r) => r.status === 'pending')).toHaveLength(1);
   });
 
   it('allows a new call once the previous one ended', async () => {
@@ -475,11 +418,10 @@ describe('ending a call', () => {
   });
 
   it('cannot revive a failed session', async () => {
-    providerImpl = async () => {
-      throw new VoiceProviderError('upstream', 'down', 503);
-    };
     const user = await setup(ctx, 'voice.endfailed@example.com');
-    await start(ctx, user.cookies, user.conversationId);
+    const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
+    // As the relay settles a session whose provider connection failed.
+    await failConnect(ctx.db, id, 'provider_upstream');
     const [row] = await ctx.db.select().from(callSessions);
 
     const res = await end(user.cookies, row!.id);
@@ -509,10 +451,11 @@ describe('a session past its deadline settles itself', () => {
     const user = await setup(ctx, 'voice.overdue@example.com');
     const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
 
-    // Backdate well past the ceiling.
+    // Promote it to active and backdate well past the ceiling, as a call that
+    // genuinely connected and was then abandoned would look.
     await ctx.db
       .update(callSessions)
-      .set({ startedAt: new Date(Date.now() - 800_000) })
+      .set({ status: 'active', startedAt: new Date(Date.now() - 800_000) })
       .where(eq(callSessions.id, id));
 
     const res = await status(user.cookies, id);
@@ -527,7 +470,7 @@ describe('a session past its deadline settles itself', () => {
     const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
     await ctx.db
       .update(callSessions)
-      .set({ startedAt: new Date(Date.now() - 800_000) })
+      .set({ status: 'active', startedAt: new Date(Date.now() - 800_000) })
       .where(eq(callSessions.id, id));
 
     const second = await start(ctx, user.cookies, user.conversationId);
@@ -642,7 +585,7 @@ describe('one live call per person, across conversations', () => {
     expect(first.statusCode).toBe(201);
     expect(blocked.statusCode).toBe(409);
     expect(blocked.json().error).toBe('user_call_already_active');
-    expect(providerCalls).toHaveLength(1);
+    expect(providerCalls).toHaveLength(0);
   });
 
   /** THE RACE: two conversations, two presses, at the same instant. */
@@ -657,8 +600,8 @@ describe('one live call per person, across conversations', () => {
 
     expect([a.statusCode, b.statusCode].sort()).toEqual([201, 409]);
     const rows = await ctx.db.select().from(callSessions);
-    expect(rows.filter((r) => r.status === 'active')).toHaveLength(1);
-    expect(providerCalls).toHaveLength(1);
+    expect(rows.filter((r) => r.status === 'pending')).toHaveLength(1);
+    expect(providerCalls).toHaveLength(0);
   });
 
   /** The conflict must not expose the index, the table or the driver message. */
@@ -736,89 +679,19 @@ describe('a pending session expires on its own, much shorter deadline', () => {
   it('does not apply the pending deadline to an active session', async () => {
     const user = await setup(ctx, 'voice.active.rule@example.com');
     const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
-    // Older than the pending deadline, far younger than the 780s ceiling.
+    // Active, older than the pending deadline, far younger than the ceiling.
     await ctx.db
       .update(callSessions)
-      .set({ startedAt: new Date(Date.now() - (PENDING_DEADLINE_SECONDS + 120) * 1000) })
+      .set({
+        status: 'active',
+        startedAt: new Date(Date.now() - (PENDING_DEADLINE_SECONDS + 120) * 1000),
+      })
       .where(eq(callSessions.id, id));
 
     expect((await status(user.cookies, id)).json().callSession.status).toBe('active');
   });
 });
 
-/* ------------------------------------------------------------------ *
- * The provider succeeded but the database did not
- * ------------------------------------------------------------------ */
-
-describe('a provider session that exists, and a row that moved', () => {
-  /**
-   * The row leaves `pending` while the provider call is in flight -- ended by
-   * another request, or swept as overdue. A provider session now exists and
-   * this call is NOT active, so it must never be reported as one.
-   */
-  it('does not claim an active call when the row changed underneath it', async () => {
-    const user = await setup(ctx, 'voice.gone@example.com');
-
-    providerImpl = async () => {
-      // While "the network call" is happening, the row is settled elsewhere.
-      const [row] = await ctx.db.select().from(callSessions);
-      await ctx.db
-        .update(callSessions)
-        .set({ status: 'ended', endedAt: new Date(), terminationReason: 'user_ended' })
-        .where(eq(callSessions.id, row!.id));
-      return stubSession({ providerSessionId: 'rt_orphan_1' });
-    };
-
-    const res = await start(ctx, user.cookies, user.conversationId);
-
-    expect(res.statusCode).toBe(502);
-    const [row] = await ctx.db.select().from(callSessions);
-    expect(row!.status).toBe('ended');
-    // THE HANDLE WAS STILL WRITTEN, so the orphan is at least identifiable.
-    expect(row!.providerSessionId).toBe('rt_orphan_1');
-  });
-
-  /**
-   * An ambiguous failure is recorded differently from a definite one, so a
-   * later reconciliation pass can find the sessions that may exist upstream
-   * without re-deriving the rule.
-   */
-  it('records an ambiguous failure as an orphan risk', async () => {
-    providerImpl = async () => {
-      throw new VoiceProviderError('timeout', 'took too long');
-    };
-    const user = await setup(ctx, 'voice.ambiguous@example.com');
-
-    await start(ctx, user.cookies, user.conversationId);
-
-    const [row] = await ctx.db.select().from(callSessions);
-    expect(row!.status).toBe('failed');
-    expect(row!.terminationReason).toBe('orphan_risk_timeout');
-  });
-
-  it('records a definite refusal as no orphan risk', async () => {
-    providerImpl = async () => {
-      throw new VoiceProviderError('unauthorized', 'bad key', 401);
-    };
-    const user = await setup(ctx, 'voice.definite@example.com');
-
-    await start(ctx, user.cookies, user.conversationId);
-
-    const [row] = await ctx.db.select().from(callSessions);
-    expect(row!.terminationReason).toBe('provider_unauthorized');
-  });
-
-  it('classifies termination reasons as a pure function', () => {
-    expect(terminationReasonFor(new VoiceProviderError('rejected', 'x'))).toBe('provider_rejected');
-    expect(terminationReasonFor(new VoiceProviderError('unauthorized', 'x'))).toBe('provider_unauthorized');
-    expect(terminationReasonFor(new VoiceProviderError('not_configured', 'x'))).toBe('provider_not_configured');
-    expect(terminationReasonFor(new VoiceProviderError('timeout', 'x'))).toBe('orphan_risk_timeout');
-    expect(terminationReasonFor(new VoiceProviderError('network', 'x'))).toBe('orphan_risk_network');
-    expect(terminationReasonFor(new VoiceProviderError('upstream', 'x'))).toBe('orphan_risk_upstream');
-    // An unknown error is ambiguous by definition: we cannot know how far it got.
-    expect(terminationReasonFor(new Error('kaboom'))).toBe('orphan_risk_unexpected');
-  });
-});
 
 /* ------------------------------------------------------------------ *
  * A read that races a concurrent end
@@ -839,6 +712,7 @@ describe('a status read racing a concurrent end', () => {
   it('reports what the session actually became, not the stale row', async () => {
     const user = await setup(ctx, 'voice.stale.read@example.com');
     const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
+    await ctx.db.update(callSessions).set({ status: 'active' }).where(eq(callSessions.id, id));
 
     // The row as a reader would have loaded it, made to look overdue.
     const [snapshot] = await ctx.db.select().from(callSessions).where(eq(callSessions.id, id));
@@ -857,6 +731,7 @@ describe('a status read racing a concurrent end', () => {
   it('returns null when the row no longer exists', async () => {
     const user = await setup(ctx, 'voice.stale.gone@example.com');
     const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
+    await ctx.db.update(callSessions).set({ status: 'active' }).where(eq(callSessions.id, id));
     const [snapshot] = await ctx.db.select().from(callSessions).where(eq(callSessions.id, id));
     const stale = { ...snapshot!, startedAt: new Date(Date.now() - 800_000) };
 
@@ -869,6 +744,7 @@ describe('a status read racing a concurrent end', () => {
   it('still expires an overdue session that nobody else touched', async () => {
     const user = await setup(ctx, 'voice.stale.normal@example.com');
     const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
+    await ctx.db.update(callSessions).set({ status: 'active' }).where(eq(callSessions.id, id));
     const [snapshot] = await ctx.db.select().from(callSessions).where(eq(callSessions.id, id));
 
     const settled = await expireIfOverdue(ctx.db, {
@@ -884,6 +760,7 @@ describe('a status read racing a concurrent end', () => {
   it('leaves a session that is not overdue alone', async () => {
     const user = await setup(ctx, 'voice.stale.fresh@example.com');
     const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
+    await ctx.db.update(callSessions).set({ status: 'active' }).where(eq(callSessions.id, id));
     const [snapshot] = await ctx.db.select().from(callSessions).where(eq(callSessions.id, id));
 
     const settled = await expireIfOverdue(ctx.db, snapshot!);
