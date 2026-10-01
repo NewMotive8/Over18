@@ -683,7 +683,10 @@ describe('only three modules move Credits: admin support (P2.4), paid actions (P
   });
 
   it('every other importer only reads, or reads an error: the customer commercial state (P3.1), the admin wallet route and users read model (P2.5.1), and the P8.2 unlock', () => {
-    const importers = application().filter((rel) => /wallet-service/.test(readFileSync(join(src, rel), 'utf8')));
+    // A module specifier, not a mention: a doc comment naming the wallet service
+    // is not an import. Static, side-effect and dynamic forms all count.
+    const IMPORTS_WALLET = /\b(?:from|import)\s*\(?\s*['"](?:\.\.?\/)+(?:services\/)?wallet-service\.js['"]/;
+    const importers = application().filter((rel) => IMPORTS_WALLET.test(readFileSync(join(src, rel), 'utf8')));
     expect(importers.sort()).toEqual([
       'routes/admin-wallets.ts',
       'services/admin-user-service.ts',
