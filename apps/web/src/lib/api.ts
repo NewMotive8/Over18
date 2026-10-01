@@ -154,6 +154,58 @@ export const conversationsApi = {
   },
 };
 
+/**
+ * One live voice call, as the API reports it.
+ *
+ * Mirrors the server's `PublicCallSession` (apps/api/src/services/
+ * call-session-service.ts). Declared here rather than in `@over18/shared`
+ * because the server does not share it either -- it is a response shape, and
+ * the credentials the server holds for the call are deliberately NOT part of
+ * it. Nothing in this object can reach the provider.
+ */
+export interface VoiceCallSession {
+  id: string;
+  status: 'pending' | 'active' | 'ended' | 'failed' | 'expired';
+  voice: string;
+  maxSeconds: number;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  terminationReason: string | null;
+}
+
+/**
+ * Live voice calls.
+ *
+ * THE BROWSER NEVER LEARNS WHERE THE PROVIDER IS. Starting a call returns a
+ * session id and nothing else; the provider's URL and its short-lived client
+ * secret are created by the server when our own relay socket connects, and are
+ * never serialised into any response. The only socket this app opens is to our
+ * API, carrying the session cookie.
+ */
+export const callsApi = {
+  /** Claim a call for a conversation. 201 with a `pending` session. */
+  start(conversationId: string): Promise<{ callSession: VoiceCallSession }> {
+    return request<{ callSession: VoiceCallSession }>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/call`,
+      { method: 'POST' },
+    );
+  },
+  /** Current state of a call the caller owns. */
+  get(callSessionId: string): Promise<{ callSession: VoiceCallSession }> {
+    return request<{ callSession: VoiceCallSession }>(
+      `/api/calls/${encodeURIComponent(callSessionId)}`,
+    );
+  },
+  /** Hang up. Idempotent: ending an ended call is not an error. */
+  end(callSessionId: string): Promise<{ callSession: VoiceCallSession; alreadyEnded?: boolean }> {
+    return request<{ callSession: VoiceCallSession; alreadyEnded?: boolean }>(
+      `/api/calls/${encodeURIComponent(callSessionId)}/end`,
+      { method: 'POST' },
+    );
+  },
+};
+
 export const messagesApi = {
   list(conversationId: string): Promise<ChatMessage[]> {
     return request<ChatMessage[]>(

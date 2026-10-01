@@ -111,6 +111,114 @@ const status = (cookies: Record<string, string>, id: string) =>
   ctx.app.inject({ method: 'GET', url: `/api/calls/${id}`, cookies });
 
 /* ------------------------------------------------------------------ *
+ * Migration 0049 -- the transcript table's shape
+ * ------------------------------------------------------------------ */
+
+describe('call_transcript_turns schema / migration', () => {
+  it('created the table with the expected columns', async () => {
+    const res = await ctx.pool.query(
+      `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+       WHERE table_name = 'call_transcript_turns' ORDER BY column_name`,
+    );
+    const columns = Object.fromEntries(res.rows.map((r) => [r.column_name, r]));
+    expect(Object.keys(columns).sort()).toEqual([
+      'call_session_id',
+      'content',
+      'created_at',
+      'id',
+      'seq',
+      'speaker',
+    ]);
+    expect(columns.id.data_type).toBe('uuid');
+    expect(columns.call_session_id.data_type).toBe('uuid');
+    // bigserial reports as bigint with a sequence default -- see the next test.
+    expect(columns.seq.data_type).toBe('bigint');
+    expect(columns.speaker.data_type).toBe('USER-DEFINED'); // call_turn_speaker enum
+    expect(columns.content.data_type).toBe('text');
+    expect(columns.created_at.data_type).toBe('timestamp with time zone');
+    // Nothing here is optional: a turn with no speaker or no text is not a turn.
+    for (const name of Object.keys(columns)) {
+      expect(columns[name].is_nullable).toBe('NO');
+    }
+  });
+
+  /** `seq` must be a real sequence, not a column someone remembers to set. */
+  it('orders turns by a database-assigned sequence', async () => {
+    const res = await ctx.pool.query(
+      `SELECT column_default FROM information_schema.columns
+       WHERE table_name = 'call_transcript_turns' AND column_name = 'seq'`,
+    );
+    expect(res.rows[0].column_default).toContain('nextval');
+  });
+
+  it('permits exactly two speakers', async () => {
+    const res = await ctx.pool.query(
+      `SELECT e.enumlabel FROM pg_enum e
+       JOIN pg_type t ON t.oid = e.enumtypid
+       WHERE t.typname = 'call_turn_speaker' ORDER BY e.enumsortorder`,
+    );
+    expect(res.rows.map((r) => r.enumlabel)).toEqual(['user', 'character']);
+  });
+
+  /**
+   * ONE INDEX, LEADING ON call_session_id. Reading a transcript is always "this
+   * call, in order", and Postgres does not index a foreign key on its own -- so
+   * the composite covers both and a separate index on the key alone would be
+   * redundant with this one's leading column.
+   */
+  it('indexes (call_session_id, seq) and nothing redundant', async () => {
+    const res = await ctx.pool.query(
+      `SELECT indexname, indexdef FROM pg_indexes
+       WHERE tablename = 'call_transcript_turns' ORDER BY indexname`,
+    );
+    const names = res.rows.map((r) => r.indexname);
+    // The primary key's own index, plus exactly one of ours.
+    expect(names).toContain('call_transcript_turns_call_seq_idx');
+    expect(names).toHaveLength(2);
+    const composite = res.rows.find((r) => r.indexname === 'call_transcript_turns_call_seq_idx');
+    expect(composite.indexdef).toMatch(/\(call_session_id, seq\)/);
+  });
+
+  it('is scoped only through its call session -- no user or character column', async () => {
+    const res = await ctx.pool.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'call_transcript_turns'`,
+    );
+    const names = res.rows.map((r) => r.column_name);
+    // Ownership is inherited through call_sessions. A copy here would be a
+    // second place for it to be true, and therefore a place to disagree.
+    expect(names).not.toContain('user_id');
+    expect(names).not.toContain('character_id');
+  });
+
+  it('cascades from its call session, so a transcript cannot outlive the call', async () => {
+    const res = await ctx.pool.query(
+      `SELECT rc.delete_rule, kcu.column_name, ccu.table_name AS references_table
+         FROM information_schema.referential_constraints rc
+         JOIN information_schema.key_column_usage kcu
+           ON kcu.constraint_name = rc.constraint_name
+         JOIN information_schema.constraint_column_usage ccu
+           ON ccu.constraint_name = rc.constraint_name
+        WHERE kcu.table_name = 'call_transcript_turns'`,
+    );
+    expect(res.rows).toHaveLength(1);
+    expect(res.rows[0].delete_rule).toBe('CASCADE');
+    expect(res.rows[0].column_name).toBe('call_session_id');
+    expect(res.rows[0].references_table).toBe('call_sessions');
+  });
+
+  /** Inert on purpose: the relay is unchanged in this step. */
+  it('is empty after a call has been started and ended', async () => {
+    const user = await setup(ctx, 'transcript.inert@example.com');
+    const started = await start(ctx, user.cookies, user.conversationId);
+    expect(started.statusCode).toBe(201);
+    await end(user.cookies, started.json().callSession.id);
+
+    const res = await ctx.pool.query('SELECT count(*)::int AS n FROM call_transcript_turns');
+    expect(res.rows[0].n).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * The gate
  * ------------------------------------------------------------------ */
 

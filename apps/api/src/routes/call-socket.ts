@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { WebSocket as FastifyWebSocket } from '@fastify/websocket';
 import type { Db } from '../db/client.js';
@@ -8,8 +9,10 @@ import {
   failConnect,
   getCallSessionForUser,
   recordProviderSession,
+  recordTranscriptTurn,
   settleCall,
   type SettleStatus,
+  type TranscriptSpeaker,
 } from '../services/call-session-service.js';
 import {
   decideClientFrame,
@@ -19,8 +22,23 @@ import {
   UPSTREAM_CONNECT_TIMEOUT_MS,
 } from '../voice/relay-protocol.js';
 import { VoiceProviderError, type VoiceSessionProvider } from '../voice/types.js';
+import { extractCallMemories, ELIGIBLE_STATUSES } from '../services/call-memory-service.js';
+import { DEFAULT_MEMORY_MAX_STORED } from '../services/memory-service.js';
+import { noopMemoryExtractor, type MemoryExtractor } from '../services/memory-extractor.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Backoff between transcript write attempts: three attempts in total.
+ *
+ * BOUNDED SO THE CHAIN ALWAYS SETTLES. Retries happen inside the serial write
+ * chain, which is what keeps a retried turn ahead of the turns spoken after it
+ * -- so every millisecond spent here delays the rest of the transcript. Half a
+ * second covers the fault this is actually for, a connection blip, and refuses
+ * to sit through an outage: a transcript that is one turn short is a far better
+ * outcome than one that arrives minutes late or not at all.
+ */
+const TRANSCRIPT_RETRY_DELAYS_MS = [100, 400] as const;
 
 /**
  * The voice relay: browser <-> this server <-> the provider.
@@ -56,6 +74,14 @@ export default async function callSocketRoutes(
     enabled: boolean;
     /** Comma-separated list, as CORS_ORIGIN is written. */
     allowedOrigin: string;
+    /**
+     * Turns a finished call's transcript into remembered facts. The SAME seam the
+     * text chat uses, so both channels fill one memory. Defaults to the noop, so
+     * a caller that wires nothing extracts nothing rather than guessing.
+     */
+    memoryExtractor?: MemoryExtractor;
+    /** Per-(user, character) memory cap, as the message path configures it. */
+    memoryMaxStored?: number;
   },
 ) {
   const allowedOrigins = new Set(
@@ -107,6 +133,67 @@ export default async function callSocketRoutes(
       let connectTimer: ReturnType<typeof setTimeout> | null = null;
 
       /**
+       * The transcript writes, as a single chain rather than a scatter.
+       *
+       * ORDER IS THE WHOLE REASON THIS IS NOT `void insert(...)`. `seq` is
+       * assigned by the database at insert time, so the order these inserts
+       * REACH the database is the order the transcript will read in. Firing them
+       * independently from a synchronous event handler lets two overlap, and a
+       * reply that was spoken second can be numbered first -- which is exactly
+       * the kind of defect that only shows up on a fast exchange in production.
+       *
+       * Chaining makes arrival order the write order by construction. Each link
+       * swallows its own failure so one bad write cannot break the chain for the
+       * turns behind it, and nothing ever awaits this from the audio path.
+       */
+      let transcriptWrites: Promise<void> = Promise.resolve();
+
+      /**
+       * Resolves once every turn queued BEFORE this call has been written.
+       *
+       * This is the hook the memory-extraction step needs: extraction must read a
+       * finished transcript, and the writes are deliberately not awaited by the
+       * audio path, so without this it would read whatever happened to have
+       * landed. The semantics are precisely "what was queued by now" -- a turn
+       * arriving after the call is not waited for, because there is no moment at
+       * which a live conversation is guaranteed to have stopped producing them.
+       *
+       * Cannot hang: each link's retries are bounded by
+       * TRANSCRIPT_RETRY_DELAYS_MS, so the chain always settles. Cannot reject:
+       * the links swallow their own failures, and this absorbs anything that
+       * somehow escaped rather than handing a rejection to its caller.
+       */
+      const flushTranscripts = (): Promise<void> =>
+        transcriptWrites.then(
+          () => undefined,
+          () => undefined,
+        );
+
+      /**
+       * Transcript item ids whose turn is known to be STORED.
+       *
+       * Added only after a successful write, deliberately. Marking an event
+       * handled the moment it arrived meant a turn whose insert then failed was
+       * recorded as dealt with and could never be written by anything -- the
+       * failure was final twice over.
+       *
+       * Per-socket, which is the whole lifetime that matters: a call has exactly
+       * one socket -- the `connect_claimed_at` claim refuses a second -- so there
+       * is no reconnect through which an earlier turn could arrive again.
+       */
+      const seenTranscriptIds = new Set<string>();
+
+      /**
+       * Event id -> the row id chosen for it, while that turn is still in flight.
+       *
+       * THE SAME EVENT ARRIVING TWICE BEFORE THE FIRST WRITE FINISHES must not
+       * become two rows. It cannot be caught by `seenTranscriptIds`, which is
+       * empty until the write succeeds, so the second arrival is given the SAME
+       * row id as the first and the insert's conflict clause absorbs it.
+       */
+      const inFlightTurnIds = new Map<string, string>();
+
+      /**
        * Close everything, once.
        *
        * Competing close, error and timeout events all land here, from both
@@ -138,6 +225,17 @@ export default async function callSocketRoutes(
         } catch {
           /* already gone */
         }
+        /**
+         * The transcript is finished before the call is recorded as finished.
+         *
+         * Writes are queued and never awaited by the audio path, so without this
+         * the row could settle while the last turns of the conversation were
+         * still in flight -- and the extraction step, which keys off a settled
+         * call, would read a transcript missing its ending. The socket is already
+         * closed by this point, so nobody is kept waiting by it.
+         */
+        await flushTranscripts();
+
         if (settle && claimed) {
           /**
            * GUARDED HERE AS WELL AS INSIDE settleCall, deliberately.
@@ -154,10 +252,43 @@ export default async function callSocketRoutes(
            * duration deadlines settle it. Throwing instead would replace the
            * reason the call ended with "and the database was also unreachable".
            */
+          let settled: Awaited<ReturnType<typeof settleCall>> = null;
           try {
-            await settleCall(opts.db, callSessionId, settle.status, settle.reason);
+            settled = await settleCall(opts.db, callSessionId, settle.status, settle.reason);
           } catch {
             /* left for the deadline sweep */
+          }
+
+          /**
+           * THE CALL IS OVER, SO NOW SHE CAN REMEMBER IT.
+           *
+           * Fired here and nowhere else, which gives it the three properties it
+           * needs. It runs only after `flushTranscripts()` above, so the
+           * transcript it reads is complete. It runs only when `settled` is a
+           * row, so a call whose settlement failed is not treated as finished --
+           * it keeps a null `memories_extracted_at` and stays eligible. And
+           * teardown is single-entry, so it fires once per call however many
+           * close, error and timeout events arrive.
+           *
+           * NOT AWAITED, deliberately: this is an LLM round trip and the person's
+           * socket is already closed. Awaiting it would hold teardown open for
+           * seconds after the call for no one's benefit. The `.catch` is what
+           * keeps a fire-and-forget promise from reaching Node's
+           * unhandled-rejection handler -- `extractCallMemories` does not throw,
+           * and this does not depend on that remaining true.
+           */
+          if (settled && (ELIGIBLE_STATUSES as readonly string[]).includes(settled.status)) {
+            void extractCallMemories(
+              opts.db,
+              callSessionId,
+              {
+                extractor: opts.memoryExtractor ?? noopMemoryExtractor,
+                maxStored: opts.memoryMaxStored ?? DEFAULT_MEMORY_MAX_STORED,
+              },
+              request.log,
+            ).catch(() => {
+              /* already logged inside; nothing is owed to this socket */
+            });
           }
         }
       };
@@ -220,6 +351,92 @@ export default async function callSocketRoutes(
 
       /** True while the browser socket is genuinely still there. */
       const clientGone = (): boolean => closed || socket.readyState !== socket.OPEN;
+
+      /**
+       * Queues one finished turn for storage. Never awaited by the audio path.
+       *
+       * A FAILURE TO STORE A TURN IS NOT A REASON TO DROP A CALL. The person is
+       * mid-conversation, and losing a line of transcript is a far smaller harm
+       * than hanging up on them. So the write is retried a bounded number of
+       * times and then given up on, and the call carries on either way.
+       *
+       * Nothing here is awaited by the audio path, and nothing here can reject:
+       * the link catches its own failures, so the chain survives a bad write and
+       * the turns behind it still go in.
+       */
+      const persistTurn = (speaker: TranscriptSpeaker, transcript: unknown, id?: unknown): void => {
+        if (typeof transcript !== 'string' || transcript.trim().length === 0) return;
+
+        const eventId = typeof id === 'string' && id.length > 0 ? id : null;
+        // Already stored. Nothing to do, and no second row to risk.
+        if (eventId && seenTranscriptIds.has(eventId)) return;
+
+        /**
+         * ONE ROW ID FOR EVERY ATTEMPT AT THIS TURN, chosen here rather than by
+         * the database. An insert can fail after it has committed, and a retry
+         * under a fresh id would duplicate the turn in exactly that case; under
+         * the same id it conflicts and does nothing. A repeat of the same event
+         * arriving while the first is still in flight reuses the same id too.
+         */
+        const turnId = (eventId && inFlightTurnIds.get(eventId)) || randomUUID();
+        if (eventId) inFlightTurnIds.set(eventId, turnId);
+
+        transcriptWrites = transcriptWrites.then(async () => {
+          for (let attempt = 0; ; attempt += 1) {
+            try {
+              const outcome = await recordTranscriptTurn(opts.db, {
+                id: turnId,
+                callSessionId,
+                speaker,
+                content: transcript,
+              });
+              if (eventId) {
+                seenTranscriptIds.add(eventId);
+                inFlightTurnIds.delete(eventId);
+              }
+              if (outcome.truncated) {
+                // The length, never the words: a transcript is what was said in
+                // confidence and does not belong in an application log.
+                request.log.warn(
+                  { voiceRelay: { callSessionId, speaker, length: outcome.length } },
+                  'voice relay: transcript turn truncated to the limit',
+                );
+              }
+              return;
+            } catch (error) {
+              const backoff = TRANSCRIPT_RETRY_DELAYS_MS[attempt];
+              if (backoff === undefined) {
+                /**
+                 * Given up on. The turn is lost and the call continues.
+                 *
+                 * Two log lines on purpose: one naming WHICH turn went missing,
+                 * in facts that are safe to write down -- the call, the speaker,
+                 * how much was said -- and one naming the failure class through
+                 * `describeError`, because a drizzle message is the statement and
+                 * its bound parameters. Neither carries a word of the transcript.
+                 */
+                request.log.warn(
+                  {
+                    voiceRelay: {
+                      callSessionId,
+                      speaker,
+                      length: transcript.trim().length,
+                      attempts: TRANSCRIPT_RETRY_DELAYS_MS.length + 1,
+                    },
+                  },
+                  'voice relay: transcript turn was not stored after retries',
+                );
+                request.log.error(
+                  { voiceRelay: describeError(error) },
+                  'voice relay: transcript write failed',
+                );
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, backoff));
+            }
+          }
+        });
+      };
 
       if (!originAllowed(request)) return refuse('forbidden_origin');
       if (!opts.enabled) return refuse('voice_unavailable');
@@ -390,6 +607,26 @@ export default async function callSocketRoutes(
           socket.send(JSON.stringify(decision.payload));
         } catch {
           /* browser gone; its close handler tears down */
+        }
+
+        /**
+         * THE TRANSCRIPT IS STORED FROM THE SANITISED PAYLOAD, NOT THE RAW FRAME.
+         *
+         * Reading the provider's own object here would put a second, unfiltered
+         * path into the system -- one that could carry a field nobody reviewed
+         * into a durable table. The sanitiser already rebuilt these two events
+         * from named primitives, and what it produced is all the transcript
+         * needs, so there is no reason to reach past it.
+         *
+         * ONLY THE FINISHED TURNS. The `.delta` events still reach the browser
+         * so it can show speech as it arrives, and are never stored: they are
+         * fragments of the same sentence, and writing them would record each
+         * turn several times over, in pieces.
+         */
+        if (decision.type === 'conversation.item.input_audio_transcription.completed') {
+          persistTurn('user', decision.payload.transcript, decision.payload.item_id);
+        } else if (decision.type === 'response.audio_transcript.done') {
+          persistTurn('character', decision.payload.transcript);
         }
       });
 

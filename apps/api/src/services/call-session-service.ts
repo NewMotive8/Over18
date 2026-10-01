@@ -1,9 +1,16 @@
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../db/client.js';
-import { callSessions, characterPersonas, characters, type CallSessionRow } from '../db/schema.js';
+import {
+  callSessions,
+  callTranscriptTurns,
+  characterPersonas,
+  characters,
+  type CallSessionRow,
+} from '../db/schema.js';
 import { getConversationForUser } from './conversation-service.js';
 import { toPublicCharacter } from './character-service.js';
-import { buildCharacterSystemPrompt } from './prompt-builder.js';
+import { buildCharacterSystemPrompt, selectMemoriesForPrompt } from './prompt-builder.js';
+import { listMemories } from './memory-service.js';
 import { resolveVoice } from '../voice/voice-catalogue.js';
 import { VoiceProviderError, type VoiceSessionProvider } from '../voice/types.js';
 
@@ -427,6 +434,27 @@ export async function buildProviderSessionRequest(
     .where(eq(characterPersonas.characterId, characterRow.id))
     .limit(1);
 
+  /**
+   * ONE MEMORY, BOTH CHANNELS. What someone told her in text, she knows on the
+   * phone -- and the reverse, once calls start contributing facts of their own.
+   * `memories` is scoped to (user, character) rather than to a conversation, so
+   * this needed no new table and no migration: the voice path was simply passing
+   * an empty list where the text path passes the real one.
+   *
+   * SCOPED FROM THE ROW, NEVER FROM THE CLIENT. `row` is the call session the
+   * server itself claimed in `beginConnect`, after ownership was checked. The
+   * browser supplies a call session id and nothing else, so it cannot ask for
+   * another person's memories or another character's by any route.
+   *
+   * BOUNDED EXACTLY AS TEXT BOUNDS IT. `createPromptBuilder` applies
+   * `selectMemoriesForPrompt` before rendering, and this path does not go
+   * through it, so the same selection is applied here on purpose. Without it a
+   * long-standing user's hundred stored facts would all be rendered into a field
+   * the provider truncates at eight thousand characters -- which would silently
+   * cut the persona's closing lines to make room for trivia.
+   */
+  const rememberedFacts = await listMemories(db, row.userId, row.characterId);
+
   return {
     instructions: buildCharacterSystemPrompt({
       character: toPublicCharacter(characterRow, null),
@@ -435,7 +463,7 @@ export async function buildProviderSessionRequest(
       history: [],
       priorMessageCount: 0,
       userMessage: '',
-      memories: [],
+      memories: selectMemoriesForPrompt(rememberedFacts),
     }),
     // The voice resolved when the call was claimed, so a change to the
     // character mid-call cannot swap her voice underneath the caller.
@@ -462,6 +490,110 @@ export async function recordProviderSession(
     .update(callSessions)
     .set({ providerSessionId, updatedAt: new Date() })
     .where(eq(callSessions.id, callSessionId));
+}
+
+/** Who said a transcript turn, in the schema's own vocabulary. */
+export type TranscriptSpeaker = 'user' | 'character';
+
+/**
+ * The most text one spoken turn may contribute to the record.
+ *
+ * DERIVED FROM WHAT SPEECH ACTUALLY IS, not picked for roundness. Speech runs
+ * around 150 words a minute, so roughly thirteen characters a second: the
+ * provider's entire 780-second ceiling is about ten thousand characters, shared
+ * between both speakers across many turns. Four thousand is therefore five
+ * straight minutes of one person talking without a break -- possible in
+ * principle, effectively absent in practice.
+ *
+ * It sits between the two limits already in this codebase for related things: a
+ * remembered fact is capped at 300 characters, a whole compiled persona at
+ * 8,000. A conversational turn belongs between them.
+ */
+export const TRANSCRIPT_MAX_CHARS = 4_000;
+
+/**
+ * Trims a turn to the limit without cutting a word in half.
+ *
+ * TRUNCATED, NEVER REJECTED. Refusing an over-long turn would leave a silent
+ * hole in the conversation, and the next step extracts memories from this
+ * record -- a transcript where somebody appears not to have spoken is worse than
+ * one where they said slightly less than they did. The beginning of a turn is
+ * also where its meaning is, so what survives is the useful part.
+ *
+ * The word boundary is only honoured if it keeps most of the budget, exactly as
+ * `truncateInstructions` does for the persona: a turn with no spaces in four
+ * thousand characters is not prose, and chopping it at the last space would
+ * throw away nearly all of it.
+ */
+export function boundTranscript(content: string): { content: string; truncated: boolean } {
+  const text = content.trim();
+  if (text.length <= TRANSCRIPT_MAX_CHARS) return { content: text, truncated: false };
+  const slice = text.slice(0, TRANSCRIPT_MAX_CHARS);
+  const lastSpace = slice.lastIndexOf(' ');
+  const cut = lastSpace > TRANSCRIPT_MAX_CHARS * 0.5 ? slice.slice(0, lastSpace) : slice;
+  return { content: cut.trimEnd(), truncated: true };
+}
+
+/** What a write did, in terms the caller can safely log. */
+export interface TranscriptWriteOutcome {
+  /** False only when there was nothing left to store after trimming. */
+  stored: boolean;
+  /** True when the turn was longer than the limit and was cut. */
+  truncated: boolean;
+  /** The persisted length. A number, so it can be logged without the content. */
+  length: number;
+}
+
+/**
+ * Writes one finished transcript turn, idempotently.
+ *
+ * THE ID COMES FROM THE CALLER, AND THAT IS WHAT MAKES A RETRY SAFE. An insert
+ * can fail after the row has already committed -- a connection dropped while the
+ * acknowledgement was in flight looks identical to a connection dropped before
+ * the write. Retrying a server-generated id would duplicate the turn in exactly
+ * that case. With the caller holding one id for all attempts, the second attempt
+ * conflicts on the primary key and does nothing, so "insert once" holds however
+ * many times this is called.
+ *
+ * SCOPED BY THE CALL SESSION ALONE. The row carries no user or character id --
+ * both are reachable through `call_sessions` -- so there is nothing here for a
+ * client-supplied identifier to influence. The caller passes the id of the
+ * session the server itself claimed.
+ *
+ * `seq` is assigned by the database, so the order of these calls IS the order of
+ * the transcript. That is why the relay serialises them rather than firing them
+ * off in parallel: two concurrent inserts would take their sequence numbers in
+ * whatever order they reached the server, which is not necessarily the order the
+ * words were spoken.
+ *
+ * Empty content is refused here as well as at the call site. A turn with nothing
+ * in it is not a turn, and a provider that sends one should not be able to put a
+ * blank row between two real ones.
+ */
+export async function recordTranscriptTurn(
+  db: Db,
+  turn: {
+    /** Stable across every retry of this turn. See the note above. */
+    id: string;
+    callSessionId: string;
+    speaker: TranscriptSpeaker;
+    content: string;
+  },
+): Promise<TranscriptWriteOutcome> {
+  const { content, truncated } = boundTranscript(turn.content);
+  if (content.length === 0) return { stored: false, truncated, length: 0 };
+
+  await db
+    .insert(callTranscriptTurns)
+    .values({
+      id: turn.id,
+      callSessionId: turn.callSessionId,
+      speaker: turn.speaker,
+      content,
+    })
+    .onConflictDoNothing({ target: callTranscriptTurns.id });
+
+  return { stored: true, truncated, length: content.length };
 }
 
 /**
@@ -507,16 +639,25 @@ export async function settleCall(
   callSessionId: string,
   status: SettleStatus,
   reason: string,
-): Promise<void> {
+): Promise<CallSessionRow | null> {
   try {
     const [row] = await db
       .select()
       .from(callSessions)
       .where(eq(callSessions.id, callSessionId))
       .limit(1);
-    if (!row) return;
+    if (!row) return null;
     const now = new Date();
-    await db
+    /**
+     * RETURNS THE SETTLED ROW, so a caller can tell a settled call from one the
+     * database refused. The relay needs that distinction: memory extraction must
+     * run for a call that genuinely finished and must NOT run for one whose
+     * settlement failed, and `void` made those two outcomes indistinguishable.
+     *
+     * Null when the write failed or matched nothing -- the row was already
+     * settled by somebody else, or the deadline sweep got there first.
+     */
+    const [settled] = await db
       .update(callSessions)
       .set({
         status,
@@ -525,9 +666,12 @@ export async function settleCall(
         terminationReason: reason,
         updatedAt: now,
       })
-      .where(and(eq(callSessions.id, callSessionId), sql`${callSessions.status} in ('pending', 'active')`));
+      .where(and(eq(callSessions.id, callSessionId), sql`${callSessions.status} in ('pending', 'active')`))
+      .returning();
+    return settled ?? null;
   } catch {
     // Left live on purpose; the deadline sweep settles it.
+    return null;
   }
 }
 

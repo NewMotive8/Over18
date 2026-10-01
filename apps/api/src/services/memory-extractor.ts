@@ -24,10 +24,29 @@ import { MEMORY_MAX_CONTENT_LENGTH } from './memory-service.js';
  * extractor loses at most that exchange's memories, never the chat exchange.
  */
 
+/**
+ * One spoken turn, as extraction needs to see it.
+ *
+ * Structurally the transcript row without its ids, declared here rather than
+ * imported so the extractor contract does not depend on the call-session module.
+ */
+export interface TranscriptTurn {
+  speaker: 'user' | 'character';
+  content: string;
+}
+
 export interface MemoryExtractionContext {
   character: PublicCharacter;
   /** The user's newest message — the only text facts are extracted from. */
   userMessage: string;
+  /**
+   * A finished voice call, in spoken order, when extracting from one.
+   *
+   * Present ONLY for calls. When it is set, `userMessage` is empty and the turns
+   * are the whole input -- so an implementation must branch on this rather than
+   * quietly extracting from an empty string.
+   */
+  transcript?: readonly TranscriptTurn[];
 }
 
 export type MemoryExtractor = (
@@ -162,13 +181,27 @@ const RULES: Rule[] = [
  * same facts, which keeps tests stable and the dev demo predictable.
  * Deliberately favors missing a fact over inventing one.
  */
-export const deterministicMemoryExtractor: MemoryExtractor = ({ userMessage }) => {
+export const deterministicMemoryExtractor: MemoryExtractor = ({ userMessage, transcript }) => {
+  /**
+   * ONLY WHAT THE USER SAID, and for the transcript case that is a structural
+   * guarantee rather than an instruction: the character's turns are filtered out
+   * before a single pattern runs, so no wording of hers can produce a fact about
+   * him. The rules are first-person ("my name is", "I live in"), which is also
+   * why they cannot fire on her speech even if it reached them.
+   */
+  const sources = transcript
+    ? transcript.filter((turn) => turn.speaker === 'user').map((turn) => turn.content)
+    : [userMessage];
+
   const facts: string[] = [];
-  for (const rule of RULES) {
-    const match = userMessage.match(rule.pattern);
-    if (!match) continue;
-    const fact = rule.fact(match);
-    if (fact && !facts.includes(fact)) facts.push(fact);
+  for (const source of sources) {
+    for (const rule of RULES) {
+      const match = source.match(rule.pattern);
+      if (!match) continue;
+      const fact = rule.fact(match);
+      if (fact && !facts.includes(fact)) facts.push(fact);
+      if (facts.length >= MAX_FACTS_PER_EXCHANGE) break;
+    }
     if (facts.length >= MAX_FACTS_PER_EXCHANGE) break;
   }
   return facts;
@@ -193,6 +226,50 @@ const EXTRACTION_INSTRUCTIONS = [
   '- Do NOT include small talk, questions, moods, opinions about the conversation partner, or anything temporary.',
   '- If the message contains no durable personal facts, output exactly: NONE',
 ].join('\n');
+
+/**
+ * The instructions for a whole call, which is a different problem from one message.
+ *
+ * THE DANGER IS ATTRIBUTION, NOT FORMAT. A transcript contains both voices, and
+ * the character spends it asking questions, guessing and suggesting things. "You
+ * must be exhausted" is hers, not his, and a model handed the whole conversation
+ * will cheerfully turn it into "They are exhausted." So the speakers are labelled
+ * and the rule is stated more than once, in the terms the mistake actually takes:
+ * a question is not an answer, a guess is not a fact.
+ *
+ * BOTH VOICES ARE SHOWN ANYWAY, on purpose. Dropping her turns would make his
+ * unreadable -- "Maya" as a bare answer means nothing without "what should I call
+ * you?" before it. Context is what makes the facts resolvable; labelling is what
+ * keeps them attributed.
+ *
+ * The OUTPUT contract is identical to the single-message one, because
+ * `parseExtractedFacts` is the pollution guard for both and is not weakened for
+ * this: bullet, third person, finished sentence.
+ */
+const TRANSCRIPT_EXTRACTION_INSTRUCTIONS = [
+  'You are reading a transcript of a phone call between a person and someone they talk to.',
+  'Extract durable facts about THE PERSON LABELLED "USER" and nobody else.',
+  'A durable fact is something about them that would still be true and worth remembering weeks from now: their name, age, where they live or come from, their job, family, pets, lasting likes and dislikes, plans they have made, and topics they left unresolved and would expect to be asked about again.',
+  'ATTRIBUTION RULES, which matter more than anything else here:',
+  '- Use ONLY what the USER said. The CHARACTER\'s lines are context for understanding the USER, never a source of facts.',
+  '- A question the CHARACTER asked is not an answer. If she asks "do you have a brother?" and the USER does not say he has one, there is no fact.',
+  '- A guess, suggestion or sympathy from the CHARACTER is not a fact. If she says "you must be exhausted" and the USER does not agree, there is no fact.',
+  '- Never record a fact about the CHARACTER. Nothing about her is remembered here.',
+  '- If the USER contradicts or corrects something, record only what they settled on.',
+  'Output rules:',
+  '- Output ONLY the facts, one per line, each line starting with "- ".',
+  '- Write each fact in the third person as one short standalone sentence beginning with "They" or "Their" and ending with a period, e.g. "- Their name is Maya."',
+  `- At most ${MAX_FACTS_PER_EXCHANGE} facts. Prefer the most durable ones.`,
+  '- Do NOT include small talk, pleasantries, moods, or anything temporary.',
+  '- If the USER said nothing durable, output exactly: NONE',
+].join('\n');
+
+/** The transcript as the model reads it: labelled, in spoken order, nothing else. */
+export function renderTranscriptForExtraction(turns: readonly TranscriptTurn[]): string {
+  return turns
+    .map((turn) => `${turn.speaker === 'user' ? 'USER' : 'CHARACTER'}: ${turn.content}`)
+    .join('\n');
+}
 
 /**
  * Turns the model's line-per-fact output into a clean, bounded fact list.
@@ -242,10 +319,19 @@ export function createLlmMemoryExtractor(
   client: LlmClient,
   options: LlmMemoryExtractorOptions = DEFAULT_LLM_EXTRACTOR_OPTIONS,
 ): MemoryExtractor {
-  return async ({ userMessage }): Promise<string[]> => {
+  return async ({ userMessage, transcript }): Promise<string[]> => {
+    // A call and a message are the same task with different hazards, so they get
+    // different instructions and the same output contract.
+    const fromCall = transcript !== undefined;
     const messages: LlmMessage[] = [
-      { role: 'system', content: EXTRACTION_INSTRUCTIONS },
-      { role: 'user', content: userMessage },
+      {
+        role: 'system',
+        content: fromCall ? TRANSCRIPT_EXTRACTION_INSTRUCTIONS : EXTRACTION_INSTRUCTIONS,
+      },
+      {
+        role: 'user',
+        content: fromCall ? renderTranscriptForExtraction(transcript) : userMessage,
+      },
     ];
     const raw = await client.generate({
       messages,

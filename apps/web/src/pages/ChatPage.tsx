@@ -18,6 +18,8 @@ import { mergeOpeningMessage, shouldRequestOpening } from '../lib/chatOpening';
 import MessageMedia from '../components/MessageMedia';
 import { CreditBalance, PaidActionButton } from '../components/CustomerEconomy';
 import { getAction, useCustomerEconomy } from '../lib/customerEconomy';
+import CallOverlay, { CallButton } from '../components/CallOverlay';
+import { useVoiceCall } from '../hooks/useVoiceCall';
 
 type ChatState =
   | { status: 'loading' }
@@ -35,6 +37,12 @@ export default function ChatPage() {
   const [state, setState] = useState<ChatState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [imageFailed, setImageFailed] = useState(false);
+  /**
+   * The voice call. Keyed on the route's conversation id, so navigating to a
+   * different chat tears down any call in progress rather than carrying the
+   * microphone across to somebody else's conversation.
+   */
+  const call = useVoiceCall(conversationId ?? '');
   const [economyState] = useCustomerEconomy();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -336,8 +344,22 @@ export default function ChatPage() {
             <p className="text-xs text-zinc-500">Tap to view profile</p>
           </div>
         </Link>
-        {economyState.status === 'ready' && <CreditBalance overview={economyState.overview} compact />}
+        <div className="flex items-center gap-2">
+          <CallButton state={call.state} characterName={character.displayName} onStart={call.start} />
+          {economyState.status === 'ready' && <CreditBalance overview={economyState.overview} compact />}
+        </div>
       </header>
+
+      {/* Renders nothing while idle; it is a full-screen dialog once a call
+          starts. Kept here rather than at the app root so it is unmounted -- and
+          therefore cleaned up -- by the same navigation that leaves this chat. */}
+      <CallOverlay
+        state={call.state}
+        characterName={character.displayName}
+        onStart={call.start}
+        onHangUp={call.hangUp}
+        onClose={call.close}
+      />
 
       {/* No onScroll here on purpose. This element does not scroll (measured:
           scrollHeight === clientHeight), so its scroll handler never fired and

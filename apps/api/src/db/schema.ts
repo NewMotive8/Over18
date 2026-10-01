@@ -3112,6 +3112,44 @@ export const callSessions = pgTable(
      * which can echo the request and therefore the persona.
      */
     terminationReason: text('termination_reason'),
+    /**
+     * When this call's transcript was turned into remembered facts.
+     *
+     * NULL MEANS "STILL OWED", and that is the entire point of the column. It is
+     * set only after the extracted facts have been written, so every way the work
+     * can fail -- the model refusing, the write failing, the process being
+     * restarted mid-extraction -- leaves it null and leaves the call eligible to
+     * be processed later. A flag set before the work, or no flag at all, would
+     * have made "this call still needs extracting" unrepresentable.
+     *
+     * It is NOT a lock. The `memories` unique index already makes storing the
+     * same fact twice a no-op, so a second attempt cannot duplicate a memory --
+     * but it would repeat the inference, which is billable. This column is what
+     * stops that, by being checked before the model is called.
+     */
+    memoriesExtractedAt: timestamp('memories_extracted_at', { withTimezone: true }),
+    /**
+     * When somebody started extracting this call's memories.
+     *
+     * A LEASE, NOT A RESULT, and separate from `memories_extracted_at` on
+     * purpose. The completion marker cannot double as the claim: it is set only
+     * after the facts are stored, so claiming with it would mean a process that
+     * died mid-extraction had marked the call successfully processed and nothing
+     * would ever revisit it.
+     *
+     * Taken BEFORE the model is called, which is the point. The unique index on
+     * `memories` already makes a duplicate fact impossible, but nothing except
+     * this stops two callers both paying for the same inference -- and once
+     * recovery retries pending calls, a retry and a live teardown really can
+     * reach the same call at once.
+     *
+     * STALE AFTER EXTRACTION_CLAIM_STALE_SECONDS, so a crash cannot make a call
+     * permanently unclaimable. Released explicitly when extraction fails, so an
+     * ordinary failure does not have to wait out the lease.
+     */
+    memoriesExtractionClaimedAt: timestamp('memories_extraction_claimed_at', {
+      withTimezone: true,
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -3151,9 +3189,78 @@ export const callSessions = pgTable(
   ],
 );
 
+
+/**
+ * Who spoke a transcript turn. Its own enum, not `message_sender`.
+ *
+ * The two share their values today and that is a coincidence of this moment,
+ * not a shared contract: a text message gaining a third sender -- a system
+ * notice, say -- must not silently become a legal speaker on a phone call. Every
+ * other table in this schema owns its own enum for the same reason.
+ */
+export const callTurnSpeaker = pgEnum('call_turn_speaker', ['user', 'character']);
+
+/**
+ * call_transcript_turns -- what was actually said on a voice call, in order.
+ *
+ * WHY THIS EXISTS. A call currently leaves no trace of its content, so a
+ * character cannot discuss on Tuesday what she was told on Monday. The provider
+ * already sends both sides' transcripts to this server -- it must, because the
+ * browser never connects to the provider directly -- and today they are
+ * forwarded to the browser and discarded. This is where they will land.
+ *
+ * NOTHING WRITES TO IT YET. The relay is unchanged in this step: the table is
+ * inert until a later commit adds the writes, exactly as `messages.media_asset_id`
+ * was inert when it was introduced.
+ *
+ * `seq` IS A BIGSERIAL FOR THE SAME REASON `messages.seq` IS. `created_at`
+ * alone cannot order a conversation: turns arriving inside one statement, or
+ * within the same microsecond of a fast exchange, share a timestamp and the
+ * order becomes whatever the planner returns. A sequence is monotonic by
+ * construction, so transcript order is a property of the data rather than of
+ * how it was queried.
+ *
+ * NO user_id AND NO character_id, DELIBERATELY. Both are reachable through
+ * `call_sessions`, and duplicating them here would create a second place for
+ * ownership to be true -- which is the shape that lets a query filter on the
+ * copy and miss a mismatch. Ownership is inherited through the parent, exactly
+ * as `messages` inherits it through `conversations`.
+ *
+ * ON DELETE CASCADE because a transcript has no meaning without its call: when
+ * the session goes -- with a deleted account, or a deleted character's sessions
+ * -- what was said on it goes too.
+ */
+export const callTranscriptTurns = pgTable(
+  'call_transcript_turns',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    callSessionId: uuid('call_session_id')
+      .notNull()
+      .references(() => callSessions.id, { onDelete: 'cascade' }),
+    /** Monotonic ordering key; see the note above on why not `created_at`. */
+    seq: bigserial('seq', { mode: 'number' }).notNull(),
+    speaker: callTurnSpeaker('speaker').notNull(),
+    /** What was said. Provider-transcribed text, never audio. */
+    content: text('content').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * One index, and it does both jobs.
+     *
+     * Reading a transcript is always "this call, in order", so the composite
+     * serves the retrieval directly. It also covers the foreign key, which
+     * Postgres does NOT index on its own -- so a separate index on
+     * `call_session_id` would be redundant with this one's leading column.
+     */
+    index('call_transcript_turns_call_seq_idx').on(t.callSessionId, t.seq),
+  ],
+);
+
 export type SubscriptionRow = typeof subscriptions.$inferSelect;
 export type PaidActionRow = typeof paidActions.$inferSelect;
 export type ContentEntitlementRow = typeof contentEntitlements.$inferSelect;
 export type PaymentRow = typeof payments.$inferSelect;
 export type PaymentEventRow = typeof paymentEvents.$inferSelect;
 export type CallSessionRow = typeof callSessions.$inferSelect;
+export type CallTranscriptTurnRow = typeof callTranscriptTurns.$inferSelect;

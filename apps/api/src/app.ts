@@ -298,6 +298,9 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     db,
     provider: voiceProvider,
     enabled: voiceEnabled,
+    // Starting a call is also where pending extractions get retried.
+    memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
+    memoryMaxStored: env.memory.maxStored,
     maxSeconds: env.voice?.maxSeconds ?? 780,
   });
 
@@ -330,6 +333,10 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
       provider: voiceProvider,
       enabled: voiceEnabled,
       allowedOrigin: env.corsOrigin,
+      // The same extractor and the same cap as the text path: one memory,
+      // filled from both channels.
+      memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
+      memoryMaxStored: env.memory.maxStored,
     });
   });
 

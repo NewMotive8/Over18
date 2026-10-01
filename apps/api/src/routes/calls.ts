@@ -1,4 +1,8 @@
 import type { FastifyInstance } from 'fastify';
+import { recoverCallMemories } from '../services/call-memory-service.js';
+import { getConversationForUser } from '../services/conversation-service.js';
+import { DEFAULT_MEMORY_MAX_STORED } from '../services/memory-service.js';
+import { noopMemoryExtractor, type MemoryExtractor } from '../services/memory-extractor.js';
 import type { Db } from '../db/client.js';
 import {
   endCall,
@@ -41,6 +45,9 @@ export default async function callRoutes(
     /** env.voiceCalls.enabled && a provider is configured. */
     enabled: boolean;
     maxSeconds: number;
+    /** Same extractor as the relay and the text path. Defaults to extracting nothing. */
+    memoryExtractor?: MemoryExtractor;
+    memoryMaxStored?: number;
   },
 ) {
   /** Start a call for a conversation the caller owns. */
@@ -60,6 +67,50 @@ export default async function callRoutes(
       });
 
       if (result.ok) {
+        /**
+         * RECOVERY, RIDING ON A TRIGGER THAT ALREADY EXISTS.
+         *
+         * Extraction normally happens when a call ends. It can fail, or the
+         * process can be restarted mid-flight, and nothing revisits those calls
+         * -- so a handful of this person's own unprocessed calls are retried
+         * here, at the one moment we know they are about to talk to this
+         * character again. No scheduler, no queue, no new moving part.
+         *
+         * NOT AWAITED, and that is load-bearing: this is up to three LLM round
+         * trips and the caller is waiting to connect a call. The response goes
+         * out first and the retries happen behind it. The `.catch` is belt to
+         * `recoverCallMemories`'s own braces -- it does not throw, and this does
+         * not rely on that staying true.
+         *
+         * Bounded to RECOVERY_BATCH_LIMIT rows, scoped to this (user, character),
+         * and it cannot touch the call just started: only settled rows are
+         * eligible, and this one is `pending`.
+         */
+        void (async () => {
+          // The character is resolved in here rather than above, so the extra
+          // read costs the waiting caller nothing. `PublicCallSession` does not
+          // carry a character id, and widening the wire shape for this would be
+          // the wrong trade.
+          const conversation = await getConversationForUser(
+            opts.db,
+            request.currentUser!.id,
+            conversationId,
+          );
+          if (!conversation) return;
+          await recoverCallMemories(
+            opts.db,
+            request.currentUser!.id,
+            conversation.character.id,
+            {
+              extractor: opts.memoryExtractor ?? noopMemoryExtractor,
+              maxStored: opts.memoryMaxStored ?? DEFAULT_MEMORY_MAX_STORED,
+            },
+            request.log,
+          );
+        })().catch(() => {
+          /* already logged inside; the caller has a call to make */
+        });
+
         // `result.credentials` is deliberately NOT spread into this response.
         return reply.code(201).send({ callSession: result.session });
       }

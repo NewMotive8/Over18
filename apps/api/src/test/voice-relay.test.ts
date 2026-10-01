@@ -1,10 +1,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { WebSocket as WsClient } from 'ws';
-import { callSessions } from '../db/schema.js';
+import { callSessions, callTranscriptTurns } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters } from '../db/seed.js';
 import { VoiceProviderError, type VoiceSession, type VoiceSessionRequest } from '../voice/types.js';
+import { listMemories, storeMemories } from '../services/memory-service.js';
+import { deterministicMemoryExtractor } from '../services/memory-extractor.js';
+import { DEFAULT_MEMORY_INJECTION } from '../services/prompt-builder.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -28,6 +31,12 @@ const hooks = vi.hoisted(() => ({
   activate: null as null | (() => Promise<never>),
   hold: null as null | { fn: string; reached: () => void; release: Promise<void> },
   reject: null as null | { fn: string; error: unknown },
+  /**
+   * A scripted transcript-write failure: fail the next `failures` attempts, and
+   * with `commitFirst`, perform the real insert BEFORE throwing -- which is the
+   * case retries have to survive without duplicating a row.
+   */
+  transcript: null as null | { failures: number; commitFirst?: boolean; error: unknown },
 }));
 
 vi.mock('../services/call-session-service.js', async (importOriginal) => {
@@ -67,6 +76,17 @@ vi.mock('../services/call-session-service.js', async (importOriginal) => {
       boom('settleCall');
       return actual.settleCall(...args);
     },
+    recordTranscriptTurn: async (...args: Parameters<typeof actual.recordTranscriptTurn>) => {
+      boom('recordTranscriptTurn');
+      const plan = hooks.transcript;
+      if (plan && plan.failures > 0) {
+        plan.failures -= 1;
+        // The write that commits and then reports failure anyway.
+        if (plan.commitFirst) await actual.recordTranscriptTurn(...args);
+        throw plan.error;
+      }
+      return actual.recordTranscriptTurn(...args);
+    },
   };
 });
 
@@ -82,6 +102,8 @@ vi.mock('../services/call-session-service.js', async (importOriginal) => {
  */
 
 const LUNA_ID = SEED_CHARACTERS.find((c) => c.name === 'luna')!.id;
+/** A second character, so "wrong character" can be asserted and not assumed. */
+const EMBER_ID = SEED_CHARACTERS.find((c) => c.name === 'ember')!.id;
 const CANARY = 'Her name is Luna.';
 const PROVIDER_URL = 'wss://api.spicyapi.com/v1/realtime?session=SUPER_SECRET_TICKET';
 
@@ -178,7 +200,12 @@ class FakeUpstream {
 
 beforeAll(async () => {
   migrateTestDb();
-  ctx = await createTestContext({ voiceCallsEnabled: true, voiceProvider: provider });
+  ctx = await createTestContext({
+    voiceCallsEnabled: true,
+    voiceProvider: provider,
+    // The SAME extractor the text path uses, so a call fills one memory.
+    memoryExtractor: deterministicMemoryExtractor,
+  });
   gated = await createTestContext({ voiceProvider: provider });
   const addr = await ctx.app.listen({ port: 0, host: '127.0.0.1' });
   baseUrl = addr.replace('http://', 'ws://');
@@ -200,6 +227,7 @@ beforeEach(async () => {
   hooks.activate = null;
   hooks.hold = null;
   hooks.reject = null;
+  hooks.transcript = null;
   vi.stubGlobal('WebSocket', FakeUpstream);
 });
 
@@ -305,12 +333,17 @@ function connect(
 }
 
 /** Waits until the relay has created an upstream socket. */
-async function waitForUpstream(ms = 3_000): Promise<FakeUpstream> {
+async function waitForUpstream(ms = 3_000, minCount = 1): Promise<FakeUpstream> {
   const deadline = Date.now() + ms;
   for (;;) {
-    const last = upstreams.at(-1);
+    // `minCount` matters once a test drives TWO calls: with the default, the
+    // already-open upstream of the first satisfies the wait instantly and the
+    // second call's socket is never opened.
+    const last = upstreams.length >= minCount ? upstreams.at(-1) : undefined;
     if (last) return last;
-    if (Date.now() > deadline) throw new Error('no upstream socket was created');
+    if (Date.now() > deadline) {
+      throw new Error(`fewer than ${minCount} upstream sockets were created`);
+    }
     await new Promise((r) => setTimeout(r, 10));
   }
 }
@@ -391,6 +424,42 @@ async function vanish(client: Client) {
 
 /** Gives the handler room to do the wrong thing, so the test can prove it did not. */
 const settleEventLoop = () => new Promise((r) => setTimeout(r, 200));
+
+/** The stored transcript for a call, in `seq` order -- the order it reads in. */
+async function turnsFor(callSessionId: string) {
+  return ctx.db
+    .select({ speaker: callTranscriptTurns.speaker, content: callTranscriptTurns.content, seq: callTranscriptTurns.seq })
+    .from(callTranscriptTurns)
+    .where(eq(callTranscriptTurns.callSessionId, callSessionId))
+    .orderBy(asc(callTranscriptTurns.seq));
+}
+
+/**
+ * Waits for a given number of stored turns.
+ *
+ * Transcript writes are queued and never awaited by the relay, so a read taken
+ * the instant an event is delivered is racing them. Polling makes these
+ * assertions deterministic rather than usually-true.
+ */
+async function waitForTurns(callSessionId: string, count: number, ms = 5_000) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const rows = await turnsFor(callSessionId);
+    if (rows.length >= count) return rows;
+    if (Date.now() > deadline) {
+      throw new Error(`call ${callSessionId} had ${rows.length} turns, not ${count}, after ${ms}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+const userSaid = (transcript: string, itemId = `item_${Math.random().toString(36).slice(2)}`) => ({
+  type: 'conversation.item.input_audio_transcription.completed',
+  item_id: itemId,
+  transcript,
+});
+
+const sheSaid = (transcript: string) => ({ type: 'response.audio_transcript.done', transcript });
 
 /** A live relay: connected, upstream open, call active. */
 async function live(email: string) {
@@ -915,6 +984,605 @@ describe('a browser that disconnects during setup', () => {
     expect(row.startedAt).toBeNull();
     // And the upstream socket is closed rather than left dangling.
     expect(up.closeCalls).toBeGreaterThan(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The transcript: what was actually said, stored in order
+ * ------------------------------------------------------------------ */
+
+describe('finished transcript turns are stored', () => {
+  it('stores both sides, in the order they were spoken', async () => {
+    const { user, client, up } = await live('relay.tx.both@example.com');
+
+    up.deliver(userSaid('Hi, can you hear me?'));
+    up.deliver(sheSaid('I can hear you perfectly.'));
+    up.deliver(userSaid('Good. My name is Maya.'));
+
+    const turns = await waitForTurns(user.callSessionId, 3);
+    expect(turns.map((t) => [t.speaker, t.content])).toEqual([
+      ['user', 'Hi, can you hear me?'],
+      ['character', 'I can hear you perfectly.'],
+      ['user', 'Good. My name is Maya.'],
+    ]);
+    // seq is a GLOBAL bigserial: strictly increasing, never assumed to start at 1.
+    expect(turns[1]!.seq).toBeGreaterThan(turns[0]!.seq);
+    expect(turns[2]!.seq).toBeGreaterThan(turns[1]!.seq);
+    client.close();
+  });
+
+  /**
+   * Deltas are fragments of one sentence. Storing them would record each turn
+   * several times over, in pieces -- while the browser still needs them to show
+   * speech as it arrives.
+   */
+  it('stores nothing from the interim delta events, but still relays them', async () => {
+    const { user, client, up } = await live('relay.tx.deltas@example.com');
+
+    up.deliver({ type: 'response.audio_transcript.delta', delta: 'I can ' });
+    up.deliver({ type: 'response.audio_transcript.delta', delta: 'hear you.' });
+    up.deliver({
+      type: 'conversation.item.input_audio_transcription.delta',
+      item_id: 'item_delta_1',
+      delta: 'Hel',
+    });
+    await client.waitFor('response.audio_transcript.delta');
+
+    // Relayed as before...
+    expect(client.frames.filter((f) => String(f.type).endsWith('.delta')).length).toBeGreaterThan(0);
+    // ...and stored not at all.
+    await settleEventLoop();
+    expect(await turnsFor(user.callSessionId)).toHaveLength(0);
+
+    // The finished turn that follows them IS stored, exactly once.
+    up.deliver(sheSaid('I can hear you.'));
+    const turns = await waitForTurns(user.callSessionId, 1);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.content).toBe('I can hear you.');
+    client.close();
+  });
+
+  it.each([
+    ['empty', ''],
+    ['whitespace', '   \n\t  '],
+  ])('never stores a turn whose transcript is %s', async (label, transcript) => {
+    const { user, client, up } = await live(`relay.tx.blank.${label}@example.com`);
+
+    up.deliver(userSaid(transcript));
+    up.deliver(sheSaid(transcript));
+    // A real turn after them, so the wait has something to land on.
+    up.deliver(sheSaid('Still here.'));
+
+    const turns = await waitForTurns(user.callSessionId, 1);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.content).toBe('Still here.');
+    client.close();
+  });
+
+  it('trims surrounding whitespace rather than storing it', async () => {
+    const { user, client, up } = await live('relay.tx.trim@example.com');
+    up.deliver(userSaid('  padded on both sides  '));
+    const turns = await waitForTurns(user.callSessionId, 1);
+    expect(turns[0]!.content).toBe('padded on both sides');
+    client.close();
+  });
+
+  /**
+   * The user event carries `item_id`, so the same event arriving twice is
+   * recognised. The character's `.done` event exposes no identifier, so it is
+   * NOT deduplicated -- see the report.
+   */
+  it('stores a repeated user event once, keyed on its item id', async () => {
+    const { user, client, up } = await live('relay.tx.dupe@example.com');
+
+    const repeated = userSaid('Said exactly once.', 'item_stable_1');
+    up.deliver(repeated);
+    up.deliver(repeated);
+    up.deliver(repeated);
+    // A different id with the SAME text is a different turn and must survive.
+    up.deliver(userSaid('Said exactly once.', 'item_stable_2'));
+
+    const turns = await waitForTurns(user.callSessionId, 2);
+    expect(turns).toHaveLength(2);
+    expect(turns.map((t) => t.content)).toEqual(['Said exactly once.', 'Said exactly once.']);
+    client.close();
+  });
+
+  /** A lost line of transcript is not a reason to hang up on someone. */
+  it('keeps the call alive when the transcript write fails', async () => {
+    const { user, client, up } = await live('relay.tx.writefail@example.com');
+    /**
+     * Exactly three failures: the three attempts this turn is allowed. A hook
+     * that always throws would be non-deterministic here, because the retries
+     * outlive any fixed sleep -- the turn would succeed the moment the hook was
+     * cleared for the next one.
+     */
+    hooks.transcript = { failures: 3, error: drizzleFailure() };
+
+    up.deliver(userSaid('This line will not be stored.'));
+    // The turn after it, which must still go in.
+    up.deliver(sheSaid('This one works.'));
+
+    const turns = await waitForTurns(user.callSessionId, 1);
+    expect(turns.map((t) => t.content)).toEqual(['This one works.']);
+
+    // The call is untouched.
+    expect(client.closeCode).toBeNull();
+    expect((await rowFor(user.callSessionId)).status).toBe('active');
+
+    // Nothing about the DATABASE failure reached the browser. The transcript
+    // text itself does reach it, by design -- that is the live transcript.
+    const seen = JSON.stringify(client.frames);
+    expect(seen).not.toContain('Failed query');
+    expect(seen).not.toContain('call_transcript_turns');
+    expect(seen).not.toContain('57P01');
+    client.close();
+  });
+
+  it('keeps a transcript scoped to its own call session', async () => {
+    // Driven explicitly rather than through `live()` twice: two calls means two
+    // upstream sockets, and the second has to be waited for by count.
+    const a = await setup(ctx, 'relay.tx.scopea@example.com');
+    const clientA = connect(baseUrl, a.callSessionId, { cookie: a.cookie });
+    const upA = await waitForUpstream();
+    upA.open();
+    await clientA.waitFor('relay.connected');
+    upA.deliver(userSaid('Belongs to A.'));
+    await waitForTurns(a.callSessionId, 1);
+    clientA.close();
+
+    const b = await setup(ctx, 'relay.tx.scopeb@example.com');
+    const clientB = connect(baseUrl, b.callSessionId, { cookie: b.cookie });
+    const upB = await waitForUpstream(3_000, 2);
+    upB.open();
+    await clientB.waitFor('relay.connected');
+    upB.deliver(userSaid('Belongs to B.'));
+    await waitForTurns(b.callSessionId, 1);
+
+    expect((await turnsFor(a.callSessionId)).map((t) => t.content)).toEqual(['Belongs to A.']);
+    expect((await turnsFor(b.callSessionId)).map((t) => t.content)).toEqual(['Belongs to B.']);
+    clientB.close();
+  });
+
+  it('stores nothing once the call has been torn down', async () => {
+    const { user, client, up } = await live('relay.tx.afterclose@example.com');
+    up.deliver(userSaid('Before.'));
+    await waitForTurns(user.callSessionId, 1);
+
+    await vanish(client);
+    await waitForStatus(user.callSessionId, 'ended');
+
+    up.deliver(userSaid('After.'));
+    await settleEventLoop();
+    expect((await turnsFor(user.callSessionId)).map((t) => t.content)).toEqual(['Before.']);
+  });
+
+  /** Retention is indefinite, but a transcript has no meaning without its call. */
+  it('cascades away with its call session', async () => {
+    const { user, client, up } = await live('relay.tx.cascade@example.com');
+    up.deliver(userSaid('Will be deleted with the call.'));
+    await waitForTurns(user.callSessionId, 1);
+    client.close();
+
+    await ctx.db.delete(callSessions).where(eq(callSessions.id, user.callSessionId));
+    expect(await turnsFor(user.callSessionId)).toHaveLength(0);
+  });
+
+  /* ---------------- retries, idempotency and bounds ---------------- */
+
+  it('retries a failing write and stores exactly one row', async () => {
+    const { user, client, up } = await live('relay.tx.retry@example.com');
+    hooks.transcript = { failures: 2, error: drizzleFailure() };
+
+    up.deliver(userSaid('Stored on the third attempt.'));
+
+    const turns = await waitForTurns(user.callSessionId, 1);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.content).toBe('Stored on the third attempt.');
+    expect(hooks.transcript.failures).toBe(0); // both failures were consumed
+    client.close();
+  });
+
+  /**
+   * THE CASE THE CALLER-CHOSEN ID EXISTS FOR. An insert can commit and still
+   * report failure -- a connection dropped while the acknowledgement was in
+   * flight is indistinguishable from one dropped before the write. A retry under
+   * a fresh row id would duplicate the turn; under the same id it conflicts.
+   */
+  it('does not duplicate a row when a committed write reports failure', async () => {
+    const { user, client, up } = await live('relay.tx.commitfail@example.com');
+    hooks.transcript = { failures: 1, commitFirst: true, error: drizzleFailure() };
+
+    up.deliver(userSaid('Written once, acknowledged never.'));
+
+    const turns = await waitForTurns(user.callSessionId, 1);
+    await settleEventLoop();
+    expect(await turnsFor(user.callSessionId)).toHaveLength(1);
+    expect(turns[0]!.content).toBe('Written once, acknowledged never.');
+    client.close();
+  });
+
+  it('loses only the exhausted turn, and keeps taking the ones after it', async () => {
+    const { user, client, up } = await live('relay.tx.exhausted@example.com');
+    // Three failures: exactly the three attempts the first turn is allowed.
+    hooks.transcript = { failures: 3, error: drizzleFailure() };
+
+    up.deliver(userSaid('This turn is lost.'));
+    up.deliver(sheSaid('This turn is not.'));
+
+    const turns = await waitForTurns(user.callSessionId, 1);
+    await settleEventLoop();
+    expect(turns.map((t) => t.content)).toEqual(['This turn is not.']);
+
+    // The call is untouched, and nothing about the failure reached the browser.
+    expect(client.closeCode).toBeNull();
+    expect((await rowFor(user.callSessionId)).status).toBe('active');
+    const seen = JSON.stringify(client.frames);
+    expect(seen).not.toContain('Failed query');
+    expect(seen).not.toContain('call_transcript_turns');
+    expect(seen).not.toContain('57P01');
+    // NOTE: the transcript text itself IS relayed to the browser, by design --
+    // it is the live transcript. What must not leak is the database failure.
+    client.close();
+  });
+
+  /** Retries live INSIDE the serial chain, so a slow turn still goes in first. */
+  it('keeps order when an earlier turn needs retries', async () => {
+    const { user, client, up } = await live('relay.tx.retryorder@example.com');
+    hooks.transcript = { failures: 2, error: drizzleFailure() };
+
+    up.deliver(userSaid('First, after two retries.'));
+    up.deliver(sheSaid('Second.'));
+    up.deliver(userSaid('Third.'));
+
+    const turns = await waitForTurns(user.callSessionId, 3);
+    expect(turns.map((t) => t.content)).toEqual([
+      'First, after two retries.',
+      'Second.',
+      'Third.',
+    ]);
+    expect(turns[1]!.seq).toBeGreaterThan(turns[0]!.seq);
+    expect(turns[2]!.seq).toBeGreaterThan(turns[1]!.seq);
+    client.close();
+  });
+
+  it('stores an over-long turn at the limit, cut on a word boundary', async () => {
+    const { user, client, up } = await live('relay.tx.toolong@example.com');
+
+    // 2000 x 'word ' = 10,000 characters; trimmed, 9,999.
+    up.deliver(userSaid('word '.repeat(2000)));
+
+    const turns = await waitForTurns(user.callSessionId, 1);
+    const stored = turns[0]!.content;
+    /**
+     * The budget is 4,000. The first 4,000 characters end exactly on a space
+     * (800 x 'word '), so the last word boundary is at 3,999 -- which is where
+     * this must cut. Not 4,000, and never mid-word.
+     */
+    expect(stored).toHaveLength(3_999);
+    expect(stored.endsWith('word')).toBe(true);
+    expect(stored.endsWith(' ')).toBe(false);
+    expect(stored.startsWith('word word')).toBe(true);
+    client.close();
+  });
+
+  it('leaves a turn at exactly the limit untouched', async () => {
+    const { user, client, up } = await live('relay.tx.atlimit@example.com');
+    const exact = 'x'.repeat(4_000);
+    up.deliver(userSaid(exact));
+
+    const turns = await waitForTurns(user.callSessionId, 1);
+    expect(turns[0]!.content).toHaveLength(4_000);
+    expect(turns[0]!.content).toBe(exact);
+    client.close();
+  });
+
+  /**
+   * A 4,000-character run with no space in it is not prose. Cutting at the last
+   * space would throw away nearly all of it, so the budget wins over the
+   * boundary -- the same rule `truncateInstructions` uses for the persona.
+   */
+  it('cuts at the budget when there is no sensible boundary', async () => {
+    const { user, client, up } = await live('relay.tx.nospace@example.com');
+    up.deliver(userSaid('y'.repeat(5_000)));
+
+    const turns = await waitForTurns(user.callSessionId, 1);
+    expect(turns[0]!.content).toHaveLength(4_000);
+    client.close();
+  });
+
+  /**
+   * THE HOOK STEP 4 NEEDS. The call is recorded as finished only after the
+   * transcript is, retries included -- otherwise extraction, which keys off a
+   * settled call, would read a transcript missing its ending.
+   */
+  it('finishes the transcript before the call is settled', async () => {
+    const { user, client, up } = await live('relay.tx.flush@example.com');
+    hooks.transcript = { failures: 2, error: drizzleFailure() };
+
+    up.deliver(userSaid('The last thing said.'));
+    // Hang up immediately: the write is still retrying at this point.
+    await vanish(client);
+
+    await waitForStatus(user.callSessionId, 'ended');
+    // Read ONCE, with no polling: if the flush did not hold the settle back,
+    // the row would already say `ended` with the turn still in flight.
+    expect((await turnsFor(user.callSessionId)).map((t) => t.content)).toEqual([
+      'The last thing said.',
+    ]);
+  });
+
+  it('settles the call even when the transcript can never be written', async () => {
+    const { user, client, up } = await live('relay.tx.flushfail@example.com');
+    hooks.transcript = { failures: 99, error: drizzleFailure() };
+
+    up.deliver(userSaid('Never stored.'));
+    await vanish(client);
+
+    // The flush gives up with the chain, so the lifecycle still completes.
+    const row = await waitForStatus(user.callSessionId, 'ended');
+    expect(row.terminationReason).toBe('client_disconnected');
+    expect(await turnsFor(user.callSessionId)).toHaveLength(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * A finished call becomes memory, end to end through the socket
+ * ------------------------------------------------------------------ */
+
+describe('hanging up turns the call into memory', () => {
+  /** Polls, because extraction is deliberately not awaited by teardown. */
+  async function waitForMemories(userId: string, characterId: string, count: number, ms = 5_000) {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const facts = await listMemories(ctx.db, userId, characterId);
+      if (facts.length >= count) return facts;
+      if (Date.now() > deadline) {
+        throw new Error(`user ${userId} had ${facts.length} memories, not ${count}, after ${ms}ms`);
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  it('remembers what was said once the call ends', async () => {
+    const { user, client, up } = await live('relay.mem.fromcall@example.com');
+    const userId = (await rowFor(user.callSessionId)).userId;
+
+    up.deliver(userSaid('Hi. My name is Maya.'));
+    up.deliver(sheSaid('Nice to meet you, Maya.'));
+    up.deliver(userSaid('I live in Haifa, by the way.'));
+    await waitForTurns(user.callSessionId, 3);
+
+    // Nothing is remembered while the call is still running.
+    expect(await listMemories(ctx.db, userId, LUNA_ID)).toEqual([]);
+
+    client.close();
+    await waitForStatus(user.callSessionId, 'ended');
+
+    const facts = await waitForMemories(userId, LUNA_ID, 2);
+    expect(facts.sort()).toEqual(['Their name is Maya.', 'They live in Haifa.'].sort());
+    expect((await rowFor(user.callSessionId)).memoriesExtractedAt).not.toBeNull();
+  });
+
+  /**
+   * A call whose settlement never landed is NOT a finished call, so it is not
+   * extracted -- and it keeps a null marker, which is what leaves it eligible.
+   */
+  it('does not extract when settlement failed', async () => {
+    const { user, client, up } = await live('relay.mem.settlefail@example.com');
+    const userId = (await rowFor(user.callSessionId)).userId;
+
+    up.deliver(userSaid('My name is Maya.'));
+    await waitForTurns(user.callSessionId, 1);
+
+    hooks.reject = { fn: 'settleCall', error: drizzleFailure() };
+    client.close();
+    await settleEventLoop();
+
+    // The row never settled, so nothing was extracted and nothing was marked.
+    const row = await rowFor(user.callSessionId);
+    expect(row.status).toBe('active');
+    expect(row.memoriesExtractedAt).toBeNull();
+    expect(await listMemories(ctx.db, userId, LUNA_ID)).toEqual([]);
+  });
+
+  /** Every close, error and timeout event lands in teardown; one extraction. */
+  it('extracts once under a stampede of teardown events', async () => {
+    const { user, client, up } = await live('relay.mem.stampede@example.com');
+    const userId = (await rowFor(user.callSessionId)).userId;
+
+    up.deliver(userSaid('My name is Maya.'));
+    await waitForTurns(user.callSessionId, 1);
+
+    /**
+     * The visitor hangs up FIRST, so the call settles as `ended` -- an outcome
+     * that IS extracted. The provider events after it are the duplicates under
+     * test: each one re-enters teardown and must change nothing.
+     *
+     * Leading with `up.fail()` instead would settle the row `failed`, which is
+     * deliberately not extracted, and would prove nothing about duplication.
+     */
+    client.ws.terminate();
+    await client.waitClosed().catch(() => undefined);
+    up.fail();
+    up.hangUp();
+    up.fail();
+
+    await waitForStatus(user.callSessionId, 'ended');
+    const facts = await waitForMemories(userId, LUNA_ID, 1);
+    await settleEventLoop();
+    // One fact, not four. The unique index would hide duplicates, so the marker
+    // is checked too: set exactly once.
+    expect(await listMemories(ctx.db, userId, LUNA_ID)).toEqual(['Their name is Maya.']);
+    expect(facts).toHaveLength(1);
+    expect((await rowFor(user.callSessionId)).memoriesExtractedAt).not.toBeNull();
+  });
+
+  it('remembers nothing from a call where only she spoke', async () => {
+    const { user, client, up } = await live('relay.mem.onlyher@example.com');
+    const userId = (await rowFor(user.callSessionId)).userId;
+
+    up.deliver(sheSaid('Hello? Are you there?'));
+    await waitForTurns(user.callSessionId, 1);
+    client.close();
+    await waitForStatus(user.callSessionId, 'ended');
+    await settleEventLoop();
+
+    expect(await listMemories(ctx.db, userId, LUNA_ID)).toEqual([]);
+    // Marked done all the same: there is nothing owed for an empty call.
+    expect((await rowFor(user.callSessionId)).memoriesExtractedAt).not.toBeNull();
+  });
+
+  /** A call that never connected has nothing to remember. */
+  it('does not extract a call that failed to connect', async () => {
+    providerImpl = async () => {
+      throw new VoiceProviderError('upstream', 'nope', 503);
+    };
+    const user = await setup(ctx, 'relay.mem.neverconnected@example.com');
+    const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+    await client.waitClosed();
+
+    const row = await waitForStatus(user.callSessionId, 'failed');
+    expect(row.memoriesExtractedAt).toBeNull();
+    expect(await listMemories(ctx.db, row.userId, LUNA_ID)).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Shared memory: what she was told in text, she knows on the phone
+ * ------------------------------------------------------------------ */
+
+describe('memories reach the character on a call', () => {
+  /** The call session row is the only source of who and which character. */
+  const ownerOf = async (callSessionId: string) => (await rowFor(callSessionId)).userId;
+
+  /** The provider request the relay built, once the socket has connected. */
+  async function instructionsFor(user: { cookie: string; callSessionId: string }) {
+    const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+    await waitForUpstream();
+    expect(providerCalls).toHaveLength(1);
+    return { instructions: providerCalls[0]!.instructions, client };
+  }
+
+  it('includes facts stored for THIS user and THIS character', async () => {
+    const user = await setup(ctx, 'relay.mem.mine@example.com');
+    await storeMemories(ctx.db, await ownerOf(user.callSessionId), LUNA_ID, [
+      'Their name is Maya.',
+      'They live in Haifa.',
+    ]);
+
+    const { instructions, client } = await instructionsFor(user);
+    expect(instructions).toContain('Their name is Maya.');
+    expect(instructions).toContain('They live in Haifa.');
+    // Rendered through the SAME section the text path uses, not a new one.
+    expect(instructions).toContain(
+      'Things you remember about this person from your conversations so far:',
+    );
+    client.close();
+  });
+
+  /** THE ISOLATION THAT MATTERS MOST: another person's life is not hers to know. */
+  it("never includes another user's facts for the same character", async () => {
+    const stranger = await setup(ctx, 'relay.mem.stranger@example.com');
+    await storeMemories(ctx.db, await ownerOf(stranger.callSessionId), LUNA_ID, [
+      'Their name is Boris.',
+    ]);
+
+    const user = await setup(ctx, 'relay.mem.notstranger@example.com');
+    await storeMemories(ctx.db, await ownerOf(user.callSessionId), LUNA_ID, [
+      'Their name is Maya.',
+    ]);
+
+    const { instructions, client } = await instructionsFor(user);
+    expect(instructions).toContain('Their name is Maya.');
+    expect(instructions).not.toContain('Boris');
+    client.close();
+  });
+
+  it("never includes the same user's facts for a DIFFERENT character", async () => {
+    const user = await setup(ctx, 'relay.mem.othercharacter@example.com');
+    const userId = await ownerOf(user.callSessionId);
+    await storeMemories(ctx.db, userId, LUNA_ID, ['Their name is Maya.']);
+    await storeMemories(ctx.db, userId, EMBER_ID, ['They told Ember a secret.']);
+
+    const { instructions, client } = await instructionsFor(user);
+    expect(instructions).toContain('Their name is Maya.');
+    expect(instructions).not.toContain('secret');
+    client.close();
+  });
+
+  it('says nothing about memory when there is nothing remembered', async () => {
+    const user = await setup(ctx, 'relay.mem.none@example.com');
+    const { instructions, client } = await instructionsFor(user);
+
+    // No empty heading, and no claim to remember anything -- a character who
+    // opens with "I remember nothing about you" is worse than one who does not
+    // raise it. The persona itself is still there.
+    expect(instructions).not.toContain('Things you remember about this person');
+    expect(instructions).toContain(CANARY);
+    client.close();
+  });
+
+  /**
+   * The voice path does not go through `createPromptBuilder`, so the bound is
+   * applied explicitly. Without it, a long-standing user's hundred stored facts
+   * would be rendered into a field the provider truncates at 8000 characters.
+   */
+  it('bounds the injected facts exactly as the text path bounds them', async () => {
+    const user = await setup(ctx, 'relay.mem.bounded@example.com');
+    const userId = await ownerOf(user.callSessionId);
+    const facts = Array.from({ length: 40 }, (_, i) => `They own item number ${i}.`);
+    await storeMemories(ctx.db, userId, LUNA_ID, facts);
+
+    const { instructions, client } = await instructionsFor(user);
+    const injected = facts.filter((f) => instructions.includes(f));
+    expect(injected).toHaveLength(DEFAULT_MEMORY_INJECTION.maxMemories);
+    client.close();
+  });
+
+  /**
+   * Recency is asserted across SEPARATE batches, not within one.
+   *
+   * `storeMemories` inserts a batch in a single statement, so every row in it
+   * shares one `created_at` and `listMemories` breaks the tie on a random uuid
+   * -- which ten of forty survive is therefore arbitrary. That is pre-existing
+   * behaviour of the memory service and applies to the text path identically;
+   * this test pins the property that IS deterministic, which is that a fact
+   * stored later outranks a batch stored earlier.
+   */
+  it('prefers the newest facts when there are more than fit', async () => {
+    const user = await setup(ctx, 'relay.mem.newest@example.com');
+    const userId = await ownerOf(user.callSessionId);
+    await storeMemories(
+      ctx.db,
+      userId,
+      LUNA_ID,
+      Array.from({ length: 20 }, (_, i) => `They own old item ${i}.`),
+    );
+    await storeMemories(ctx.db, userId, LUNA_ID, ['They just adopted a cat called Pepper.']);
+
+    const { instructions, client } = await instructionsFor(user);
+    expect(instructions).toContain('They just adopted a cat called Pepper.');
+    client.close();
+  });
+
+  /** Memory is prompt material, like the persona: it must not come back out. */
+  it('never sends a remembered fact to the browser', async () => {
+    const user = await setup(ctx, 'relay.mem.noleak@example.com');
+    await storeMemories(ctx.db, await ownerOf(user.callSessionId), LUNA_ID, [
+      'Their name is Maya.',
+    ]);
+
+    const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+    const up = await waitForUpstream();
+    up.open();
+    await client.waitFor('relay.connected');
+    // The provider echoing the persona back is the leak Phase 0 found.
+    up.deliver({ type: 'session.updated', session: { instructions: 'Their name is Maya.' } });
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(JSON.stringify(client.frames)).not.toContain('Maya');
+    client.close();
   });
 });
 
