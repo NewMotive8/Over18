@@ -73,6 +73,14 @@ export interface PackDraftInput {
   sortOrder: number;
   isBestValue: boolean;
   isPurchasable: boolean;
+  /** The store's label ("Best value"), 1-40 characters; null or absent for none. */
+  badge?: string | null;
+  /** Credits given on top of `credits`, as the `bonus` class; absent means 0. */
+  bonusCredits?: number;
+  /** The regular price while `priceMinor` is promotional; must be higher. Null or absent: no promotion. */
+  wasPriceMinor?: number | null;
+  /** ISO 8601 end of the promotion; needs `wasPriceMinor`. Null or absent: no end. */
+  promotionEndsAt?: string | null;
 }
 
 export interface ActionCostInput {

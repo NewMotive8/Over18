@@ -93,7 +93,7 @@ describe('an operator Credit', () => {
       reason: 'Failed generation goodwill',
       source: { type: 'support_reference', id: 'T-1' },
     });
-    expect(await readCommercialWallet(on.db, u, 'credits')).toEqual({ included: 0, earned: 40, purchased: 0, held: 0, spendable: 40 });
+    expect(await readCommercialWallet(on.db, u, 'credits')).toEqual({ included: 0, earned: 40, purchased: 0, bonus: 0, held: 0, spendable: 40 });
   });
 
   it('opens a wallet for a user who has none, in the same transaction', async () => {
@@ -332,7 +332,7 @@ describe('after adjustments', () => {
     await adjust({ userId: u, direction: 'debit', amount: 20 }); //   included 40
     await adjust({ userId: u, direction: 'debit', amount: 45 }); //   included cannot cover 45; earned can: earned 0
     expect((await reconcileWallet(on.db, u, 'credits')).status).toBe('clean');
-    expect(await readCommercialWallet(on.db, u, 'credits')).toEqual({ included: 40, earned: 0, purchased: 0, held: 0, spendable: 40 });
+    expect(await readCommercialWallet(on.db, u, 'credits')).toEqual({ included: 40, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 40 });
   });
 
   it('support reads every currency -- an empty one included -- and the history newest first', async () => {
@@ -346,7 +346,7 @@ describe('after adjustments', () => {
       balance: 10,
       held: 0,
       version: 2,
-      classes: { included: { spendable: 0, held: 0 }, earned: { spendable: 10, held: 0 }, purchased: { spendable: 0, held: 0 } },
+      classes: { included: { spendable: 0, held: 0 }, earned: { spendable: 10, held: 0 }, purchased: { spendable: 0, held: 0 }, bonus: { spendable: 0, held: 0 } },
     });
     expect(summaries.find((s) => s.currency === OTHER)).toMatchObject({ exists: false, balance: 0, held: 0, version: 0 });
     const history = await readWalletHistory(on.db, u, 'credits');

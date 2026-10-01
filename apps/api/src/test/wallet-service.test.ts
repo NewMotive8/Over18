@@ -198,12 +198,15 @@ describe('hold', () => {
   });
 
   it('takes the first class, in spend order, whose spendable Credits cover it', async () => {
-    expect(CREDIT_SPEND_ORDER).toEqual(['included', 'earned', 'purchased']);
+    expect(CREDIT_SPEND_ORDER).toEqual(['bonus', 'included', 'earned', 'purchased']);
     const u = await user();
     await wallet(u);
     await fund(u, 5, 'purchased');
     await fund(u, 5, 'earned');
     await fund(u, 5, 'included');
+    await fund(u, 2, 'bonus');
+    // Promotional Credits go first, while they cover the spend.
+    expect((await hold(u, 2)).transaction.creditClass).toBe('bonus');
     expect((await hold(u, 4)).transaction.creditClass).toBe('included');
     // 1 included Credit is left: not enough for 3, so earned covers it whole.
     expect((await hold(u, 3)).transaction.creditClass).toBe('earned');

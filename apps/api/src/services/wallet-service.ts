@@ -51,12 +51,12 @@ import { walletCurrencies, wallets, walletTransactions, type WalletTransactionRo
  * `wallet-reconciliation.ts` proves the other half of §19.2 from the outside:
  * that every wallet still equals its ledger.
  *
- * CREDIT CLASSES (PRD §18: included -> earned -> purchased, expiring before
- * permanent). A capture, release, refund or reversal moves Credits of the class
- * of the transaction it names -- Credits go back to, or leave, the class they
- * came from. A new hold takes its class from the spend order: the first class,
- * included -> earned -> purchased, whose spendable Credits cover the whole
- * amount. Per-class balances are derived from the ledger under the wallet lock
+ * CREDIT CLASSES (bonus -> included -> earned -> purchased: promotional and
+ * expiring Credits before the ones the customer paid for). A capture, release,
+ * refund or reversal moves Credits of the class of the transaction it names --
+ * Credits go back to, or leave, the class they came from. A new hold takes its
+ * class from the spend order: the first class whose spendable Credits cover the
+ * whole amount. Per-class balances are derived from the ledger under the wallet lock
  * (P2.1 caches totals only) and must add up to the cached wallet, or the
  * operation is refused as `ledger_inconsistent`.
  *
@@ -68,7 +68,7 @@ import { walletCurrencies, wallets, walletTransactions, type WalletTransactionRo
  * misattributed to a single class. Likewise a hold is taken from a later class
  * when an earlier one holds some Credits but not enough.
  *
- * NOT HERE: purchasing, rewards, expiry, paid-action charging, and any route.
+ * NOT HERE: rewards, expiry, paid-action charging, and any route.
  * `grantCredits` gives Credits but decides nothing about WHY -- it is called
  * only by the payment service, after a provider has confirmed the money, and it
  * refuses to invent a reason of its own.
@@ -81,8 +81,13 @@ export type CreditClass = WalletTransactionRow['creditClass'];
 type EntryType = WalletTransactionRow['entryType'];
 type Direction = WalletTransactionRow['direction'];
 
-/** PRD §18: expiring balances before permanent ones. */
-export const CREDIT_SPEND_ORDER: readonly CreditClass[] = ['included', 'earned', 'purchased'];
+/**
+ * Which Credits a spend uses first: bonus (promotional), then the
+ * subscription's included allowance, then earned, and the Credits the customer
+ * PAID for last. Every class appears exactly once; a new class takes a place
+ * here.
+ */
+export const CREDIT_SPEND_ORDER: readonly CreditClass[] = ['bonus', 'included', 'earned', 'purchased'];
 
 export type WalletErrorCode =
   | 'invalid_request'
@@ -463,6 +468,7 @@ export async function readCommercialWallet(db: Pick<Db, 'execute'>, userId: stri
     included: balances.included.spendable,
     earned: balances.earned.spendable,
     purchased: balances.purchased.spendable,
+    bonus: balances.bonus.spendable,
     held: all.reduce((sum, b) => sum + b.held, 0),
     spendable: all.reduce((sum, b) => sum + b.spendable, 0),
   };
@@ -761,10 +767,16 @@ export interface GrantInput extends OperationInput {
    * guess, and the class decides expiry and refund treatment later (§6.3).
    */
   creditClass: CreditClass;
+  /**
+   * How the ledger names it: `grant` (the default) for Credits given, or
+   * `purchase` for Credits a customer bought outright in a pack.
+   */
+  entryType?: 'grant' | 'purchase';
 }
 
 /**
- * GRANT: adds Credits to a wallet, as one `grant` ledger transaction.
+ * GRANT: adds Credits to a wallet, as one `grant` (or `purchase`) ledger
+ * transaction.
  *
  * THE SEVENTH OPERATION, under exactly the same rules as the other six: one
  * transaction, the wallet locked first, the idempotency key checked after the
@@ -787,7 +799,9 @@ export async function grantCredits(db: WalletDb, input: GrantInput): Promise<Wal
   if (!CREDIT_SPEND_ORDER.includes(input.creditClass)) {
     invalid(`creditClass must be one of: ${CREDIT_SPEND_ORDER.join(', ')}.`);
   }
-  const expected: Material = { entryType: 'grant', amount: input.amount, relatedTransactionId: null, source: input.source ?? null };
+  const entryType = input.entryType ?? 'grant';
+  if (entryType !== 'grant' && entryType !== 'purchase') invalid('entryType must be grant or purchase.');
+  const expected: Material = { entryType, amount: input.amount, relatedTransactionId: null, source: input.source ?? null };
   return operate(db, async (tx) => {
     let wallet = await lockWallet(tx, input.userId, input.currency);
     if (!wallet) {
@@ -799,7 +813,7 @@ export async function grantCredits(db: WalletDb, input: GrantInput): Promise<Wal
 
     const row = await append(tx, input, {
       currency: input.currency,
-      entryType: 'grant',
+      entryType,
       direction: 'credit',
       creditClass: input.creditClass,
       relatedTransactionId: null,

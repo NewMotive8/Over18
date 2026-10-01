@@ -236,6 +236,7 @@ export async function readUserDetail(
     included: w.classes.included.spendable,
     earned: w.classes.earned.spendable,
     purchased: w.classes.purchased.spendable,
+    bonus: w.classes.bonus.spendable,
     held: w.held,
     spendable: w.balance,
     transactions: w.version,

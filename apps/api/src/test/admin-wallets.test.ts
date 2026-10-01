@@ -160,7 +160,7 @@ describe('reading a wallet', () => {
       balance: 0,
       held: 0,
       version: 0,
-      classes: { included: { spendable: 0, held: 0 }, earned: { spendable: 0, held: 0 }, purchased: { spendable: 0, held: 0 } },
+      classes: { included: { spendable: 0, held: 0 }, earned: { spendable: 0, held: 0 }, purchased: { spendable: 0, held: 0 }, bonus: { spendable: 0, held: 0 } },
     });
     expect(body.allowances.find((a) => a.currency === 'credits')).toEqual({
       currency: 'credits',
@@ -353,6 +353,6 @@ describe('after an adjustment', () => {
     await post(live, ADJUST(customer.id), support, adjustment({ direction: 'debit', amount: 5 }));
     expect((await reconcileWallet(live.db, customer.id, 'credits')).status).toBe('clean');
     const state = (await get(live, '/api/me/commercial-state', customer)).json() as CustomerCommercialState;
-    expect(state.wallet).toEqual({ available: true, value: { included: 5, earned: 25, purchased: 0, held: 0, spendable: 30 } });
+    expect(state.wallet).toEqual({ available: true, value: { included: 5, earned: 25, purchased: 0, bonus: 0, held: 0, spendable: 30 } });
   });
 });

@@ -20,7 +20,7 @@ export const customerEconomyFixture: CustomerEconomyOverview = {
       available: true,
       value: { status: 'active', planCode: 'fixture_monthly', currentPeriodEnd: '2030-01-01T00:00:00.000Z', cancelAtPeriodEnd: false },
     },
-    wallet: { available: true, value: { included: 1, earned: 0, purchased: 0, held: 0, spendable: 1 } },
+    wallet: { available: true, value: { included: 1, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 1 } },
     age: { available: false, reason: 'age_verification_not_supported' },
   },
   catalog: {
