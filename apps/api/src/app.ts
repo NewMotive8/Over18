@@ -21,7 +21,7 @@ import adminUserRoutes from './routes/admin-users.js';
 import favouriteRoutes from './routes/favourites.js';
 import messageRoutes from './routes/messages.js';
 import callRoutes from './routes/calls.js';
-import callSocketRoutes from './routes/call-socket.js';
+import callSocketRoutes, { voiceSocketErrorHandler } from './routes/call-socket.js';
 import conversationMediaRoutes from './routes/conversation-media.js';
 import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
@@ -314,10 +314,16 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
    * is the thing that stops a genuinely abusive frame from ever being buffered,
    * at the cost of an abrupt close. Setting them equal would mean the polite
    * path could never run.
+   *
+   * `errorHandler` replaces the plugin's default, which logs the raw error. A
+   * database fault during relay setup would otherwise write the failing SQL and
+   * its bound parameters into the log. Scoped here, so no other route's error
+   * handling is affected.
    */
   await app.register(async (voiceScope) => {
     await voiceScope.register(fastifyWebsocket, {
       options: { maxPayload: MAX_CLIENT_FRAME_BYTES * 2 },
+      errorHandler: voiceSocketErrorHandler,
     });
     await voiceScope.register(callSocketRoutes, {
       db,

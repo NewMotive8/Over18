@@ -4,6 +4,7 @@ import {
   MAX_CLIENT_FRAME_BYTES,
   PROVIDER_TO_CLIENT_ALLOWLIST,
   decideClientFrame,
+  describeError,
   sanitiseProviderFrame,
 } from '../voice/relay-protocol.js';
 
@@ -309,5 +310,138 @@ describe('oversized frames are refused before parsing', () => {
     const decision = decideClientFrame(multibyte);
     expect(decision.action).toBe('drop');
     if (decision.action === 'drop') expect(decision.reason).toBe('too_large');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * What may be written to the log
+ * ------------------------------------------------------------------ */
+
+describe('an error reduced to what is safe to log', () => {
+  /** A drizzle message IS the statement and its bound values. */
+  const drizzle = () =>
+    Object.assign(
+      new Error(`Failed query: select * from "users" where "email" = $1\nparams: ${SECRET}`),
+      {
+        name: 'DrizzleQueryError',
+        query: 'select * from "users" where "email" = $1',
+        params: [SECRET],
+        cause: Object.assign(new Error('terminating connection due to administrator command'), {
+          code: '57P01',
+          table: 'users',
+        }),
+      },
+    );
+
+  it('keeps the class and the SQLSTATE and discards everything else', () => {
+    expect(describeError(drizzle())).toEqual({
+      errorName: 'DrizzleQueryError',
+      errorCode: '57P01',
+    });
+  });
+
+  /** THE WHOLE POINT: the statement and its parameters must not survive. */
+  it('carries no statement, no parameters and no message', () => {
+    const logged = JSON.stringify(describeError(drizzle()));
+    expect(logged).not.toContain(SECRET);
+    expect(logged).not.toContain('Failed query');
+    expect(logged).not.toContain('select');
+    expect(logged).not.toContain('users');
+    expect(logged).not.toContain('$1');
+    expect(logged).not.toContain('administrator');
+  });
+
+  it('finds a code wrapped more deeply than drizzle wraps it', () => {
+    const nested = Object.assign(new Error('outer'), {
+      cause: Object.assign(new Error('middle'), {
+        cause: Object.assign(new Error('inner'), { code: '08006' }),
+      }),
+    });
+    expect(describeError(nested)).toEqual({ errorName: 'Error', errorCode: '08006' });
+  });
+
+  it('omits the code when there is none rather than inventing one', () => {
+    expect(describeError(new Error('plain'))).toEqual({ errorName: 'Error' });
+  });
+
+  it('refuses a "code" long enough to be prose, and says it refused', () => {
+    const chatty = Object.assign(new Error('x'), {
+      code: `not a code at all, it is ${SECRET}`,
+    });
+    expect(describeError(chatty)).toEqual({ errorName: 'Error', errorCodeWithheld: true });
+  });
+
+  /**
+   * THE HOLE THE ALLOWLIST CLOSES. The previous rule was "a string of twelve
+   * characters or fewer", which every one of these would have satisfied.
+   */
+  it.each([
+    ['pw:hunter2', 'punctuation'],
+    ['hunter2', 'lower case'],
+    ['SK_LIVE_ABC', 'an upper-case token that is not a known code'],
+    ['sk-spicy-ab', 'a provider key fragment'],
+    ['root@db', 'a user and host'],
+    ['57p01', 'a SQLSTATE in the wrong case'],
+    ['57P0', 'too short for a SQLSTATE'],
+    ['57P011', 'too long for a SQLSTATE'],
+    ['57-01', 'SQLSTATE length but not SQLSTATE characters'],
+  ])('withholds %s (%s)', (code) => {
+    const result = describeError(Object.assign(new Error('x'), { code }));
+    expect(result).toEqual({ errorName: 'Error', errorCodeWithheld: true });
+    expect(JSON.stringify(result)).not.toContain(code);
+  });
+
+  /** The codes an operator actually acts on still come through. */
+  it.each(['08006', '57P01', '23505', 'XX000', 'P0001'])('keeps SQLSTATE %s', (code) => {
+    expect(describeError(Object.assign(new Error('x'), { code }))).toEqual({
+      errorName: 'Error',
+      errorCode: code,
+    });
+  });
+
+  it.each(['ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET', 'ABORT_ERR'])(
+    'keeps the system code %s',
+    (code) => {
+      expect(describeError(Object.assign(new Error('x'), { code }))).toEqual({
+        errorName: 'Error',
+        errorCode: code,
+      });
+    },
+  );
+
+  /**
+   * The old rule stopped at the FIRST code it found, so junk on the outer
+   * wrapper hid the real SQLSTATE underneath -- the permissiveness cost
+   * diagnostics as well as leaking.
+   */
+  it('keeps searching past an unrecognised code to the real one', () => {
+    // Short on purpose: a long junk code was skipped even by the old length
+    // rule, so only a SHORT one proves the search continues for the right
+    // reason -- and `pw:hunter2` is exactly what the old rule would have logged.
+    const wrapped = Object.assign(new Error('outer'), {
+      code: 'pw:hunter2',
+      cause: Object.assign(new Error('pg'), { code: '23505' }),
+    });
+    expect(describeError(wrapped)).toEqual({ errorName: 'Error', errorCode: '23505' });
+  });
+
+  it('does not trust a numeric code', () => {
+    expect(describeError(Object.assign(new Error('x'), { code: 1045 }))).toEqual({
+      errorName: 'Error',
+      errorCodeWithheld: true,
+    });
+  });
+
+  it('survives something that is not an Error at all', () => {
+    expect(describeError('a bare string')).toEqual({ errorName: 'string' });
+    expect(describeError(null)).toEqual({ errorName: 'object' });
+    expect(describeError(undefined)).toEqual({ errorName: 'undefined' });
+  });
+
+  it('stops walking rather than looping on a circular cause', () => {
+    const a: Record<string, unknown> = { name: 'A' };
+    const b: Record<string, unknown> = { name: 'B', cause: a };
+    a.cause = b;
+    expect(describeError(a)).toEqual({ errorName: 'object' });
   });
 });

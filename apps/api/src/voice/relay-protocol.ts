@@ -190,6 +190,111 @@ export function sanitiseProviderFrame(raw: string): ProviderFrameDecision {
   return { action: 'forward', type, payload: build(event) };
 }
 
+/**
+ * A PostgreSQL SQLSTATE, by the server's own definition: exactly five
+ * characters, digits and upper-case ASCII letters only. `08006`, `57P01`,
+ * `23505`, `XX000`, `P0001`.
+ *
+ * Matched by SHAPE rather than against a table of the ~250 defined values,
+ * because that table grows: a code Postgres adds next year is exactly the one
+ * an operator would need, and an enumeration would silently withhold it. Five
+ * characters of upper-case alphanumerics cannot carry a credential, so the
+ * shape is a safe thing to trust.
+ */
+const SQLSTATE = /^[0-9A-Z]{5}$/;
+
+/**
+ * System and transport codes that may be logged, enumerated deliberately.
+ *
+ * ENUMERATED RATHER THAN PATTERN-MATCHED, unlike SQLSTATE. These are
+ * free-form upper-case identifiers, and a pattern loose enough to admit
+ * `ECONNREFUSED` is also loose enough to admit `SK_LIVE_ABCDEF` -- an
+ * upper-case token with underscores is indistinguishable from a credential by
+ * shape alone. So the set is closed, and it is short on purpose: these are the
+ * codes someone would actually act on when the relay cannot reach the database
+ * or the provider. Anything else is reported as withheld, which is a visible
+ * gap rather than a silent one.
+ */
+const LOGGABLE_CODES = new Set([
+  // The database or the provider is unreachable, or went away mid-request.
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENETDOWN',
+  'EADDRNOTAVAIL',
+  'EPIPE',
+  'EAI_AGAIN',
+  // TLS, which is how both the staging and production databases are reached.
+  'CERT_HAS_EXPIRED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  // The socket or stream was already gone when something wrote to it.
+  'ABORT_ERR',
+  'ERR_SOCKET_CLOSED',
+  'ERR_STREAM_DESTROYED',
+  'ERR_STREAM_WRITE_AFTER_END',
+  // undici, which backs the global WebSocket the relay opens upstream.
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_ABORTED',
+]);
+
+/**
+ * The only things that may be logged about a failure.
+ *
+ * A DRIZZLE REJECTION'S MESSAGE IS THE STATEMENT AND ITS BOUND VALUES --
+ * literally `Failed query: <sql>\nparams: <values>` -- and its stack begins with
+ * that same message. So handing the error object to a logger writes the query
+ * and every parameter into the application log, where an identifier, a token
+ * stored in a column, or a connection string in a parameter would then sit in
+ * plain text for anyone with log access.
+ *
+ * The error is therefore reduced to the class it was, plus a code only when that
+ * code is recognisably a code. An earlier version accepted any string of twelve
+ * characters or fewer, which was wrong twice over: `pw:hunter2` would have been
+ * logged verbatim, and a junk `code` on an outer wrapper would have stopped the
+ * search before the real SQLSTATE underneath it was ever reached.
+ *
+ * So the chain is walked to the end looking for something recognised, and a code
+ * that is present but unrecognised is reported as `errorCodeWithheld` rather
+ * than dropped in silence -- otherwise "there was no code" and "there was a code
+ * I would not print" look identical in the log, and the second is worth knowing.
+ *
+ * The `cause` chain is walked because drizzle wraps the pg error rather than
+ * replacing it, exactly as `violatedConstraint` does, with the same depth bound
+ * -- which also makes a circular chain terminate.
+ */
+export function describeError(error: unknown): {
+  errorName: string;
+  errorCode?: string;
+  errorCodeWithheld?: true;
+} {
+  const errorName =
+    error instanceof Error && typeof error.name === 'string' && error.name.length > 0
+      ? error.name
+      : typeof error;
+
+  let withheld = false;
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 5; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && (SQLSTATE.test(code) || LOGGABLE_CODES.has(code))) {
+      return { errorName, errorCode: code };
+    }
+    // Present but not recognised -- including a number, which is not trusted
+    // either: keep looking deeper, and remember that something was refused.
+    if (code !== undefined && code !== null) withheld = true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return withheld ? { errorName, errorCodeWithheld: true } : { errorName };
+}
+
 /** Relay-originated notices. Distinct prefix so they cannot collide upstream. */
 export const RELAY_EVENTS = {
   connected: () => ({ type: 'relay.connected' }),

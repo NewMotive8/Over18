@@ -13,6 +13,7 @@ import {
 } from '../services/call-session-service.js';
 import {
   decideClientFrame,
+  describeError,
   sanitiseProviderFrame,
   RELAY_EVENTS,
   UPSTREAM_CONNECT_TIMEOUT_MS,
@@ -138,10 +139,45 @@ export default async function callSocketRoutes(
           /* already gone */
         }
         if (settle && claimed) {
-          // Swallowed inside settleCall; a database fault here must not throw
-          // over the reason the call ended.
-          await settleCall(opts.db, callSessionId, settle.status, settle.reason);
+          /**
+           * GUARDED HERE AS WELL AS INSIDE settleCall, deliberately.
+           *
+           * Seven fire-and-forget callers and the activation flow all depend on
+           * this function never rejecting. Relying on a `try` in another module
+           * made that guarantee non-local: a future change making `settleCall`
+           * propagate its errors -- a reasonable thing to want, so a caller can
+           * log them -- would have silently turned every one of those call sites
+           * back into a process-killing unhandled rejection. The guarantee now
+           * lives where the callers can see it.
+           *
+           * A failure to write leaves the row live on purpose; the pending and
+           * duration deadlines settle it. Throwing instead would replace the
+           * reason the call ended with "and the database was also unreachable".
+           */
+          try {
+            await settleCall(opts.db, callSessionId, settle.status, settle.reason);
+          } catch {
+            /* left for the deadline sweep */
+          }
         }
+      };
+
+      /**
+       * Teardown for the callers that cannot await it.
+       *
+       * Close events, socket errors and both timers all have to fire and forget.
+       * `teardown` is written so it cannot reject, and this adds the belt to that
+       * braces: if it ever did, the rejection is absorbed here instead of
+       * reaching Node's unhandled-rejection handler, whose default is to end the
+       * process and take every unrelated request with it.
+       */
+      const closeQuietly = (
+        reason: string,
+        settle?: { status: SettleStatus; reason: string },
+      ): void => {
+        void teardown(reason, settle).catch(() => {
+          /* nothing left to do: the call is already going away */
+        });
       };
 
       /**
@@ -166,8 +202,8 @@ export default async function callSocketRoutes(
        * a socket that no longer existed, and the call sat `active` for the full
        * thirteen minutes. Listening from the first line closes that window.
        */
-      socket.on('close', () => void teardown('client_closed', settleForDisconnect('client_disconnected')));
-      socket.on('error', () => void teardown('client_error', settleForDisconnect('client_socket_error')));
+      socket.on('close', () => closeQuietly('client_closed', settleForDisconnect('client_disconnected')));
+      socket.on('error', () => closeQuietly('client_error', settleForDisconnect('client_socket_error')));
 
       /** One reason slug, then the socket goes. Never a provider message. */
       const refuse = (reason: string): void => {
@@ -277,7 +313,7 @@ export default async function callSocketRoutes(
       upstream = new WebSocket(session.url);
 
       connectTimer = setTimeout(() => {
-        void teardown('provider_timeout', {
+        closeQuietly('provider_timeout', {
           status: 'failed',
           reason: 'orphan_risk_connect_timeout',
         });
@@ -301,7 +337,7 @@ export default async function callSocketRoutes(
             if (!activated) {
               // Ended or swept underneath us. Never report a live call, and do
               // not settle: whatever moved the row already recorded why.
-              await teardown('invalid_state');
+              closeQuietly('invalid_state');
               return;
             }
             connected = true;
@@ -315,7 +351,7 @@ export default async function callSocketRoutes(
             // the ceiling is an expiry, not a failure: the call did everything
             // it was allowed to do.
             durationTimer = setTimeout(
-              () => void teardown('max_duration', { status: 'expired', reason: 'max_duration' }),
+              () => closeQuietly('max_duration', { status: 'expired', reason: 'max_duration' }),
               session.maxSeconds * 1000,
             );
           } catch {
@@ -333,12 +369,16 @@ export default async function callSocketRoutes(
              * Teardown's `closed` flag means a terminal outcome that already
              * won is not overwritten.
              */
-            await teardown('activation_failed', {
+            closeQuietly('activation_failed', {
               status: 'failed',
               reason: 'orphan_risk_activation_unwritten',
             });
           }
-        })();
+        })().catch(() => {
+          // Unreachable while the body's own catch holds, and attached anyway:
+          // this promise is deliberately not awaited by anyone, so a rejection
+          // escaping it would have nowhere to go but the process.
+        });
       });
 
       upstream.addEventListener('message', (event) => {
@@ -354,11 +394,11 @@ export default async function callSocketRoutes(
       });
 
       upstream.addEventListener('error', () => {
-        void teardown('provider_error', { status: 'failed', reason: 'provider_socket_error' });
+        closeQuietly('provider_error', { status: 'failed', reason: 'provider_socket_error' });
       });
 
       upstream.addEventListener('close', () => {
-        void teardown('provider_closed', settleForDisconnect('provider_disconnected'));
+        closeQuietly('provider_closed', settleForDisconnect('provider_disconnected'));
       });
 
       /* ---------------------------------------------------------------- *
@@ -373,7 +413,7 @@ export default async function callSocketRoutes(
           if (decision.reason === 'too_large') {
             // Oversized is treated as hostile rather than clumsy: a client that
             // can send 64 KiB frames can exhaust us with them.
-            void teardown('frame_too_large');
+            closeQuietly('frame_too_large');
           }
           return;
         }
@@ -381,6 +421,57 @@ export default async function callSocketRoutes(
       });
     },
   );
+}
+
+/**
+ * The relay's own handler for anything the socket route throws.
+ *
+ * WITHOUT THIS, @fastify/websocket's default runs: `request.log.error(error)`
+ * followed by `socket.terminate()`. The relay awaits three database round trips
+ * before it reaches the provider, and a fault in any of them rejects the
+ * handler's promise -- so the default would write the failing statement and its
+ * bound parameters into the application log, in full, on an ordinary database
+ * blip. That is the whole reason this exists.
+ *
+ * The process is never at risk either way: the plugin attaches its own `.catch`
+ * to the handler's promise, so this replaces WHAT IS LOGGED, not whether the
+ * rejection is caught.
+ *
+ * `close` rather than `terminate`, because terminate destroys the transport
+ * immediately and the generic frame queued just above it would never flush --
+ * the browser would see a bare 1006 and learn nothing. A clean close carries
+ * both. `terminate` remains the fallback if the clean path throws, so the
+ * socket cannot be left open either way.
+ *
+ * Deliberately NOT a global `setErrorHandler`: this is scoped to the voice
+ * plugin alone, so no unrelated route's error handling changes. Authentication
+ * and authorisation are untouched -- `requireAuth` is a preHandler that rejects
+ * before the upgrade, through the normal HTTP path, and never reaches here.
+ */
+export function voiceSocketErrorHandler(
+  error: Error,
+  socket: FastifyWebSocket,
+  request: FastifyRequest,
+): void {
+  // Two fields, both safe, and never the message or the stack: see describeError.
+  request.log.error(
+    { voiceRelay: describeError(error) },
+    'voice relay: socket handler failed',
+  );
+  try {
+    socket.send(JSON.stringify(RELAY_EVENTS.error('server_error')));
+  } catch {
+    /* already gone */
+  }
+  try {
+    socket.close(1011, 'server_error');
+  } catch {
+    try {
+      socket.terminate();
+    } catch {
+      /* already gone */
+    }
+  }
 }
 
 /**

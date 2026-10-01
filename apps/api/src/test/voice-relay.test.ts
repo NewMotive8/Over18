@@ -16,16 +16,18 @@ import {
 } from './helpers.js';
 
 /**
- * A seam for forcing the two failures the relay must survive.
+ * A seam for forcing the failures the relay must survive.
  *
- * `activate` makes the activation write reject; `hold` parks a named setup call
- * until the test releases it. Both default to the real implementation, so every
- * other test in this file runs against untouched production code -- the point is
- * to exercise the ROUTE's handling of these failures, not a helper in isolation.
+ * `activate` makes the activation write reject, `hold` parks a named call until
+ * the test releases it, and `reject` makes a named call throw. All default to
+ * the real implementation, so every other test in this file runs against
+ * untouched production code -- the point is to exercise the ROUTE's handling of
+ * these failures, not a helper in isolation.
  */
 const hooks = vi.hoisted(() => ({
   activate: null as null | (() => Promise<never>),
   hold: null as null | { fn: string; reached: () => void; release: Promise<void> },
+  reject: null as null | { fn: string; error: unknown },
 }));
 
 vi.mock('../services/call-session-service.js', async (importOriginal) => {
@@ -38,11 +40,17 @@ vi.mock('../services/call-session-service.js', async (importOriginal) => {
     await hooks.hold.release;
   };
 
+  /** Throws from `fn` if a test asked for it, before the real work happens. */
+  const boom = (fn: string) => {
+    if (hooks.reject?.fn === fn) throw hooks.reject.error;
+  };
+
   return {
     ...actual,
     activateConnected: async (...args: Parameters<typeof actual.activateConnected>) =>
       hooks.activate ? hooks.activate() : actual.activateConnected(...args),
     getCallSessionForUser: async (...args: Parameters<typeof actual.getCallSessionForUser>) => {
+      boom('getCallSessionForUser');
       const row = await actual.getCallSessionForUser(...args);
       await park('getCallSessionForUser');
       return row;
@@ -50,9 +58,14 @@ vi.mock('../services/call-session-service.js', async (importOriginal) => {
     buildProviderSessionRequest: async (
       ...args: Parameters<typeof actual.buildProviderSessionRequest>
     ) => {
+      boom('buildProviderSessionRequest');
       const built = await actual.buildProviderSessionRequest(...args);
       await park('buildProviderSessionRequest');
       return built;
+    },
+    settleCall: async (...args: Parameters<typeof actual.settleCall>) => {
+      boom('settleCall');
+      return actual.settleCall(...args);
     },
   };
 });
@@ -186,6 +199,7 @@ beforeEach(async () => {
   providerImpl = async () => stubSession();
   hooks.activate = null;
   hooks.hold = null;
+  hooks.reject = null;
   vi.stubGlobal('WebSocket', FakeUpstream);
 });
 
@@ -343,6 +357,31 @@ function holdAt(fn: string) {
   hooks.hold = { fn, reached, release: released };
   return { reachedAt, release };
 }
+
+/**
+ * Watches for a rejection escaping into the process.
+ *
+ * Node's default for an unhandled rejection is to terminate, so "did anything
+ * escape" is the actual assertion behind this hardening -- not a proxy for it.
+ */
+function watchUnhandled() {
+  const escaped: unknown[] = [];
+  const onUnhandled = (reason: unknown) => escaped.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  return {
+    escaped,
+    stop: () => process.off('unhandledRejection', onUnhandled),
+  };
+}
+
+/** A drizzle rejection, shaped like the real thing: SQL and params in the message. */
+const drizzleFailure = () =>
+  Object.assign(
+    new Error(
+      `Failed query: select * from "call_sessions" where "id" = $1\nparams: ${CANARY}`,
+    ),
+    { name: 'DrizzleQueryError', cause: Object.assign(new Error('terminating connection'), { code: '57P01' }) },
+  );
 
 /** A shut laptop, not a polite goodbye: no close frame, no handshake. */
 async function vanish(client: Client) {
@@ -876,6 +915,110 @@ describe('a browser that disconnects during setup', () => {
     expect(row.startedAt).toBeNull();
     // And the upstream socket is closed rather than left dangling.
     expect(up.closeCalls).toBeGreaterThan(0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Teardown and setup failures cannot reach the process
+ * ------------------------------------------------------------------ */
+
+describe('a settlement write that fails during teardown', () => {
+  /**
+   * Seven fire-and-forget callers depend on teardown never rejecting. This
+   * forces the one await inside it to throw and checks the guarantee holds at
+   * the call site rather than only inside the service.
+   */
+  it('still closes the call cleanly and lets nothing escape', async () => {
+    const watcher = watchUnhandled();
+    try {
+      const { user, client, up } = await live('relay.settlefail@example.com');
+      hooks.reject = { fn: 'settleCall', error: drizzleFailure() };
+
+      // An upstream error reaches teardown through a listener that cannot await.
+      up.fail();
+
+      // The browser is still told why, and the socket closes politely.
+      expect((await client.waitFor('relay.closed')).reason).toBe('provider_error');
+      expect(await client.waitClosed()).toBe(1000);
+      expect(up.closeCalls).toBeGreaterThan(0);
+
+      // The write failed, so the row stays live on purpose -- the duration
+      // deadline sweeps it. What must NOT happen is a rejection escaping.
+      await settleEventLoop();
+      expect(watcher.escaped).toEqual([]);
+
+      const row = await rowFor(user.callSessionId);
+      expect(row.status).toBe('active');
+      expect(row.terminationReason).toBeNull();
+    } finally {
+      watcher.stop();
+    }
+  });
+
+  it('leaks nothing from the failed write to the browser', async () => {
+    const { client, up } = await live('relay.settleleak@example.com');
+    hooks.reject = { fn: 'settleCall', error: drizzleFailure() };
+    up.fail();
+    await client.waitClosed();
+
+    const seen = JSON.stringify(client.frames);
+    expect(seen).not.toContain(CANARY);
+    expect(seen).not.toContain('Failed query');
+    expect(seen).not.toContain('call_sessions');
+    expect(seen).not.toContain('57P01');
+  });
+});
+
+describe('a database fault during relay setup', () => {
+  /**
+   * THE DEFECT THIS CLOSES: @fastify/websocket's default error handler is
+   * `request.log.error(error)`, and a drizzle message is the failing statement
+   * plus its bound values. An ordinary database blip during setup therefore
+   * wrote the SQL and its parameters into the application log.
+   */
+  it('answers a generic server error and never the statement', async () => {
+    const watcher = watchUnhandled();
+    try {
+      hooks.reject = { fn: 'getCallSessionForUser', error: drizzleFailure() };
+
+      const user = await setup(ctx, 'relay.setupfault@example.com');
+      const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+
+      // One generic slug, and 1011 Internal Error rather than a bare 1006 --
+      // the clean close is what lets the frame flush at all.
+      expect((await client.waitFor('relay.error')).reason).toBe('server_error');
+      expect(await client.waitClosed()).toBe(1011);
+
+      const seen = JSON.stringify(client.frames);
+      expect(seen).not.toContain(CANARY);
+      expect(seen).not.toContain('Failed query');
+      expect(seen).not.toContain('call_sessions');
+      expect(seen).not.toContain('$1');
+
+      // Nothing was bought, and the row is untouched: the fault was ours.
+      expect(providerCalls).toHaveLength(0);
+      expect(upstreams).toHaveLength(0);
+      const row = await rowFor(user.callSessionId);
+      expect(row.status).toBe('pending');
+      expect(row.connectClaimedAt).toBeNull();
+
+      await settleEventLoop();
+      expect(watcher.escaped).toEqual([]);
+    } finally {
+      watcher.stop();
+    }
+  });
+
+  /** Authentication still happens first, and is not routed through this handler. */
+  it('does not change what an unauthenticated socket gets', async () => {
+    hooks.reject = { fn: 'getCallSessionForUser', error: drizzleFailure() };
+    const user = await setup(ctx, 'relay.setupfault.anon@example.com');
+    const client = connect(baseUrl, user.callSessionId); // no cookie
+
+    expect(await client.waitClosed()).toBeGreaterThan(0);
+    // Refused before the handler ran at all, so no server_error frame.
+    expect(client.frames.find((f) => f.type === 'relay.error')?.reason).not.toBe('server_error');
+    expect(providerCalls).toHaveLength(0);
   });
 });
 
