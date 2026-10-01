@@ -56,6 +56,36 @@ export class VoiceProviderError extends Error {
   }
 }
 
+/**
+ * The only fields that may be logged about a provider failure.
+ *
+ * WHY THIS IS A FUNCTION AND NOT A LOG CALL. The first live Staging call failed
+ * with `provider_rejected` and the log said only that -- the HTTP status was
+ * captured on the error and then dropped at the call site, so "a 4xx that is not
+ * 401, 402 or 403" was the entire diagnosis available. That is an unforced loss:
+ * a status code is three digits and cannot contain a persona.
+ *
+ * The body still never appears, and that part was never the mistake. A provider
+ * error body routinely echoes the request, and the request carries the compiled
+ * persona -- which is exactly why `VoiceProviderError` refuses to hold one. This
+ * function exists so that what IS forwarded is one reviewable, testable list
+ * rather than a decision repeated at each call site.
+ *
+ * `unexpected` for anything that is not a provider error, preserving the
+ * classification the relay already used.
+ */
+export function providerFailureLogFields(error: unknown): {
+  voiceErrorKind: VoiceErrorKind | 'unexpected';
+  voiceErrorStatus?: number;
+} {
+  if (!(error instanceof VoiceProviderError)) return { voiceErrorKind: 'unexpected' };
+  // Omitted rather than set to undefined, so a timeout or a network failure --
+  // neither of which has a status -- logs no empty field.
+  return error.status === undefined
+    ? { voiceErrorKind: error.kind }
+    : { voiceErrorKind: error.kind, voiceErrorStatus: error.status };
+}
+
 /** What the server needs to create a session. Assembled server-side, always. */
 export interface VoiceSessionRequest {
   /** The compiled persona. Never logged, never returned to a client. */

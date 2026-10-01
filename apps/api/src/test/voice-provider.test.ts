@@ -9,7 +9,11 @@ import {
   SPICYAPI_MODEL,
   SPICYAPI_SESSIONS_URL,
 } from '../voice/spicyapi.js';
-import { VoiceProviderError, unconfiguredVoiceProvider } from '../voice/types.js';
+import {
+  VoiceProviderError,
+  providerFailureLogFields,
+  unconfiguredVoiceProvider,
+} from '../voice/types.js';
 import {
   DEFAULT_LIVE_CALL_VOICE,
   VOICE_CATALOGUE,
@@ -168,6 +172,75 @@ describe('failures are classified without reading the body', () => {
     expect(errorKindForStatus(402)).toBe('payment_required');
     expect(errorKindForStatus(418)).toBe('rejected');
     expect(errorKindForStatus(502)).toBe('upstream');
+  });
+});
+
+describe('what may be logged about a provider failure', () => {
+  /**
+   * THE DEFECT THIS CLOSES. The first live Staging call failed with
+   * `provider_rejected` and the log carried only the kind, so the diagnosis
+   * available was "a 4xx that is not 401, 402 or 403" -- which cannot tell a bad
+   * field from a wrong model. The status was on the error the whole time.
+   */
+  it('carries the HTTP status alongside the kind', () => {
+    expect(providerFailureLogFields(new VoiceProviderError('rejected', 'HTTP 400.', 400))).toEqual({
+      voiceErrorKind: 'rejected',
+      voiceErrorStatus: 400,
+    });
+  });
+
+  it.each([
+    [400, 'rejected'],
+    [401, 'unauthorized'],
+    [402, 'payment_required'],
+    [422, 'rejected'],
+    [503, 'upstream'],
+  ] as const)('distinguishes HTTP %i (%s)', (status, kind) => {
+    expect(
+      providerFailureLogFields(new VoiceProviderError(kind, `HTTP ${status}.`, status)),
+    ).toEqual({ voiceErrorKind: kind, voiceErrorStatus: status });
+  });
+
+  /** A timeout and a network failure have no status; neither logs an empty field. */
+  it.each(['timeout', 'network'] as const)('omits the status for a %s failure', (kind) => {
+    const fields = providerFailureLogFields(new VoiceProviderError(kind, 'no response'));
+    expect(fields).toEqual({ voiceErrorKind: kind });
+    expect('voiceErrorStatus' in fields).toBe(false);
+  });
+
+  it('classifies anything that is not a provider error as unexpected', () => {
+    expect(providerFailureLogFields(new Error('something else'))).toEqual({
+      voiceErrorKind: 'unexpected',
+    });
+    expect(providerFailureLogFields('a string')).toEqual({ voiceErrorKind: 'unexpected' });
+    expect(providerFailureLogFields(null)).toEqual({ voiceErrorKind: 'unexpected' });
+  });
+
+  /**
+   * THE RULE THAT MUST NOT SLIP. A provider error body echoes the request, and
+   * the request carries the compiled persona. The status is three digits and
+   * cannot; the message is free text and can.
+   */
+  it('never carries the message, however much is stuffed into it', () => {
+    const error = new VoiceProviderError(
+      'rejected',
+      'Rejected instructions: You are Luna. sk-spicy-SECRET wss://api.spicyapi.com/v1/realtime',
+      400,
+    );
+    const logged = JSON.stringify(providerFailureLogFields(error));
+
+    expect(logged).toBe('{"voiceErrorKind":"rejected","voiceErrorStatus":400}');
+    expect(logged).not.toContain('Luna');
+    expect(logged).not.toContain('sk-spicy');
+    expect(logged).not.toContain('wss://');
+    expect(logged).not.toContain('instructions');
+  });
+
+  /** Exactly two keys, so a future field cannot be added without a test failing. */
+  it('forwards two fields and no others', () => {
+    expect(
+      Object.keys(providerFailureLogFields(new VoiceProviderError('rejected', 'x', 400))).sort(),
+    ).toEqual(['voiceErrorKind', 'voiceErrorStatus']);
   });
 });
 

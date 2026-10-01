@@ -21,7 +21,11 @@ import {
   RELAY_EVENTS,
   UPSTREAM_CONNECT_TIMEOUT_MS,
 } from '../voice/relay-protocol.js';
-import { VoiceProviderError, type VoiceSessionProvider } from '../voice/types.js';
+import {
+  VoiceProviderError,
+  providerFailureLogFields,
+  type VoiceSessionProvider,
+} from '../voice/types.js';
 import { extractCallMemories, ELIGIBLE_STATUSES } from '../services/call-memory-service.js';
 import { DEFAULT_MEMORY_MAX_STORED } from '../services/memory-service.js';
 import { noopMemoryExtractor, type MemoryExtractor } from '../services/memory-extractor.js';
@@ -503,9 +507,15 @@ export default async function callSocketRoutes(
       } catch (error) {
         const kind = error instanceof VoiceProviderError ? error.kind : 'unexpected';
         const ambiguous = !(error instanceof VoiceProviderError && error.definitelyCreatedNothing);
-        // Kind only. A provider error body can quote the request, and the
-        // request carried the persona.
-        request.log.warn({ voiceErrorKind: kind }, 'voice relay: provider session creation failed');
+        /**
+         * Kind AND status, never the body. The body can quote the request and the
+         * request carried the persona; a status code cannot. `providerFailureLogFields`
+         * is the single place that decides which of the two that is.
+         */
+        request.log.warn(
+          providerFailureLogFields(error),
+          'voice relay: provider session creation failed',
+        );
         await teardown('provider_unavailable', {
           status: 'failed',
           reason: `${ambiguous ? 'orphan_risk' : 'provider'}_${kind}`,
