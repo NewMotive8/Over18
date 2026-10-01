@@ -8,6 +8,7 @@ import {
   WalletError,
   captureHold,
   holdCredits,
+  readCommercialWallet,
   refundTransaction,
   releaseHold,
   reverseTransaction,
@@ -208,21 +209,416 @@ describe('hold', () => {
     // Promotional Credits go first, while they cover the spend.
     expect((await hold(u, 2)).transaction.creditClass).toBe('bonus');
     expect((await hold(u, 4)).transaction.creditClass).toBe('included');
-    // 1 included Credit is left: not enough for 3, so earned covers it whole.
-    expect((await hold(u, 3)).transaction.creditClass).toBe('earned');
-    expect((await hold(u, 5)).transaction.creditClass).toBe('purchased');
-    expect((await hold(u, 1)).transaction.creditClass).toBe('included');
+    // 1 included Credit is left: it is used, and earned covers the rest.
+    expect((await hold(u, 3)).entries.map((e) => [e.creditClass, e.amount])).toEqual([['included', 1], ['earned', 2]]);
+    expect((await hold(u, 5)).entries.map((e) => [e.creditClass, e.amount])).toEqual([['earned', 3], ['purchased', 2]]);
+    expect((await hold(u, 1)).entries.map((e) => [e.creditClass, e.amount])).toEqual([['purchased', 1]]);
     await expectReconciled(u);
   });
 
-  it('refuses a hold no single class covers rather than misattribute it -- the documented limitation', async () => {
+  it('takes a hold no single class covers from several, rather than refusing it', async () => {
     const u = await user();
     await wallet(u);
     await fund(u, 3, 'included');
     await fund(u, 3, 'earned');
-    await expect(hold(u, 5)).rejects.toMatchObject(refusal('credit_class_split_required'));
-    await expect(hold(u, 7)).rejects.toMatchObject(refusal('insufficient_credits'));
-    expect(await walletOf(u)).toEqual({ balance: 6, held: 0, version: 2 });
+    expect((await hold(u, 5)).entries.map((e) => [e.creditClass, e.amount])).toEqual([
+      ['included', 3],
+      ['earned', 2],
+    ]);
+    await expect(hold(u, 2)).rejects.toMatchObject(refusal('insufficient_credits'));
+    expect(await walletOf(u)).toEqual({ balance: 1, held: 5, version: 4 });
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Spending across Credit classes -- one balance to the customer
+ * ------------------------------------------------------------------ */
+
+describe('spending across classes', () => {
+  /** Spendable Credits by class, as the customer's state reports them. */
+  const classesOf = async (userId: string) => {
+    const w = (await readCommercialWallet(on.db, userId, 'credits'))!;
+    return { bonus: w.bonus, included: w.included, earned: w.earned, purchased: w.purchased, held: w.held, spendable: w.spendable };
+  };
+  const shares = (result: WalletOperationResult) => result.entries.map((e) => [e.creditClass, e.amount]);
+
+  async function funded(classes: Partial<Record<CreditClass, number>>): Promise<string> {
+    const u = await user();
+    await wallet(u);
+    for (const [creditClass, amount] of Object.entries(classes)) if (amount) await fund(u, amount, creditClass as CreditClass);
+    return u;
+  }
+
+  it('one class covering the cost: one row, as before', async () => {
+    const u = await funded({ bonus: 20, purchased: 6 });
+    const held = await hold(u, 10);
+    expect(shares(held)).toEqual([['bonus', 10]]);
+    expect(held).toMatchObject({ amount: 10, transaction: { amount: 10 } });
+    expect(await classesOf(u)).toEqual({ bonus: 10, included: 0, earned: 0, purchased: 6, held: 10, spendable: 16 });
+  });
+
+  it('two classes: 6 bonus + 6 purchased pay for 10 with 6 bonus and 4 purchased', async () => {
+    const u = await funded({ bonus: 6, purchased: 6 });
+    const held = await hold(u, 10);
+    expect(shares(held)).toEqual([
+      ['bonus', 6],
+      ['purchased', 4],
+    ]);
+    expect(held.amount).toBe(10);
+    expect(await classesOf(u)).toEqual({ bonus: 0, included: 0, earned: 0, purchased: 2, held: 10, spendable: 2 });
+
+    // Consumed: the customer has exactly what was left, in the class it was left in.
+    await capture(u, held.transaction.id, 10);
+    expect(await classesOf(u)).toEqual({ bonus: 0, included: 0, earned: 0, purchased: 2, held: 0, spendable: 2 });
+    await expectReconciled(u);
+  });
+
+  it('three classes, in spend order: bonus, then included, then earned, then purchased', async () => {
+    const u = await funded({ purchased: 3, earned: 3, included: 3, bonus: 3 });
+    const held = await hold(u, 10);
+    expect(shares(held)).toEqual([
+      ['bonus', 3],
+      ['included', 3],
+      ['earned', 3],
+      ['purchased', 1],
+    ]);
+    await capture(u, held.transaction.id, 10);
+    expect(await classesOf(u)).toEqual({ bonus: 0, included: 0, earned: 0, purchased: 2, held: 0, spendable: 2 });
+    await expectReconciled(u);
+  });
+
+  it('the exact balance across classes leaves every class at zero', async () => {
+    const u = await funded({ bonus: 4, included: 5, purchased: 3 });
+    const held = await hold(u, 12);
+    expect(held.amount).toBe(12);
+    await capture(u, held.transaction.id, 12);
+    expect(await classesOf(u)).toEqual({ bonus: 0, included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 });
+    await expectReconciled(u);
+  });
+
+  it('a total short of the cost is refused, and nothing is written', async () => {
+    const u = await funded({ bonus: 6, purchased: 3 });
+    const before = await ledgerSize();
+    await expect(hold(u, 10)).rejects.toMatchObject(refusal('insufficient_credits'));
+    expect(await ledgerSize()).toBe(before);
+    expect(await classesOf(u)).toEqual({ bonus: 6, included: 0, earned: 0, purchased: 3, held: 0, spendable: 9 });
+  });
+
+  it('held Credits are never counted: a second spend sees only what is left', async () => {
+    const u = await funded({ bonus: 6, purchased: 6 });
+    await hold(u, 10);
+    await expect(hold(u, 3)).rejects.toMatchObject(refusal('insufficient_credits'));
+    expect(shares(await hold(u, 2))).toEqual([['purchased', 2]]);
+  });
+
+  it('a released split hold returns every Credit to the class it came from', async () => {
+    const u = await funded({ bonus: 6, included: 2, purchased: 6 });
+    const held = await hold(u, 12);
+    const released = await release(u, held.transaction.id, 12);
+    expect(shares(released)).toEqual([
+      ['bonus', 6],
+      ['included', 2],
+      ['purchased', 4],
+    ]);
+    expect(await classesOf(u)).toEqual({ bonus: 6, included: 2, earned: 0, purchased: 6, held: 0, spendable: 14 });
+    await expectReconciled(u);
+  });
+
+  it('a refunded split capture returns every Credit to its class; a partial refund returns paid Credits first', async () => {
+    const u = await funded({ bonus: 6, purchased: 6 });
+    const held = await hold(u, 10);
+    const captured = await capture(u, held.transaction.id, 10);
+    expect(shares(captured)).toEqual([
+      ['bonus', 6],
+      ['purchased', 4],
+    ]);
+
+    expect(shares(await refund(u, captured.transaction.id, 5))).toEqual([
+      ['purchased', 4],
+      ['bonus', 1],
+    ]);
+    expect(await classesOf(u)).toEqual({ bonus: 1, included: 0, earned: 0, purchased: 6, held: 0, spendable: 7 });
+    await refund(u, captured.transaction.id, 5);
+    expect(await classesOf(u)).toEqual({ bonus: 6, included: 0, earned: 0, purchased: 6, held: 0, spendable: 12 });
+    await expect(refund(u, captured.transaction.id, 1)).rejects.toMatchObject(refusal('exceeds_remaining'));
+    await expectReconciled(u);
+  });
+
+  it('a split operation is idempotent as a whole: a retry returns every row and writes none', async () => {
+    const u = await funded({ bonus: 6, purchased: 6 });
+    const key = randomUUID();
+    const first = await hold(u, 10, { idempotencyKey: key });
+    const size = await ledgerSize();
+    const again = await hold(u, 10, { idempotencyKey: key });
+    expect(again).toMatchObject({ replayed: true, amount: 10, transaction: { id: first.transaction.id } });
+    expect(again.entries.map((e) => e.id)).toEqual(first.entries.map((e) => e.id));
+    expect(await ledgerSize()).toBe(size);
+    // The same key for a different amount is a different operation.
+    await expect(hold(u, 6, { idempotencyKey: key })).rejects.toMatchObject(refusal('idempotency_conflict'));
+
+    const settleKey = randomUUID();
+    const captured = await capture(u, first.transaction.id, 10, { idempotencyKey: settleKey });
+    expect(await capture(u, first.transaction.id, 10, { idempotencyKey: settleKey })).toMatchObject({
+      replayed: true,
+      amount: 10,
+      transaction: { id: captured.transaction.id },
+    });
+  });
+
+  it('a part is reached through its lead, never settled on its own', async () => {
+    const u = await funded({ bonus: 6, purchased: 6 });
+    const held = await hold(u, 10);
+    const part = held.entries[1]!;
+    await expect(capture(u, part.id, 4)).rejects.toMatchObject(refusal('invalid_reference'));
+    await expect(release(u, part.id, 4)).rejects.toMatchObject(refusal('invalid_reference'));
+  });
+
+  it('is atomic: a split whose later row fails writes nothing at all', async () => {
+    const u = await funded({ bonus: 6, purchased: 6 });
+    const before = await ledgerSize();
+    // Make the database refuse the PURCHASED part of a hold -- after the bonus lead was written.
+    await q(`CREATE FUNCTION test_refuse_purchased_hold() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+               IF NEW.entry_type = 'hold' AND NEW.credit_class = 'purchased' THEN
+                 RAISE EXCEPTION 'refused for the test' USING ERRCODE = 'check_violation';
+               END IF;
+               RETURN NEW;
+             END $$`);
+    await q('CREATE TRIGGER test_refuse_purchased_hold BEFORE INSERT ON wallet_transactions FOR EACH ROW EXECUTE FUNCTION test_refuse_purchased_hold()');
+    try {
+      await expect(hold(u, 10)).rejects.toMatchObject(refusal('ledger_refused'));
+    } finally {
+      await q('DROP TRIGGER test_refuse_purchased_hold ON wallet_transactions');
+      await q('DROP FUNCTION test_refuse_purchased_hold()');
+    }
+    expect(await ledgerSize()).toBe(before);
+    expect(await classesOf(u)).toEqual({ bonus: 6, included: 0, earned: 0, purchased: 6, held: 0, spendable: 12 });
+    await expectReconciled(u);
+  });
+
+  it('is atomic inside a caller\'s transaction too: if the caller fails afterwards, the split is undone', async () => {
+    const u = await funded({ bonus: 6, purchased: 6 });
+    const before = await ledgerSize();
+    await expect(
+      on.db.transaction(async (tx) => {
+        await holdCredits(tx, { userId: u, currency: 'credits', amount: 10, idempotencyKey: randomUUID() });
+        throw new Error('the work after the hold failed');
+      }),
+    ).rejects.toThrow('the work after the hold failed');
+    expect(await ledgerSize()).toBe(before);
+    expect(await classesOf(u)).toEqual({ bonus: 6, included: 0, earned: 0, purchased: 6, held: 0, spendable: 12 });
+  });
+
+  it('concurrent spends cannot overspend: 12 Credits across two classes cover two holds of 5, never three', async () => {
+    const u = await funded({ bonus: 6, purchased: 6 });
+    const results = await Promise.allSettled(Array.from({ length: 6 }, () => hold(u, 5)));
+    const won = results.filter((r) => r.status === 'fulfilled');
+    const lost = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(won).toHaveLength(2);
+    expect(lost.every((r) => (r.reason as WalletError).code === 'insufficient_credits')).toBe(true);
+    expect(await classesOf(u)).toEqual({ bonus: 0, included: 0, earned: 0, purchased: 2, held: 10, spendable: 2 });
+    await expectReconciled(u);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * A split hold through its whole lifecycle -- one logical operation
+ * ------------------------------------------------------------------ */
+
+describe('a split hold through hold, capture, release and refund', () => {
+  const classesOf = async (userId: string) => {
+    const w = (await readCommercialWallet(on.db, userId, 'credits'))!;
+    return { bonus: w.bonus, included: w.included, earned: w.earned, purchased: w.purchased, held: w.held, spendable: w.spendable };
+  };
+  /** The ledger rows of one entry type that settle or compensate the given rows. */
+  const settling = async (ids: string[], entryType: string) =>
+    (
+      await q<{ related_transaction_id: string; credit_class: string; amount: number }>(
+        'SELECT related_transaction_id, credit_class, amount FROM wallet_transactions WHERE entry_type = $1 AND related_transaction_id = ANY($2::uuid[]) ORDER BY sequence',
+        [entryType, ids],
+      )
+    ).rows;
+
+  async function splitHold() {
+    const u = await user();
+    await wallet(u);
+    await fund(u, 4, 'bonus');
+    await fund(u, 3, 'included');
+    await fund(u, 10, 'purchased');
+    const held = await hold(u, 12);
+    return { u, held, ids: held.entries.map((e) => e.id) };
+  }
+
+  it('the hold records the whole amount on its lead and each source as a part of it', async () => {
+    const { u, held } = await splitHold();
+    expect(held.amount).toBe(12);
+    expect(held.entries.map((e) => [e.entryType, e.creditClass, e.amount])).toEqual([
+      ['hold', 'bonus', 4],
+      ['hold', 'included', 3],
+      ['hold', 'purchased', 5],
+    ]);
+    const rows = (
+      await q<{ id: string; metadata: Record<string, unknown> }>('SELECT id, metadata FROM wallet_transactions WHERE id = ANY($1::uuid[]) ORDER BY sequence', [
+        held.entries.map((e) => e.id),
+      ])
+    ).rows;
+    expect(rows[0]!.metadata).toMatchObject({ splitTotal: 12 });
+    expect(rows.slice(1).every((r) => r.metadata.splitOf === held.transaction.id)).toBe(true);
+    expect(await classesOf(u)).toEqual({ bonus: 0, included: 0, earned: 0, purchased: 5, held: 12, spendable: 5 });
+  });
+
+  it('capture settles every part exactly once, and a replay settles nothing more', async () => {
+    const { u, held, ids } = await splitHold();
+    const key = randomUUID();
+    const captured = await capture(u, held.transaction.id, 12, { idempotencyKey: key });
+    expect(captured.amount).toBe(12);
+    const again = await capture(u, held.transaction.id, 12, { idempotencyKey: key });
+    expect(again).toMatchObject({ replayed: true, amount: 12 });
+    expect(again.entries.map((e) => e.id)).toEqual(captured.entries.map((e) => e.id));
+
+    // One capture per part, each of the whole part, in its own class.
+    expect(await settling(ids, 'capture')).toEqual([
+      { related_transaction_id: ids[0], credit_class: 'bonus', amount: 4 },
+      { related_transaction_id: ids[1], credit_class: 'included', amount: 3 },
+      { related_transaction_id: ids[2], credit_class: 'purchased', amount: 5 },
+    ]);
+    // A second capture under ANOTHER key finds nothing left to settle.
+    await expect(capture(u, held.transaction.id, 1)).rejects.toMatchObject(refusal('exceeds_remaining'));
+    await expect(release(u, held.transaction.id, 1)).rejects.toMatchObject(refusal('exceeds_remaining'));
+    expect(await classesOf(u)).toEqual({ bonus: 0, included: 0, earned: 0, purchased: 5, held: 0, spendable: 5 });
+    await expectReconciled(u);
+  });
+
+  it('release restores every part exactly once, to its own source, and a replay restores nothing more', async () => {
+    const { u, held, ids } = await splitHold();
+    const key = randomUUID();
+    await release(u, held.transaction.id, 12, { idempotencyKey: key });
+    expect(await release(u, held.transaction.id, 12, { idempotencyKey: key })).toMatchObject({ replayed: true, amount: 12 });
+
+    expect((await settling(ids, 'release')).map((r) => [r.credit_class, r.amount])).toEqual([
+      ['bonus', 4],
+      ['included', 3],
+      ['purchased', 5],
+    ]);
+    await expect(release(u, held.transaction.id, 1)).rejects.toMatchObject(refusal('exceeds_remaining'));
+    await expect(capture(u, held.transaction.id, 1)).rejects.toMatchObject(refusal('exceeds_remaining'));
+    expect(await classesOf(u)).toEqual({ bonus: 4, included: 3, earned: 0, purchased: 10, held: 0, spendable: 17 });
+    await expectReconciled(u);
+  });
+
+  it('refund restores the right amount to each source exactly once, and a replay restores nothing more', async () => {
+    const { u, held } = await splitHold();
+    const captured = await capture(u, held.transaction.id, 12);
+    const captureIds = captured.entries.map((e) => e.id);
+    const key = randomUUID();
+    const refunded = await refund(u, captured.transaction.id, 12, { idempotencyKey: key });
+    expect(refunded.amount).toBe(12);
+    expect(await refund(u, captured.transaction.id, 12, { idempotencyKey: key })).toMatchObject({ replayed: true, amount: 12 });
+
+    expect((await settling(captureIds, 'refund')).map((r) => [r.credit_class, r.amount]).sort()).toEqual([
+      ['bonus', 4],
+      ['included', 3],
+      ['purchased', 5],
+    ]);
+    await expect(refund(u, captured.transaction.id, 1)).rejects.toMatchObject(refusal('exceeds_remaining'));
+    // A part of the capture cannot be refunded on its own, around the lead.
+    await expect(refund(u, captureIds[1]!, 1)).rejects.toMatchObject(refusal('invalid_reference'));
+    expect(await classesOf(u)).toEqual({ bonus: 4, included: 3, earned: 0, purchased: 10, held: 0, spendable: 17 });
+    await expectReconciled(u);
+  });
+
+  /** Makes the database refuse one class's row of one entry type, for the duration of `run`. */
+  async function refusing(entryType: string, creditClass: string, run: () => Promise<void>) {
+    await q(`CREATE FUNCTION test_refuse_row() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+               IF NEW.entry_type = '${entryType}' AND NEW.credit_class = '${creditClass}' THEN
+                 RAISE EXCEPTION 'refused for the test' USING ERRCODE = 'check_violation';
+               END IF;
+               RETURN NEW;
+             END $$`);
+    await q('CREATE TRIGGER test_refuse_row BEFORE INSERT ON wallet_transactions FOR EACH ROW EXECUTE FUNCTION test_refuse_row()');
+    try {
+      await run();
+    } finally {
+      await q('DROP TRIGGER test_refuse_row ON wallet_transactions');
+      await q('DROP FUNCTION test_refuse_row()');
+    }
+  }
+
+  it.each([
+    ['capture', 'purchased'],
+    ['release', 'included'],
+  ] as const)('a %s that fails part-way settles no part at all: no source is left settled while another is not', async (step, failing) => {
+    const { u, held } = await splitHold();
+    const before = await ledgerSize();
+    const classes = await classesOf(u);
+    await refusing(step, failing, async () => {
+      await expect((step === 'capture' ? capture : release)(u, held.transaction.id, 12)).rejects.toMatchObject(refusal('ledger_refused'));
+    });
+    expect(await ledgerSize()).toBe(before);
+    expect(await classesOf(u)).toEqual(classes);
+    // And it can still be settled whole afterwards.
+    expect((await (step === 'capture' ? capture : release)(u, held.transaction.id, 12)).amount).toBe(12);
+    await expectReconciled(u);
+  });
+
+  it('a refund that fails part-way restores no source at all', async () => {
+    const { u, held } = await splitHold();
+    const captured = await capture(u, held.transaction.id, 12);
+    const before = await ledgerSize();
+    await refusing('refund', 'bonus', async () => {
+      await expect(refund(u, captured.transaction.id, 12)).rejects.toMatchObject(refusal('ledger_refused'));
+    });
+    expect(await ledgerSize()).toBe(before);
+    expect(await classesOf(u)).toEqual({ bonus: 0, included: 0, earned: 0, purchased: 5, held: 0, spendable: 5 });
+    await expectReconciled(u);
+  });
+
+  it('concurrent settlements of one split hold settle it once: one capture or release wins, the rest find nothing left', async () => {
+    const { u, held, ids } = await splitHold();
+    const attempts = await Promise.allSettled([
+      capture(u, held.transaction.id, 12),
+      capture(u, held.transaction.id, 12),
+      release(u, held.transaction.id, 12),
+      release(u, held.transaction.id, 12),
+    ]);
+    expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
+    for (const a of attempts.filter((x): x is PromiseRejectedResult => x.status === 'rejected')) {
+      expect((a.reason as WalletError).code).toBe('exceeds_remaining');
+    }
+    const settledRows = [...(await settling(ids, 'capture')), ...(await settling(ids, 'release'))];
+    expect(settledRows.reduce((sum, r) => sum + r.amount, 0)).toBe(12);
+    expect((await classesOf(u)).held).toBe(0);
+    await expectReconciled(u);
+  });
+
+  it('concurrent refunds of one split capture restore it once', async () => {
+    const { u, held } = await splitHold();
+    const captured = await capture(u, held.transaction.id, 12);
+    const attempts = await Promise.allSettled(Array.from({ length: 4 }, () => refund(u, captured.transaction.id, 12)));
+    expect(attempts.filter((a) => a.status === 'fulfilled')).toHaveLength(1);
+    expect(await classesOf(u)).toEqual({ bonus: 4, included: 3, earned: 0, purchased: 10, held: 0, spendable: 17 });
+    await expectReconciled(u);
+  });
+
+  it('a single-source hold behaves exactly as before: one row each, no split metadata', async () => {
+    const u = await user();
+    await wallet(u);
+    await fund(u, 20, 'purchased');
+    const held = await hold(u, 8);
+    const captured = await capture(u, held.transaction.id, 8);
+    const refunded = await refund(u, captured.transaction.id, 8);
+    for (const result of [held, captured, refunded]) {
+      expect(result.entries).toHaveLength(1);
+      expect(result.amount).toBe(8);
+      expect(result.entries[0]).toEqual(result.transaction);
+    }
+    expect(captured.transaction.relatedTransactionId).toBe(held.transaction.id);
+    expect(refunded.transaction.relatedTransactionId).toBe(captured.transaction.id);
+    const metas = (await q<{ metadata: Record<string, unknown> }>('SELECT metadata FROM wallet_transactions WHERE user_id = $1', [u])).rows;
+    expect(metas.every((r) => !('splitTotal' in r.metadata) && !('splitOf' in r.metadata) && !('settles' in r.metadata))).toBe(true);
+    expect(await walletOf(u)).toMatchObject({ balance: 20, held: 0 });
+    await expectReconciled(u);
   });
 });
 
@@ -399,7 +795,7 @@ describe('idempotency', () => {
     ];
     for (const [original, again] of replays) {
       const replayed = await again();
-      expect(replayed).toEqual({ transaction: original.transaction, replayed: true });
+      expect(replayed).toEqual({ ...original, replayed: true });
     }
     expect(await ledgerSize()).toBe(size);
     expect(await walletOf(u)).toEqual(before);
@@ -412,7 +808,7 @@ describe('idempotency', () => {
     const original = await hold(u, 10, { idempotencyKey: 'all-of-it' });
     await capture(u, original.transaction.id, 10);
     // Nothing is spendable or held any more; the retry still gets its answer.
-    expect(await hold(u, 10, { idempotencyKey: 'all-of-it' })).toEqual({ transaction: original.transaction, replayed: true });
+    expect(await hold(u, 10, { idempotencyKey: 'all-of-it' })).toEqual({ ...original, replayed: true });
   });
 
   it('refuses a key reused for a materially different operation, and writes nothing', async () => {

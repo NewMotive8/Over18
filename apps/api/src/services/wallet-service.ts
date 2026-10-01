@@ -54,19 +54,22 @@ import { walletCurrencies, wallets, walletTransactions, type WalletTransactionRo
  * CREDIT CLASSES (bonus -> included -> earned -> purchased: promotional and
  * expiring Credits before the ones the customer paid for). A capture, release,
  * refund or reversal moves Credits of the class of the transaction it names --
- * Credits go back to, or leave, the class they came from. A new hold takes its
- * class from the spend order: the first class whose spendable Credits cover the
- * whole amount. Per-class balances are derived from the ledger under the wallet lock
- * (P2.1 caches totals only) and must add up to the cached wallet, or the
- * operation is refused as `ledger_inconsistent`.
+ * Credits go back to, or leave, the class they came from. Per-class balances
+ * are derived from the ledger under the wallet lock (P2.1 caches totals only)
+ * and must add up to the cached wallet, or the operation is refused as
+ * `ledger_inconsistent`.
  *
- * THE LIMITATION, stated rather than papered over: in P2.1 a hold is ONE ledger
- * row of ONE class, and captures and releases name one hold. A hold whose
- * amount no single class covers -- though the classes together do -- would have
- * to be split across several rows that P2.1 has no way to group into one
- * operation. It is refused with `credit_class_split_required` rather than
- * misattributed to a single class. Likewise a hold is taken from a later class
- * when an earlier one holds some Credits but not enough.
+ * SPENDING ACROSS CLASSES. A spend (a hold, or an operator's Debit) takes the
+ * WHOLE spendable balance into account and consumes it in spend order: 6 bonus
+ * and 6 purchased Credits pay for a 10-Credit action with 6 bonus and 4
+ * purchased. One ledger row is one class, so such a spend is written as a
+ * SPLIT: a LEAD row, which carries the operation's idempotency key and its
+ * whole amount (`metadata.splitTotal`), and one PART row per further class
+ * (`metadata.splitOf` = the lead's id), all in the same database transaction
+ * under the same wallet lock -- all or nothing, and never more than the
+ * wallet holds. Callers keep naming the lead: a capture, release or refund of
+ * it settles every row of the group, each against its own class, and is split
+ * the same way. A spend that fits one class is one row, exactly as before.
  *
  * NOT HERE: rewards, expiry, paid-action charging, and any route.
  * `grantCredits` gives Credits but decides nothing about WHY -- it is called
@@ -95,7 +98,6 @@ export type WalletErrorCode =
   | 'transaction_not_found'
   | 'invalid_reference'
   | 'insufficient_credits'
-  | 'credit_class_split_required'
   | 'exceeds_remaining'
   | 'idempotency_conflict'
   | 'adjustment_cap_exceeded'
@@ -170,9 +172,17 @@ export interface WalletTransactionView {
 }
 
 export interface WalletOperationResult {
+  /** The operation's lead row: the one its idempotency key names, and the one callers refer to. */
   transaction: WalletTransactionView;
   /** True when the idempotency key had already been used for this same operation: nothing was written. */
   replayed: boolean;
+  /**
+   * Every ledger row of the operation, lead first: one, unless it spent,
+   * settled or refunded Credits of more than one class.
+   */
+  entries: WalletTransactionView[];
+  /** The operation's whole amount, across its entries. */
+  amount: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -294,13 +304,51 @@ interface Material {
   source: WalletSourceRef | null;
 }
 
+/* ---- split operations: one lead row, and a part per further class ---- */
+
+/** On a split's lead: the operation's whole amount. */
+const SPLIT_TOTAL = 'splitTotal';
+/** On a part: the id of its lead. */
+const SPLIT_OF = 'splitOf';
+/** On a settlement's lead, when the row itself names a part: the transaction the operation settles. */
+const SETTLES = 'settles';
+
+const meta = (row: WalletTransactionRow): Record<string, unknown> => row.metadata ?? {};
+/** What the operation behind a lead row amounted to. */
+const operationAmount = (row: WalletTransactionRow): number =>
+  typeof meta(row)[SPLIT_TOTAL] === 'number' ? (meta(row)[SPLIT_TOTAL] as number) : row.amount;
+/** What the operation behind a lead row settled or compensated. */
+const operationTarget = (row: WalletTransactionRow): string | null =>
+  typeof meta(row)[SETTLES] === 'string' ? (meta(row)[SETTLES] as string) : row.relatedTransactionId;
+
+/** The parts written with a lead, in the order they were written. */
+async function partsOf(tx: Tx, lead: WalletTransactionRow): Promise<WalletTransactionRow[]> {
+  return tx
+    .select()
+    .from(walletTransactions)
+    .where(
+      and(
+        eq(walletTransactions.userId, lead.userId),
+        eq(walletTransactions.currency, lead.currency),
+        sql`${walletTransactions.metadata} ->> ${SPLIT_OF} = ${lead.id}`,
+      ),
+    )
+    .orderBy(asc(walletTransactions.sequence));
+}
+
+const resultOf = (lead: WalletTransactionRow, parts: WalletTransactionRow[], replayed: boolean): WalletOperationResult => {
+  const entries = [lead, ...parts].map(view);
+  return { transaction: entries[0]!, replayed, entries, amount: entries.reduce((sum, e) => sum + e.amount, 0) };
+};
+
 /** The earlier result for this key -- or `idempotency_conflict` if it was a different operation. */
-function replay(existing: WalletTransactionRow, expected: Material): WalletOperationResult {
+async function replay(tx: Tx, existing: WalletTransactionRow, expected: Material): Promise<WalletOperationResult> {
   const differences: string[] = [];
+  const amount = operationAmount(existing);
   if (existing.entryType !== expected.entryType) differences.push(`type ${existing.entryType}, not ${expected.entryType}`);
   if (expected.direction && existing.direction !== expected.direction) differences.push(`direction ${existing.direction}, not ${expected.direction}`);
-  if (existing.amount !== expected.amount) differences.push(`amount ${existing.amount}, not ${expected.amount}`);
-  if (existing.relatedTransactionId !== expected.relatedTransactionId) differences.push('a different original transaction');
+  if (amount !== expected.amount) differences.push(`amount ${amount}, not ${expected.amount}`);
+  if (operationTarget(existing) !== expected.relatedTransactionId) differences.push('a different original transaction');
   if (existing.sourceType !== (expected.source?.type ?? null) || existing.sourceId !== (expected.source?.id ?? null)) {
     differences.push('a different source');
   }
@@ -310,7 +358,66 @@ function replay(existing: WalletTransactionRow, expected: Material): WalletOpera
       `Idempotency key "${existing.idempotencyKey}" was already used in this wallet for a different operation (${differences.join('; ')}).`,
     );
   }
-  return { transaction: view(existing), replayed: true };
+  return resultOf(existing, await partsOf(tx, existing), true);
+}
+
+/** One share of a split operation: how much, and the row it becomes. */
+interface Share {
+  amount: number;
+  row: { currency: string; entryType: EntryType; direction: Direction; creditClass: CreditClass; relatedTransactionId: string | null };
+}
+
+/**
+ * Writes one operation as its shares: the first is the lead, under the
+ * operation's own key; each further one is a part, under a key derived from the
+ * lead. A single share is a single row, exactly as an unsplit operation always
+ * was. `settles` is recorded on the lead when the lead's own row names a
+ * different transaction than the one the operation settles.
+ */
+async function appendShares(
+  tx: Tx,
+  input: OperationInput,
+  shares: Share[],
+  kind: string,
+  settles: string | null = null,
+): Promise<WalletOperationResult> {
+  if (shares.length === 0) throw new WalletError('ledger_inconsistent', 'An operation with nothing to write.');
+  const total = shares.reduce((sum, s) => sum + s.amount, 0);
+  const leadMeta = { ...(input.metadata ?? {}) } as Record<string, unknown>;
+  if (shares.length > 1) leadMeta[SPLIT_TOTAL] = total;
+  if (settles !== null && settles !== shares[0]!.row.relatedTransactionId) leadMeta[SETTLES] = settles;
+  const lead = await append(tx, { ...input, amount: shares[0]!.amount, metadata: leadMeta }, shares[0]!.row);
+  const parts: WalletTransactionRow[] = [];
+  for (const [i, share] of shares.slice(1).entries()) {
+    parts.push(
+      await append(
+        tx,
+        {
+          ...input,
+          amount: share.amount,
+          idempotencyKey: `${kind}-part:${lead.id}:${i + 1}`,
+          metadata: { ...(input.metadata ?? {}), [SPLIT_OF]: lead.id },
+        },
+        share.row,
+      ),
+    );
+  }
+  return resultOf(lead, parts, false);
+}
+
+/** Takes `amount` from `pools` in their order, as much from each as it has. */
+function allocate<T extends { available: number }>(pools: T[], amount: number): Array<{ pool: T; amount: number }> {
+  const taken: Array<{ pool: T; amount: number }> = [];
+  let left = amount;
+  for (const pool of pools) {
+    if (left === 0) break;
+    const take = Math.min(pool.available, left);
+    if (take > 0) {
+      taken.push({ pool, amount: take });
+      left -= take;
+    }
+  }
+  return left === 0 ? taken : [];
 }
 
 /** Sum of the amounts of the transactions of `types` that name `id`. */
@@ -369,32 +476,31 @@ async function classBalances(tx: Tx, userId: string, currency: string, cached: {
 }
 
 /**
- * The class a spend of `amount` comes from, by the spend order: the first
- * class, included -> earned -> purchased, whose spendable Credits cover it
- * whole. Held Credits are never spendable. A spend that no single class covers,
- * though the classes together do, is refused: one P2.1 transaction is one
- * class, and splitting across classes is not supported (the P2.2 limitation).
+ * Where a spend of `amount` comes from: the WHOLE spendable balance, consumed
+ * in spend order -- all of the first class's Credits, then the next class's,
+ * until the amount is covered. Held Credits are never spendable. Refused only
+ * when the wallet's spendable total is short; never because no single class
+ * covers it.
  */
-async function spendClass(
+async function spendShares(
   tx: Tx,
   userId: string,
   currency: string,
   wallet: { balance: number; held: number },
   amount: number,
   what: string,
-): Promise<CreditClass> {
+): Promise<Array<{ creditClass: CreditClass; amount: number }>> {
   if (wallet.balance < amount) {
     throw new WalletError('insufficient_credits', `${what} ${amount} needs ${amount} spendable Credits; the wallet has ${wallet.balance}.`);
   }
   const classes = await classBalances(tx, userId, currency, wallet);
-  const creditClass = CREDIT_SPEND_ORDER.find((c) => classes[c].spendable >= amount);
-  if (!creditClass) {
-    throw new WalletError(
-      'credit_class_split_required',
-      `${what} ${amount} would need Credits from more than one class (${CREDIT_SPEND_ORDER.map((c) => `${c} ${classes[c].spendable}`).join(', ')}); one transaction is one class.`,
-    );
-  }
-  return creditClass;
+  const taken = allocate(
+    CREDIT_SPEND_ORDER.map((creditClass) => ({ creditClass, available: classes[creditClass].spendable })),
+    amount,
+  );
+  // The classes add up to the wallet (checked above), so this cannot come up short.
+  if (taken.length === 0) throw new WalletError('ledger_inconsistent', `The ${currency} wallet's classes cannot cover ${amount}.`);
+  return taken.map(({ pool, amount: share }) => ({ creditClass: pool.creditClass, amount: share }));
 }
 
 async function append(
@@ -481,6 +587,10 @@ export async function readCommercialWallet(db: Pick<Db, 'execute'>, userId: stri
 /**
  * HOLD: moves `amount` spendable Credits to held, for an action in flight.
  * Held Credits are not spendable: a later hold or debit cannot use them.
+ *
+ * Taken from the whole spendable balance in spend order; when that crosses
+ * classes the hold is a split -- a lead and its parts, written together. The
+ * lead is what the caller keeps and later captures or releases.
  */
 export async function holdCredits(db: WalletDb, input: HoldInput): Promise<WalletOperationResult> {
   validate(input);
@@ -490,12 +600,38 @@ export async function holdCredits(db: WalletDb, input: HoldInput): Promise<Walle
     const wallet = await lockWallet(tx, input.userId, input.currency);
     if (!wallet) throw new WalletError('wallet_not_found', `The user has no ${input.currency} wallet.`);
     const existing = await byKey(tx, input.userId, input.currency, input.idempotencyKey);
-    if (existing) return replay(existing, expected);
+    if (existing) return replay(tx, existing, expected);
 
-    const creditClass = await spendClass(tx, input.userId, input.currency, wallet, input.amount, 'Holding');
-    const row = await append(tx, input, { currency: input.currency, entryType: 'hold', direction: 'debit', creditClass, relatedTransactionId: null });
-    return { transaction: view(row), replayed: false };
+    const shares = await spendShares(tx, input.userId, input.currency, wallet, input.amount, 'Holding');
+    return appendShares(
+      tx,
+      input,
+      shares.map((s) => ({
+        amount: s.amount,
+        row: { currency: input.currency, entryType: 'hold', direction: 'debit', creditClass: s.creditClass, relatedTransactionId: null },
+      })),
+      'hold',
+    );
   });
+}
+
+/** A part is reached through its lead, never on its own. */
+function refuseSplitPart(row: WalletTransactionRow, what: string): void {
+  const lead = meta(row)[SPLIT_OF];
+  if (typeof lead === 'string') {
+    throw new WalletError('invalid_reference', `Transaction ${row.id} is part of ${lead}; ${what} names ${lead} instead.`);
+  }
+}
+
+/**
+ * How much of each row of a (possibly split) operation is still open, given
+ * the transactions of `types` that already name it.
+ */
+async function openRows(tx: Tx, lead: WalletTransactionRow, types: EntryType[]) {
+  const rows = [lead, ...(await partsOf(tx, lead))];
+  const open: Array<{ row: WalletTransactionRow; available: number }> = [];
+  for (const row of rows) open.push({ row, available: row.amount - (await namedBy(tx, row.id, types)) });
+  return open;
 }
 
 async function settleHold(db: WalletDb, input: SettleHoldInput, entryType: 'capture' | 'release'): Promise<WalletOperationResult> {
@@ -506,32 +642,44 @@ async function settleHold(db: WalletDb, input: SettleHoldInput, entryType: 'capt
     const hold = await ownTransaction(tx, input.userId, holdId);
     await lockWallet(tx, hold.userId, hold.currency);
     const existing = await byKey(tx, hold.userId, hold.currency, input.idempotencyKey);
-    if (existing) return replay(existing, expected);
+    if (existing) return replay(tx, existing, expected);
 
     if (hold.entryType !== 'hold') {
       throw new WalletError('invalid_reference', `A ${entryType} settles a hold; transaction ${hold.id} is a ${hold.entryType}.`);
     }
-    const remaining = hold.amount - (await namedBy(tx, hold.id, ['capture', 'release']));
+    refuseSplitPart(hold, `a ${entryType}`);
+    // Every row of the hold, in the order it was taken: settled in that order.
+    const open = await openRows(tx, hold, ['capture', 'release']);
+    const remaining = open.reduce((sum, o) => sum + o.available, 0);
     if (input.amount > remaining) {
       throw new WalletError('exceeds_remaining', `The hold has ${remaining} Credits remaining; cannot ${entryType} ${input.amount}.`);
     }
-    const row = await append(tx, input, {
-      currency: hold.currency,
+    const taken = allocate(open, input.amount);
+    return appendShares(
+      tx,
+      input,
+      taken.map(({ pool, amount }) => ({
+        amount,
+        row: {
+          currency: hold.currency,
+          entryType,
+          direction: entryType === 'capture' ? 'debit' : 'credit',
+          creditClass: pool.row.creditClass,
+          relatedTransactionId: pool.row.id,
+        },
+      })),
       entryType,
-      direction: entryType === 'capture' ? 'debit' : 'credit',
-      creditClass: hold.creditClass,
-      relatedTransactionId: hold.id,
-    });
-    return { transaction: view(row), replayed: false };
+      hold.id,
+    );
   });
 }
 
-/** CAPTURE: consumes part or all of a hold's remaining Credits. */
+/** CAPTURE: consumes part or all of a hold's remaining Credits, across all of its classes. */
 export function captureHold(db: WalletDb, input: SettleHoldInput): Promise<WalletOperationResult> {
   return settleHold(db, input, 'capture');
 }
 
-/** RELEASE: returns part or all of a hold's remaining Credits to spendable. */
+/** RELEASE: returns part or all of a hold's remaining Credits to spendable, each to its own class. */
 export function releaseHold(db: WalletDb, input: SettleHoldInput): Promise<WalletOperationResult> {
   return settleHold(db, input, 'release');
 }
@@ -539,7 +687,8 @@ export function releaseHold(db: WalletDb, input: SettleHoldInput): Promise<Walle
 /**
  * REFUND: returns Credits charged by a paid action or a capture, to the class
  * they were charged from. Together with any reversals of it, never more than
- * the original.
+ * the original. A split capture is refunded across its rows -- the Credits the
+ * customer paid for first, promotional ones last.
  */
 export async function refundTransaction(db: WalletDb, input: CompensateInput): Promise<WalletOperationResult> {
   validate(input);
@@ -549,23 +698,28 @@ export async function refundTransaction(db: WalletDb, input: CompensateInput): P
     const original = await ownTransaction(tx, input.userId, originalId);
     await lockWallet(tx, original.userId, original.currency);
     const existing = await byKey(tx, original.userId, original.currency, input.idempotencyKey);
-    if (existing) return replay(existing, expected);
+    if (existing) return replay(tx, existing, expected);
 
     if (original.entryType !== 'paid_action' && original.entryType !== 'capture') {
       throw new WalletError('invalid_reference', `A refund returns Credits charged by a paid action or a capture; transaction ${original.id} is a ${original.entryType}.`);
     }
-    const refundable = original.amount - (await namedBy(tx, original.id, ['refund', 'reversal']));
+    refuseSplitPart(original, 'a refund');
+    const open = await openRows(tx, original, ['refund', 'reversal']);
+    const refundable = open.reduce((sum, o) => sum + o.available, 0);
     if (input.amount > refundable) {
       throw new WalletError('exceeds_remaining', `${refundable} Credits of that transaction remain refundable; cannot refund ${input.amount}.`);
     }
-    const row = await append(tx, input, {
-      currency: original.currency,
-      entryType: 'refund',
-      direction: 'credit',
-      creditClass: original.creditClass,
-      relatedTransactionId: original.id,
-    });
-    return { transaction: view(row), replayed: false };
+    const taken = allocate([...open].reverse(), input.amount);
+    return appendShares(
+      tx,
+      input,
+      taken.map(({ pool, amount }) => ({
+        amount,
+        row: { currency: original.currency, entryType: 'refund', direction: 'credit', creditClass: pool.row.creditClass, relatedTransactionId: pool.row.id },
+      })),
+      'refund',
+      original.id,
+    );
   });
 }
 
@@ -584,7 +738,7 @@ export async function reverseTransaction(db: WalletDb, input: CompensateInput): 
     const original = await ownTransaction(tx, input.userId, originalId);
     const wallet = (await lockWallet(tx, original.userId, original.currency))!;
     const existing = await byKey(tx, original.userId, original.currency, input.idempotencyKey);
-    if (existing) return replay(existing, expected);
+    if (existing) return replay(tx, existing, expected);
 
     if (original.entryType === 'hold' || original.entryType === 'release') {
       throw new WalletError('invalid_reference', `A ${original.entryType} is settled by a capture or release, not reversed.`);
@@ -611,7 +765,7 @@ export async function reverseTransaction(db: WalletDb, input: CompensateInput): 
       creditClass: original.creditClass,
       relatedTransactionId: original.id,
     });
-    return { transaction: view(row), replayed: false };
+    return resultOf(row, [], false);
   });
 }
 
@@ -728,7 +882,7 @@ export async function adjustWallet(db: WalletDb, input: AdjustInput): Promise<Wa
       wallet = (await lockWallet(tx, input.userId, input.currency))!;
     }
     const existing = await byKey(tx, input.userId, input.currency, input.idempotencyKey);
-    if (existing) return replay(existing, expected);
+    if (existing) return replay(tx, existing, expected);
 
     const cap = ADJUSTMENT_DAILY_CAPS[input.direction];
     const used = (await adjustedToday(tx, input.actorUserId, input.currency))[input.direction];
@@ -739,18 +893,20 @@ export async function adjustWallet(db: WalletDb, input: AdjustInput): Promise<Wa
       );
     }
 
-    const creditClass =
+    // A Credit is one row in `earned`; a Debit spends like a hold, across classes when it has to.
+    const shares =
       input.direction === 'credit'
-        ? ADJUSTMENT_CREDIT_CLASS
-        : await spendClass(tx, input.userId, input.currency, wallet, input.amount, 'Debiting');
-    const row = await append(tx, input, {
-      currency: input.currency,
-      entryType: 'admin_adjustment',
-      direction: input.direction,
-      creditClass,
-      relatedTransactionId: null,
-    });
-    return { transaction: view(row), replayed: false };
+        ? [{ creditClass: ADJUSTMENT_CREDIT_CLASS, amount: input.amount }]
+        : await spendShares(tx, input.userId, input.currency, wallet, input.amount, 'Debiting');
+    return appendShares(
+      tx,
+      input,
+      shares.map((s) => ({
+        amount: s.amount,
+        row: { currency: input.currency, entryType: 'admin_adjustment', direction: input.direction, creditClass: s.creditClass, relatedTransactionId: null },
+      })),
+      'adjustment',
+    );
   });
 }
 
@@ -809,7 +965,7 @@ export async function grantCredits(db: WalletDb, input: GrantInput): Promise<Wal
       wallet = (await lockWallet(tx, input.userId, input.currency))!;
     }
     const existing = await byKey(tx, input.userId, input.currency, input.idempotencyKey);
-    if (existing) return replay(existing, expected);
+    if (existing) return replay(tx, existing, expected);
 
     const row = await append(tx, input, {
       currency: input.currency,
@@ -818,7 +974,7 @@ export async function grantCredits(db: WalletDb, input: GrantInput): Promise<Wal
       creditClass: input.creditClass,
       relatedTransactionId: null,
     });
-    return { transaction: view(row), replayed: false };
+    return resultOf(row, [], false);
   });
 }
 

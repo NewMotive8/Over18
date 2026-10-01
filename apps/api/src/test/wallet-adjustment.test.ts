@@ -121,18 +121,29 @@ describe('an operator Debit', () => {
     await fund(u, 30, 'earned');
     await fund(u, 30, 'included');
     expect((await adjust({ userId: u, direction: 'debit', amount: 20 })).transaction).toMatchObject({ direction: 'debit', creditClass: 'included', balanceAfter: 70 });
-    // 10 included left: not enough for 15, so earned covers it whole.
-    expect((await adjust({ userId: u, direction: 'debit', amount: 15 })).transaction.creditClass).toBe('earned');
-    expect((await adjust({ userId: u, direction: 'debit', amount: 30 })).transaction.creditClass).toBe('purchased');
+    // 10 included left: the rest of 15 comes from earned, as one Debit in two rows.
+    const split = await adjust({ userId: u, direction: 'debit', amount: 15 });
+    expect(split.amount).toBe(15);
+    expect(split.entries.map((e) => [e.creditClass, e.amount])).toEqual([
+      ['included', 10],
+      ['earned', 5],
+    ]);
+    expect(split.entries.every((e) => e.entryType === 'admin_adjustment' && e.actorUserId === split.transaction.actorUserId)).toBe(true);
+    expect((await adjust({ userId: u, direction: 'debit', amount: 30 })).entries.map((e) => [e.creditClass, e.amount])).toEqual([
+      ['earned', 25],
+      ['purchased', 5],
+    ]);
+    expect(await walletOf(u)).toMatchObject({ balance: 25, held: 0 });
   });
 
-  it('is refused when it would have to split across classes, and when the balance does not cover it', async () => {
+  it('spans classes when it has to, counts all of it against the cap, and is refused only when the balance does not cover it', async () => {
     const u = await user();
     await fund(u, 10, 'included');
     await fund(u, 10, 'earned');
-    await expect(adjust({ userId: u, direction: 'debit', amount: 15 })).rejects.toMatchObject(refusal('credit_class_split_required'));
     await expect(adjust({ userId: u, direction: 'debit', amount: 21 })).rejects.toMatchObject(refusal('insufficient_credits'));
-    expect(await walletOf(u)).toEqual({ balance: 20, held: 0, version: 2 });
+    expect((await adjust({ userId: u, direction: 'debit', amount: 15 })).entries).toHaveLength(2);
+    expect(await walletOf(u)).toEqual({ balance: 5, held: 0, version: 4 });
+    expect((await readAdjustmentAllowance(on.db, operator, 'credits')).debit.used).toBe(15);
   });
 
   it('never takes held Credits', async () => {
@@ -249,7 +260,7 @@ describe('idempotency and concurrency', () => {
     const u = await user();
     const first = await adjust({ userId: u, direction: 'credit', amount: 300, idempotencyKey: 'ticket-9' });
     const again = await adjust({ userId: u, direction: 'credit', amount: 300, idempotencyKey: 'ticket-9', reason: 'Retried' });
-    expect(again).toEqual({ transaction: first.transaction, replayed: true });
+    expect(again).toEqual({ ...first, replayed: true });
     expect(await walletOf(u)).toEqual({ balance: 300, held: 0, version: 1 });
     expect((await readAdjustmentAllowance(on.db, operator, 'credits')).credit.used).toBe(300);
   });
@@ -330,9 +341,9 @@ describe('after adjustments', () => {
     await fund(u, 60, 'included'); //                                   included 60
     await adjust({ userId: u, direction: 'credit', amount: 45 }); //  earned 45
     await adjust({ userId: u, direction: 'debit', amount: 20 }); //   included 40
-    await adjust({ userId: u, direction: 'debit', amount: 45 }); //   included cannot cover 45; earned can: earned 0
+    await adjust({ userId: u, direction: 'debit', amount: 45 }); //   all 40 included, then 5 earned: earned 40
     expect((await reconcileWallet(on.db, u, 'credits')).status).toBe('clean');
-    expect(await readCommercialWallet(on.db, u, 'credits')).toEqual({ included: 40, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 40 });
+    expect(await readCommercialWallet(on.db, u, 'credits')).toEqual({ included: 0, earned: 40, purchased: 0, bonus: 0, held: 0, spendable: 40 });
   });
 
   it('support reads every currency -- an empty one included -- and the history newest first', async () => {
