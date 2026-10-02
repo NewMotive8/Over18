@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createSpicyApiProvider,
+  contentRefusalFrom,
   errorKindForStatus,
   parseSessionResponse,
   truncateInstructions,
@@ -109,7 +110,7 @@ describe('the request follows the published contract', () => {
   });
 });
 
-describe('failures are classified without reading the body', () => {
+describe('failures are classified by status, and by one allowlisted type', () => {
   it.each([
     [401, 'unauthorized'],
     [403, 'unauthorized'],
@@ -134,6 +135,112 @@ describe('failures are classified without reading the body', () => {
       .catch((err: VoiceProviderError) => {
         expect(err.message).not.toContain('You are Luna');
       });
+  });
+
+  /**
+   * THE REFUSAL THIS EXISTS FOR. A live Staging call was refused with exactly
+   * this body shape -- HTTP 422, `error.type` of `moderation_blocked` -- and was
+   * reported to the person as "she could not be reached", which invited a retry
+   * that could only fail the same way.
+   *
+   * The sibling fields are present here on purpose: `message`, `code` and
+   * `categories` all arrive in the real body, and none of them may influence the
+   * decision or escape into the error.
+   */
+  it('classifies a content refusal from the type, not the status', async () => {
+    stubFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              message: 'Rejected: instructions: You are Luna.',
+              type: 'moderation_blocked',
+              code: 'minor',
+              categories: { minor: 0.77 },
+            },
+          }),
+          { status: 422 },
+        ),
+    );
+
+    await expect(provider().createSession(request)).rejects.toMatchObject({
+      kind: 'content_blocked',
+      status: 422,
+    });
+  });
+
+  /** The type is the signal, so the same refusal is caught on any status. */
+  it('classifies a content refusal arriving on a different status', async () => {
+    stubFetch(() => new Response('{"error":{"type":"moderation_blocked"}}', { status: 400 }));
+
+    await expect(provider().createSession(request)).rejects.toMatchObject({
+      kind: 'content_blocked',
+      status: 400,
+    });
+  });
+
+  /**
+   * THE MISCLASSIFICATION THIS GUARDS AGAINST. 422 is the status for any
+   * unprocessable request -- a bad voice name would plausibly land there -- so a
+   * 422 that does not say `moderation_blocked` must stay an ordinary rejection.
+   */
+  it.each([
+    ['no type at all', '{"error":{"message":"voice not found"}}'],
+    ['a different type', '{"error":{"type":"invalid_request_error","param":"voice"}}'],
+    ['a non-string type', '{"error":{"type":{"nested":"moderation_blocked"}}}'],
+    ['no error object', '{"detail":"unprocessable"}'],
+    ['an unparsable body', '<html>gateway</html>'],
+    ['an empty body', ''],
+  ])('leaves a 422 with %s as an ordinary rejection', async (_label, body) => {
+    stubFetch(() => new Response(body, { status: 422 }));
+
+    await expect(provider().createSession(request)).rejects.toMatchObject({
+      kind: 'rejected',
+      status: 422,
+    });
+  });
+
+  /** The fallback keeps its own shape: a 500 saying nothing is still upstream. */
+  it('still classifies a 500 by status when the body says nothing', async () => {
+    stubFetch(() => new Response('{"error":{"type":"server_error"}}', { status: 500 }));
+
+    await expect(provider().createSession(request)).rejects.toMatchObject({
+      kind: 'upstream',
+      status: 500,
+    });
+  });
+
+  /**
+   * The body is now read, so the guarantee it was never read under has to be
+   * re-established: the one field consulted is compared and dropped, and
+   * everything beside it stays out of the error.
+   */
+  it('puts nothing from a refusal body into the error', async () => {
+    stubFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              message: 'instructions: You are Luna, and she is 26.',
+              type: 'moderation_blocked',
+              code: 'minor',
+              categories: { minor: 0.77, injection: 0.63 },
+              docs_url: 'https://example.invalid/moderation',
+            },
+          }),
+          { status: 422 },
+        ),
+    );
+
+    await provider()
+      .createSession(request)
+      .catch((err: VoiceProviderError) => {
+        expect(err.message).toBe('Voice provider returned HTTP 422.');
+        expect(err.message).not.toContain('Luna');
+        expect(err.message).not.toContain('minor');
+        expect(JSON.stringify(err)).not.toContain('0.77');
+      });
+    expect.assertions(4);
   });
 
   it('classifies a timeout', async () => {
@@ -165,6 +272,8 @@ describe('failures are classified without reading the body', () => {
     expect(new VoiceProviderError('upstream', 'x').definitelyCreatedNothing).toBe(false);
     expect(new VoiceProviderError('unauthorized', 'x').definitelyCreatedNothing).toBe(true);
     expect(new VoiceProviderError('rejected', 'x').definitelyCreatedNothing).toBe(true);
+    // A refusal is a refusal: nothing was created, so nothing can be orphaned.
+    expect(new VoiceProviderError('content_blocked', 'x').definitelyCreatedNothing).toBe(true);
   });
 
   it('classifies statuses with a pure function', () => {
@@ -172,6 +281,35 @@ describe('failures are classified without reading the body', () => {
     expect(errorKindForStatus(402)).toBe('payment_required');
     expect(errorKindForStatus(418)).toBe('rejected');
     expect(errorKindForStatus(502)).toBe('upstream');
+  });
+});
+
+describe('reading a refusal out of an error body', () => {
+  it('accepts only the exact allowlisted type', () => {
+    expect(contentRefusalFrom({ error: { type: 'moderation_blocked' } })).toBe('content_blocked');
+  });
+
+  /**
+   * NOTHING IS MATCHED BY SHAPE. The value read comes out of a body that can
+   * quote the request, so a near miss is a miss: no prefix, no casing variant
+   * and no substring counts.
+   */
+  it.each([
+    ['a near miss', { error: { type: 'moderation_blocked_v2' } }],
+    ['a casing variant', { error: { type: 'Moderation_Blocked' } }],
+    ['a substring host', { error: { type: 'not_moderation_blocked' } }],
+    ['a sentence containing it', { error: { type: 'blocked: moderation_blocked' } }],
+    ['the type one level too deep', { error: { error: { type: 'moderation_blocked' } } }],
+    ['the type at the top level', { type: 'moderation_blocked' }],
+    ['a number', { error: { type: 422 } }],
+    ['a null error', { error: null }],
+    ['an array error', { error: ['moderation_blocked'] }],
+    ['no error key', { message: 'moderation_blocked' }],
+    ['null', null],
+    ['a string body', 'moderation_blocked'],
+    ['undefined', undefined],
+  ])('refuses %s', (_label, body) => {
+    expect(contentRefusalFrom(body)).toBeUndefined();
   });
 });
 

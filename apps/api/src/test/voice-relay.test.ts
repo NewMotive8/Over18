@@ -679,6 +679,92 @@ describe('a provider that will not connect', () => {
     expect(upstreams).toHaveLength(0);
   });
 
+  /**
+   * THE DEFECT THIS CLOSES. A refused persona and an unreachable provider were
+   * reported to the browser with the SAME reason, so a refusal -- which fails
+   * identically every time -- was shown as "she could not be reached just now,
+   * try again in a moment". The browser already understood `content_blocked`;
+   * the server simply never sent it.
+   */
+  it('tells the browser a refusal was a refusal, not an outage', async () => {
+    providerImpl = async () => {
+      throw new VoiceProviderError('content_blocked', 'HTTP 422.', 422);
+    };
+    const user = await setup(ctx, 'relay.blocked@example.com');
+
+    const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+    await client.waitClosed();
+
+    expect(client.frames.find((f) => f.type === 'relay.closed')?.reason).toBe('content_blocked');
+    // And emphatically not the reason that invites a pointless retry.
+    expect(client.frames.find((f) => f.type === 'relay.closed')?.reason).not.toBe(
+      'provider_unavailable',
+    );
+  });
+
+  /**
+   * The cleanup is the part a new reason could quietly break: the row must still
+   * settle, stay un-started, carry the documented short code, and leave no
+   * upstream socket behind.
+   */
+  it('settles a refused call with no orphan and no upstream', async () => {
+    providerImpl = async () => {
+      throw new VoiceProviderError('content_blocked', 'HTTP 422.', 422);
+    };
+    const user = await setup(ctx, 'relay.blockedrow@example.com');
+
+    const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+    await client.waitClosed();
+
+    const row = await waitForStatus(user.callSessionId, 'failed');
+    // Definite, so no orphan marker -- the provider refused rather than half-acted.
+    expect(row.terminationReason).toBe('provider_content_blocked');
+    expect(row.startedAt).toBeNull();
+    expect(row.providerSessionId).toBeNull();
+    expect(upstreams).toHaveLength(0);
+  });
+
+  /** A refusal body can quote the request, so nothing of it may reach the browser. */
+  it('leaks nothing from a refusal to the browser', async () => {
+    providerImpl = async () => {
+      throw new VoiceProviderError('content_blocked', `blocked: ${CANARY}`, 422);
+    };
+    const user = await setup(ctx, 'relay.blockedleak@example.com');
+
+    const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+    await client.waitClosed();
+
+    expect(JSON.stringify(client.frames)).not.toContain(CANARY);
+  });
+
+  /**
+   * THE FALLBACK, HELD STILL. Every other rejection keeps the old reason: only a
+   * confirmed content refusal changes what the person is told.
+   */
+  it.each([
+    ['rejected', 400, 'provider_rejected'],
+    // Not a definite refusal: a 402 is not on `definitelyCreatedNothing`, so it
+    // keeps the orphan marker it already had. Unchanged by this work.
+    ['payment_required', 402, 'orphan_risk_payment_required'],
+    ['network', undefined, 'orphan_risk_network'],
+  ] as const)(
+    'still reports %s as provider_unavailable',
+    async (kind, status, settled) => {
+      providerImpl = async () => {
+        throw new VoiceProviderError(kind, 'x', status);
+      };
+      const user = await setup(ctx, `relay.fallback.${kind}@example.com`);
+
+      const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+      await client.waitClosed();
+
+      expect(client.frames.find((f) => f.type === 'relay.closed')?.reason).toBe(
+        'provider_unavailable',
+      );
+      expect((await waitForStatus(user.callSessionId, 'failed')).terminationReason).toBe(settled);
+    },
+  );
+
   it('records a definite refusal without an orphan marker', async () => {
     providerImpl = async () => {
       throw new VoiceProviderError('unauthorized', 'bad key', 401);

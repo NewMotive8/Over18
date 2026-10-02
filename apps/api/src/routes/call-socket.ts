@@ -516,7 +516,18 @@ export default async function callSocketRoutes(
           providerFailureLogFields(error),
           'voice relay: provider session creation failed',
         );
-        await teardown('provider_unavailable', {
+        /**
+         * A content refusal is told apart from everything else, because the two
+         * call for opposite advice. `provider_unavailable` renders as "she could
+         * not be reached, try again in a moment" -- true of a fault that may
+         * clear, and misleading for a refusal that will repeat identically. The
+         * browser already knows `content_blocked`; only the server never said it.
+         *
+         * The settle reason is untouched: `content_blocked` is a kind, so the
+         * existing template already writes `provider_content_blocked`, which is
+         * exactly the short code the column documents.
+         */
+        await teardown(kind === 'content_blocked' ? 'content_blocked' : 'provider_unavailable', {
           status: 'failed',
           reason: `${ambiguous ? 'orphan_risk' : 'provider'}_${kind}`,
         });

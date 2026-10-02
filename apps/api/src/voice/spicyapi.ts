@@ -98,6 +98,50 @@ export function errorKindForStatus(status: number) {
   return 'rejected' as const;
 }
 
+/**
+ * The `error.type` values that mean the persona itself was refused.
+ *
+ * CLOSED, AND THE REASON IS THE SAME ONE `LOGGABLE_CODES` HAS. The value being
+ * read comes out of a body that can quote the request, and the request carried
+ * the compiled persona. A pattern loose enough to admit a vocabulary we have
+ * not seen is also loose enough to admit a sentence of the persona. So nothing
+ * is matched by shape: a type either IS one of these exact strings or it is not
+ * a content refusal, and the string is compared and then discarded.
+ */
+const CONTENT_REFUSAL_TYPES = new Set(['moderation_blocked']);
+
+/**
+ * Whether an error body says the content was refused, rather than the request.
+ *
+ * ── WHY THE STATUS IS NOT ENOUGH ─────────────────────────────────────────────
+ *
+ * The observed refusal is an HTTP 422, but 422 is the status for any
+ * unprocessable request -- a bad voice name would plausibly land there too.
+ * Treating the status as the signal would tell somebody their call was refused
+ * on content when the real fault was a typo in a config field. So the status is
+ * not consulted at all: `error.type` is the provider's own name for what
+ * happened, and it is the only thing trusted here.
+ *
+ * ── WHAT IS READ, AND WHAT IS NOT ────────────────────────────────────────────
+ *
+ * One field, compared against a closed set, and nothing retained. The sibling
+ * fields are deliberately ignored: `message` is free text that can echo the
+ * request, and `code` and `categories` carry the classifier's verdict about the
+ * persona -- the server's business when diagnosing, never something to widen
+ * this seam for. Anything unrecognised returns undefined and the caller falls
+ * back to classifying by status, exactly as before.
+ *
+ * Exported for tests: this is the whole of the new decision, and it deserves
+ * assertions without a network in the way.
+ */
+export function contentRefusalFrom(body: unknown): 'content_blocked' | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const error = (body as Record<string, unknown>).error;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const type = (error as Record<string, unknown>).type;
+  return typeof type === 'string' && CONTENT_REFUSAL_TYPES.has(type) ? 'content_blocked' : undefined;
+}
+
 export function createSpicyApiProvider(config: SpicyApiConfig): VoiceSessionProvider {
   const url = config.sessionsUrl ?? SPICYAPI_SESSIONS_URL;
   // The application never asks for more than the provider allows.
@@ -138,10 +182,25 @@ export function createSpicyApiProvider(config: SpicyApiConfig): VoiceSessionProv
       }
 
       if (!response.ok) {
-        // Status only. The body can echo the request, and the request carried
-        // the persona.
+        /**
+         * One field out of the body, then the status. The body can echo the
+         * request and the request carried the persona, so it is read here and
+         * nowhere else: `contentRefusalFrom` returns a kind or nothing, the
+         * parsed body is never bound to a name that outlives this expression,
+         * and the message below still says only what the status was.
+         *
+         * A body that will not parse is simply not a content refusal. That is
+         * the safe direction to fail: it costs a less precise message, where
+         * trusting an unparsed body would cost the guarantee above.
+         */
+        let refusal: 'content_blocked' | undefined;
+        try {
+          refusal = contentRefusalFrom(await response.json());
+        } catch {
+          refusal = undefined;
+        }
         throw new VoiceProviderError(
-          errorKindForStatus(response.status),
+          refusal ?? errorKindForStatus(response.status),
           `Voice provider returned HTTP ${response.status}.`,
           response.status,
         );
