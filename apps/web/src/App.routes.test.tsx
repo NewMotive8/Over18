@@ -1,14 +1,38 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import App from './App';
 import { AuthProvider } from './auth/AuthContext';
+import { AGE_CONFIRMED_KEY } from './lib/ageGate';
 
 /**
  * Route-level smoke tests (US-18) via static rendering. Effects don't run under
  * renderToStaticMarkup, so no network is hit — pages render their initial
  * (loading/empty) state inside the persistent AppShell.
+ *
+ * THE AGE IS CONFIRMED BEFORE EACH, because the shell now renders the age gate
+ * INSTEAD OF its outlet until a visitor says they are 18 or over. These tests
+ * are about routing, and a browser that has already answered is the state in
+ * which routing is the thing under test. That the gate blocks every route when
+ * the answer is missing is asserted in `AppShellAgeGate.test.tsx`, where it is
+ * the subject rather than a precondition.
  */
+beforeEach(() => {
+  const map = new Map<string, string>([[AGE_CONFIRMED_KEY, String(Date.now())]]);
+  vi.stubGlobal('localStorage', {
+    getItem: (k: string) => map.get(k) ?? null,
+    setItem: (k: string, v: string) => void map.set(k, v),
+    removeItem: (k: string) => void map.delete(k),
+    clear: () => map.clear(),
+    key: () => null,
+    length: 0,
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 function renderApp(path: string): string {
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[path]}>

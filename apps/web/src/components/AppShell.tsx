@@ -1,8 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom';
+import AgeGate from './AgeGate';
 import CreditsPill from './CreditsPill';
 import MobileNavigation from './MobileNavigation';
+import SiteFooter from './SiteFooter';
 import StagingBanner from './StagingBanner';
+import { initialStatus, writeConfirmation, type GateStatus } from '../lib/ageGate';
 import { applyScrollTarget, scrollActionFor, type NavigationKind } from '../lib/scrollRestoration';
 
 /**
@@ -49,6 +52,17 @@ export default function AppShell() {
   const positions = useRef(new Map<string, number>());
   const currentKey = useRef(location.key);
   const previousPathname = useRef<string | null>(null);
+
+  /**
+   * The age gate's answer for this browser.
+   *
+   * READ ONCE, LAZILY, AND NOT IN AN EFFECT. A `useState(() => ...)` initialiser
+   * runs during the first render, so the very first paint is already the gate
+   * for an unconfirmed visitor. Reading it in an effect instead would render
+   * the application first and replace it a tick later -- which is a flash of
+   * exactly the content the gate exists to withhold.
+   */
+  const [gate, setGate] = useState<GateStatus>(() => initialStatus());
 
   /**
    * RECORDED AS THE VISITOR SCROLLS, not as they leave.
@@ -113,6 +127,39 @@ export default function AppShell() {
     };
   }, [location.key, pathname, navigationType]);
 
+  /**
+   * BEFORE THE OUTLET, AND AFTER EVERY HOOK.
+   *
+   * After the hooks because their order may not change between renders; before
+   * the outlet because this is what makes the gate a barrier rather than a
+   * curtain. Returning here means no page component is constructed, no effect
+   * of theirs runs, and no request for a character or a clip is ever sent --
+   * so there is nothing explicit in the document to be found behind the gate,
+   * by a reader, a screen reader, or View Source.
+   *
+   * It gates the whole consumer shell rather than a list of adult routes. A
+   * list is a thing to forget to add to; the shell is every route there is.
+   * `/admin` sits outside this shell and is staff-authenticated separately.
+   *
+   * NO NAVIGATION, SO NO LOOP. The gate is a different render of the same
+   * route, not a redirect to a gate page -- nothing to bounce against
+   * `RequireAuth`, and the address a visitor arrived at is still the address
+   * they are on when they confirm.
+   */
+  if (gate !== 'confirmed') {
+    return (
+      <AgeGate
+        status={gate}
+        onConfirm={() => {
+          writeConfirmation();
+          setGate('confirmed');
+        }}
+        onDecline={() => setGate('declined')}
+        onBack={() => setGate('asking')}
+      />
+    );
+  }
+
   // The v2 lobby (US-28) and the v2 persona profile (US-29) own their own
   // top-of-screen chrome and full-bleed media, so on those routes the shell
   // drops its default brand bar and content padding. Every other screen keeps
@@ -148,6 +195,10 @@ export default function AppShell() {
 
       <main className={`flex flex-1 flex-col overflow-y-auto ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}>
         <Outlet />
+        {/* Inside the scroll region and after the outlet, so it sits at the end
+            of the content rather than competing with the sticky primary nav
+            below it. */}
+        <SiteFooter />
       </main>
 
       <div className="sticky bottom-0 z-10">
