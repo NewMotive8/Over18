@@ -6,6 +6,7 @@ import PageHeader from '../components/PageHeader';
 import PaymentMethodSheet from '../components/PaymentMethodSheet';
 import { CurrentPlanCard, EconomyStateNotice, PlanCatalog, PremiumBenefits } from '../components/CustomerEconomy';
 import { formatPlanPrice, offeredPlans, useCustomerEconomy } from '../lib/customerEconomy';
+import { track, useTrackView } from '../lib/analytics';
 import { useCheckout } from '../lib/payments';
 
 /**
@@ -25,6 +26,9 @@ import { useCheckout } from '../lib/payments';
  * balance. Each plan is a row rather than a card, because they are one product
  * at three billing periods, not three offers -- which is also what keeps the
  * CTA above the fold on a phone.
+ *
+ * Funnel A (PR 3): the page seen, a plan chosen, the method sheet dismissed.
+ * Whether Premium STARTED is the server's to record, after the payment.
  */
 export default function SubscriptionPage() {
   const [state, retry] = useCustomerEconomy();
@@ -38,6 +42,7 @@ export default function SubscriptionPage() {
   const premium = overview?.commercial?.tier?.available && overview.commercial.tier.value === 'premium';
   /** Set when the customer has just come back from a checkout. */
   const returned = params.get('from') === 'checkout';
+  useTrackView('paywall_viewed', { surface: 'subscription_page' }, overview !== null);
 
   const buy = async (method: PaymentMethod) => {
     if (!plan) return;
@@ -77,7 +82,13 @@ export default function SubscriptionPage() {
 
           <CurrentPlanCard overview={overview} />
           <PremiumBenefits overview={overview} />
-          <PlanCatalog overview={overview} onBuy={(code) => setChosen(code)} />
+          <PlanCatalog
+            overview={overview}
+            onBuy={(code) => {
+              track('subscription_cta_clicked', { surface: 'subscription_page', planCode: code });
+              setChosen(code);
+            }}
+          />
 
           {/*
             The disclosure is part of the offer, not a footnote: someone about
@@ -100,6 +111,7 @@ export default function SubscriptionPage() {
           error={checkout.state.status === 'failed' ? checkout.state.message : null}
           onChoose={(method) => void buy(method)}
           onCancel={() => {
+            track('paywall_dismissed', { surface: 'subscription_page', planCode: plan.code });
             setChosen(null);
             checkout.reset();
           }}

@@ -1,5 +1,6 @@
 import type {
   AdminAccessView,
+  AnalyticsFunnelsView,
   AdminAccountStatusChangeRequest,
   AdminCharacterContentAccess,
   AdminAccountStatusChangeResult,
@@ -1303,6 +1304,26 @@ export const adminAccessApi = {
     request<AuditPage>(`/admin/audit${auditQuery(filters)}`),
   /** A plain URL: the browser downloads it with the session cookie. */
   exportUrl: (filters: AuditFilters = {}) => `${API_URL}/admin/audit/export.csv${auditQuery(filters)}`,
+};
+
+/** Credits Store PR 3 -- the funnels (`analytics.read`) and the export (`analytics.export`). */
+export interface AnalyticsWindow {
+  from?: string;
+  to?: string;
+}
+
+function windowQuery(window: AnalyticsWindow): string {
+  const params = new URLSearchParams();
+  if (window.from) params.set('from', window.from);
+  if (window.to) params.set('to', window.to);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
+export const adminAnalyticsApi = {
+  funnels: (window: AnalyticsWindow = {}) => request<AnalyticsFunnelsView>(`/admin/analytics/funnels${windowQuery(window)}`),
+  /** A plain URL: the browser downloads it with the session cookie. */
+  exportUrl: (window: AnalyticsWindow = {}) => `${API_URL}/admin/analytics/events/export.csv${windowQuery(window)}`,
 };
 
 /* ------------------------------------------------------------------ *

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { PublicClip } from '../../lib/api';
+import { track } from '../../lib/analytics';
 import { accessFor, contentCardView, useContentAccess, type ContentAccessState } from '../../lib/contentAccess';
 import { useContentUnlock, type ContentUnlockClient } from '../../lib/contentUnlock';
 import { creditsStoreHref, pendingUnlock, resumeUnlockAction, withStoreLink } from '../../lib/creditsStore';
@@ -57,6 +58,9 @@ import { LikeIcon } from '../icons';
  * and the tile changes because the server now says `owned` — not because
  * anything here decided it did. A failure changes nothing at all.
  */
+/** The decisions that mean a post is locked to this customer right now. */
+const LOCKED_DECISIONS = new Set<string>(['credits_required', 'insufficient_credits', 'premium_required']);
+
 export default function PostsTab({
   clips,
   onOpenClip,
@@ -121,6 +125,27 @@ export default function PostsTab({
    * buying. Anything else (a new price, no remembered price) is left for them
    * to confirm. Content they already own needs nothing.
    */
+  /**
+   * Funnel C (PR 3): each locked post this tab shows, reported once per visit
+   * once the server's access answers are in. The server states the access
+   * decision and price itself; unlocking is the server's to record, after the
+   * Credits move.
+   */
+  const reported = useRef(new Set<string>());
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    for (const clip of clips) {
+      const item = accessFor(state, clip.id);
+      if (!item || reported.current.has(clip.id) || !LOCKED_DECISIONS.has(item.decision)) continue;
+      reported.current.add(clip.id);
+      track('locked_content_viewed', {
+        surface: 'posts',
+        assetId: clip.id,
+        characterId,
+      });
+    }
+  }, [state, clips, characterId]);
+
   const resumed = useRef(false);
   useEffect(() => {
     if (!resumeUnlockAssetId || resumed.current || state.status !== 'ready') return;

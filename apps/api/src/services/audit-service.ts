@@ -160,7 +160,7 @@ const CSV_COLUMNS: ReadonlyArray<keyof AuditEntryView> = [
   'metadata',
 ];
 
-function csvCell(value: unknown): string {
+export function csvCell(value: unknown): string {
   if (value === null || value === undefined) return '';
   const text = typeof value === 'string' ? value : JSON.stringify(value);
   // Quote everything that could break a row, and neutralise formula injection:

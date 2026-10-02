@@ -27,6 +27,7 @@ import BannerEditorPage from './pages/admin/BannerEditorPage';
 import HomeComposerPage from './pages/admin/HomeComposerPage';
 import GenerationPage from './pages/admin/GenerationPage';
 import AdminAuditPage from './pages/admin/AdminAuditPage';
+import AdminAnalyticsPage from './pages/admin/AdminAnalyticsPage';
 import EconomyPage from './pages/admin/EconomyPage';
 import AdminWalletPage from './pages/admin/AdminWalletPage';
 import AdminUsersPage from './pages/admin/AdminUsersPage';
@@ -88,6 +89,9 @@ export default function App() {
             server enforces access); only LISTED in the navigation once the
             audit switch is on and the operator holds audit.read. */}
         <Route path="audit" element={<AdminAuditPage />} />
+        {/* Credits Store PR 3 -- the commercial funnels. Listed for operators
+            holding analytics.read; the server enforces it. */}
+        <Route path="analytics" element={<AdminAnalyticsPage />} />
         {/* PRD v1.2 §31, P1.4 -- the economy console. Listed in the navigation
             for operators holding economy.manage; the server enforces it. */}
         <Route path="economy" element={<EconomyPage />} />

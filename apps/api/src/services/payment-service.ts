@@ -11,6 +11,7 @@ import type { Db } from '../db/client.js';
 import type { CommerceEnv } from '../env.js';
 import { paymentEvents, payments, type PaymentRow } from '../db/schema.js';
 import type { PaymentProvider, ParsedPaymentWebhook, WebhookInput } from '../commerce/payment-provider.js';
+import { track, type Analytics } from './analytics-service.js';
 import { economyNow, resolvePackVersion, resolvePlanVersion } from './economy-resolver.js';
 import { effectivePackTerms } from './pack-terms.js';
 import { changeSubscription, readSubscriptionRecord } from './subscription-service.js';
@@ -135,6 +136,30 @@ function contextOf(row: Pick<PaymentRow, 'context'>): PurchaseContext | null {
     assetId: c.assetId ?? null,
     conversationId: c.conversationId ?? null,
     characterId: c.characterId ?? null,
+  };
+}
+
+/**
+ * What a Credit pack event says about its payment: the terms locked at checkout
+ * and where the purchase started, as stored -- never re-resolved. The shared
+ * allow-list drops anything else (the display name included).
+ */
+async function packEventProperties(db: Db, row: PaymentRow): Promise<Record<string, unknown>> {
+  const t = row.terms as Partial<StoredPackTerms>;
+  const terms = packTermsOf(row);
+  const { current } = await readSubscriptionRecord(db, row.userId);
+  return {
+    ...(contextOf(row) ?? {}),
+    paymentId: row.id,
+    packCode: terms?.packCode,
+    packVersion: terms?.packVersion,
+    credits: terms?.credits,
+    bonusCredits: terms?.bonusCredits,
+    totalCredits: terms?.totalCredits,
+    priceMinor: row.amountMinor,
+    currency: row.currency,
+    promoted: t.wasPriceMinor != null,
+    tier: current?.premium ? 'premium' : 'free',
   };
 }
 
@@ -272,6 +297,7 @@ export async function startCheckout(
   commerce: Pick<CommerceEnv, 'enabled'>,
   provider: PaymentProvider,
   input: StartCheckoutInput,
+  options: { analytics?: Analytics; requestId?: string | null } = {},
 ): Promise<CustomerCheckout> {
   if (!commerce.enabled) throw new PaymentError('economy_disabled', 'The economy is switched off: nothing can be purchased yet.');
   const request = parseStart(input);
@@ -316,6 +342,16 @@ export async function startCheckout(
       context: request.context ? { ...request.context } : {},
     })
     .returning();
+
+  // The pending payment is committed (a single autocommitted insert). A replayed
+  // key returned above and is not a second start.
+  if (row!.kind === 'credit_pack') {
+    void track(options.analytics, 'credit_purchase_started', async () => ({
+      userId: row!.userId,
+      requestId: options.requestId ?? null,
+      properties: { ...(await packEventProperties(db, row!)), method: row!.methodHint },
+    }));
+  }
 
   return { payment: toView(row!), checkoutRef: checkout.checkoutRef, redirectUrl: checkout.redirectUrl, replayed: false };
 }
@@ -409,6 +445,7 @@ export async function ingestPaymentEvent(
   commerce: Pick<CommerceEnv, 'enabled'>,
   provider: PaymentProvider,
   delivery: WebhookInput,
+  options: { analytics?: Analytics } = {},
 ): Promise<IngestOutcome> {
   const parsed: ParsedPaymentWebhook = await provider.parseWebhook(delivery);
   const payload = safeJson(delivery.rawBody);
@@ -437,17 +474,54 @@ export async function ingestPaymentEvent(
   if (!commerce.enabled) return { status: 'ignored', eventRef: parsed.eventRef, reason: 'economy_disabled' };
 
   const event = parsed.event;
+  // Analytics below runs only once the effect's transaction has COMMITTED, and
+  // only for the delivery that actually applied it -- a redelivery, or an event
+  // for a payment already settled, describes nothing new.
   if (event.type === 'payment_succeeded') {
-    const paymentId = await applySuccess(db, event.checkoutRef, event.transactionRef, stored.id);
+    const { paymentId, applied } = await applySuccess(db, event.checkoutRef, event.transactionRef, stored.id);
+    if (applied) emitSucceeded(db, options.analytics, applied.payment, applied.billingPeriodMonths);
     return { status: 'processed', eventRef: parsed.eventRef, paymentId };
   }
   if (event.type === 'payment_failed') {
-    const paymentId = await settleUnsuccessful(db, event.checkoutRef, 'failed', event.reason, stored.id);
+    const { paymentId, applied } = await settleUnsuccessful(db, event.checkoutRef, 'failed', event.reason, stored.id);
+    if (applied && applied.payment.kind === 'credit_pack') {
+      const payment = applied.payment;
+      void track(options.analytics, 'credit_purchase_failed', async () => ({
+        userId: payment.userId,
+        properties: { ...(await packEventProperties(db, payment)), status: applied.status },
+      }));
+    }
     return { status: 'processed', eventRef: parsed.eventRef, paymentId };
   }
   // Renewals, cancellations, refunds and chargebacks are P9.2's remaining work
   // and P9.D1's rules; recorded now, deliberately not acted on.
   return { status: 'ignored', eventRef: parsed.eventRef, reason: `unhandled_${event.type}` };
+}
+
+function emitSucceeded(db: Db, analytics: Analytics | undefined, payment: PaymentRow, billingPeriodMonths: number | null): void {
+  if (payment.kind === 'credit_pack') {
+    void track(analytics, 'credit_purchase_completed', async () => ({
+      userId: payment.userId,
+      properties: await packEventProperties(db, payment),
+    }));
+    return;
+  }
+  void track(analytics, 'subscription_started', () => ({
+    userId: payment.userId,
+    properties: {
+      paymentId: payment.id,
+      planCode: payment.productRef,
+      billingPeriodMonths,
+      priceMinor: payment.amountMinor,
+      currency: payment.currency,
+    },
+  }));
+}
+
+/** What a settlement did: `applied` is set only when THIS call changed the payment. */
+interface Settlement<T> {
+  paymentId: string | null;
+  applied: T | null;
 }
 
 function safeJson(rawBody: Buffer): Record<string, unknown> {
@@ -469,13 +543,18 @@ function safeJson(rawBody: Buffer): Record<string, unknown> {
  * the same version, and the Credit grant's idempotency key is derived from the
  * payment.
  */
-async function applySuccess(db: Db, checkoutRef: string, transactionRef: string, eventId: string): Promise<string | null> {
+async function applySuccess(
+  db: Db,
+  checkoutRef: string,
+  transactionRef: string,
+  eventId: string,
+): Promise<Settlement<{ payment: PaymentRow; billingPeriodMonths: number | null }>> {
   return db.transaction(async (tx) => {
     const [payment] = await tx.select().from(payments).where(eq(payments.checkoutRef, checkoutRef)).for('update');
-    if (!payment) return null;
+    if (!payment) return { paymentId: null, applied: null };
     await tx.update(paymentEvents).set({ paymentId: payment.id, processedAt: sql`now()` }).where(eq(paymentEvents.id, eventId));
     // Already applied: the effect happened once, and happens no more.
-    if (payment.status !== 'pending') return payment.id;
+    if (payment.status !== 'pending') return { paymentId: payment.id, applied: null };
 
     if (payment.kind === 'credit_pack') {
       await awardPack(tx, payment);
@@ -483,7 +562,7 @@ async function applySuccess(db: Db, checkoutRef: string, transactionRef: string,
         .update(payments)
         .set({ status: 'succeeded', transactionRef, settledAt: sql`now()`, updatedAt: sql`now()` })
         .where(eq(payments.id, payment.id));
-      return payment.id;
+      return { paymentId: payment.id, applied: { payment, billingPeriodMonths: null } };
     }
 
     const { version } = await readSubscriptionRecord(tx as unknown as Db, payment.userId);
@@ -525,7 +604,7 @@ async function applySuccess(db: Db, checkoutRef: string, transactionRef: string,
       .update(payments)
       .set({ status: 'succeeded', transactionRef, settledAt: sql`now()`, updatedAt: sql`now()` })
       .where(eq(payments.id, payment.id));
-    return payment.id;
+    return { paymentId: payment.id, applied: { payment, billingPeriodMonths: plan.billingPeriodMonths } };
   });
 }
 
@@ -582,17 +661,17 @@ async function settleUnsuccessful(
   status: 'failed' | 'cancelled',
   reason: string | null,
   eventId: string,
-): Promise<string | null> {
+): Promise<Settlement<{ payment: PaymentRow; status: 'failed' | 'cancelled' }>> {
   return db.transaction(async (tx) => {
     const [payment] = await tx.select().from(payments).where(eq(payments.checkoutRef, checkoutRef)).for('update');
-    if (!payment) return null;
+    if (!payment) return { paymentId: null, applied: null };
     await tx.update(paymentEvents).set({ paymentId: payment.id, processedAt: sql`now()` }).where(eq(paymentEvents.id, eventId));
-    if (payment.status !== 'pending') return payment.id;
+    if (payment.status !== 'pending') return { paymentId: payment.id, applied: null };
     await tx
       .update(payments)
       .set({ status, failureReason: reason, settledAt: sql`now()`, updatedAt: sql`now()` })
       .where(eq(payments.id, payment.id));
-    return payment.id;
+    return { paymentId: payment.id, applied: { payment, status } };
   });
 }
 
