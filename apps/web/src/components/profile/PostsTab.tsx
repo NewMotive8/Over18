@@ -1,6 +1,8 @@
+import { useEffect, useRef } from 'react';
 import type { PublicClip } from '../../lib/api';
 import { accessFor, contentCardView, useContentAccess, type ContentAccessState } from '../../lib/contentAccess';
 import { useContentUnlock, type ContentUnlockClient } from '../../lib/contentUnlock';
+import { creditsStoreHref, pendingUnlock, resumeUnlockAction } from '../../lib/creditsStore';
 import { spendableCredits, useCustomerEconomy, type CustomerEconomyClient } from '../../lib/customerEconomy';
 import ClipMedia from '../lobby/ClipMedia';
 import { CreditBalance } from '../CustomerEconomy';
@@ -62,6 +64,9 @@ export default function PostsTab({
   accessClient,
   economyClient,
   unlockClient,
+  characterId,
+  resumeUnlockAssetId,
+  onResumeHandled,
 }: {
   clips: PublicClip[];
   onOpenClip: (index: number) => void;
@@ -71,6 +76,11 @@ export default function PostsTab({
   accessClient?: Parameters<typeof useContentAccess>[1];
   economyClient?: CustomerEconomyClient;
   unlockClient?: ContentUnlockClient;
+  /** Whose posts these are: carried to the Credits Store so the customer comes back here. */
+  characterId?: string;
+  /** An unlock to pick up again, after the customer bought Credits for it (Credits Store PR 2). */
+  resumeUnlockAssetId?: string | null;
+  onResumeHandled?: () => void;
 }) {
   const [fetched, refreshAccess] = useContentAccess(
     clips.map((clip) => clip.id),
@@ -87,6 +97,44 @@ export default function PostsTab({
       refreshEconomy();
     },
   });
+
+  /**
+   * NOT ENOUGH CREDITS -> THE CREDITS STORE, AND BACK. "Get Credits" carries
+   * what was being unlocked, so the store can bring the customer straight back
+   * here; the price they were shown is remembered for this tab.
+   */
+  const shortOfCredits = unlock.failure?.code === 'insufficient_credits' && unlock.target !== null;
+  const storeHref = shortOfCredits
+    ? creditsStoreHref({ origin: 'profile', originAction: 'content_unlock', assetId: unlock.target!.assetId, characterId: characterId ?? null })
+    : null;
+  const failure = shortOfCredits && unlock.failure ? { ...unlock.failure, action: { label: 'Get Credits', to: storeHref! } } : unlock.failure;
+  useEffect(() => {
+    if (shortOfCredits && unlock.target?.creditPrice != null) {
+      pendingUnlock.set({ assetId: unlock.target.assetId, creditPrice: unlock.target.creditPrice });
+    }
+  }, [shortOfCredits, unlock.target]);
+
+  /**
+   * BACK FROM THE STORE: the unlock continues. Once the server's access answer
+   * is in, the confirmation reopens for that post -- and goes through on its
+   * own ONLY if the server's price is still the one the customer saw before
+   * buying. Anything else (a new price, no remembered price) is left for them
+   * to confirm. Content they already own needs nothing.
+   */
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (!resumeUnlockAssetId || resumed.current || state.status !== 'ready') return;
+    resumed.current = true;
+    const index = clips.findIndex((clip) => clip.id === resumeUnlockAssetId);
+    const item = accessFor(state, resumeUnlockAssetId);
+    const action = resumeUnlockAction(item, index >= 0, pendingUnlock.get(), resumeUnlockAssetId);
+    if (action !== 'none') {
+      unlock.open({ assetId: resumeUnlockAssetId, title: `Post ${index + 1}`, creditPrice: item?.creditPrice ?? null });
+      if (action === 'auto') unlock.confirm();
+    }
+    pendingUnlock.clear();
+    onResumeHandled?.();
+  }, [resumeUnlockAssetId, state, clips, unlock, onResumeHandled]);
 
   if (clips.length === 0) {
     // Said plainly rather than filled with invented tiles. An empty collection
@@ -165,7 +213,7 @@ export default function PostsTab({
           target={unlock.target}
           balance={spendableCredits(economy.status === 'ready' ? economy.overview : null)}
           busy={unlock.busy}
-          failure={unlock.failure}
+          failure={failure}
           onConfirm={unlock.confirm}
           onCancel={unlock.cancel}
         />
