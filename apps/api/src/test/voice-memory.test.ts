@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { callSessions, callTranscriptTurns, memories } from '../db/schema.js';
+import {
+  callSessions,
+  callTranscriptTurns,
+  characterVisualIdentities,
+  memories,
+} from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters } from '../db/seed.js';
 import type { LlmClient, LlmRequest } from '../llm/types.js';
@@ -20,6 +25,7 @@ import {
   RECOVERY_BATCH_LIMIT,
 } from '../services/call-memory-service.js';
 import { buildProviderSessionRequest } from '../services/call-session-service.js';
+import { buildCharacterSystemPrompt } from '../services/prompt-builder.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -1058,5 +1064,153 @@ describe('recovering calls that were never extracted', () => {
     expect(result).toEqual({ attempted: 1, extracted: 0 });
     // Still owed, and claimable again immediately.
     expect(await findCallsAwaitingExtraction(ctx.db, user.userId, LUNA.id)).toEqual([call.id]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Her apparent age, when the record establishes one
+ * ------------------------------------------------------------------ */
+
+describe('the call prompt states her apparent age', () => {
+  /**
+   * Writes an active visual identity carrying `apparentAgeBand`.
+   *
+   * Inserted directly rather than through `createVisualIdentityVersion`, because
+   * that path validates the band on the way in -- and several of these cases are
+   * precisely the invalid data a validator would have refused. A record can still
+   * hold one: rows predate validators, and operators edit databases.
+   */
+  async function identityWithBand(characterId: string, apparentAgeBand: unknown) {
+    await ctx.db.delete(characterVisualIdentities).where(
+      eq(characterVisualIdentities.characterId, characterId),
+    );
+    await ctx.db.insert(characterVisualIdentities).values({
+      characterId,
+      version: 1,
+      status: 'active',
+      visualDna: { apparentAgeBand } as never,
+    });
+  }
+
+  /** The compiled instructions for a live call on this user's character. */
+  async function instructionsFor(user: { userId: string; conversationId: string; characterId: string }) {
+    const call = await finishedCall(user, 'active');
+    const request = await buildProviderSessionRequest(ctx.db, call);
+    expect(request).not.toBeNull();
+    return request!.instructions;
+  }
+
+  it('states a verified adult band verbatim', async () => {
+    const user = await register('age.adult@example.com');
+    await identityWithBand(LUNA.id, 'adult (mid-20s)');
+
+    expect(await instructionsFor(user)).toContain('Her apparent age is adult (mid-20s).');
+  });
+
+  /**
+   * VERBATIM, NOT COMPUTED. The profile page shows "26" for a character whose
+   * only stored datum is the word "adult" -- that number is invented in the
+   * browser by `adultAgeFromBand`, which defaults to 26. None of it reaches the
+   * prompt.
+   */
+  it('invents no number when the band carries none', async () => {
+    const user = await register('age.noNumber@example.com');
+    await identityWithBand(LUNA.id, 'adult');
+
+    const instructions = await instructionsFor(user);
+    expect(instructions).toContain('Her apparent age is adult.');
+    expect(instructions).not.toContain('26');
+  });
+
+  it.each([
+    ['no visual identity at all', null],
+    ['an empty band', ''],
+    ['a whitespace band', '   '],
+  ])('says nothing about her age with %s', async (label, band) => {
+    const user = await register(`age.missing.${label.length}@example.com`);
+    if (band !== null) await identityWithBand(LUNA.id, band);
+    else {
+      await ctx.db
+        .delete(characterVisualIdentities)
+        .where(eq(characterVisualIdentities.characterId, LUNA.id));
+    }
+
+    expect(await instructionsFor(user)).not.toContain('Her apparent age');
+  });
+
+  it.each([
+    ['a non-string band', 42],
+    ['a null band', null],
+    ['an object band', { band: 'adult' }],
+  ])('says nothing about her age given %s', async (label, band) => {
+    const user = await register(`age.invalid.${label.length}@example.com`);
+    await identityWithBand(LUNA.id, band);
+
+    expect(await instructionsFor(user)).not.toContain('Her apparent age');
+  });
+
+  /**
+   * THE CONTRADICTORY CASE, which the existing validator already resolves the
+   * safe way: its numeric check runs BEFORE the word "adult" can accept, so a
+   * band that says both is refused rather than believed.
+   */
+  it.each([
+    'adult (17)',
+    'adult, 16',
+    'adult teenager',
+    'young adult, 15-19',
+  ])('refuses the contradictory band %s', async (band) => {
+    const user = await register(`age.contradictory.${band.length}@example.com`);
+    await identityWithBand(LUNA.id, band);
+
+    const instructions = await instructionsFor(user);
+    expect(instructions).not.toContain('Her apparent age');
+    expect(instructions).not.toContain('adult');
+  });
+
+  it.each(['teen', 'child', 'minor', 'adolescent', 'underage'])(
+    'refuses the non-adult band %s',
+    async (band) => {
+      const user = await register(`age.minor.${band}@example.com`);
+      await identityWithBand(LUNA.id, band);
+
+      expect(await instructionsFor(user)).not.toContain('Her apparent age');
+    },
+  );
+
+  it('accepts a decade band that never says the word adult', async () => {
+    const user = await register('age.decade@example.com');
+    await identityWithBand(LUNA.id, '30s');
+
+    expect(await instructionsFor(user)).toContain('Her apparent age is 30s.');
+  });
+
+  /** Everything else about the persona is untouched by this line. */
+  it('leaves the rest of the persona intact', async () => {
+    const user = await register('age.intact@example.com');
+    await identityWithBand(LUNA.id, 'adult');
+
+    const instructions = await instructionsFor(user);
+    expect(instructions).toContain('WHO SHE IS');
+    expect(instructions).toContain(LUNA.displayName);
+    // The age sits among the facts, not in place of them.
+    expect(instructions.indexOf('Her apparent age')).toBeGreaterThan(
+      instructions.indexOf('WHO SHE IS'),
+    );
+  });
+
+  /**
+   * TEXT CHAT IS UNCHANGED. It never reads the visual identity, so the field is
+   * absent and the chat prompt is byte-for-byte what it was.
+   */
+  it('adds nothing to a prompt built without the field', () => {
+    const withoutField = buildCharacterSystemPrompt({
+      character: { id: LUNA.id, displayName: 'Luna', shortBio: '', personality: '', interests: [] } as never,
+      systemPrompt: '',
+      history: [],
+      priorMessageCount: 0,
+      userMessage: 'hello',
+    });
+    expect(withoutField).not.toContain('Her apparent age');
   });
 });
