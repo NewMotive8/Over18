@@ -84,6 +84,38 @@ export default function CharacterDetailPage() {
     [authStatus, navigate, location.pathname],
   );
 
+  /**
+   * The phone button. Opens the conversation and starts the call there.
+   *
+   * WHY IT NAVIGATES RATHER THAN CALLING FROM HERE. A call belongs to a
+   * conversation -- that is where its transcript is stored and where the
+   * memories it produces are read back -- and this page may not have one yet.
+   * Routing through the chat page means one call implementation, one overlay and
+   * one cleanup path, and the person ends up where the conversation they just
+   * had actually lives.
+   *
+   * Shares `starting` with the Chat button, so pressing either twice, or both,
+   * cannot open two conversations.
+   */
+  const startCall = useCallback(
+    async (character: PublicCharacter) => {
+      if (authStatus !== 'authenticated') {
+        navigate('/login', { state: { from: location.pathname } });
+        return;
+      }
+      setStarting(true);
+      setStartError(null);
+      try {
+        const conversation = await conversationsApi.start(character.id);
+        navigate(`/chat/${conversation.id}`, { state: { autoCall: true } });
+      } catch {
+        setStartError("Couldn't start the call. Please try again.");
+        setStarting(false);
+      }
+    },
+    [authStatus, navigate, location.pathname],
+  );
+
   useEffect(() => {
     if (!characterId) return;
     let cancelled = false;
@@ -254,7 +286,7 @@ export default function CharacterDetailPage() {
         <ProfileActions
           onUpgrade={() => setGateOpen(true)}
           onChat={() => startChat(character)}
-          onCall={() => setGateOpen(true)}
+          onCall={() => startCall(character)}
           chatting={starting}
         />
 

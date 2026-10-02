@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   deriveMediaContext,
   detectMediaRequest,
@@ -43,6 +43,27 @@ export default function ChatPage() {
    * microphone across to somebody else's conversation.
    */
   const call = useVoiceCall(conversationId ?? '');
+
+  /**
+   * Arriving from the profile's phone button, which navigates here with
+   * `state.autoCall` because a call needs a conversation and that page may not
+   * have had one.
+   *
+   * Fired once and then forgotten: the history entry is replaced so that going
+   * back, or refreshing, does not place a second call. `autoCalledRef` guards
+   * the same tick, since React may run this effect twice in development.
+   */
+  const location = useLocation();
+  const navigate = useNavigate();
+  const autoCalledRef = useRef(false);
+  const autoCall = (location.state as { autoCall?: boolean } | null)?.autoCall === true;
+
+  useEffect(() => {
+    if (!autoCall || autoCalledRef.current || !conversationId) return;
+    autoCalledRef.current = true;
+    navigate(location.pathname, { replace: true, state: null });
+    call.start();
+  }, [autoCall, conversationId, navigate, location.pathname, call]);
   const [economyState] = useCustomerEconomy();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
