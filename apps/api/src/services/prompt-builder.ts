@@ -137,6 +137,22 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
    * improvement available.
    */
   const facts: string[] = [`Her name is ${character.displayName}.`];
+  /**
+   * Her apparent age, STATED VERBATIM FROM THE RECORD AND NEVER COMPUTED.
+   *
+   * The profile page shows a number -- "Mazal 26" -- and that number is not
+   * data: `adultAgeFromBand` in the web client invents it, defaulting to 26 when
+   * no band exists. The only stored fact is this free-text band, set by an
+   * operator on the character's visual identity, so the band is what is said and
+   * nothing is derived from it.
+   *
+   * Omitted entirely when the caller did not supply a verified band. Saying
+   * nothing about her age is correct when the record does not establish one;
+   * asserting adulthood that the data does not support would be worse than
+   * silence, whatever it cost downstream.
+   */
+  const ageBand = context.verifiedAdultAgeBand?.trim();
+  if (ageBand) facts.push(`Her apparent age is ${ageBand}.`);
   if (character.shortBio.trim()) facts.push(character.shortBio.trim());
   if (character.personality.trim()) facts.push(character.personality.trim());
   const interests = character.interests.map((i) => i.trim()).filter(Boolean);

@@ -9,6 +9,7 @@ import {
 } from '../db/schema.js';
 import { getConversationForUser } from './conversation-service.js';
 import { toPublicCharacter } from './character-service.js';
+import { getActiveVisualIdentity, isAdultAgeBand } from './visual-identity-service.js';
 import { buildCharacterSystemPrompt, selectMemoriesForPrompt } from './prompt-builder.js';
 import { listMemories } from './memory-service.js';
 import { resolveVoice } from '../voice/voice-catalogue.js';
@@ -455,6 +456,27 @@ export async function buildProviderSessionRequest(
    */
   const rememberedFacts = await listMemories(db, row.userId, row.characterId);
 
+  /**
+   * Her apparent age, if the record actually establishes one.
+   *
+   * THE SOURCE IS THE ACTIVE VISUAL IDENTITY, not the profile page's number --
+   * that number is invented in the browser. `apparentAgeBand` is the stored
+   * free-text band, and `isAdultAgeBand` is the same conservative check that
+   * guards it on the way in: minor terms reject, any number below eighteen
+   * rejects before "adult" can accept it, and anything ambiguous rejects.
+   *
+   * FAILS CLOSED, DELIBERATELY. A missing identity, a missing band, an invalid
+   * one, or a contradictory one like "adult (17)" all produce nothing, and the
+   * prompt simply says nothing about her age. This does not assert adulthood on
+   * a character whose record does not establish it, and it is not an attempt to
+   * influence anybody's moderation decision -- it states a fact we hold and were
+   * dropping.
+   */
+  const identity = await getActiveVisualIdentity(db, row.characterId);
+  const band = identity?.visualDna?.apparentAgeBand;
+  const verifiedAdultAgeBand =
+    typeof band === 'string' && isAdultAgeBand(band) ? band.trim() : null;
+
   return {
     instructions: buildCharacterSystemPrompt({
       character: toPublicCharacter(characterRow, null),
@@ -464,6 +486,7 @@ export async function buildProviderSessionRequest(
       priorMessageCount: 0,
       userMessage: '',
       memories: selectMemoriesForPrompt(rememberedFacts),
+      verifiedAdultAgeBand,
     }),
     // The voice resolved when the call was claimed, so a change to the
     // character mid-call cannot swap her voice underneath the caller.
