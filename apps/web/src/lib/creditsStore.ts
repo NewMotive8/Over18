@@ -228,6 +228,21 @@ export const pendingPayment = {
 };
 
 /**
+ * WHAT A RETURN FROM CHECKOUT MAY SAY. "Credits added" is news, and only the
+ * FIRST return from a checkout THIS TAB started can carry it -- the moment the
+ * Credits actually arrived. A refresh, a revisit or a link opened later reads
+ * the same succeeded payment, but nothing is being added then, so it says the
+ * purchase is complete instead. The server's award is untouched either way:
+ * this decides only the words.
+ */
+export type ReturnOutcome = 'added' | 'already_added' | 'pending' | 'not_completed';
+export function returnOutcome(status: string, paymentId: string, pendingPaymentId: string | null): ReturnOutcome {
+  if (status === 'succeeded') return pendingPaymentId === paymentId ? 'added' : 'already_added';
+  if (status === 'pending') return 'pending';
+  return 'not_completed';
+}
+
+/**
  * The unlock that sent the customer to buy Credits, with the price they were
  * shown. On the way back it is continued automatically ONLY if the server's
  * price is still that price; otherwise it is offered again for them to confirm.
