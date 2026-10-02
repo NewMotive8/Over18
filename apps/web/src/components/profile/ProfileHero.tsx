@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import type { CharacterMediaItem } from '../../lib/media';
 import HeroMedia from '../HeroMedia';
 import { ChevronLeftIcon, CrownIcon } from '../icons';
@@ -27,6 +27,7 @@ export default function ProfileHero({
   avatarPoster,
   onBack,
   onOpen,
+  topRight,
 }: {
   items: CharacterMediaItem[];
   name: string;
@@ -34,6 +35,8 @@ export default function ProfileHero({
   avatarPoster?: string;
   onBack: () => void;
   onOpen: (index: number) => void;
+  /** Opposite Back -- the page puts the customer's Credits here. */
+  topRight?: ReactNode;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(0);
@@ -100,7 +103,7 @@ export default function ProfileHero({
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent" />
 
       {/* Floating top controls */}
-      <div className="absolute inset-x-0 top-0 flex items-center p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+      <div className="absolute inset-x-0 top-0 flex items-center justify-between p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
         <button
           type="button"
           onClick={onBack}
@@ -109,6 +112,7 @@ export default function ProfileHero({
         >
           <ChevronLeftIcon className="h-5 w-5" />
         </button>
+        {topRight && <span className="rounded-xl bg-black/40 backdrop-blur">{topRight}</span>}
       </div>
 
       {/* Pagination dots */}

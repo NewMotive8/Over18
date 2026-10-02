@@ -524,7 +524,8 @@ describe('POST /api/analytics/events', () => {
     expect(res.json()).toEqual({ recorded: true });
     const [row] = await rows();
     expect(row).toMatchObject({ name: 'credit_purchase_viewed', user_id: customer.id, source: 'client' });
-    expect(row!.properties).toEqual({ origin: 'chat', originAction: 'image', tier: 'free', balanceState: 'zero', packCount: 3 });
+    // The only purchasable pack in this suite's catalog is 'starter': the server recommends it.
+    expect(row!.properties).toEqual({ origin: 'chat', originAction: 'image', tier: 'free', balanceState: 'zero', packCount: 3, recommendedPackCode: 'starter' });
   });
 
   it("states a locked post's decision and price, and the tier and balance, from the server -- never from the browser", async () => {
@@ -544,7 +545,67 @@ describe('POST /api/analytics/events', () => {
       creditPrice: 50,
     });
     await report(live, customer, { name: 'credit_purchase_viewed', properties: { tier: 'premium', balanceState: 'normal' } });
-    expect((await rows('credit_purchase_viewed'))[0]!.properties).toEqual({ tier: 'free', balanceState: 'low' });
+    expect((await rows('credit_purchase_viewed'))[0]!.properties).toEqual({ tier: 'free', balanceState: 'low', recommendedPackCode: 'starter' });
+  });
+
+  describe('credit_purchase_viewed.recommendedPackCode is the server\'s (store conversion)', () => {
+    const ladder = async () => {
+      // 'starter' (120 Credits, $4.99) is published by beforeEach; two more make a ladder.
+      await publishPack({ code: 'mid', credits: 300, bonusCredits: 0, priceMinor: 999, wasPriceMinor: null });
+      await publishPack({ code: 'big', credits: 750, bonusCredits: 50, priceMinor: 1999, wasPriceMinor: null });
+    };
+    const viewed = async () => (await rows('credit_purchase_viewed'))[0]!.properties;
+    /** A NEW published version of an existing pack -- published versions are immutable. */
+    const republish = async (code: string, over: { isBestValue?: boolean; isPurchasable?: boolean }) => {
+      const packId = (await q<{ id: string }>('SELECT id FROM economy_packs WHERE code = $1', [code])).rows[0]!.id;
+      const prev = (await q<{ version: number; credits: number; bonus_credits: number; price_minor: number }>(
+        'SELECT version, credits, bonus_credits, price_minor FROM economy_pack_versions WHERE pack_id = $1 ORDER BY version DESC LIMIT 1',
+        [packId],
+      )).rows[0]!;
+      const versionId = (
+        await q<{ id: string }>(
+          `INSERT INTO economy_pack_versions
+             (pack_id, version, display_name, credits, price_minor, currency, sort_order, is_best_value, is_purchasable, badge, bonus_credits, was_price_minor, promotion_ends_at)
+           VALUES ($1, $2, $3, $4, $5, 'USD', 0, $6, $7, NULL, $8, NULL, NULL) RETURNING id`,
+          [packId, prev.version + 1, code, prev.credits, prev.price_minor, over.isBestValue ?? false, over.isPurchasable ?? true, prev.bonus_credits],
+        )
+      ).rows[0]!.id;
+      await q(`UPDATE economy_pack_versions SET status = 'published', published_by = $2, publish_reason = 'test' WHERE id = $1`, [versionId, ACTOR]);
+    };
+
+    it('a plain visit: the second-cheapest pack -- whatever the browser claims', async () => {
+      await ladder();
+      const customer = await account();
+      await report(live, customer, { name: 'credit_purchase_viewed', properties: { origin: 'store', recommendedPackCode: 'big' } });
+      expect((await viewed()).recommendedPackCode).toBe('mid');
+    });
+
+    it('arriving to unlock: the smallest pack covering the server price less the server balance', async () => {
+      await ladder();
+      const customer = await account();
+      const { clip } = await pricedClip(400);
+      await fund(customer.id, 30); // needs 370: 'starter' (120) and 'mid' (300) fall short, 'big' (800) covers it
+      await report(live, customer, {
+        name: 'credit_purchase_viewed',
+        properties: { origin: 'profile', originAction: 'content_unlock', assetId: clip, characterId: LUNA.id, recommendedPackCode: 'starter' },
+      });
+      expect(await viewed()).toMatchObject({ assetId: clip, recommendedPackCode: 'big' });
+    });
+
+    it("the operator's best value wins, and a code the catalog does not offer can never be stored", async () => {
+      await ladder();
+      await republish('starter', { isBestValue: true });
+      const customer = await account();
+      await report(live, customer, { name: 'credit_purchase_viewed', properties: { recommendedPackCode: 'not_a_pack' } });
+      expect((await viewed()).recommendedPackCode).toBe('starter');
+    });
+
+    it('nothing on sale: no recommended pack at all', async () => {
+      await republish('starter', { isPurchasable: false });
+      const customer = await account();
+      await report(live, customer, { name: 'credit_purchase_viewed', properties: { recommendedPackCode: 'starter' } });
+      expect(await viewed()).not.toHaveProperty('recommendedPackCode');
+    });
   });
 
   it.each([

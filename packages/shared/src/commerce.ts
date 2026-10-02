@@ -814,6 +814,8 @@ export const ANALYTICS_EVENT_PROPERTIES: Readonly<Partial<Record<AnalyticsEventN
     tier: TIERS,
     balanceState: ['unknown', 'zero', 'low', 'normal'],
     packCount: 'int',
+    /** The pack the store recommended -- stated by the server, from its own catalog and facts. */
+    recommendedPackCode: 'code',
   },
   locked_content_viewed: {
     surface: SURFACES,
@@ -835,11 +837,6 @@ export const ANALYTICS_EVENT_PROPERTIES: Readonly<Partial<Record<AnalyticsEventN
 const ANALYTICS_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ANALYTICS_CODE = /^[A-Za-z0-9_]{1,64}$/;
 
-/**
- * An event's properties with everything not on its allow-list removed. Pure,
- * shared by the server (for every event it stores) and the client (before it
- * sends anything).
- */
 /** At or below this many spendable Credits, a balance is "low" (the store's notice and its analytics agree). */
 export const LOW_CREDIT_BALANCE = 10;
 
@@ -851,6 +848,66 @@ export function creditBalanceState(spendable: number | null): CreditBalanceState
   return spendable <= LOW_CREDIT_BALANCE ? 'low' : 'normal';
 }
 
+/* ---- which pack the Credits Store recommends (store conversion) ---- */
+
+/**
+ * What a pack needs to say for the store to recommend one. Every field is the
+ * catalog's; nothing here prices anything -- it only CHOOSES among the server's
+ * packs. Shared so the server states the same recommendation for analytics
+ * that the page shows (`credit_purchase_viewed.recommendedPackCode`).
+ */
+export interface RecommendablePack {
+  code: string;
+  totalCredits: number;
+  priceMinor: number;
+  isBestValue: boolean;
+  isPurchasable: boolean;
+  sortOrder?: number;
+}
+
+/** How many more Credits an unlock needs: the server's price less the server's balance. Null when either is unknown. */
+export function creditsNeededFor(creditPrice: number | null | undefined, spendable: number | null | undefined): number | null {
+  if (typeof creditPrice !== 'number' || typeof spendable !== 'number') return null;
+  return Math.max(0, creditPrice - spendable);
+}
+
+const byLadder = (a: RecommendablePack, b: RecommendablePack) =>
+  (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.code.localeCompare(b.code);
+
+/**
+ * The smallest purchasable pack whose Credits cover `creditsNeeded` ("Unlocks
+ * this ✓"). Null when nothing is needed or no pack is big enough.
+ */
+export function packCoveringNeed(packs: readonly RecommendablePack[], creditsNeeded: number | null): string | null {
+  if (creditsNeeded === null || creditsNeeded <= 0) return null;
+  const covering = packs
+    .filter((p) => p.isPurchasable && p.totalCredits >= creditsNeeded)
+    .sort((a, b) => a.totalCredits - b.totalCredits || a.priceMinor - b.priceMinor || byLadder(a, b));
+  return covering[0]?.code ?? null;
+}
+
+/**
+ * The pack the store puts first and selects by default:
+ *   1. the one the operator marked best value;
+ *   2. arriving to unlock something: the smallest pack that covers it;
+ *   3. otherwise the second-cheapest (the cheapest when there is only one).
+ */
+export function recommendCreditPack(packs: readonly RecommendablePack[], creditsNeeded: number | null): string | null {
+  const offered = packs.filter((p) => p.isPurchasable);
+  if (offered.length === 0) return null;
+  const best = offered.filter((p) => p.isBestValue).sort(byLadder)[0];
+  if (best) return best.code;
+  const covering = packCoveringNeed(offered, creditsNeeded);
+  if (covering) return covering;
+  const byPrice = [...offered].sort((a, b) => a.priceMinor - b.priceMinor || a.totalCredits - b.totalCredits || byLadder(a, b));
+  return (byPrice[1] ?? byPrice[0])!.code;
+}
+
+/**
+ * An event's properties with everything not on its allow-list removed. Pure,
+ * shared by the server (for every event it stores) and the client (before it
+ * sends anything).
+ */
 export function allowedAnalyticsProperties(
   name: AnalyticsEventName,
   properties: Readonly<Record<string, unknown>> | null | undefined,

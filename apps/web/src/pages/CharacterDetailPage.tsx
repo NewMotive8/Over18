@@ -19,6 +19,7 @@ import AboutTab from '../components/profile/AboutTab';
 import PostsTab from '../components/profile/PostsTab';
 import MediaViewer from '../components/MediaViewer';
 import PremiumGate from '../components/PremiumGate';
+import CreditsPill from '../components/CreditsPill';
 
 type VisualState =
   | { status: 'loading' }
@@ -277,6 +278,8 @@ export default function CharacterDetailPage() {
         avatarPoster={avatarPoster}
         onBack={goBack}
         onOpen={(index) => setViewer({ items: heroItems, index })}
+        // The customer's Credits, one tap from the Credits Store. Nothing while unknown.
+        topRight={<CreditsPill />}
       />
 
       <div className="flex flex-col gap-4 px-4 pt-4">
