@@ -8,6 +8,7 @@ import { CurrentPlanCard, EconomyStateNotice, PlanCatalog, PremiumBenefits } fro
 import { formatPlanPrice, offeredPlans, useCustomerEconomy } from '../lib/customerEconomy';
 import { track, useTrackView } from '../lib/analytics';
 import { useCheckout } from '../lib/payments';
+import { PREMIUM_SUMMARY } from '../lib/membership';
 
 /**
  * Premium (US-18, P9.1) -- what Premium is, what the customer has now, and
@@ -60,7 +61,7 @@ export default function SubscriptionPage() {
       <PageHeader
         eyebrow="Plans & Premium"
         title="Premium"
-        subtitle="Unlimited text chat, Premium content, and Credits every billing cycle."
+        subtitle={PREMIUM_SUMMARY}
       />
       <EconomyStateNotice state={state} retry={retry} />
 
