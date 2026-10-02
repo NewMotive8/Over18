@@ -1,7 +1,7 @@
 import type { AdminPackVersion, EconomyConfigurationView } from '@over18/shared';
 import { EMPTY_PACK_FORM, packDraftFromForm, packFormFrom, type PackForm } from '../../../admin/economyConfig';
 import { adminEconomyApi } from '../../../lib/api';
-import { Field, inputClass } from './EconomyUi';
+import { Field, formatMinor, inputClass } from './EconomyUi';
 import VersionedItemScreen from './VersionedItemScreen';
 
 export function PackDraftFields({ form, onChange }: { form: PackForm; onChange: (form: PackForm) => void }) {
@@ -58,12 +58,21 @@ export function PackDraftFields({ form, onChange }: { form: PackForm; onChange: 
 export const packColumns: Array<{ label: string; value: (v: AdminPackVersion) => string }> = [
   { label: 'Name', value: (v) => v.displayName },
   { label: 'Credits', value: (v) => String(v.credits) },
-  { label: 'Price', value: (v) => `${v.priceMinor} (${v.currency} minor units)` },
+  /**
+   * MONEY AS MONEY. `200 (USD minor units)` asked the operator setting a price
+   * to divide by a hundred in their head, on the screen where a mistake is
+   * charged to a customer. The amount is shown the way the customer's store
+   * shows it, by the SAME function, with the stored integer kept alongside
+   * because that is what the form below takes and what support quotes.
+   */
+  { label: 'Price', value: (v) => `${formatMinor(v.priceMinor, v.currency)} (${v.priceMinor})` },
   { label: 'Bonus', value: (v) => (v.bonusCredits ? `+${v.bonusCredits}` : '') },
   {
     label: 'Promotion',
     value: (v) =>
-      v.wasPriceMinor ? `regular ${v.wasPriceMinor}${v.promotionEndsAt ? `, ends ${new Date(v.promotionEndsAt).toLocaleString()}` : ''}` : '',
+      v.wasPriceMinor
+        ? `regular ${formatMinor(v.wasPriceMinor, v.currency)}${v.promotionEndsAt ? `, ends ${new Date(v.promotionEndsAt).toLocaleString()}` : ''}`
+        : '',
   },
   { label: 'Badge', value: (v) => v.badge ?? '' },
   { label: 'Position', value: (v) => String(v.sortOrder) },
