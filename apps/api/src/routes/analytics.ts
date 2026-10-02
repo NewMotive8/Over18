@@ -34,6 +34,11 @@ const SERVER_OWNED = ['tier', 'balanceState', 'decision', 'creditPrice'] as cons
  * codes, whole numbers and fixed values; everything else -- free text, emails,
  * URLs -- is dropped before storage.
  *
+ * NOT RATE LIMITED. The API has no inbound per-user limiter to reuse (the one in
+ * prompt-generation paces our own calls to a provider), and PR 3 adds no new
+ * infrastructure for one. What bounds this endpoint is the session requirement
+ * and the 4 KB body limit.
+ *
  * NEVER IN THE WAY. The answer is always quick and always 202 for a well-formed
  * report, whether analytics is on, off or failing: the page that sent it does
  * not wait for it and must not learn anything from it.
@@ -57,6 +62,8 @@ export default async function analyticsRoutes(app: FastifyInstance, opts: { db: 
       if (!user) return reply.code(202).send({ recorded: false });
 
       if (!opts.analytics.enabled) return reply.code(202).send({ recorded: false });
+      // Dated on arrival, before the server's facts are read for it.
+      const occurredAt = opts.analytics.now();
       const stated: Record<string, unknown> = { ...((properties ?? {}) as Record<string, unknown>) };
       for (const key of SERVER_OWNED) delete stated[key];
       const allowed = ANALYTICS_EVENT_PROPERTIES[name] ?? {};
@@ -79,6 +86,7 @@ export default async function analyticsRoutes(app: FastifyInstance, opts: { db: 
         properties: stated,
         source: 'client',
         requestId: request.id,
+        occurredAt,
       });
       return reply.code(202).send({ recorded });
     },

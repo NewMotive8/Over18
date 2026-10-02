@@ -13,6 +13,12 @@ import { csvCell } from './audit-service.js';
  * counted at a step they reached out of order. Anonymous events (no user) are
  * never in a funnel; they still appear in the per-event counts.
  *
+ * A CORRELATED funnel follows one thing, not just one person: every step must
+ * carry the same value of its `correlate` property (Funnel C: the same
+ * `assetId`). Viewing post A and then buying and unlocking post B is two
+ * unfinished journeys, never one finished one. A step still counts PEOPLE --
+ * those with at least one journey that reached it.
+ *
  * Read-only, and fixed: the four funnels below are the whole of it. There is no
  * query language, no user list and no per-customer drill-down here -- an
  * analyst sees how many, never who.
@@ -29,6 +35,8 @@ interface FunnelDef {
   key: AnalyticsFunnel['key'];
   title: string;
   steps: readonly StepDef[];
+  /** A stored property every step must share, so the funnel follows one item through. */
+  correlate?: 'assetId';
 }
 
 export const FUNNELS: readonly FunnelDef[] = [
@@ -53,6 +61,9 @@ export const FUNNELS: readonly FunnelDef[] = [
   {
     key: 'locked_content_to_unlock',
     title: 'Locked content → purchase → unlock',
+    // The SAME post throughout: its view, the checkout bought for it, that
+    // payment, and its unlock.
+    correlate: 'assetId',
     steps: [
       { name: 'locked_content_viewed', label: 'Saw locked content' },
       {
@@ -77,6 +88,9 @@ export const FUNNELS: readonly FunnelDef[] = [
     ],
   },
 ];
+
+/** The properties a funnel may correlate on, spelled out so only these can be inlined. */
+const CORRELATE_PROPERTY: Record<NonNullable<FunnelDef['correlate']>, string> = { assetId: 'assetId' };
 
 /** The longest window one request may read. */
 export const FUNNEL_MAX_DAYS = 366;
@@ -129,17 +143,27 @@ async function countFunnel(db: Db, funnel: FunnelDef, from: Date, toExclusive: D
   const window = (alias: string) =>
     sql`${sql.raw(alias)}.occurred_at >= ${from.toISOString()}::timestamptz and ${sql.raw(alias)}.occurred_at < ${toExclusive.toISOString()}::timestamptz and ${sql.raw(alias)}.user_id is not null`;
 
-  // s1: each customer's first qualifying event. sN: their first event of step N
-  // at or after the moment they reached step N-1.
+  // A journey is (customer, k): k is the correlated property's value, or one
+  // constant when the funnel follows only the customer. An event without the
+  // correlated property belongs to no journey.
+  // Inlined, not bound: the SELECT and the GROUP BY must be the identical
+  // expression, and `correlate` is a fixed literal of this file, never input.
+  const key = funnel.correlate ? sql.raw(`(e.properties ->> '${CORRELATE_PROPERTY[funnel.correlate]}')`) : sql`''`;
+  const keyed = funnel.correlate ? sql` and ${key} is not null` : sql``;
+  const groupKey = funnel.correlate ? sql`, ${key}` : sql``;
+
+  // s1: each journey's first qualifying event. sN: the journey's first event of
+  // step N at or after the moment it reached step N-1 -- same customer, same k.
   const ctes: SQL[] = funnel.steps.map((step, i) => {
     const name = sql.raw(`s${i + 1}`);
     if (i === 0) {
-      return sql`${name} as (select e.user_id, min(e.occurred_at) as t from analytics_events e where ${stepFilter(step, 'e')} and ${window('e')} group by e.user_id)`;
+      return sql`${name} as (select e.user_id, ${key} as k, min(e.occurred_at) as t from analytics_events e where ${stepFilter(step, 'e')} and ${window('e')}${keyed} group by e.user_id${groupKey})`;
     }
     const prev = sql.raw(`s${i}`);
-    return sql`${name} as (select e.user_id, min(e.occurred_at) as t from analytics_events e join ${prev} p on p.user_id = e.user_id and e.occurred_at >= p.t where ${stepFilter(step, 'e')} and ${window('e')} group by e.user_id)`;
+    return sql`${name} as (select e.user_id, ${key} as k, min(e.occurred_at) as t from analytics_events e join ${prev} p on p.user_id = e.user_id and p.k = ${key} and e.occurred_at >= p.t where ${stepFilter(step, 'e')} and ${window('e')} group by e.user_id${groupKey})`;
   });
-  const counts = funnel.steps.map((_, i) => sql`(select count(*)::int from ${sql.raw(`s${i + 1}`)}) as ${sql.raw(`c${i + 1}`)}`);
+  // People, not journeys: a customer with two journeys at a step is one person there.
+  const counts = funnel.steps.map((_, i) => sql`(select count(distinct user_id)::int from ${sql.raw(`s${i + 1}`)}) as ${sql.raw(`c${i + 1}`)}`);
 
   const result = await db.execute<Record<string, number>>(
     sql`with ${sql.join(ctes, sql`, `)} select ${sql.join(counts, sql`, `)}`,

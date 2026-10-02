@@ -1734,7 +1734,12 @@ export const analyticsEvents = pgTable(
     /** A name from the shared catalogue (`ANALYTICS_EVENT_NAMES`); checked by the service. */
     name: text('name').notNull(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
-    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * When it happened, as the emitter stated it (captured right after the
+     * commit). No default: a row without that time is refused rather than
+     * dated later by the database.
+     */
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
     /** Who reported it: the server where a transaction committed, or a browser. */
     source: text('source').notNull(),
     properties: jsonb('properties').$type<Record<string, string | number | boolean>>().notNull().default({}),

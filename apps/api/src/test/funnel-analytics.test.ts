@@ -6,10 +6,10 @@ import { createDb } from '../db/client.js';
 import type { Env } from '../env.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters, seedVisualIdentities } from '../db/seed.js';
-import { createAnalytics, createDbAnalyticsSink, type AnalyticsEvent, type AnalyticsSink } from '../services/analytics-service.js';
+import { createAnalytics, createDbAnalyticsSink, track, type AnalyticsEvent, type AnalyticsSink } from '../services/analytics-service.js';
 import { setContentOffer } from '../services/commercial-boundary.js';
 import { refundContentUnlock } from '../services/content-unlock-service.js';
-import { ANALYTICS_EXPORT_MAX, parseAnalyticsWindow } from '../services/analytics-funnels.js';
+import { ANALYTICS_EXPORT_MAX, parseAnalyticsWindow, readAnalyticsFunnels } from '../services/analytics-funnels.js';
 import { uploadLibraryAsset } from '../services/library-upload-service.js';
 import { approveVisualAsset } from '../services/visual-asset-service.js';
 import {
@@ -437,6 +437,46 @@ describe('emitted only after the business transaction commits', () => {
     expect(by('locked_content_unlocked')).toEqual([{ entitlement: 1 }]);
   });
 
+  it('an event is dated when it is emitted: a slow property builder cannot make it later than the next event', async () => {
+    const customer = await account();
+    const analytics = createAnalytics({ enabled: true, sink: createDbAnalyticsSink(live.db) });
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+
+    // First: completed, whose properties take a while to build (as a DB read can).
+    const first = track(analytics, 'credit_purchase_completed', async () => {
+      await held;
+      return { userId: customer.id, properties: { packCode: 'starter' } };
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    // Then: a spend, emitted after it and stored straight away.
+    await track(analytics, 'credit_spend', () => ({ userId: customer.id, properties: { amount: 5 } }));
+    expect((await rows()).map((r) => r.name)).toEqual(['credit_spend']); // completed is still being built
+    await new Promise((r) => setTimeout(r, 150));
+    release();
+    expect(await first).toBe(true);
+
+    const stored = (
+      await q<{ name: string; occurred_at: Date; id: string }>('SELECT id, name, occurred_at FROM analytics_events ORDER BY id')
+    ).rows;
+    // Stored second...
+    expect(stored.map((r) => r.name)).toEqual(['credit_spend', 'credit_purchase_completed']);
+    const at = Object.fromEntries(stored.map((r) => [r.name, r.occurred_at.getTime()]));
+    // ...but dated first, when it was emitted -- not ~170ms later, when it was written.
+    expect(at.credit_purchase_completed!).toBeLessThan(at.credit_spend!);
+  });
+
+  it('the sink writes the time the emitter gave, and the table never supplies one of its own', async () => {
+    const customer = await account();
+    const stated = new Date('2026-09-20T08:00:00.123Z');
+    const analytics = createAnalytics({ enabled: true, sink: createDbAnalyticsSink(live.db), now: () => new Date('2030-01-01T00:00:00Z') });
+    expect(await analytics.emit('credit_spend', { userId: customer.id, occurredAt: stated })).toBe(true);
+    const [row] = (await q<{ occurred_at: Date }>('SELECT occurred_at FROM analytics_events')).rows;
+    expect(row!.occurred_at.toISOString()).toBe(stated.toISOString());
+    // No column default: a row without a time is refused, not dated by the database.
+    await expect(q(`INSERT INTO analytics_events (name, source) VALUES ('credit_spend', 'server')`)).rejects.toMatchObject({ code: '23502' });
+  });
+
   it('a failing analytics store changes nothing: the purchase completes and the unlock owns', async () => {
     const customer = await account();
     const checkout = await startPack(broken, customer);
@@ -578,13 +618,15 @@ describe('the funnels', () => {
     await event(a.id, 'credit_spend', '2026-09-13T11:00:00Z');
     await event(b.id, 'credit_purchase_completed', '2026-09-13T10:02:00Z');
     await event(b.id, 'credit_purchase_failed', '2026-09-13T10:03:00Z');
-    // C: locked content -> checkout to unlock -> paid -> unlocked.
-    await event(c.id, 'locked_content_viewed', '2026-09-14T10:00:00Z');
-    await event(c.id, 'credit_purchase_started', '2026-09-14T10:01:00Z', { originAction: 'content_unlock' });
-    await event(c.id, 'credit_purchase_completed', '2026-09-14T10:02:00Z', { originAction: 'content_unlock' });
-    await event(c.id, 'locked_content_unlocked', '2026-09-14T10:03:00Z');
-    await event(d.id, 'locked_content_viewed', '2026-09-14T10:00:00Z');
-    await event(d.id, 'credit_purchase_started', '2026-09-14T10:01:00Z', { originAction: 'browse' }); // not to unlock
+    // C: locked content -> checkout to unlock it -> paid -> unlocked, all the same post.
+    const postC = randomUUID();
+    const postD = randomUUID();
+    await event(c.id, 'locked_content_viewed', '2026-09-14T10:00:00Z', { assetId: postC });
+    await event(c.id, 'credit_purchase_started', '2026-09-14T10:01:00Z', { originAction: 'content_unlock', assetId: postC });
+    await event(c.id, 'credit_purchase_completed', '2026-09-14T10:02:00Z', { originAction: 'content_unlock', assetId: postC });
+    await event(c.id, 'locked_content_unlocked', '2026-09-14T10:03:00Z', { assetId: postC });
+    await event(d.id, 'locked_content_viewed', '2026-09-14T10:00:00Z', { assetId: postD });
+    await event(d.id, 'credit_purchase_started', '2026-09-14T10:01:00Z', { originAction: 'browse', assetId: postD }); // not to unlock
     // Outside the window, and anonymous: neither is in a funnel.
     await event(d.id, 'paywall_viewed', '2026-08-01T10:00:00Z', { tier: 'free' });
     await event(null, 'paywall_viewed', '2026-09-15T10:00:00Z', { tier: 'free' });
@@ -602,6 +644,79 @@ describe('the funnels', () => {
     expect(view.eventCounts.paywall_viewed).toBe(6); // anonymous included, August excluded
     expect(view.failedCreditPurchases).toBe(1);
     expect(view.recording).toBe(true);
+  });
+
+  describe('Funnel C follows ONE post: the same assetId at every step', () => {
+    const WINDOW = { from: new Date('2026-09-01T00:00:00Z'), toExclusive: new Date('2026-10-01T00:00:00Z') };
+    const funnelC = async () =>
+      (await readAnalyticsFunnels(dark.db, WINDOW, true)).funnels.find((f) => f.key === 'locked_content_to_unlock')!.steps.map((s) => s.users);
+    const UNLOCK = { originAction: 'content_unlock' };
+    /** One journey step for `who` on `post`, a minute apart. */
+    const step = (who: Account, name: string, minute: number, post: string, extra: Record<string, unknown> = {}) =>
+      event(who.id, name, `2026-09-14T10:${String(minute).padStart(2, '0')}:00Z`, { assetId: post, ...extra });
+
+    it('view A -> buy A -> unlock A counts at every step', async () => {
+      const who = await account();
+      const A = randomUUID();
+      await step(who, 'locked_content_viewed', 0, A);
+      await step(who, 'credit_purchase_started', 1, A, UNLOCK);
+      await step(who, 'credit_purchase_completed', 2, A, UNLOCK);
+      await step(who, 'locked_content_unlocked', 3, A);
+      expect(await funnelC()).toEqual([1, 1, 1, 1]);
+    });
+
+    it('view A -> buy B -> unlock B does NOT count for A', async () => {
+      const who = await account();
+      const [A, B] = [randomUUID(), randomUUID()];
+      await step(who, 'locked_content_viewed', 0, A);
+      await step(who, 'credit_purchase_started', 1, B, UNLOCK);
+      await step(who, 'credit_purchase_completed', 2, B, UNLOCK);
+      await step(who, 'locked_content_unlocked', 3, B);
+      expect(await funnelC()).toEqual([1, 0, 0, 0]);
+    });
+
+    it('view A -> buy B -> unlock A does NOT count', async () => {
+      const who = await account();
+      const [A, B] = [randomUUID(), randomUUID()];
+      await step(who, 'locked_content_viewed', 0, A);
+      await step(who, 'credit_purchase_started', 1, B, UNLOCK);
+      await step(who, 'credit_purchase_completed', 2, B, UNLOCK);
+      await step(who, 'locked_content_unlocked', 3, A);
+      expect(await funnelC()).toEqual([1, 0, 0, 0]);
+    });
+
+    it("one customer's purchases for different posts are never merged into one journey", async () => {
+      const who = await account();
+      const [A, B] = [randomUUID(), randomUUID()];
+      // Saw both; started a checkout for A but paid for B; unlocked both.
+      await step(who, 'locked_content_viewed', 0, A);
+      await step(who, 'locked_content_viewed', 1, B);
+      await step(who, 'credit_purchase_started', 2, A, UNLOCK);
+      await step(who, 'credit_purchase_completed', 3, B, UNLOCK);
+      await step(who, 'locked_content_unlocked', 4, A);
+      await step(who, 'locked_content_unlocked', 5, B);
+      // A stops after its checkout; B never had one. Merged, this would read [1, 1, 1, 1].
+      expect(await funnelC()).toEqual([1, 1, 0, 0]);
+    });
+
+    it('two finished journeys by one customer are still one person at each step', async () => {
+      const who = await account();
+      for (const [i, post] of [randomUUID(), randomUUID()].entries()) {
+        await step(who, 'locked_content_viewed', i * 10, post);
+        await step(who, 'credit_purchase_started', i * 10 + 1, post, UNLOCK);
+        await step(who, 'credit_purchase_completed', i * 10 + 2, post, UNLOCK);
+        await step(who, 'locked_content_unlocked', i * 10 + 3, post);
+      }
+      expect(await funnelC()).toEqual([1, 1, 1, 1]);
+    });
+
+    it('an event with no assetId belongs to no journey', async () => {
+      const who = await account();
+      const A = randomUUID();
+      await step(who, 'locked_content_viewed', 0, A);
+      await event(who.id, 'credit_purchase_started', '2026-09-14T10:01:00Z', UNLOCK); // no asset
+      expect(await funnelC()).toEqual([1, 0, 0, 0]);
+    });
   });
 
   it('refuses a bad or oversized window (400)', async () => {

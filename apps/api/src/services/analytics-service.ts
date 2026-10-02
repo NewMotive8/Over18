@@ -76,10 +76,19 @@ export interface EmitInput {
   /** `server` unless a browser reported it. */
   source?: AnalyticsSource;
   requestId?: string | null;
+  /**
+   * When the thing happened. `track` sets it at the moment it is called --
+   * right after the commit -- so work done later to describe the event (reading
+   * its properties, waiting for the store) can never move it later than an
+   * event that genuinely happened after it.
+   */
+  occurredAt?: Date;
 }
 
 export interface Analytics {
   readonly enabled: boolean;
+  /** The analytics clock: what `track` stamps an event with when it is emitted. */
+  now(): Date;
   /** Resolves true if the event reached the sink, false if dropped or failed. Never rejects. */
   emit(name: AnalyticsEventName, input: EmitInput): Promise<boolean>;
 }
@@ -95,6 +104,7 @@ export function createAnalytics(options: {
 
   return {
     enabled: options.enabled,
+    now,
     async emit(name, input) {
       if (!options.enabled) return false;
       // The type already forbids an unknown name; this refuses one that arrives
@@ -104,7 +114,8 @@ export function createAnalytics(options: {
         await sink.write({
           name,
           userId: input.userId,
-          occurredAt: now(),
+          // The emitter's time when it gave one; the sink writes it as given.
+          occurredAt: input.occurredAt ?? now(),
           properties: allowedAnalyticsProperties(name, input.properties ?? {}),
           source: input.source ?? 'server',
           requestId: input.requestId ?? null,
@@ -131,6 +142,9 @@ export const disabledAnalytics: Analytics = createAnalytics({ enabled: false });
  * it cannot throw, delay or fail the action it describes. The input is built
  * lazily -- not at all while analytics is off -- and a failure building it
  * costs a data point, never a purchase.
+ *
+ * THE TIME IS TAKEN HERE, SYNCHRONOUSLY, before anything is awaited: an event
+ * is dated when it happened, not when its properties finished loading.
  */
 export function track(
   analytics: Analytics | undefined,
@@ -138,9 +152,15 @@ export function track(
   input: () => EmitInput | Promise<EmitInput>,
 ): Promise<boolean> {
   if (!analytics?.enabled) return Promise.resolve(false);
+  let occurredAt: Date;
+  try {
+    occurredAt = analytics.now();
+  } catch {
+    return Promise.resolve(false);
+  }
   return (async () => {
     try {
-      return await analytics.emit(name, await input());
+      return await analytics.emit(name, { ...(await input()), occurredAt });
     } catch {
       return false;
     }

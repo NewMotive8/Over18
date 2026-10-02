@@ -2,7 +2,7 @@ CREATE TABLE "analytics_events" (
 	"id" bigserial PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"user_id" uuid,
-	"occurred_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"occurred_at" timestamp with time zone NOT NULL,
 	"source" text NOT NULL,
 	"properties" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"request_id" text,
