@@ -49,6 +49,7 @@ export default function LockedContentCard({
   footer,
   onOpen,
   onUnlock,
+  onFollowCta,
 }: {
   view: ContentCardView;
   /** What this tile is, for assistive technology. */
@@ -65,6 +66,8 @@ export default function LockedContentCard({
    * server says it has.
    */
   onUnlock?: () => void;
+  /** Called as the customer follows the tile's link (e.g. "Get Credits"), before they leave. */
+  onFollowCta?: () => void;
 }) {
   // The approved tile frame, unchanged -- including the order of its classes,
   // which the Posts tab's presentation guard checks.
@@ -134,6 +137,7 @@ export default function LockedContentCard({
           ) : (
             <Link
               to={view.cta.to}
+              onClick={onFollowCta}
               className="flex min-h-11 w-full items-center justify-center rounded-xl bg-rose-600 px-3 text-[13px] font-semibold text-white transition-colors hover:bg-rose-500"
             >
               {view.cta.label}

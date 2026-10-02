@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import { CreditBalance } from './CustomerEconomy';
 import { useCustomerEconomy, type CustomerEconomyClient } from '../lib/customerEconomy';
+import { CREDITS_CHANGED_EVENT } from '../lib/creditsStore';
 
 /**
  * The customer's Credit balance, wherever they might spend Credits (P8.1, from
@@ -29,6 +30,14 @@ export default function CreditsPill({ client }: { client?: CustomerEconomyClient
     if (mounted.current) refresh();
     else mounted.current = true;
   }, [pathname, refresh]);
+
+  // And when a purchase lands without the path changing (the Credits Store's
+  // own success screen): the store announces it, the pill asks again.
+  useEffect(() => {
+    const onChanged = () => refresh();
+    window.addEventListener(CREDITS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(CREDITS_CHANGED_EVENT, onChanged);
+  }, [refresh]);
 
   if (state.status !== 'ready') return null;
   // CreditBalance renders nothing when the server did not state a balance.

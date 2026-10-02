@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
-import type { CustomerCheckout, CustomerPaymentView, PaymentMethod, SimulatedOutcome, SimulatedPaymentResult } from '@over18/shared';
+import type { CustomerCheckout, CustomerPaymentView, PaymentMethod, PurchaseContext, SimulatedOutcome, SimulatedPaymentResult } from '@over18/shared';
 import { ApiRequestError, paymentsApi } from './api';
+import { packCheckoutRequest } from './creditsStore';
 
 /**
  * BUYING PREMIUM, FROM THE CUSTOMER'S SIDE (P9.1).
@@ -30,6 +31,8 @@ const MESSAGES: Record<string, string> = {
   already_subscribed: 'This account already has an active subscription.',
   plan_unavailable: 'That plan is no longer offered.',
   unknown_plan: 'That plan is no longer offered.',
+  pack_unavailable: 'That pack is no longer offered.',
+  unknown_pack: 'That pack is no longer offered.',
 };
 
 export function checkoutMessage(error: unknown): string {
@@ -75,6 +78,45 @@ export function useCheckout(): {
   );
 
   return { state, start, reset: useCallback(() => setState({ status: 'idle' }), []) };
+}
+
+/**
+ * Buying a Credit pack (Credits Store PR 2). The same rules as a plan: one key
+ * per attempt, and no price sent -- only the pack's code, and where the
+ * purchase started so the customer can be taken back afterwards. The server
+ * checks that context against fixed lists and keeps it with the payment.
+ */
+export function usePackCheckout(): {
+  state: CheckoutState;
+  start(packCode: string, method: PaymentMethod, context: PurchaseContext | null): Promise<CustomerCheckout | null>;
+  reset(): void;
+} {
+  const [state, setState] = useState<CheckoutState>({ status: 'idle' });
+
+  const start = useCallback(async (packCode: string, method: PaymentMethod, context: PurchaseContext | null) => {
+    setState((current) => (current.status === 'starting' ? current : { status: 'starting' }));
+    try {
+      const checkout = await paymentsApi.startCheckout(packCheckoutRequest(packCode, method, newCheckoutKey(packCode), context));
+      setState({ status: 'started', checkout });
+      return checkout;
+    } catch (error) {
+      setState({ status: 'failed', message: checkoutMessage(error) });
+      return null;
+    }
+  }, []);
+
+  return { state, start, reset: useCallback(() => setState({ status: 'idle' }), []) };
+}
+
+/**
+ * Where the simulated checkout sends the customer once the provider has
+ * answered: a pack back to the Credits Store with the payment to read, a plan
+ * back to Premium. Always a path of this app.
+ */
+export function afterCheckoutPath(payment: Pick<CustomerPaymentView, 'id' | 'kind'>): string {
+  return payment.kind === 'credit_pack'
+    ? `/credits?from=checkout&payment=${encodeURIComponent(payment.id)}`
+    : '/subscription?from=checkout';
 }
 
 /* ------------------------------------------------------------------ *
