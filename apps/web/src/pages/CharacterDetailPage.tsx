@@ -331,7 +331,7 @@ export default function CharacterDetailPage() {
           videoFit="contain"
         />
       )}
-      {gateOpen && <PremiumGate name={character.displayName} onClose={() => setGateOpen(false)} />}
+      {gateOpen && <PremiumGate name={character.displayName} characterId={character.id} onClose={() => setGateOpen(false)} />}
     </div>
   );
 }

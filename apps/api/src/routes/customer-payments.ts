@@ -12,6 +12,7 @@ import {
   type PaymentErrorCode,
 } from '../services/payment-service.js';
 import { simulatePaymentEvent } from '../services/simulated-payment.js';
+import type { Analytics } from '../services/analytics-service.js';
 
 const ECONOMY_UNAVAILABLE: EconomyUnavailableResponse = {
   error: 'economy_unavailable',
@@ -64,6 +65,8 @@ export default async function customerPaymentRoutes(
     provider: PaymentProvider | null;
     /** The secret the fake provider signs with. Only used to simulate. */
     fakeSecret: string;
+    /** Records the purchase funnel after each step commits. Off unless ANALYTICS_ENABLED. */
+    analytics?: Analytics;
   },
 ) {
   const failed = (reply: FastifyReply, error: unknown) => {
@@ -111,7 +114,7 @@ export default async function customerPaymentRoutes(
           idempotencyKey: typeof request.body?.idempotencyKey === 'string' ? request.body.idempotencyKey : '',
           returnUrl: typeof request.body?.returnUrl === 'string' ? request.body.returnUrl : '/subscription',
           context: request.body?.context,
-        });
+        }, { analytics: opts.analytics, requestId: request.id });
       } catch (error) {
         return failed(reply, error);
       }
@@ -183,7 +186,7 @@ export default async function customerPaymentRoutes(
           amountMinor: payment.amountMinor,
           currency: payment.currency,
           eventRef: typeof request.body?.eventRef === 'string' ? request.body.eventRef : undefined,
-        });
+        }, { analytics: opts.analytics });
         return { status: result.status, payment: await readPayment(opts.db, request.currentUser!.id, payment.id) };
       } catch (error) {
         return failed(reply, error);

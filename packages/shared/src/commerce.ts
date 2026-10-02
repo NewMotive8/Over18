@@ -184,6 +184,12 @@ export const ANALYTICS_EVENT_NAMES = [
   'credit_purchase_viewed',
   'credit_purchase_started',
   'credit_purchase_completed',
+  /**
+   * A Credit pack payment the provider declined, or the customer cancelled
+   * (PR 3). No other name can say it: `completed` would be false and
+   * `spend_refunded` is about spending. Never emitted with `completed`.
+   */
+  'credit_purchase_failed',
   'credit_spend',
   'locked_content_viewed',
   'locked_content_unlocked',
@@ -199,6 +205,57 @@ export type AnalyticsEventName = (typeof ANALYTICS_EVENT_NAMES)[number];
 
 export function isAnalyticsEventName(value: string): value is AnalyticsEventName {
   return (ANALYTICS_EVENT_NAMES as readonly string[]).includes(value);
+}
+
+/**
+ * The events a BROWSER may report (PR 3): only what the server cannot see for
+ * itself -- a screen shown, a button pressed, a sheet dismissed. Purchases,
+ * spends and unlocks are reported by the server where they commit, and a
+ * client claiming one is refused, so a browser can never fake a conversion.
+ */
+export const ANALYTICS_CLIENT_EVENTS = [
+  'paywall_viewed',
+  'subscription_cta_clicked',
+  'paywall_dismissed',
+  'credit_purchase_viewed',
+  'locked_content_viewed',
+] as const satisfies readonly AnalyticsEventName[];
+export type AnalyticsClientEventName = (typeof ANALYTICS_CLIENT_EVENTS)[number];
+
+export function isAnalyticsClientEvent(value: string): value is AnalyticsClientEventName {
+  return (ANALYTICS_CLIENT_EVENTS as readonly string[]).includes(value);
+}
+
+/**
+ * What one property may hold: an id, a short code from a fixed vocabulary, a
+ * whole number, a boolean, or one value of a fixed list. Never free text --
+ * which is how an email or a message could never ride along in an event.
+ */
+export type AnalyticsPropertyKind = 'id' | 'code' | 'int' | 'bool' | readonly string[];
+
+/* ---- the funnels (GET /admin/analytics/funnels) ---- */
+
+export interface AnalyticsFunnelStep {
+  /** The event this step counts, and the filter on it, said plainly. */
+  label: string;
+  /** People who reached this step after every earlier one, within the window. */
+  users: number;
+}
+export interface AnalyticsFunnel {
+  key: 'free_to_premium' | 'free_to_credit_purchase' | 'locked_content_to_unlock' | 'purchase_to_spend';
+  title: string;
+  steps: AnalyticsFunnelStep[];
+}
+export interface AnalyticsFunnelsView {
+  from: string;
+  to: string;
+  funnels: AnalyticsFunnel[];
+  /** Every event in the window by name, signed in or not. */
+  eventCounts: Record<string, number>;
+  /** Credit pack payments that failed or were cancelled in the window. */
+  failedCreditPurchases: number;
+  /** Whether ANALYTICS_ENABLED is on now. Off: nothing new is being recorded. */
+  recording: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -716,6 +773,109 @@ export const PURCHASE_ORIGINS = ['chat', 'store', 'header', 'profile', 'lobby', 
 export type PurchaseOrigin = (typeof PURCHASE_ORIGINS)[number];
 export const PURCHASE_ORIGIN_ACTIONS = ['content_unlock', 'image', 'video', 'voice_message', 'voice_call', 'browse'] as const;
 export type PurchaseOriginAction = (typeof PURCHASE_ORIGIN_ACTIONS)[number];
+
+/* ---- analytics property allow-lists (PR 3), beside the purchase vocabulary they use ---- */
+
+const SURFACES = ['premium_gate', 'subscription_page', 'credits_store', 'posts'] as const;
+const TIERS = ['free', 'premium'] as const;
+const PURCHASE_CONTEXT = {
+  origin: PURCHASE_ORIGINS,
+  originAction: PURCHASE_ORIGIN_ACTIONS,
+  assetId: 'id',
+  conversationId: 'id',
+  characterId: 'id',
+} as const;
+const PACK_TERMS = {
+  paymentId: 'id',
+  packCode: 'code',
+  packVersion: 'int',
+  credits: 'int',
+  bonusCredits: 'int',
+  totalCredits: 'int',
+  priceMinor: 'int',
+  currency: 'code',
+  promoted: 'bool',
+  tier: TIERS,
+} as const;
+
+/**
+ * EVERY EVENT'S PROPERTIES, AS A FIXED ALLOW-LIST (PR 3). A key not listed for
+ * an event is dropped, and so is a value of the wrong kind -- whether it came
+ * from the server or a browser. An event not listed here carries no
+ * properties at all until it is given a list.
+ */
+export const ANALYTICS_EVENT_PROPERTIES: Readonly<Partial<Record<AnalyticsEventName, Readonly<Record<string, AnalyticsPropertyKind>>>>> = {
+  // Client-reported
+  paywall_viewed: { surface: SURFACES, characterId: 'id', tier: TIERS },
+  subscription_cta_clicked: { surface: SURFACES, planCode: 'code' },
+  paywall_dismissed: { surface: SURFACES, packCode: 'code', planCode: 'code' },
+  credit_purchase_viewed: {
+    ...PURCHASE_CONTEXT,
+    tier: TIERS,
+    balanceState: ['unknown', 'zero', 'low', 'normal'],
+    packCount: 'int',
+  },
+  locked_content_viewed: {
+    surface: SURFACES,
+    assetId: 'id',
+    characterId: 'id',
+    decision: ['credits_required', 'insufficient_credits', 'premium_required'],
+    creditPrice: 'int',
+  },
+  // Server-reported, where the business transaction commits
+  subscription_started: { paymentId: 'id', planCode: 'code', billingPeriodMonths: 'int', priceMinor: 'int', currency: 'code' },
+  credit_purchase_started: { ...PACK_TERMS, ...PURCHASE_CONTEXT, method: 'code' },
+  credit_purchase_completed: { ...PACK_TERMS, ...PURCHASE_CONTEXT },
+  credit_purchase_failed: { ...PACK_TERMS, ...PURCHASE_CONTEXT, status: ['failed', 'cancelled'] },
+  credit_spend: { paidActionId: 'id', actionType: 'code', amount: 'int' },
+  locked_content_unlocked: { assetId: 'id', offerId: 'id', entitlementId: 'id', creditPrice: 'int' },
+  spend_refunded: { paidActionId: 'id', actionType: 'code', amount: 'int' },
+};
+
+const ANALYTICS_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ANALYTICS_CODE = /^[A-Za-z0-9_]{1,64}$/;
+
+/**
+ * An event's properties with everything not on its allow-list removed. Pure,
+ * shared by the server (for every event it stores) and the client (before it
+ * sends anything).
+ */
+/** At or below this many spendable Credits, a balance is "low" (the store's notice and its analytics agree). */
+export const LOW_CREDIT_BALANCE = 10;
+
+export type CreditBalanceState = 'unknown' | 'zero' | 'low' | 'normal';
+
+export function creditBalanceState(spendable: number | null): CreditBalanceState {
+  if (spendable === null) return 'unknown';
+  if (spendable <= 0) return 'zero';
+  return spendable <= LOW_CREDIT_BALANCE ? 'low' : 'normal';
+}
+
+export function allowedAnalyticsProperties(
+  name: AnalyticsEventName,
+  properties: Readonly<Record<string, unknown>> | null | undefined,
+): Record<string, string | number | boolean> {
+  const allowed = ANALYTICS_EVENT_PROPERTIES[name];
+  const out: Record<string, string | number | boolean> = {};
+  if (!allowed || !properties) return out;
+  for (const [key, kind] of Object.entries(allowed)) {
+    const value = properties[key];
+    if (value === undefined || value === null) continue;
+    if (kind === 'id') {
+      if (typeof value === 'string' && ANALYTICS_ID.test(value)) out[key] = value.toLowerCase();
+    } else if (kind === 'code') {
+      if (typeof value === 'string' && ANALYTICS_CODE.test(value)) out[key] = value;
+    } else if (kind === 'int') {
+      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) out[key] = value;
+    } else if (kind === 'bool') {
+      if (typeof value === 'boolean') out[key] = value;
+    } else if (typeof value === 'string' && kind.includes(value)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 
 export interface PurchaseContext {
   origin: PurchaseOrigin | null;

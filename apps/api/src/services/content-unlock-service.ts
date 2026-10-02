@@ -2,6 +2,7 @@ import type { CustomerContentUnlock } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import type { CommerceEnv } from '../env.js';
 import type { ContentEntitlementRow } from '../db/schema.js';
+import { track, type Analytics } from './analytics-service.js';
 import type { SafeUser } from './auth-service.js';
 import { liveOfferFor } from './commercial-boundary.js';
 import { readContentAccess } from './content-access.js';
@@ -166,6 +167,7 @@ export async function unlockContent(
   commerce: Pick<CommerceEnv, 'enabled'>,
   user: SafeUser,
   request: ContentUnlockRequest,
+  options: { analytics?: Analytics } = {},
 ): Promise<CustomerContentUnlock> {
   if (!commerce.enabled) {
     throw new ContentUnlockError('economy_disabled', 'The economy is switched off: content cannot be unlocked yet.');
@@ -189,8 +191,11 @@ export async function unlockContent(
   // `credits_required` and `insufficient_credits` both go on: affordability is
   // the wallet's to judge under its own lock, not this read's.
 
+  // Set only on the path that charged: a replay, an already-owned answer or a
+  // rolled-back attempt leaves it null and describes no spend.
+  let charged: { paidActionId: string; amount: number } | null = null;
   try {
-    return await db.transaction(async (tx) => {
+    const unlocked = await db.transaction(async (tx) => {
       const started = await beginPaidAction(tx, commerce, {
         userId: user.id,
         actionType: CONTENT_UNLOCK_ACTION,
@@ -238,8 +243,30 @@ export async function unlockContent(
       // Consume exactly what was reserved, in the same transaction that
       // recorded the ownership: neither can exist without the other.
       await capturePaidAction(tx, commerce, { actionId: action.id });
+      charged = { paidActionId: action.id, amount: action.amount };
       return toUnlock(assetId, entitlement, false);
     });
+    // COMMITTED. Only now is there a spend and an unlock to describe -- one
+    // paid action, so one `credit_spend` however many Credit classes paid it.
+    const spent = charged as { paidActionId: string; amount: number } | null;
+    if (spent && !unlocked.replayed) {
+      void track(options.analytics, 'credit_spend', () => ({
+        userId: user.id,
+        requestId,
+        properties: { paidActionId: spent.paidActionId, actionType: CONTENT_UNLOCK_ACTION, amount: spent.amount },
+      }));
+      void track(options.analytics, 'locked_content_unlocked', () => ({
+        userId: user.id,
+        requestId,
+        properties: {
+          assetId: unlocked.assetId,
+          offerId: unlocked.offerId,
+          entitlementId: unlocked.entitlementId,
+          creditPrice: unlocked.creditPrice,
+        },
+      }));
+    }
+    return unlocked;
   } catch (error) {
     if (isDuplicateEntitlement(error)) {
       // Another request bought it first. This transaction rolled back whole, so
@@ -283,6 +310,7 @@ export async function refundContentUnlock(
   db: Db,
   commerce: Pick<CommerceEnv, 'enabled'>,
   input: { userId: string; assetId: string; reason: string },
+  options: { analytics?: Analytics } = {},
 ): Promise<{ entitlementId: string; action: PaidActionRecord }> {
   if (!commerce.enabled) {
     throw new ContentUnlockError('economy_disabled', 'The economy is switched off: nothing can be refunded yet.');
@@ -294,7 +322,7 @@ export async function refundContentUnlock(
   }
   const reason = input.reason.trim();
 
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const held = await readEntitlementFor(tx, input.userId, input.assetId.toLowerCase());
     if (!held) throw new ContentUnlockError('not_owned', 'This customer does not own this content.');
 
@@ -303,4 +331,10 @@ export async function refundContentUnlock(
     if (!revoked) throw new ContentUnlockError('not_owned', 'This customer does not own this content.');
     return { entitlementId: revoked.id, action: refunded.action };
   });
+  // Committed: the Credits are back and the ownership is gone.
+  void track(options.analytics, 'spend_refunded', () => ({
+    userId: result.action.userId,
+    properties: { paidActionId: result.action.id, actionType: result.action.actionType, amount: result.action.amount },
+  }));
+  return result;
 }

@@ -35,6 +35,7 @@ import {
 } from '../lib/creditsStore';
 import { commercialTier, spendableCredits, useCustomerEconomy } from '../lib/customerEconomy';
 import { absoluteMediaUrl } from '../lib/media';
+import { track, useTrackView } from '../lib/analytics';
 import { usePackCheckout } from '../lib/payments';
 
 /**
@@ -83,6 +84,16 @@ export default function CreditsStorePage() {
   const outcome = usePurchaseOutcome(returningFromCheckout ? params.get('payment') : null, returningFromCheckout, refreshEconomy);
   // The balance shown after a purchase is the one the server reports now.
   const balanceNow = spendableCredits(overview);
+
+  // Funnel B/C (PR 3): the store seen once its packs are known -- not on the
+  // return from a checkout, which is the end of a visit rather than a new one.
+  // Starting and completing a purchase are the server's to record, and the
+  // tier and balance state are stated by the server, not sent from here.
+  useTrackView(
+    'credit_purchase_viewed',
+    { ...(context ?? {}), packCount: all.length },
+    overview !== null && !returningFromCheckout,
+  );
 
   const buy = async (method: PaymentMethod) => {
     if (!selected) return;
@@ -192,6 +203,7 @@ export default function CreditsStorePage() {
           error={checkout.state.status === 'failed' ? checkout.state.message : null}
           onChoose={(method) => void buy(method)}
           onCancel={() => {
+            track('paywall_dismissed', { surface: 'credits_store', packCode: selected.code });
             setChosen(null);
             checkout.reset();
           }}
