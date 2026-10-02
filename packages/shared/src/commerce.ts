@@ -23,14 +23,17 @@ export interface CommercialSubscription {
 }
 
 /**
- * Credits by class. The three classes stay distinguishable because they may
- * carry different expiry and refund treatment (PRD §6.3, §18). `held` is
- * reserved for in-flight paid actions and is NOT part of `spendable`.
+ * Credits by class. The classes stay distinguishable because they may carry
+ * different expiry and refund treatment (PRD §6.3, §18); a customer is shown
+ * one total, `spendable`. `included` is the subscription's allowance; `bonus`
+ * is given on top of a purchase or as a promotion. `held` is reserved for
+ * in-flight paid actions and is NOT part of `spendable`.
  */
 export interface CommercialWallet {
   included: number;
   earned: number;
   purchased: number;
+  bonus: number;
   held: number;
   spendable: number;
 }
@@ -108,6 +111,21 @@ export interface CustomerPackOffer {
   isBestValue: boolean;
   isPurchasable: boolean;
   effectiveFrom: string;
+  /** The store's label for the pack ("Best value"), as configured; null for none. */
+  badge: string | null;
+  /** Credits given on top of `credits`; 0 for none. */
+  bonusCredits: number;
+  /** `credits + bonusCredits`: what the customer receives. */
+  totalCredits: number;
+  /**
+   * The regular price, ONLY while a promotion is in effect at `asOf`, so the
+   * store can strike it through; `priceMinor` is then the promotional price.
+   * Null when there is no promotion or it has ended -- and once it has ended,
+   * `priceMinor` IS the regular price.
+   */
+  wasPriceMinor: number | null;
+  /** When the promotion in effect ends; null when there is none, or it has no end. */
+  promotionEndsAt: string | null;
 }
 
 /** GET /api/economy/catalog: the published, in-effect catalog. */
@@ -281,7 +299,7 @@ export interface AuditEntryView {
  * Admin wallet support (P2.4, PRD §16, §18, §34)
  * ------------------------------------------------------------------ */
 
-export type WalletCreditClass = 'included' | 'earned' | 'purchased';
+export type WalletCreditClass = 'included' | 'earned' | 'purchased' | 'bonus';
 export type WalletDirection = 'credit' | 'debit';
 export type WalletEntryType =
   | 'grant'
@@ -455,6 +473,7 @@ export interface AdminUserWallet {
   included: number;
   earned: number;
   purchased: number;
+  bonus: number;
   /** Reserved for in-flight actions; not part of `spendable`. */
   held: number;
   spendable: number;
@@ -688,12 +707,43 @@ export const PAYMENT_METHOD_LABELS: Readonly<Record<PaymentMethod, string>> = {
 /** Where a payment stands. Mirrors the `payment_status` enum. */
 export type PaymentStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled' | 'refunded' | 'disputed';
 
+/**
+ * Where a customer opened the Credits Store from, and what they were doing.
+ * Fixed lists: the app turns these back into one of its own pages afterwards,
+ * so nothing here is ever a URL.
+ */
+export const PURCHASE_ORIGINS = ['chat', 'store', 'header', 'profile', 'lobby', 'premium', 'content'] as const;
+export type PurchaseOrigin = (typeof PURCHASE_ORIGINS)[number];
+export const PURCHASE_ORIGIN_ACTIONS = ['content_unlock', 'image', 'video', 'voice_message', 'voice_call', 'browse'] as const;
+export type PurchaseOriginAction = (typeof PURCHASE_ORIGIN_ACTIONS)[number];
+
+export interface PurchaseContext {
+  origin: PurchaseOrigin | null;
+  originAction: PurchaseOriginAction | null;
+  /** The content asset being unlocked, when that is the action. */
+  assetId: string | null;
+  /** The conversation it was in, when there is one. */
+  conversationId: string | null;
+  /** The character it was with, when there is one. */
+  characterId: string | null;
+}
+
+/** A Credit pack's terms as they stood at checkout: what the payment buys, whatever the catalog says later. */
+export interface CreditPackTerms {
+  packCode: string;
+  packVersion: number;
+  displayName: string;
+  credits: number;
+  bonusCredits: number;
+  totalCredits: number;
+}
+
 /** One payment, as its own customer may see it. No card data, ever. */
 export interface CustomerPaymentView {
   id: string;
   status: PaymentStatus;
   kind: 'subscription' | 'credit_pack';
-  /** Our product identifier -- a plan code. Never the processor's. */
+  /** Our product identifier -- a plan or pack code. Never the processor's. */
   productRef: string;
   /** Integer minor units. */
   amountMinor: number;
@@ -703,6 +753,10 @@ export interface CustomerPaymentView {
   provider: string;
   createdAt: string;
   settledAt: string | null;
+  /** A Credit pack's locked terms; null for a subscription. */
+  pack: CreditPackTerms | null;
+  /** Where the purchase started; null when it carried none. */
+  context: PurchaseContext | null;
 }
 
 /**

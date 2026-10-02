@@ -30,7 +30,7 @@ export async function resolveEntitlement(
     viewer: viewer ? 'user' : 'anonymous',
     tier: 'free',
     subscription: null,
-    wallet: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 },
+    wallet: { included: 0, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 0 },
     age: { verified: false, expiresAt: null },
     economyEnabled: commerce.enabled,
   };

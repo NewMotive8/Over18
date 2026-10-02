@@ -168,6 +168,13 @@ export interface PackForm {
   sortOrder: string;
   isBestValue: boolean;
   isPurchasable: boolean;
+  /** Shown on the pack in the store; empty for none. */
+  badge: string;
+  bonusCredits: string;
+  /** The regular price while the price above is promotional; empty for no promotion. */
+  wasPriceMinor: string;
+  /** A `datetime-local` value, in the operator's own time zone; empty for no end. */
+  promotionEndsAt: string;
 }
 
 export const EMPTY_PACK_FORM: PackForm = {
@@ -178,7 +185,31 @@ export const EMPTY_PACK_FORM: PackForm = {
   sortOrder: '',
   isBestValue: false,
   isPurchasable: true,
+  badge: '',
+  bonusCredits: '',
+  wasPriceMinor: '',
+  promotionEndsAt: '',
 };
+
+/** An instant as a `datetime-local` value in this browser's time zone, to the minute. */
+export function localDateTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** A `datetime-local` value as an ISO instant; empty means no end. */
+function promotionEndFrom(value: string, errors: string[]): string | null {
+  if (value.trim() === '') return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    errors.push('Promotion end must be a date and time.');
+    return null;
+  }
+  return d.toISOString();
+}
 
 export function packFormFrom(version: AdminPackVersion): PackForm {
   return {
@@ -189,6 +220,10 @@ export function packFormFrom(version: AdminPackVersion): PackForm {
     sortOrder: asText(version.sortOrder),
     isBestValue: version.isBestValue,
     isPurchasable: version.isPurchasable,
+    badge: version.badge ?? '',
+    bonusCredits: version.bonusCredits ? asText(version.bonusCredits) : '',
+    wasPriceMinor: asText(version.wasPriceMinor),
+    promotionEndsAt: localDateTime(version.promotionEndsAt),
   };
 }
 
@@ -202,6 +237,10 @@ export function packDraftFromForm(form: PackForm): Parsed<PackDraftInput> {
     sortOrder: wholeNumber(form.sortOrder, 'Ladder position', errors),
     isBestValue: form.isBestValue,
     isPurchasable: form.isPurchasable,
+    badge: form.badge.trim() === '' ? null : form.badge.trim(),
+    bonusCredits: wholeNumber(form.bonusCredits, 'Bonus Credits', errors, true) ?? 0,
+    wasPriceMinor: wholeNumber(form.wasPriceMinor, 'Regular price (minor units)', errors, true),
+    promotionEndsAt: promotionEndFrom(form.promotionEndsAt, errors),
   };
   return errors.length > 0 ? { ok: false, errors } : { ok: true, body: body as PackDraftInput };
 }

@@ -16,6 +16,7 @@ import {
   type PaidActionRequest,
 } from '../services/paid-action-service.js';
 import { reconcileWallet } from '../services/wallet-reconciliation.js';
+import { readCommercialWallet } from '../services/wallet-service.js';
 import { createTestContext, destroyTestContext, migrateTestDb, truncateAll, type TestContext } from './helpers.js';
 
 /**
@@ -491,6 +492,116 @@ describe('settling a held action', () => {
     await releasePaidAction(on.db, ON, { actionId: two.action.id });
     expect(await walletOf(user)).toMatchObject({ balance: 93, held: 0 });
     expect((await reconcileWallet(on.db, user, 'credits')).status).toBe('clean');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * A cost paid from several Credit sources is still ONE paid action
+ * ------------------------------------------------------------------ */
+
+describe('a paid action whose cost spans Credit sources', () => {
+  type Classes = { bonus: number; included: number; earned: number; purchased: number };
+  /** A user with a wallet funded per class, by raw grants. */
+  async function fundedBy(classes: Partial<Classes>): Promise<string> {
+    const id = await funded(0);
+    for (const [creditClass, amount] of Object.entries(classes)) {
+      if (!amount) continue;
+      await q(
+        `INSERT INTO wallet_transactions (user_id, currency, entry_type, direction, amount, credit_class, idempotency_key)
+         VALUES ($1, 'credits', 'grant', 'credit', $2, $3, $4)`,
+        [id, amount, creditClass, `fixture:${randomUUID()}`],
+      );
+    }
+    return id;
+  }
+  const classesOf = async (userId: string): Promise<Classes & { held: number }> => {
+    const w = (await readCommercialWallet(on.db, userId, 'credits'))!;
+    return { bonus: w.bonus, included: w.included, earned: w.earned, purchased: w.purchased, held: w.held };
+  };
+  const rowsOf = async (userId: string, entryType: string) =>
+    (
+      await q<{ credit_class: string; amount: number }>(
+        'SELECT credit_class, amount FROM wallet_transactions WHERE user_id = $1 AND entry_type = $2 ORDER BY sequence',
+        [userId, entryType],
+      )
+    ).rows.map((r) => [r.credit_class, r.amount] as [string, number]);
+  const total = (rows: Array<[string, number]>) => rows.reduce((sum, [, amount]) => sum + amount, 0);
+
+  // Each case: the wallet, a cost of 10, the sources it is paid from, and what is left.
+  const CASES: Array<[string, Partial<Classes>, Array<[string, number]>, Classes]> = [
+    ['one source', { purchased: 30 }, [['purchased', 10]], { bonus: 0, included: 0, earned: 0, purchased: 20 }],
+    ['two sources', { bonus: 6, purchased: 6 }, [['bonus', 6], ['purchased', 4]], { bonus: 0, included: 0, earned: 0, purchased: 2 }],
+    [
+      'three sources',
+      { bonus: 3, included: 4, purchased: 8 },
+      [['bonus', 3], ['included', 4], ['purchased', 3]],
+      { bonus: 0, included: 0, earned: 0, purchased: 5 },
+    ],
+  ];
+
+  describe.each(CASES)('covered by %s', (_label, wallet, paidFrom, left) => {
+    const asStarted = { bonus: 0, included: 0, earned: 0, purchased: 0, ...wallet, held: 0 };
+    const start = async () => {
+      await ruleset(1, [{ credits: 10 }]);
+      const user = await fundedBy(wallet);
+      const { action } = await beginPaidAction(on.db, ON, request(user));
+      return { user, action, selector: { actionId: action.id } };
+    };
+
+    it('holds the whole cost as one action, then captures every part exactly once', async () => {
+      const { user, action, selector } = await start();
+      expect(action).toMatchObject({ status: 'held', amount: 10 });
+      expect(await rowsOf(user, 'hold')).toEqual(paidFrom);
+      expect((await classesOf(user)).held).toBe(10);
+
+      const captured = await capturePaidAction(on.db, ON, selector);
+      expect(captured.action).toMatchObject({ status: 'captured', amount: 10 });
+      expect(await capturePaidAction(on.db, ON, selector)).toEqual({ action: captured.action, replayed: true });
+      expect(await rowsOf(user, 'capture')).toEqual(paidFrom);
+      expect(await classesOf(user)).toEqual({ ...left, held: 0 });
+      expect((await reconcileWallet(on.db, user, 'credits')).status).toBe('clean');
+    });
+
+    it('release returns every source exactly as it was, once', async () => {
+      const { user, selector } = await start();
+      await releasePaidAction(on.db, ON, selector, { reason: 'provider failed' });
+      await releasePaidAction(on.db, ON, selector);
+      expect(await rowsOf(user, 'release')).toEqual(paidFrom);
+      expect(await classesOf(user)).toEqual(asStarted);
+      expect((await reconcileWallet(on.db, user, 'credits')).status).toBe('clean');
+    });
+
+    it('refund after capture restores every source exactly once', async () => {
+      const { user, selector } = await start();
+      await capturePaidAction(on.db, ON, selector);
+      const refunded = await refundPaidAction(on.db, ON, selector, { reason: 'never delivered' });
+      expect(refunded.action.status).toBe('refunded');
+      expect(await refundPaidAction(on.db, ON, selector)).toEqual({ action: refunded.action, replayed: true });
+      expect(total(await rowsOf(user, 'refund'))).toBe(10);
+      expect((await rowsOf(user, 'refund')).map(([c]) => c).sort()).toEqual(paidFrom.map(([c]) => c).sort());
+      expect(await classesOf(user)).toEqual(asStarted);
+      expect((await reconcileWallet(on.db, user, 'credits')).status).toBe('clean');
+    });
+
+    it('a failed job releases every source: the customer is exactly as they started', async () => {
+      await ruleset(1, [{ credits: 10 }]);
+      const user = await fundedBy(wallet);
+      await expect(
+        runPaidAction(on.db, ON, request(user), async () => {
+          throw new Error('the provider fell over');
+        }),
+      ).rejects.toThrow('the provider fell over');
+      expect(await classesOf(user)).toEqual(asStarted);
+      expect((await reconcileWallet(on.db, user, 'credits')).status).toBe('clean');
+    });
+
+    it('concurrent captures and releases of the action settle it once', async () => {
+      const { user, selector } = await start();
+      await Promise.allSettled([capturePaidAction(on.db, ON, selector), capturePaidAction(on.db, ON, selector), releasePaidAction(on.db, ON, selector)]);
+      expect(total([...(await rowsOf(user, 'capture')), ...(await rowsOf(user, 'release'))])).toBe(10);
+      expect((await classesOf(user)).held).toBe(0);
+      expect((await reconcileWallet(on.db, user, 'credits')).status).toBe('clean');
+    });
   });
 });
 

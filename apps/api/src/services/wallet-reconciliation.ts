@@ -41,7 +41,7 @@ type Row = Pick<
 type CreditClass = WalletTransactionRow['creditClass'];
 type Reader = Pick<Db, 'transaction'>;
 
-const CLASSES: readonly CreditClass[] = ['included', 'earned', 'purchased'];
+const CLASSES: readonly CreditClass[] = ['included', 'earned', 'purchased', 'bonus'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** What the ledger says a wallet holds. */

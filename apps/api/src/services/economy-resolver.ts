@@ -366,6 +366,11 @@ export interface PackVersionView {
   sortOrder: number;
   isBestValue: boolean;
   isPurchasable: boolean;
+  badge: string | null;
+  bonusCredits: number;
+  /** As stored. Whether a promotion is in effect is `pack-terms.ts`'s to decide. */
+  wasPriceMinor: number | null;
+  promotionEndsAt: string | null;
   effectiveFrom: string;
   publishedAt: string;
 }
@@ -383,6 +388,10 @@ const packColumns = {
   sortOrder: economyPackVersions.sortOrder,
   isBestValue: economyPackVersions.isBestValue,
   isPurchasable: economyPackVersions.isPurchasable,
+  badge: economyPackVersions.badge,
+  bonusCredits: economyPackVersions.bonusCredits,
+  wasPriceMinor: economyPackVersions.wasPriceMinor,
+  promotionEndsAt: isoUs(economyPackVersions.promotionEndsAt) as SQL<string | null>,
   effectiveFrom: isoUs(economyPackVersions.effectiveFrom),
   publishedAt: isoUs(economyPackVersions.publishedAt),
 };
@@ -400,6 +409,10 @@ type PackRow = {
   sortOrder: number;
   isBestValue: boolean;
   isPurchasable: boolean;
+  badge: string | null;
+  bonusCredits: number;
+  wasPriceMinor: number | null;
+  promotionEndsAt: string | null;
   effectiveFrom: string;
   publishedAt: string;
 };
@@ -416,6 +429,10 @@ function toPackView(row: PackRow): PackVersionView {
     sortOrder: row.sortOrder,
     isBestValue: row.isBestValue,
     isPurchasable: row.isPurchasable,
+    badge: row.badge,
+    bonusCredits: row.bonusCredits,
+    wasPriceMinor: row.wasPriceMinor,
+    promotionEndsAt: row.promotionEndsAt,
     effectiveFrom: row.effectiveFrom,
     publishedAt: row.publishedAt,
   };
