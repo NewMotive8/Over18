@@ -729,9 +729,12 @@ describe('the framework stays a framework', () => {
    * a number.
    */
   it('its callers are the reviewed ones, and they only begin and settle', () => {
+    // A module specifier, not a mention: a doc comment naming the framework
+    // is not an import. Static, side-effect and dynamic forms all count.
+    const IMPORTS_PAID_ACTION = /\b(?:from|import)\s*\(?\s*['"](?:\.\.?\/)+(?:services\/)?paid-action-service\.js['"]/;
     const callers = application()
       .filter((rel) => rel !== SERVICE)
-      .filter((rel) => /paid-action-service/.test(read(rel)));
+      .filter((rel) => IMPORTS_PAID_ACTION.test(read(rel)));
     expect(callers).toEqual(['services/content-unlock-service.ts']);
     const used = new Set(read('services/content-unlock-service.ts').match(/\b(beginPaidAction|capturePaidAction|releasePaidAction|refundPaidAction|runPaidAction|quotePaidAction)\b/g));
     expect([...used].sort()).toEqual(['beginPaidAction', 'capturePaidAction', 'refundPaidAction']);
