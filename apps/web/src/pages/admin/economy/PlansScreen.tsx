@@ -1,7 +1,7 @@
 import type { AdminPlanVersion, EconomyConfigurationView } from '@over18/shared';
 import { emptyPlanForm, planDraftFromForm, planFormFrom, type Catalogue, type PlanForm } from '../../../admin/economyConfig';
 import { adminEconomyApi } from '../../../lib/api';
-import { Field, inputClass } from './EconomyUi';
+import { Field, formatMinor, inputClass } from './EconomyUi';
 import VersionedItemScreen from './VersionedItemScreen';
 
 /** A plan draft's fields. The feature flags are the server's catalogue, one checkbox each. */
@@ -50,7 +50,10 @@ export function PlanDraftFields({ form, catalogue, onChange }: { form: PlanForm;
 
 export const planColumns: Array<{ label: string; value: (v: AdminPlanVersion) => string }> = [
   { label: 'Name', value: (v) => v.displayName },
-  { label: 'Price', value: (v) => `${v.priceMinor} (${v.currency} minor units)` },
+  // Money as money, exactly as the pack table shows it: the amount an operator
+  // is actually setting, with the stored integer kept beside it because that is
+  // what the draft form takes and what support quotes.
+  { label: 'Price', value: (v) => `${formatMinor(v.priceMinor, v.currency)} (${v.priceMinor})` },
   { label: 'Term', value: (v) => `${v.billingPeriodMonths} mo` },
   { label: 'Credits / month', value: (v) => String(v.monthlyIncludedCredits) },
   { label: 'Flags on', value: (v) => Object.entries(v.features).filter(([, on]) => on === true).map(([key]) => key).join(', ') || '—' },
