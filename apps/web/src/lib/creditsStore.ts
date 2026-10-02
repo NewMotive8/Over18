@@ -2,8 +2,11 @@ import {
   LOW_CREDIT_BALANCE,
   PURCHASE_ORIGIN_ACTIONS,
   PURCHASE_ORIGINS,
+  packCoveringNeed,
+  recommendCreditPack,
   type CustomerEconomyCatalog,
   type CustomerPackOffer,
+  type CustomerPlanOffer,
   type PurchaseContext,
 } from '@over18/shared';
 import { formatMoneyMinor } from './customerEconomy.selectors';
@@ -36,9 +39,20 @@ export function purchasablePacks(catalog: CustomerEconomyCatalog | null | undefi
     .sort((a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code));
 }
 
-/** The pack the operator marked as the one to recommend (`isBestValue`), if any. */
-export function recommendedPack(packs: readonly CustomerPackOffer[]): CustomerPackOffer | null {
-  return packs.find((pack) => pack.isBestValue) ?? null;
+/**
+ * The pack the store recommends -- put first and selected by default. The rule
+ * is the shared one the server also applies for analytics:
+ *   1. the operator's best value; 2. arriving to unlock something, the smallest
+ *   pack that covers what is still needed; 3. otherwise the second-cheapest.
+ */
+export function recommendedPack(packs: readonly CustomerPackOffer[], creditsNeeded: number | null = null): CustomerPackOffer | null {
+  const code = recommendCreditPack(packs, creditsNeeded);
+  return packs.find((pack) => pack.code === code) ?? null;
+}
+
+/** The smallest pack that covers an unlock ("Unlocks this ✓"), when one does. */
+export function packThatUnlocks(packs: readonly CustomerPackOffer[], creditsNeeded: number | null): string | null {
+  return packCoveringNeed(packs, creditsNeeded);
 }
 
 /* ------------------------------------------------------------------ *
@@ -76,6 +90,9 @@ export interface PackView {
   totalCredits: number;
   /** What it costs NOW, formatted. */
   price: string;
+  /** What it costs NOW, in minor units -- for comparing packs, never for charging. */
+  priceMinorNow: number;
+  currency: string;
   /** The regular price to strike through -- only while a promotion is in effect. */
   wasPrice: string | null;
   /** Milliseconds until the promotion ends, while it is running and has an end. */
@@ -103,12 +120,98 @@ export function packView(pack: CustomerPackOffer, now: number, recommended: Cust
     bonusCredits: pack.bonusCredits,
     totalCredits: pack.totalCredits,
     price: formatMoneyMinor(priceMinor, pack.currency),
+    priceMinorNow: priceMinor,
+    currency: pack.currency,
     wasPrice: promoting ? formatMoneyMinor(pack.wasPriceMinor!, pack.currency) : null,
     endsInMs: promoting && endsAt !== null ? endsAt - now : null,
     badge: pack.badge,
     recommended: recommended?.code === pack.code,
     cta: `Get ${credits(pack.totalCredits)}`,
   };
+}
+
+/** The button that buys it: what is received and what it costs, both the catalog's. */
+export function packCtaLabel(view: Pick<PackView, 'totalCredits' | 'price'>): string {
+  return `Get ${credits(view.totalCredits)} · ${view.price}`;
+}
+
+/**
+ * How much cheaper each pack's Credits are than the cheapest pack's, in whole
+ * percent, ROUNDED DOWN so a saving is never overstated. Computed only from the
+ * prices on screen; the cheapest pack itself, a pack in another currency, and
+ * any saving under 5% get nothing.
+ */
+export function packSavings(views: readonly PackView[]): Map<string, number> {
+  const out = new Map<string, number>();
+  const priced = views.filter((v) => v.totalCredits > 0 && v.priceMinorNow > 0);
+  const reference = [...priced].sort((a, b) => a.priceMinorNow - b.priceMinorNow || b.totalCredits - a.totalCredits)[0];
+  if (!reference) return out;
+  const referenceRate = reference.priceMinorNow / reference.totalCredits;
+  for (const view of priced) {
+    if (view.code === reference.code || view.currency !== reference.currency) continue;
+    const saving = Math.floor((1 - view.priceMinorNow / view.totalCredits / referenceRate) * 100);
+    if (saving >= 5) out.set(view.code, saving);
+  }
+  return out;
+}
+
+/** The balance, in one line. Low and zero say what to do, without any alarm. */
+export function balanceLine(balance: BalanceState): string | null {
+  switch (balance.kind) {
+    case 'zero':
+      return "You're out of Credits: top up to keep going.";
+    case 'low':
+      return `Only ${balance.credits.toLocaleString('en-US')} left: top up to keep going.`;
+    case 'normal':
+      return `You have ${credits(balance.credits)}`;
+    default:
+      return null;
+  }
+}
+
+/** What the hero says, from what the store knows about why the customer is here. */
+export interface StoreHeroCopy {
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+}
+export function storeHeroCopy(input: {
+  characterName: string | null;
+  /** Arriving to unlock a post: its media type and what it still needs (server price less server balance). */
+  unlock: { mediaType: 'image' | 'video' | null; creditsNeeded: number | null } | null;
+}): StoreHeroCopy {
+  const name = input.characterName;
+  if (input.unlock && name) {
+    const thing = input.unlock.mediaType === 'video' ? 'video' : input.unlock.mediaType === 'image' ? 'photo' : 'post';
+    const needed = input.unlock.creditsNeeded;
+    return {
+      eyebrow: 'Credits Store',
+      title: `Unlock ${name}'s private ${thing}`,
+      subtitle:
+        needed === null
+          ? "Pick a pack and we'll take you straight back to unlock it."
+          : needed > 0
+            ? `You need ${needed.toLocaleString('en-US')} more ${needed === 1 ? 'Credit' : 'Credits'}.`
+            : 'You already have enough Credits to unlock it.',
+    };
+  }
+  if (name) {
+    return { eyebrow: 'Credits Store', title: "She's waiting for you", subtitle: `Get Credits for ${name}'s private photos, videos and voice messages.` };
+  }
+  return { eyebrow: 'Credits Store', title: 'Keep the experience going', subtitle: 'Get Credits for photos, videos, voice and premium content.' };
+}
+
+/**
+ * Premium as a value anchor, for a customer known not to have it: the monthly
+ * plan's included Credits and price, both the catalog's. Null when there is no
+ * such plan to quote -- never a made-up number.
+ */
+export function premiumAnchor(plans: readonly CustomerPlanOffer[], tier: string | null): { credits: number; price: string } | null {
+  if (tier === null || tier === 'premium') return null;
+  const monthly = plans
+    .filter((p) => p.isPurchasable && p.billingPeriodMonths === 1 && p.monthlyIncludedCredits > 0)
+    .sort((a, b) => a.priceMinor - b.priceMinor)[0];
+  return monthly ? { credits: monthly.monthlyIncludedCredits, price: formatMoneyMinor(monthly.priceMinor, monthly.currency) } : null;
 }
 
 /** `02:14:37`, or `3d 02:14:37` beyond a day. */
@@ -305,10 +408,6 @@ export function withStoreLink<V extends { state: string; cta: { to: string | nul
   return { ...view, cta: { ...view.cta, to } };
 }
 
-/** Premium is mentioned -- secondary, below the packs -- only to someone known not to have it. */
-export function showPremiumNote(tier: string | null): boolean {
-  return tier !== null && tier !== 'premium';
-}
 
 /**
  * The checkout request for a pack: its code, the method, a fresh key and where

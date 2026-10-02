@@ -1,15 +1,24 @@
-import { ANALYTICS_EVENT_PROPERTIES, creditBalanceState, isAnalyticsClientEvent } from '@over18/shared';
+import {
+  ANALYTICS_EVENT_PROPERTIES,
+  creditBalanceState,
+  creditsNeededFor,
+  isAnalyticsClientEvent,
+  recommendCreditPack,
+} from '@over18/shared';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/client.js';
 import type { Analytics } from '../services/analytics-service.js';
 import { readContentAccess } from '../services/content-access.js';
-import { readCustomerCommercialState } from '../services/customer-economy.js';
+import { readCustomerCatalog, readCustomerCommercialState } from '../services/customer-economy.js';
 
 /** A client event is a name and a handful of ids and codes; anything bigger is not one. */
 const BODY_LIMIT_BYTES = 4 * 1024;
 
 /** Properties only the server may state, whatever a client sends. */
-const SERVER_OWNED = ['tier', 'balanceState', 'decision', 'creditPrice'] as const;
+const SERVER_OWNED = ['tier', 'balanceState', 'decision', 'creditPrice', 'recommendedPackCode'] as const;
+
+/** Content-access decisions under which an unlock still needs Credits. */
+const NEEDS_CREDITS = new Set(['credits_required', 'insufficient_credits']);
 
 /**
  * What the BROWSER may report (PR 3): that a customer SAW or DISMISSED
@@ -29,6 +38,8 @@ const SERVER_OWNED = ['tier', 'balanceState', 'decision', 'creditPrice'] as cons
  * customer's commercial state (P3.1), and a locked post's decision and price from
  * the content-access resolver (P4.2) -- read here, whatever the browser sent, so a
  * client cannot skew the free-tier funnels or report a price it was not shown.
+ * The store's recommended pack is recomputed here too, by the same shared rule
+ * the page uses, from the live catalog, the asset's price and the balance.
  *
  * ONLY ALLOW-LISTED PROPERTIES. The shared per-event list keeps ids, short
  * codes, whole numbers and fixed values; everything else -- free text, emails,
@@ -68,15 +79,27 @@ export default async function analyticsRoutes(app: FastifyInstance, opts: { db: 
       for (const key of SERVER_OWNED) delete stated[key];
       const allowed = ANALYTICS_EVENT_PROPERTIES[name] ?? {};
       try {
-        if ('tier' in allowed || 'balanceState' in allowed) {
+        let spendable: number | null = null;
+        if ('tier' in allowed || 'balanceState' in allowed || 'recommendedPackCode' in allowed) {
           const state = await readCustomerCommercialState(opts.db, user);
+          spendable = state.wallet.available ? state.wallet.value.spendable : null;
           if ('tier' in allowed && state.tier.available) stated.tier = state.tier.value;
-          if ('balanceState' in allowed) stated.balanceState = creditBalanceState(state.wallet.available ? state.wallet.value.spendable : null);
+          if ('balanceState' in allowed) stated.balanceState = creditBalanceState(spendable);
         }
         if ('decision' in allowed && typeof stated.assetId === 'string') {
           const [item] = (await readContentAccess(opts.db, user, [stated.assetId])).items;
           stated.decision = item?.decision;
           stated.creditPrice = item?.creditPrice;
+        }
+        if ('recommendedPackCode' in allowed) {
+          // Arriving to unlock something: what that unlock still needs, from the
+          // resolver's price and the wallet -- exactly as the page computes it.
+          let needed: number | null = null;
+          if (stated.originAction === 'content_unlock' && typeof stated.assetId === 'string') {
+            const [item] = (await readContentAccess(opts.db, user, [stated.assetId])).items;
+            if (item && NEEDS_CREDITS.has(item.decision)) needed = creditsNeededFor(item.creditPrice, spendable);
+          }
+          stated.recommendedPackCode = recommendCreditPack((await readCustomerCatalog(opts.db)).packs, needed) ?? undefined;
         }
       } catch {
         /* a fact that cannot be read is left out, never taken from the browser */

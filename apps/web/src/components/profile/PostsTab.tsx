@@ -3,7 +3,7 @@ import type { PublicClip } from '../../lib/api';
 import { track } from '../../lib/analytics';
 import { accessFor, contentCardView, useContentAccess, type ContentAccessState } from '../../lib/contentAccess';
 import { useContentUnlock, type ContentUnlockClient } from '../../lib/contentUnlock';
-import { creditsStoreHref, pendingUnlock, resumeUnlockAction, withStoreLink } from '../../lib/creditsStore';
+import { announceCreditsChanged, creditsStoreHref, pendingUnlock, resumeUnlockAction, withStoreLink } from '../../lib/creditsStore';
 import { spendableCredits, useCustomerEconomy, type CustomerEconomyClient } from '../../lib/customerEconomy';
 import ClipMedia from '../lobby/ClipMedia';
 import { CreditBalance } from '../CustomerEconomy';
@@ -99,6 +99,8 @@ export default function PostsTab({
     onUnlocked: () => {
       refreshAccess();
       refreshEconomy();
+      // Every other balance on screen (the profile's, the app bar's) re-reads too.
+      announceCreditsChanged();
     },
   });
 
