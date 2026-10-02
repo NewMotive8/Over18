@@ -14,6 +14,9 @@ import conversationRoutes from './routes/conversations.js';
 import { randomBytes } from 'node:crypto';
 import customerEconomyRoutes from './routes/customer-economy.js';
 import customerPaymentRoutes from './routes/customer-payments.js';
+import analyticsRoutes from './routes/analytics.js';
+import adminAnalyticsRoutes from './routes/admin-analytics.js';
+import { createAnalytics, createDbAnalyticsSink, type AnalyticsSink } from './services/analytics-service.js';
 import { selectPaymentProvider } from './commerce/select-providers.js';
 import adminWalletRoutes from './routes/admin-wallets.js';
 import adminContentAccessRoutes from './routes/admin-content-access.js';
@@ -106,6 +109,11 @@ export interface BuildAppOptions {
    * failures and restart recovery without a network or a bill.
    */
   promptGeneration?: PromptRunnerDeps;
+  /**
+   * Where analytics events go. Defaults to `analytics_events`. Still gated by
+   * ANALYTICS_ENABLED -- injecting a sink cannot switch analytics on.
+   */
+  analyticsSink?: AnalyticsSink;
 }
 
 /**
@@ -225,7 +233,17 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // The customer economy READ API: session-only, GET-only, and 503
   // `economy_unavailable` while ECONOMY_ENABLED is off. Serves only what the
   // P1.2 resolver says is published and in effect; writes nothing.
-  await app.register(customerEconomyRoutes, { db, commerce: env.commerce });
+  // PR 3 funnel analytics. OFF unless ANALYTICS_ENABLED; fail-open always -- a
+  // failing write is logged and the purchase, unlock or page carries on.
+  const analytics = createAnalytics({
+    enabled: env.commerce.analyticsEnabled,
+    sink: options.analyticsSink ?? createDbAnalyticsSink(db),
+    onError: (error, name) => app.log.warn({ err: error, event: name }, 'analytics event not recorded'),
+  });
+  await app.register(analyticsRoutes, { db, analytics });
+  // Funnels (`analytics.read`) and a bounded export (`analytics.export`). Read-only.
+  await app.register(adminAnalyticsRoutes, { db, analyticsEnabled: env.commerce.analyticsEnabled });
+  await app.register(customerEconomyRoutes, { db, commerce: env.commerce, analytics });
   // P9.1 customer payments. The provider is whatever `PAYMENT_PROVIDER`
   // selects -- `none` (every route 503) or the fake one, which
   // commerce/fake-provider-policy.ts refuses to build in production or on
@@ -238,6 +256,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     commerce: env.commerce,
     provider: selectPaymentProvider(env.commerce.paymentProvider, { secret: fakeSecret, baseUrl: env.corsOrigin }),
     fakeSecret,
+    analytics,
   });
   // P2.4 admin wallet support: read with `users.commercial.read`; Credit or
   // Debit with `users.credits.adjust`, refused while ECONOMY_ENABLED is off.

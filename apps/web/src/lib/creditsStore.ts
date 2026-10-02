@@ -1,4 +1,5 @@
 import {
+  LOW_CREDIT_BALANCE,
   PURCHASE_ORIGIN_ACTIONS,
   PURCHASE_ORIGINS,
   type CustomerEconomyCatalog,
@@ -50,7 +51,7 @@ export function recommendedPack(packs: readonly CustomerPackOffer[]): CustomerPa
  * not an affordability rule: it blocks nothing, warns nowhere, and decides
  * nothing -- the server alone decides whether anything can be paid for.
  */
-export const LOW_BALANCE = 10;
+export const LOW_BALANCE = LOW_CREDIT_BALANCE;
 
 export type BalanceState = { kind: 'unknown' } | { kind: 'zero' } | { kind: 'low'; credits: number } | { kind: 'normal'; credits: number };
 

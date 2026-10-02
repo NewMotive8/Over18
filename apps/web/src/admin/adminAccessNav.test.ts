@@ -30,7 +30,7 @@ describe('gated admin navigation', () => {
 
   it('keeps Audit hidden while the audit switch is off -- production defaults', () => {
     // Enforcement off: every staff member holds every permission, so Economy, Users and Wallets show.
-    expect(keys(visibleAdminDestinations(access()))).toEqual([...SIX, 'economy', 'users', 'wallets']);
+    expect(keys(visibleAdminDestinations(access()))).toEqual([...SIX, 'economy', 'users', 'wallets', 'analytics']);
   });
 
   it('keeps Audit hidden from an operator without audit.read, even with the switch on', () => {
@@ -40,7 +40,15 @@ describe('gated admin navigation', () => {
 
   it('shows Audit only with BOTH the permission and the switch, after the six', () => {
     const view = access({ features: { auditLog: true } });
-    expect(keys(visibleAdminDestinations(view))).toEqual([...SIX, 'economy', 'users', 'wallets', 'audit']);
+    expect(keys(visibleAdminDestinations(view))).toEqual([...SIX, 'economy', 'users', 'wallets', 'audit', 'analytics']);
+  });
+
+  it('shows Analytics (PR 3) only to an operator holding analytics.read -- no switch involved', () => {
+    const analyst = access({ enforced: true, permissions: ['analytics.read', 'analytics.export'] });
+    expect(keys(visibleAdminDestinations(analyst))).toEqual([...SIX, 'analytics']);
+    const support = access({ enforced: true, permissions: ['users.commercial.read'] });
+    expect(keys(visibleAdminDestinations(support))).not.toContain('analytics');
+    expect(activeAdminDestination('/admin/analytics')).toBe('analytics');
   });
 
   it('shows Users (P2.5.1) and Wallets (P2.4) only to an operator holding users.commercial.read -- no switch involved', () => {

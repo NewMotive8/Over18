@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/client.js';
 import type { CommerceEnv } from '../env.js';
 import { ContentAccessError, parseAssetIds, readContentAccess } from '../services/content-access.js';
+import type { Analytics } from '../services/analytics-service.js';
 import { ContentUnlockError, unlockContent, type ContentUnlockErrorCode } from '../services/content-unlock-service.js';
 import { readCustomerCatalog, readCustomerCommercialState } from '../services/customer-economy.js';
 
@@ -56,7 +57,7 @@ const UNLOCK_STATUS: Partial<Record<ContentUnlockErrorCode, number>> = {
 };
 export default async function customerEconomyRoutes(
   app: FastifyInstance,
-  opts: { db: Db; commerce: Pick<CommerceEnv, 'enabled'> },
+  opts: { db: Db; commerce: Pick<CommerceEnv, 'enabled'>; analytics?: Analytics },
 ) {
   /** The published, in-effect plans and Credit packs. */
   app.get('/api/economy/catalog', { preHandler: app.requireAuth }, async (_request, reply) => {
@@ -113,7 +114,7 @@ export default async function customerEconomyRoutes(
           assetId: request.params.assetId,
           idempotencyKey: typeof request.body?.idempotencyKey === 'string' ? request.body.idempotencyKey : '',
           requestId: request.id,
-        });
+        }, { analytics: opts.analytics });
       } catch (error) {
         if (error instanceof ContentUnlockError) {
           return reply.code(UNLOCK_STATUS[error.code] ?? 400).send({ error: error.code, message: error.message });

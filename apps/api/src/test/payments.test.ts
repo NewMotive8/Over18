@@ -495,6 +495,8 @@ describe('the simulation is a provider, not a shortcut', () => {
         '../commerce/payment-provider.js',
         '../db/client.js',
         '../env.js',
+        // PR 3: only to pass the funnel's recorder through, never to write commercial state.
+        './analytics-service.js',
         './payment-service.js',
         '@over18/shared',
         'node:crypto',
@@ -514,6 +516,8 @@ describe('the simulation is a provider, not a shortcut', () => {
       '../db/client.js',
       '../env.js',
       '../db/schema.js',
+      // PR 3: funnel events, emitted after each settlement commits.
+      './analytics-service.js',
       './economy-resolver.js',
       './pack-terms.js',
       './subscription-service.js',

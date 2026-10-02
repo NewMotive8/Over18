@@ -110,7 +110,7 @@ export const ADMIN_DESTINATIONS: readonly AdminDestination[] = [
  * server regardless of what this list renders.
  * ------------------------------------------------------------------ */
 
-export type GatedAdminDestinationKey = 'economy' | 'users' | 'wallets' | 'audit';
+export type GatedAdminDestinationKey = 'economy' | 'users' | 'wallets' | 'audit' | 'analytics';
 
 export interface GatedAdminDestination extends Omit<AdminDestination, 'key'> {
   key: GatedAdminDestinationKey;
@@ -161,6 +161,16 @@ export const GATED_ADMIN_DESTINATIONS: readonly GatedAdminDestination[] = [
     status: 'available',
     owner: 'PRD v1.2 §34 — admin roles and audit',
     requires: { permission: 'audit.read', feature: 'auditLog' },
+  },
+  {
+    key: 'analytics',
+    label: 'Analytics',
+    path: '/admin/analytics',
+    matchPrefixes: ['/admin/analytics'],
+    description: 'The commercial funnels, and an export of the events behind them',
+    status: 'available',
+    owner: 'Credits Store PR 3 — funnel analytics',
+    requires: { permission: 'analytics.read' },
   },
 ];
 

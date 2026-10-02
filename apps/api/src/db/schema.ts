@@ -1711,6 +1711,44 @@ export const auditLog = pgTable(
   ],
 );
 
+/**
+ * analytics_events -- the commercial funnel, as it happened (PRD §23, PR 3).
+ *
+ * WHAT PEOPLE DID, NOT WHAT HAPPENED TO THEIR MONEY. The ledger, payments and
+ * subscription history are the record of Credits and Premium; this table only
+ * says that a screen was seen, a button pressed, a purchase started or
+ * completed. Nothing reads it to decide anything, and losing a row loses a
+ * data point, never a purchase: events are written after the business
+ * transaction commits, fail-open (services/analytics-service.ts).
+ *
+ * NO PII BEYOND THE USER ID. `properties` holds only what the shared per-event
+ * allow-list permits -- ids, short codes, whole numbers, booleans and values of
+ * fixed lists; never an email, a name or free text. `user_id` is null for an
+ * anonymous visitor, and becomes null if the account is deleted. Retention is
+ * a later decision.
+ */
+export const analyticsEvents = pgTable(
+  'analytics_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    /** A name from the shared catalogue (`ANALYTICS_EVENT_NAMES`); checked by the service. */
+    name: text('name').notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Who reported it: the server where a transaction committed, or a browser. */
+    source: text('source').notNull(),
+    properties: jsonb('properties').$type<Record<string, string | number | boolean>>().notNull().default({}),
+    requestId: text('request_id'),
+  },
+  (table) => [
+    index('analytics_events_name_occurred_idx').on(table.name, table.occurredAt),
+    index('analytics_events_user_occurred_idx').on(table.userId, table.occurredAt),
+    check('analytics_events_name_format', sql`${table.name} ~ '^[a-z][a-z_]{1,63}$'`),
+    check('analytics_events_source', sql`${table.source} in ('server', 'client')`),
+    check('analytics_events_properties_object', sql`jsonb_typeof(${table.properties}) = 'object'`),
+  ],
+);
+
 /* ------------------------------------------------------------------ *
  * Economy configuration (PRD v1.2 §8, §9, §17, §20, §31) -- P1.1
  *
