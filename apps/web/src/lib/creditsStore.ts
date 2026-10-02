@@ -273,6 +273,22 @@ export function resumeUnlockAction(
   return mayAutoUnlock(pending, assetId, access.creditPrice ?? null) ? 'auto' : 'confirm';
 }
 
+/**
+ * A locked tile the customer cannot yet afford says "Get Credits". That link
+ * must carry what they wanted -- the post and whose it is -- or the store has
+ * nowhere to bring them back to and nothing to finish. Every other tile is
+ * returned unchanged.
+ */
+export function withStoreLink<V extends { state: string; cta: { to: string | null } | null }>(
+  view: V,
+  assetId: string,
+  characterId: string | null | undefined,
+): V {
+  if (view.state !== 'insufficient_credits' || !view.cta) return view;
+  const to = creditsStoreHref({ origin: 'profile', originAction: 'content_unlock', assetId, characterId: characterId ?? null });
+  return { ...view, cta: { ...view.cta, to } };
+}
+
 /** Premium is mentioned -- secondary, below the packs -- only to someone known not to have it. */
 export function showPremiumNote(tier: string | null): boolean {
   return tier !== null && tier !== 'premium';
