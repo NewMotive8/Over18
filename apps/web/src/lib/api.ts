@@ -29,6 +29,7 @@ import type {
   CustomerContentAccessResponse,
   CustomerContentUnlock,
   CustomerCheckout,
+  PurchaseContext,
   CustomerPaymentView,
   SimulatedPaymentResult,
   CustomerEconomyCatalog,
@@ -1543,7 +1544,8 @@ export const contentAccessApi = {
  * signed provider event does, on the server.
  */
 export const paymentsApi = {
-  startCheckout: (body: { planCode: string; method: string; idempotencyKey: string; returnUrl: string }) =>
+  /** A subscription plan (`planCode`) or a Credit pack (`packCode`, with where the purchase started). */
+  startCheckout: (body: { method: string; idempotencyKey: string; returnUrl: string } & ({ planCode: string } | { packCode: string; context?: PurchaseContext | null })) =>
     request<CustomerCheckout>('/api/payments/checkout', { method: 'POST', body: JSON.stringify(body) }),
   read: (paymentId: string) => request<CustomerPaymentView>(`/api/payments/${encodeURIComponent(paymentId)}`),
   readCheckout: (checkoutRef: string) => request<CustomerPaymentView>(`/api/payments/checkout/${encodeURIComponent(checkoutRef)}`),

@@ -11,7 +11,7 @@ import FavouritesPage from './pages/FavouritesPage';
 import ProfilePage from './pages/ProfilePage';
 import SubscriptionPage from './pages/SubscriptionPage';
 import SimulatedCheckoutPage from './pages/SimulatedCheckoutPage';
-import WalletPage from './pages/WalletPage';
+import CreditsStorePage from './pages/CreditsStorePage';
 import ChatPage from './pages/ChatPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminShell from './admin/AdminShell';
@@ -130,10 +130,10 @@ export default function App() {
         {/* P9: where the payment provider's hosted checkout will be. The
             server refuses it unless the simulated provider is selected. */}
         <Route path="/fake-checkout/:checkoutRef" element={<SimulatedCheckoutPage />} />
-        {/* Credits is the customer-facing name (P8.1). The original path keeps
+        {/* The Credits Store (Credits Store PR 2). Credits is the customer-facing name (P8.1); the original path keeps
             working so nothing already linked to it breaks. */}
-        <Route path="/credits" element={<WalletPage />} />
-        <Route path="/wallet" element={<WalletPage />} />
+        <Route path="/credits" element={<CreditsStorePage />} />
+        <Route path="/wallet" element={<CreditsStorePage />} />
 
         {/* Auth */}
         <Route path="/login" element={<LoginPage />} />

@@ -18,6 +18,7 @@ import { mergeOpeningMessage, shouldRequestOpening } from '../lib/chatOpening';
 import MessageMedia from '../components/MessageMedia';
 import { CreditBalance, PaidActionButton } from '../components/CustomerEconomy';
 import { getAction, useCustomerEconomy } from '../lib/customerEconomy';
+import { lastCharacter } from '../lib/creditsStore';
 import CallOverlay, { CallButton } from '../components/CallOverlay';
 import { useVoiceCall } from '../hooks/useVoiceCall';
 
@@ -94,6 +95,8 @@ export default function ChatPage() {
         if (cancelled) return;
         setMessages(history);
         setState({ status: 'ready', conversation });
+        // Who the Credits Store opens on, when the customer goes there next.
+        lastCharacter.set(conversation.character.id);
         if (!shouldRequestOpening(history)) return;
 
         const key = `${conversationId}:${attempt}`;

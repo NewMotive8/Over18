@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import { API_URL, ApiRequestError, charactersApi, conversationsApi, type PublicClip } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
@@ -52,7 +52,10 @@ export default function CharacterDetailPage() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [visual, setVisual] = useState<VisualState>({ status: 'loading' });
-  const [tab, setTab] = useState<ProfileTab>('about');
+  const [params, setParams] = useSearchParams();
+  // `?tab=posts` opens on Posts -- the Credits Store sends a customer back here to finish an unlock.
+  const [tab, setTab] = useState<ProfileTab>(() => (params.get('tab') === 'posts' ? 'posts' : 'about'));
+  const resumeUnlock = params.get('unlock');
   const [viewer, setViewer] = useState<{ items: CharacterMediaItem[]; index: number } | null>(null);
   const [gateOpen, setGateOpen] = useState(false);
   /**
@@ -267,6 +270,13 @@ export default function CharacterDetailPage() {
         ) : (
           <PostsTab
             clips={clips}
+            characterId={character.id}
+            resumeUnlockAssetId={resumeUnlock}
+            onResumeHandled={() => {
+              const next = new URLSearchParams(params);
+              next.delete('unlock');
+              setParams(next, { replace: true });
+            }}
             onOpenClip={(index) => setViewer({ items: postItems, index })}
           />
         )}

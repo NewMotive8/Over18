@@ -120,9 +120,12 @@ export default function AppShell() {
   const isLobby = pathname === '/characters';
   const isProfile = /^\/characters\/[^/]+$/.test(pathname);
   const isImmersive = isLobby || isProfile;
+  // The Credits Store alone is laid out in two columns on a wide screen (hero
+  // left, store right); every other screen keeps the phone-width column.
+  const isWide = pathname === '/credits' || pathname === '/wallet';
 
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-lg flex-col bg-zinc-950 text-zinc-100">
+    <div className={`mx-auto flex min-h-dvh w-full flex-col bg-zinc-950 text-zinc-100 ${isWide ? 'max-w-lg lg:max-w-6xl' : 'max-w-lg'}`}>
       {!isImmersive && (
         <header className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur pt-[max(0.75rem,env(safe-area-inset-top))]">
           <Link
