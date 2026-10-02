@@ -18,6 +18,7 @@ import {
   readStoreContext,
   recommendedPack,
   resumeUnlockAction,
+  returnOutcome,
   returnTarget,
   showPremiumNote,
 } from './creditsStore';
@@ -186,6 +187,45 @@ describe('the way back -- always a path of this app', () => {
   it('a pack checkout comes back to the store with its payment; a plan to Premium', () => {
     expect(afterCheckoutPath({ id: 'p-1', kind: 'credit_pack' })).toBe('/credits?from=checkout&payment=p-1');
     expect(afterCheckoutPath({ id: 'p-2', kind: 'subscription' })).toBe('/subscription?from=checkout');
+  });
+});
+
+describe('returning from checkout -- the success message is said once', () => {
+  const PAYMENT = '0e7f80ca-f0d0-418c-b641-511747c46c5b';
+  const fakeStorage = () => {
+    const data = new Map<string, string>();
+    return { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) };
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('the first return from the checkout this tab started says the Credits were added', () => {
+    expect(returnOutcome('succeeded', PAYMENT, PAYMENT)).toBe('added');
+  });
+
+  it('REGRESSION (staging QA): refreshing or revisiting a completed pack payment never says Credits were added again', () => {
+    vi.stubGlobal('sessionStorage', fakeStorage());
+    // The store starts the checkout and remembers it, as CreditsStorePage does.
+    pendingPayment.set(PAYMENT);
+    // First return: the page reads which checkout this tab started, then clears it once shown.
+    expect(returnOutcome('succeeded', PAYMENT, pendingPayment.get())).toBe('added');
+    pendingPayment.clear();
+    // A refresh of the same /credits?from=checkout&payment=... URL: nothing is remembered any more.
+    expect(returnOutcome('succeeded', PAYMENT, pendingPayment.get())).toBe('already_added');
+    // A later visit after another checkout was started: still not news for THIS payment.
+    pendingPayment.set('f640d9f8-80a5-4e58-9d32-767c0382156b');
+    expect(returnOutcome('succeeded', PAYMENT, pendingPayment.get())).toBe('already_added');
+  });
+
+  it('a link opened in another tab, with nothing remembered, is a completed purchase -- not new Credits', () => {
+    expect(returnOutcome('succeeded', PAYMENT, null)).toBe('already_added');
+  });
+
+  it('pending and unsuccessful payments are never called added, first time or not', () => {
+    expect(returnOutcome('pending', PAYMENT, PAYMENT)).toBe('pending');
+    for (const status of ['failed', 'cancelled', 'refunded', 'disputed']) {
+      expect(returnOutcome(status, PAYMENT, PAYMENT)).toBe('not_completed');
+      expect(returnOutcome(status, PAYMENT, null)).toBe('not_completed');
+    }
   });
 });
 
