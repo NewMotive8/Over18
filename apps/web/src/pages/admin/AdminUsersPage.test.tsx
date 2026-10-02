@@ -43,7 +43,7 @@ const detail = (over: Partial<AdminUserDetail> = {}): AdminUserDetail => ({
     subscription: { available: true, value: { status: 'active', planCode: 'test_plan', currentPeriodEnd: '2026-10-01T00:00:00.000Z', cancelAtPeriodEnd: false } },
     age: { available: false, reason: 'age_verification_not_supported' },
   },
-  wallets: [{ currency: 'credits', exists: true, included: 11, earned: 22, purchased: 33, held: 4, spendable: 66, transactions: 7 }],
+  wallets: [{ currency: 'credits', exists: true, included: 11, earned: 22, purchased: 33, bonus: 0, held: 4, spendable: 66, transactions: 7 }],
   audit: {
     available: true,
     entries: [
@@ -115,7 +115,7 @@ describe('the User detail', () => {
     expect(html).toContain('Premium');
     expect(html).toContain('test_plan — active, period ends 2026-10-01 00:00 UTC');
     expect(html).toContain('Switched off');
-    expect(html).toContain('<td>11</td><td>22</td><td>33</td><td>4</td>');
+    expect(html).toContain('<td>11</td><td>22</td><td>33</td><td>0</td><td>4</td>');
     expect(html).toContain('66');
     expect(html).toContain('wallet.adjust.credit');
     expect(html).toContain('operator@example.com');
@@ -137,7 +137,7 @@ describe('the User detail', () => {
     const html = render(
       <UserDetailView
         detail={detail({
-          wallets: [{ currency: 'credits', exists: false, included: 0, earned: 0, purchased: 0, held: 0, spendable: 0, transactions: 0 }],
+          wallets: [{ currency: 'credits', exists: false, included: 0, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 0, transactions: 0 }],
           audit: { available: false, reason: 'audit_read_required' },
         })}
       />,

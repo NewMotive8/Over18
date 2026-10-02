@@ -224,7 +224,10 @@ describe('GET /api/economy/catalog', () => {
       ['billingPeriodMonths', 'code', 'currency', 'displayName', 'effectiveFrom', 'isPurchasable', 'monthlyIncludedCredits', 'priceMinor', 'version', 'versionId'],
     );
     expect(Object.keys(catalog.packs[0]!).sort()).toEqual(
-      ['code', 'credits', 'currency', 'displayName', 'effectiveFrom', 'isBestValue', 'isPurchasable', 'priceMinor', 'sortOrder', 'version', 'versionId'],
+      [
+        'badge', 'bonusCredits', 'code', 'credits', 'currency', 'displayName', 'effectiveFrom', 'isBestValue', 'isPurchasable',
+        'priceMinor', 'promotionEndsAt', 'sortOrder', 'totalCredits', 'version', 'versionId', 'wasPriceMinor',
+      ],
     );
     expect(JSON.stringify(catalog)).not.toMatch(/publish_reason|publishedBy|published_by|status|draft|creditCost|features|unlimited_text/);
   });
@@ -306,7 +309,7 @@ describe('GET /api/me/commercial-state', () => {
       economyEnabled: true,
       tier: { available: true, value: 'free' },
       subscription: { available: true, value: null },
-      wallet: { available: true, value: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 } },
+      wallet: { available: true, value: { included: 0, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 0 } },
       age: { available: false, reason: 'age_verification_not_supported' },
     } satisfies CustomerCommercialState);
   });
@@ -325,7 +328,7 @@ describe('GET /api/me/commercial-state', () => {
     const state = (await get(on, STATE, admin.cookies)).json() as CustomerCommercialState;
     expect(state.tier).toEqual({ available: true, value: 'free' });
     expect(state.subscription).toEqual({ available: true, value: null });
-    expect(state.wallet).toEqual({ available: true, value: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 } });
+    expect(state.wallet).toEqual({ available: true, value: { included: 0, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 0 } });
   });
 
   it('answers only GET', async () => {

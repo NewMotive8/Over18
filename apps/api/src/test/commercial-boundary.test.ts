@@ -126,7 +126,7 @@ describe('the economy stays dark', () => {
   it('leaves the viewer-side resolver exactly as P0 left it: everyone free, economy off', async () => {
     const state = await resolveEntitlement(on.db, null, { enabled: false });
     expect(state).toMatchObject({ tier: 'free', subscription: null, economyEnabled: false });
-    expect(state.wallet).toEqual({ included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 });
+    expect(state.wallet).toEqual({ included: 0, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 0 });
   });
 
   /**

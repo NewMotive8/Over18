@@ -13,6 +13,7 @@ import {
   type PackVersionView,
   type PlanVersionView,
 } from './economy-resolver.js';
+import { effectivePackTerms } from './pack-terms.js';
 import { resolveSubscription } from './subscription-service.js';
 import { CREDITS_CURRENCY, readCommercialWallet } from './wallet-service.js';
 
@@ -57,19 +58,31 @@ function toPlanOffer(plan: PlanVersionView): CustomerPlanOffer {
   };
 }
 
-function toPackOffer(pack: PackVersionView): CustomerPackOffer {
+/**
+ * A pack as the customer may buy it at `asOfIso`: the price and promotion are
+ * the ones in effect then (`pack-terms.ts`), the same rule the checkout charges
+ * by. An ended promotion is not shown at all -- not as a countdown at zero,
+ * not as a struck-through price.
+ */
+function toPackOffer(pack: PackVersionView, asOfIso: string): CustomerPackOffer {
+  const terms = effectivePackTerms(pack, asOfIso);
   return {
     code: pack.ref.code,
     version: pack.ref.version,
     versionId: pack.ref.id,
     displayName: pack.displayName,
-    credits: pack.credits,
-    priceMinor: pack.priceMinor,
+    credits: terms.credits,
+    priceMinor: terms.priceMinor,
     currency: pack.currency,
     sortOrder: pack.sortOrder,
     isBestValue: pack.isBestValue,
     isPurchasable: pack.isPurchasable,
     effectiveFrom: pack.effectiveFrom,
+    badge: pack.badge,
+    bonusCredits: terms.bonusCredits,
+    totalCredits: terms.totalCredits,
+    wasPriceMinor: terms.wasPriceMinor,
+    promotionEndsAt: terms.promotionEndsAt,
   };
 }
 
@@ -83,7 +96,7 @@ function toPackOffer(pack: PackVersionView): CustomerPackOffer {
 export async function readCustomerCatalog(db: Db): Promise<CustomerEconomyCatalog> {
   const asOf = await economyNow(db);
   const [{ plans }, { packs }] = await Promise.all([resolvePlanCatalog(db, asOf), resolvePackCatalog(db, asOf)]);
-  return { asOf: asOf.iso, plans: plans.map(toPlanOffer), packs: packs.map(toPackOffer) };
+  return { asOf: asOf.iso, plans: plans.map(toPlanOffer), packs: packs.map((pack) => toPackOffer(pack, asOf.iso)) };
 }
 
 /**

@@ -245,6 +245,7 @@ export function UserDetailView({
                 <th>Included</th>
                 <th>Earned</th>
                 <th>Purchased</th>
+                <th>Bonus</th>
                 <th>Held</th>
                 <th>Spendable</th>
                 <th>Transactions</th>
@@ -260,6 +261,7 @@ export function UserDetailView({
                   <td>{w.included}</td>
                   <td>{w.earned}</td>
                   <td>{w.purchased}</td>
+                  <td>{w.bonus}</td>
                   <td>{w.held}</td>
                   <td className="font-semibold text-white">{w.spendable}</td>
                   <td>{w.transactions}</td>

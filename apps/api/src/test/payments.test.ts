@@ -515,6 +515,7 @@ describe('the simulation is a provider, not a shortcut', () => {
       '../env.js',
       '../db/schema.js',
       './economy-resolver.js',
+      './pack-terms.js',
       './subscription-service.js',
       './wallet-service.js',
       '@over18/shared',

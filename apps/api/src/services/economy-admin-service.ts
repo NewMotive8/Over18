@@ -140,8 +140,30 @@ export function validatePack(pack: PackDraftInput): string[] {
   if (!int(pack.sortOrder, 0)) errors.push('sortOrder must be a whole number, 0 or more.');
   if (typeof pack.isBestValue !== 'boolean') errors.push('isBestValue must be true or false.');
   if (typeof pack.isPurchasable !== 'boolean') errors.push('isPurchasable must be true or false.');
+  if (pack.badge != null && pack.badge !== '' && !text(pack.badge, 40)) errors.push('badge must be 1 to 40 characters, or empty for none.');
+  if (pack.bonusCredits != null && !int(pack.bonusCredits, 0, AMOUNT_MAX)) errors.push('bonusCredits must be a whole number, 0 or more.');
+  if (pack.wasPriceMinor != null) {
+    if (!int(pack.wasPriceMinor, 1)) errors.push('wasPriceMinor must be a positive whole number of minor units.');
+    else if (int(pack.priceMinor, 1) && pack.wasPriceMinor <= pack.priceMinor) {
+      errors.push('wasPriceMinor must be higher than priceMinor: it is the regular price the promotion is cheaper than.');
+    }
+  }
+  if (pack.promotionEndsAt != null) {
+    if (typeof pack.promotionEndsAt !== 'string' || Number.isNaN(Date.parse(pack.promotionEndsAt))) {
+      errors.push('promotionEndsAt must be an ISO 8601 date and time.');
+    }
+    // A countdown with no regular price to return to would be fake urgency.
+    if (pack.wasPriceMinor == null) errors.push('promotionEndsAt needs a wasPriceMinor: a promotion must have a regular price to end at.');
+  }
   return errors;
 }
+
+/** The ledger's integer columns. */
+const AMOUNT_MAX = 2 ** 31 - 1;
+
+/** A promotion end as the database formats it back (`iso`): UTC, microseconds. */
+const promotionEnd = (value: string | null | undefined): string | null =>
+  value == null ? null : new Date(value).toISOString().replace(/\.(\d{3})Z$/, '.$1000Z');
 
 const costKey = (c: Pick<ActionCostInput, 'actionType' | 'qualityTier' | 'maxDurationSeconds'>) =>
   `${c.actionType}/${c.qualityTier}/${c.maxDurationSeconds === null ? 'any' : `${c.maxDurationSeconds}s`}`;
@@ -282,6 +304,10 @@ const packColumns = {
   sortOrder: economyPackVersions.sortOrder,
   isBestValue: economyPackVersions.isBestValue,
   isPurchasable: economyPackVersions.isPurchasable,
+  badge: economyPackVersions.badge,
+  bonusCredits: economyPackVersions.bonusCredits,
+  wasPriceMinor: economyPackVersions.wasPriceMinor,
+  promotionEndsAt: iso(economyPackVersions.promotionEndsAt) as SQL<string | null>,
 };
 
 /**
@@ -411,6 +437,15 @@ const packFields = (p: PackDraftInput) => ({
   sortOrder: p.sortOrder,
   isBestValue: p.isBestValue,
   isPurchasable: p.isPurchasable,
+  badge: p.badge ? p.badge.trim() : null,
+  bonusCredits: p.bonusCredits ?? 0,
+  wasPriceMinor: p.wasPriceMinor ?? null,
+  promotionEndsAt: promotionEnd(p.promotionEndsAt),
+});
+/** `packFields` as a database row: the promotion end as a timestamp. */
+const packRow = (fields: ReturnType<typeof packFields>) => ({
+  ...fields,
+  promotionEndsAt: fields.promotionEndsAt === null ? null : new Date(fields.promotionEndsAt),
 });
 const rulesetFields = (r: RulesetDraftInput): RulesetDraftInput => ({
   actionCosts: [...r.actionCosts]
@@ -491,6 +526,10 @@ const packFieldsColumns = {
   sortOrder: economyPackVersions.sortOrder,
   isBestValue: economyPackVersions.isBestValue,
   isPurchasable: economyPackVersions.isPurchasable,
+  badge: economyPackVersions.badge,
+  bonusCredits: economyPackVersions.bonusCredits,
+  wasPriceMinor: economyPackVersions.wasPriceMinor,
+  promotionEndsAt: iso(economyPackVersions.promotionEndsAt) as SQL<string | null>,
 };
 
 async function nextVersion(tx: Pick<Db, 'execute'>, query: SQL): Promise<number> {
@@ -592,13 +631,13 @@ export async function savePackDraft(db: Db, code: string, input: PackDraftInput,
       let id: string;
       let version: number;
       if (draft) {
-        await tx.update(economyPackVersions).set({ ...fields, effectiveFrom: null }).where(eq(economyPackVersions.id, draft.id));
+        await tx.update(economyPackVersions).set({ ...packRow(fields), effectiveFrom: null }).where(eq(economyPackVersions.id, draft.id));
         ({ id, version } = draft);
       } else {
         version = await nextVersion(tx, sql`select coalesce(max(${economyPackVersions.version}), 0) + 1 as next from ${economyPackVersions} where ${economyPackVersions.packId} = ${pack!.id}`);
         [{ id }] = (await tx
           .insert(economyPackVersions)
-          .values({ packId: pack!.id, version, ...fields, createdBy: ctx.actor.userId })
+          .values({ packId: pack!.id, version, ...packRow(fields), createdBy: ctx.actor.userId })
           .returning({ id: economyPackVersions.id })) as [{ id: string }];
       }
       await recordAudit(tx, {

@@ -113,7 +113,7 @@ describe.each(OPERATIONS)('the idempotency boundary: $name', ({ prepare }) => {
     const after = await walletOf(u);
     const again = await run('op-1');
     expect(first.replayed).toBe(false);
-    expect(again).toEqual({ transaction: first.transaction, replayed: true });
+    expect(again).toEqual({ ...first, replayed: true });
     expect(await rowsWithKey(u, 'op-1')).toBe(1);
     expect(await walletOf(u)).toEqual(after);
   });

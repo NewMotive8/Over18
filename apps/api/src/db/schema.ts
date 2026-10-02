@@ -1938,9 +1938,19 @@ export const economyPacks = pgTable(
  * economy_pack_versions -- one rung of the §17 ladder, from an instant on.
  *
  * The per-Credit rate is DERIVED (`price_minor / credits`), never stored, so it
- * cannot disagree with the two numbers it comes from. `sort_order` and
- * `is_best_value` are presentation, versioned with the price they describe.
- * `is_purchasable` = false retires a pack, as for plans.
+ * cannot disagree with the two numbers it comes from. `sort_order`,
+ * `is_best_value` and `badge` are presentation, versioned with the price they
+ * describe. `is_purchasable` = false retires a pack, as for plans.
+ *
+ * `bonus_credits` are given on top of `credits` and land in the ledger as their
+ * own `bonus` class, never as purchased Credits.
+ *
+ * A PROMOTION IS REAL OR ABSENT. `was_price_minor` is the regular price while
+ * `price_minor` is a promotional one, so it must be higher. `promotion_ends_at`
+ * bounds that promotion and therefore needs a `was_price_minor`: a countdown
+ * with nothing ending is fake urgency, and the database refuses it. Once the
+ * end has passed the promotion is over and the regular price is the price
+ * (`pack-terms.ts` decides that, on the database clock).
  */
 export const economyPackVersions = pgTable(
   'economy_pack_versions',
@@ -1957,6 +1967,13 @@ export const economyPackVersions = pgTable(
     sortOrder: integer('sort_order').notNull().default(0),
     isBestValue: boolean('is_best_value').notNull().default(false),
     isPurchasable: boolean('is_purchasable').notNull().default(true),
+    /** A short label the store shows on the pack ("Best value"); null for none. */
+    badge: text('badge'),
+    bonusCredits: integer('bonus_credits').notNull().default(0),
+    /** The regular price while `price_minor` is promotional; null when there is no promotion. */
+    wasPriceMinor: integer('was_price_minor'),
+    /** When the promotion ends; null for an open-ended one. Needs `was_price_minor`. */
+    promotionEndsAt: timestamp('promotion_ends_at', { withTimezone: true }),
     ...versionLifecycle(),
   },
   (t) => [
@@ -1971,6 +1988,19 @@ export const economyPackVersions = pgTable(
     check('economy_pack_versions_price_positive', sql`${t.priceMinor} > 0`),
     check('economy_pack_versions_currency', sql`${t.currency} ~ ${CURRENCY_PATTERN}`),
     check('economy_pack_versions_sort_order', sql`${t.sortOrder} >= 0`),
+    check(
+      'economy_pack_versions_badge',
+      sql`${t.badge} is null or (length(btrim(${t.badge})) > 0 and length(${t.badge}) <= 40)`,
+    ),
+    check('economy_pack_versions_bonus_credits', sql`${t.bonusCredits} >= 0`),
+    check(
+      'economy_pack_versions_was_price',
+      sql`${t.wasPriceMinor} is null or ${t.wasPriceMinor} > ${t.priceMinor}`,
+    ),
+    check(
+      'economy_pack_versions_promotion_needs_was_price',
+      sql`${t.promotionEndsAt} is null or ${t.wasPriceMinor} is not null`,
+    ),
     ...lifecycleChecks('economy_pack_versions', t),
   ],
 );
@@ -2408,8 +2438,17 @@ export const walletEntryType = pgEnum('wallet_entry_type', [
  * distinguishable in the ledger because they may carry different expiry and
  * refund treatment (§6.3). Which class is spent first is the spending
  * service's rule, not the schema's.
+ *
+ *   included    came with a subscription (the product's "subscription" Credits)
+ *   earned      earned in the product
+ *   purchased   bought in a Credit pack
+ *   bonus       given on top of a purchase, or as a promotion
+ *
+ * Classes are sources within ONE currency, not currencies. A new source
+ * (referral, campaign) is one more value here and one more place in the spend
+ * order.
  */
-export const creditClass = pgEnum('credit_class', ['included', 'earned', 'purchased']);
+export const creditClass = pgEnum('credit_class', ['included', 'earned', 'purchased', 'bonus']);
 
 /** Transaction types that settle or compensate an earlier transaction, and must name it. */
 const RELATED_TYPES = sql.raw(`('capture', 'release', 'refund', 'reversal')`);
@@ -2921,6 +2960,19 @@ export const payments = pgTable(
     idempotencyKey: text('idempotency_key').notNull(),
     /** Why it failed, as the provider said. Recorded, never used to decide anything. */
     failureReason: text('failure_reason'),
+    /**
+     * What was bought, as it stood at checkout (a Credit pack's version,
+     * Credits, bonus and price). The award is made from THIS, so a later
+     * catalog change never alters a purchase already started. Empty for a
+     * subscription, which is resolved from its plan.
+     */
+    terms: jsonb('terms').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * Where the customer came from and what they were doing (origin, action,
+     * the asset or conversation it was for), validated against fixed lists so
+     * the app can take them back afterwards. Never a URL.
+     */
+    context: jsonb('context').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     /** When it stopped being pending. */
@@ -2936,6 +2988,8 @@ export const payments = pgTable(
     check('payments_currency_format', sql`${t.currency} ~ '^[A-Z]{3}$'`),
     /** Pending exactly while nothing has settled it. */
     check('payments_settled_by_status', sql`(${t.status} = 'pending') = (${t.settledAt} is null)`),
+    check('payments_terms_object', sql`jsonb_typeof(${t.terms}) = 'object'`),
+    check('payments_context_object', sql`jsonb_typeof(${t.context}) = 'object'`),
   ],
 );
 

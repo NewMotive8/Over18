@@ -258,7 +258,7 @@ describe('GET /api/me/commercial-state resolves the subscription', () => {
       expect(state.subscription).toEqual({ available: false, reason: 'subscription_unresolvable' });
       expect(res.body).not.toMatch(/premium/);
       // The rest of the state is still answered.
-      expect(state.wallet).toEqual({ available: true, value: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 } });
+      expect(state.wallet).toEqual({ available: true, value: { included: 0, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 0 } });
     }
   });
 
@@ -304,7 +304,7 @@ describe('the commercial state reads the wallet and never writes it', () => {
     await holdCredits(off.db, { userId: id, currency: 'credits', amount: 5, idempotencyKey: 'in-flight' });
     expect((await stateOf(cookies)).wallet).toEqual({
       available: true,
-      value: { included: 25, earned: 20, purchased: 10, held: 5, spendable: 55 },
+      value: { included: 25, earned: 20, purchased: 10, bonus: 0, held: 5, spendable: 55 },
     });
   });
 
