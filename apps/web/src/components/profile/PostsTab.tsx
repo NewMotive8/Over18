@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { PublicClip } from '../../lib/api';
 import { accessFor, contentCardView, useContentAccess, type ContentAccessState } from '../../lib/contentAccess';
 import { useContentUnlock, type ContentUnlockClient } from '../../lib/contentUnlock';
-import { creditsStoreHref, pendingUnlock, resumeUnlockAction } from '../../lib/creditsStore';
+import { creditsStoreHref, pendingUnlock, resumeUnlockAction, withStoreLink } from '../../lib/creditsStore';
 import { spendableCredits, useCustomerEconomy, type CustomerEconomyClient } from '../../lib/customerEconomy';
 import ClipMedia from '../lobby/ClipMedia';
 import { CreditBalance } from '../CustomerEconomy';
@@ -154,7 +154,9 @@ export default function PostsTab({
           const item = accessFor(state, clip.id);
           // This tab can carry an unlock through, so a Credit-priced tile
           // offers one rather than saying it is coming.
-          const view = contentCardView(item, { canUnlock: true, pending: state.status === 'loading' });
+          // A tile they cannot afford yet links to the Credits Store WITH this
+          // post, so the store brings them back here to finish the unlock.
+          const view = withStoreLink(contentCardView(item, { canUnlock: true, pending: state.status === 'loading' }), clip.id, characterId);
           const title = `Post ${index + 1}`;
           return (
             <LockedContentCard
@@ -163,6 +165,11 @@ export default function PostsTab({
               title={title}
               onOpen={() => onOpenClip(index)}
               onUnlock={() => unlock.open({ assetId: clip.id, title, creditPrice: item?.creditPrice ?? null })}
+              onFollowCta={() => {
+                if (view.state === 'insufficient_credits' && item?.creditPrice != null) {
+                  pendingUnlock.set({ assetId: clip.id, creditPrice: item.creditPrice });
+                }
+              }}
               media={
                 <ClipMedia
                   clip={clip}

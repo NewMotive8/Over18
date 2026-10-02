@@ -254,7 +254,7 @@ describe('the Posts tab renders the access the server decided', () => {
     // and only the Credit routes lead anywhere, at the server's price.
     expect(markup).toContain('Included with Premium.');
     expect(markup).not.toContain('href="/subscription"');
-    expect(markup).toContain('href="/credits"');
+    expect(markup).toContain('href="/credits?origin=profile&amp;originAction=content_unlock&amp;assetId=poor"');
     expect(markup).toContain('50 Credits');
   });
 
@@ -309,7 +309,8 @@ describe('the tab offers the unlock, and shows what the server decided', () => {
   it('too few Credits is never an unlock: it is the existing route to Credits', () => {
     const markup = render([clip('a1')], decided([priced('a1', { decision: 'insufficient_credits' })]));
     expect(markup).toContain('You need 50 Credits to unlock this.');
-    expect(markup).toContain('href="/credits"');
+    // The route to Credits carries this post, so the store can bring them back to finish it.
+    expect(markup).toContain('href="/credits?origin=profile&amp;originAction=content_unlock&amp;assetId=a1"');
     expect(markup).not.toContain('Unlock · 50 Credits');
   });
 
@@ -317,7 +318,7 @@ describe('the tab offers the unlock, and shows what the server decided', () => {
     const markup = render([clip('a1')], decided([priced('a1', { state: 'premium', creditPrice: null, decision: 'premium_required' })]));
     expect(markup).toContain('Included with Premium.');
     expect(markup).not.toContain('href="/subscription"');
-    expect(markup).not.toContain('href="/credits"');
+    expect(markup).not.toContain('href="/credits');
     expect(markup).not.toMatch(/Unlock ·/);
   });
 
