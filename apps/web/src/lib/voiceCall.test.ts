@@ -508,12 +508,33 @@ describe('ending a call', () => {
   it.each([
     ['provider_unavailable', 'She could not be reached just now. Try again in a moment.'],
     ['max_duration', 'The call reached its time limit.'],
+    /**
+     * The reason the server gained. It already decoded to the right sentence
+     * from a mid-call `error` frame; what was missing was any way for a call
+     * REFUSED BEFORE IT STARTED to say so, and that arrives as a close.
+     */
+    ['content_blocked', 'That could not be continued.'],
   ])('treats a %s close as a failure with our own words', async (reason, message) => {
     const h = await connected();
     h.socket.deliver({ type: 'relay.closed', reason });
     await Promise.resolve();
     expect(h.controller.state.phase).toBe('error');
     expect(h.controller.state.message).toBe(message);
+  });
+
+  /**
+   * A refusal is a FAILURE, not a tidy ending. If `content_blocked` were ever
+   * treated as a clean close the overlay would read "Call ended" and say nothing
+   * at all, which is the same silence the old wrong message replaced.
+   */
+  it('never treats a refusal as a clean hang-up', async () => {
+    const h = await connected();
+    h.socket.deliver({ type: 'relay.closed', reason: 'content_blocked' });
+    await Promise.resolve();
+    expect(h.controller.state.phase).not.toBe('ended');
+    expect(h.controller.state.message).not.toBeNull();
+    // And never the advice that cannot work: this will fail the same way again.
+    expect(h.controller.state.message).not.toContain('could not be reached');
   });
 
   it('reports a provider error by code, never by message', async () => {

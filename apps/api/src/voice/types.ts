@@ -15,6 +15,15 @@ export type VoiceErrorKind =
   | 'payment_required'
   /** The provider rejected the request (4xx other than the two above). */
   | 'rejected'
+  /**
+   * The provider refused the persona on content grounds.
+   *
+   * A NARROWER CASE OF `rejected`, kept separate because the two mean opposite
+   * things to the person waiting. A rejection is a fault that may clear by
+   * itself; a content refusal will fail identically every time, so telling
+   * somebody to "try again in a moment" is advice that cannot work.
+   */
+  | 'content_blocked'
   /** The provider failed (5xx). */
   | 'upstream'
   /** The request exceeded its bounded timeout. */
@@ -52,7 +61,14 @@ export class VoiceProviderError extends Error {
    * the caller's.
    */
   get definitelyCreatedNothing(): boolean {
-    return this.kind === 'not_configured' || this.kind === 'unauthorized' || this.kind === 'rejected';
+    return (
+      this.kind === 'not_configured' ||
+      this.kind === 'unauthorized' ||
+      this.kind === 'rejected' ||
+      // A refusal on content grounds is a refusal: the provider declined the
+      // request rather than half-performing it, so there is no session to orphan.
+      this.kind === 'content_blocked'
+    );
   }
 }
 
