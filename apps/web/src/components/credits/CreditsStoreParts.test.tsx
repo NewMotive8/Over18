@@ -144,6 +144,17 @@ describe('after the payment', () => {
     expect(html).toContain('Continue to unlock');
   });
 
+  it('REGRESSION (staging QA): a refreshed or revisited completed payment says the purchase is complete -- never "Credits added"', () => {
+    const p = payment();
+    const html = render(<PurchaseResult outcome={{ kind: 'already_added', payment: p }} continueTo={returnTarget(p.context)} continueLabel="Continue to unlock" onDismiss={() => undefined} />);
+    expect(html).toContain('data-outcome="already_added"');
+    expect(html).toContain('Purchase complete');
+    expect(html).toContain('The 850 Credits from this purchase are already in your balance.');
+    expect(html).not.toMatch(/Credits added|\+850|New balance/);
+    // The way back still works, so a revisit is not a dead end.
+    expect(html).toContain(`href="/characters/${CHARACTER}?tab=posts&amp;unlock=${ASSET}"`);
+  });
+
   it('with nowhere to go back to, Continue stays in the store', () => {
     const html = render(<PurchaseResult outcome={{ kind: 'added', payment: payment({ context: null }), balance: 850 }} continueTo={null} continueLabel="Continue" onDismiss={() => undefined} />);
     expect(html).toContain('data-testid="purchase-continue"');

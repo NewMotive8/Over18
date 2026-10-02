@@ -291,6 +291,8 @@ export function NoPacks() {
 export type PurchaseOutcome =
   | { kind: 'checking' }
   | { kind: 'added'; payment: CustomerPaymentView; balance: number | null }
+  /** The same succeeded payment, seen again (a refresh or a later visit): nothing new was added. */
+  | { kind: 'already_added'; payment: CustomerPaymentView }
   | { kind: 'not_completed'; payment: CustomerPaymentView | null }
   | { kind: 'pending'; payment: CustomerPaymentView };
 
@@ -334,6 +336,28 @@ export function PurchaseResult({
         ) : (
           <button type="button" onClick={onDismiss} data-testid="purchase-continue" className="min-h-12 w-full rounded-xl bg-rose-600 px-3 text-sm font-bold text-white hover:bg-rose-500">
             Continue
+          </button>
+        )}
+      </section>
+    );
+  }
+  if (outcome.kind === 'already_added') {
+    // Not news: the Credits arrived when this purchase completed. Said as a
+    // fact about that purchase -- never as Credits being added now.
+    const total = outcome.payment.pack?.totalCredits ?? null;
+    return (
+      <section role="status" data-testid="purchase-result" data-outcome="already_added" className="flex flex-col items-center gap-3 rounded-3xl border border-zinc-800 bg-zinc-900/60 p-6 text-center">
+        <h2 className="text-lg font-bold text-white">Purchase complete</h2>
+        <p className="text-sm text-zinc-400">
+          {total !== null ? `The ${credits(total)} from this purchase are already in your balance.` : 'The Credits from this purchase are already in your balance.'}
+        </p>
+        {continueTo ? (
+          <Link to={continueTo} data-testid="purchase-continue" className="flex min-h-12 w-full items-center justify-center rounded-xl bg-zinc-800 px-3 text-sm font-bold text-white hover:bg-zinc-700">
+            {continueLabel}
+          </Link>
+        ) : (
+          <button type="button" onClick={onDismiss} data-testid="purchase-continue" className="min-h-12 w-full rounded-xl bg-zinc-800 px-3 text-sm font-bold text-white hover:bg-zinc-700">
+            Back to the store
           </button>
         )}
       </section>

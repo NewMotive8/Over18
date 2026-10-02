@@ -29,6 +29,7 @@ import {
   purchasablePacks,
   readStoreContext,
   recommendedPack,
+  returnOutcome,
   returnTarget,
   showPremiumNote,
 } from '../lib/creditsStore';
@@ -101,9 +102,10 @@ export default function CreditsStorePage() {
     setParams({}, { replace: true });
   }, [setParams]);
 
-  const resultContext = outcome.kind === 'added' || outcome.kind === 'not_completed' ? outcome.payment?.context ?? null : null;
-  const continueTo = outcome.kind === 'added' ? returnTarget(outcome.payment.context) : null;
-  const continueLabel = outcome.kind === 'added' && outcome.payment.context?.originAction === 'content_unlock' ? 'Continue to unlock' : 'Continue';
+  const settled = outcome.kind === 'added' || outcome.kind === 'already_added';
+  const resultContext = settled || outcome.kind === 'not_completed' ? outcome.payment?.context ?? null : null;
+  const continueTo = settled ? returnTarget(outcome.payment.context) : null;
+  const continueLabel = settled && outcome.payment.context?.originAction === 'content_unlock' ? 'Continue to unlock' : 'Continue';
   const backTo = returnTarget(context);
 
   const content = (
@@ -238,14 +240,19 @@ function useHero(context: ReturnType<typeof readStoreContext>): HeroMedia {
 
 /**
  * What became of the pack checkout the customer is returning from -- as the
- * SERVER reports it. A payment still pending is asked about again a few times;
- * a success re-reads the balance and tells the app bar to do the same.
+ * SERVER reports it. A payment still pending is asked about again a few times.
+ *
+ * "Credits added" is said only on the FIRST return from a checkout this tab
+ * started (`returnOutcome`); a refresh or a later visit to the same succeeded
+ * payment is told the purchase is complete, and nothing is announced as new.
  */
 function usePurchaseOutcome(paymentParam: string | null, active: boolean, refreshEconomy: () => void): PurchaseOutcome {
   const [outcome, setOutcome] = useState<PurchaseOutcome>({ kind: 'checking' });
+  // Which checkout this tab started -- read ONCE, before anything clears it.
+  const [startedHere] = useState(() => pendingPayment.get());
   useEffect(() => {
     if (!active) return;
-    const paymentId = paymentParam ?? pendingPayment.get();
+    const paymentId = paymentParam ?? startedHere;
     if (!paymentId) {
       setOutcome({ kind: 'not_completed', payment: null });
       return;
@@ -257,18 +264,21 @@ function usePurchaseOutcome(paymentParam: string | null, active: boolean, refres
         .read(paymentId)
         .then((payment) => {
           if (cancelled) return;
-          if (payment.status === 'succeeded') {
+          const kind = returnOutcome(payment.status, payment.id, startedHere);
+          if (kind === 'added') {
             pendingPayment.clear();
             setOutcome({ kind: 'added', payment, balance: null });
             refreshEconomy();
             announceCreditsChanged();
-          } else if (payment.status === 'pending' && attempts++ < 5) {
+          } else if (kind === 'already_added') {
+            setOutcome({ kind: 'already_added', payment });
+          } else if (kind === 'pending' && attempts++ < 5) {
             setOutcome({ kind: 'pending', payment });
             setTimeout(look, 2000);
-          } else if (payment.status === 'pending') {
+          } else if (kind === 'pending') {
             setOutcome({ kind: 'pending', payment });
           } else {
-            pendingPayment.clear();
+            if (startedHere === payment.id) pendingPayment.clear();
             setOutcome({ kind: 'not_completed', payment });
           }
         })
@@ -280,6 +290,6 @@ function usePurchaseOutcome(paymentParam: string | null, active: boolean, refres
     return () => {
       cancelled = true;
     };
-  }, [paymentParam, active, refreshEconomy]);
+  }, [paymentParam, active, refreshEconomy, startedHere]);
   return outcome;
 }
