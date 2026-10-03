@@ -3,10 +3,22 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import type { PaymentMethod } from '@over18/shared';
 import PaymentMethodSheet from '../PaymentMethodSheet';
-import { EconomyStateNotice, PlanCatalog, premiumBenefitFacts } from '../CustomerEconomy';
+import { EconomyStateNotice, premiumBenefitFacts } from '../CustomerEconomy';
+import { DEFAULT_HERO } from '../credits/CreditsStoreParts';
 import { CrownIcon, PhoneIcon, SparkleIcon } from '../icons';
 import { track } from '../../lib/analytics';
-import { formatPlanPrice, offeredPlans, useCustomerEconomy, type CustomerEconomyOverview } from '../../lib/customerEconomy';
+import {
+  bestValuePlan,
+  commercialTier,
+  formatMoneyMinor,
+  formatPlanPrice,
+  monthlyEquivalentMinor,
+  offeredPlans,
+  savingsPercent,
+  useCustomerEconomy,
+  type CustomerEconomyOverview,
+} from '../../lib/customerEconomy';
+import type { CustomerPlanOffer } from '@over18/shared';
 import { useCheckout } from '../../lib/payments';
 import { FREE_CHARACTER_LIMIT, type GateSurface } from '../../lib/premiumGate';
 
@@ -15,9 +27,10 @@ import { FREE_CHARACTER_LIMIT, type GateSurface } from '../../lib/premiumGate';
  *
  *   Step 1  "This feed is for Premium eyes only": a deliberate, inviting moment
  *           over the (blurred, inert) feed, with one primary action.
- *   Step 2  The plans, right here -- the SAME `PlanCatalog` the Premium page
- *           renders -- then the SAME payment-method sheet and the SAME
- *           `useCheckout` that page uses. No `/subscription` detour, and no
+ *   Step 2  The Premium OFFER, right here: a visual header, the real benefits,
+ *           the catalog's plans as offer cards with the best value chosen,
+ *           and one CTA -- then the SAME payment-method sheet and the SAME
+ *           `useCheckout` the Premium page uses. No `/subscription` detour, and no
  *           second checkout: this is one more entry point into the existing one.
  *
  * Back from Step 2 returns to Step 1; closing returns to the feed exactly as it
@@ -47,12 +60,12 @@ export function FunnelIntro({
   const facts = overview ? premiumBenefitFacts(overview) : null;
   return (
     <div data-testid="premium-funnel-intro" className="flex w-full max-w-md flex-col items-center gap-5 px-6 text-center">
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-rose-500 to-fuchsia-600 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white shadow-lg shadow-rose-950/50">
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-rose-600 to-red-600 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white shadow-lg shadow-rose-950/50">
         <CrownIcon aria-hidden className="h-3.5 w-3.5" /> Premium only
       </span>
       <h2 id="premium-funnel-title" className="text-[2rem] font-black uppercase leading-[1.02] tracking-tight text-white drop-shadow">
         This feed is for{' '}
-        <span className="bg-gradient-to-r from-rose-400 via-pink-400 to-fuchsia-400 bg-clip-text text-transparent">Premium</span> eyes only
+        <span className="text-rose-500">Premium</span> eyes only
       </h2>
       <p className="max-w-xs text-sm leading-relaxed text-zinc-200">
         You&rsquo;ve met your {FREE_CHARACTER_LIMIT} free companions. Go Premium to keep discovering &mdash; and keep every
@@ -75,7 +88,7 @@ export function FunnelIntro({
         type="button"
         onClick={onUnlock}
         data-testid="premium-funnel-unlock"
-        className="mt-1 flex min-h-14 w-full max-w-xs items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-500 to-fuchsia-600 px-6 text-base font-bold uppercase tracking-wide text-white shadow-[0_10px_30px_rgba(225,29,72,0.45)] transition-transform active:scale-[0.98]"
+        className="mt-1 flex min-h-14 w-full max-w-xs items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-600 to-red-600 px-6 text-base font-bold uppercase tracking-wide text-white shadow-[0_10px_30px_rgba(225,29,72,0.45)] transition-transform active:scale-[0.98]"
       >
         <CrownIcon aria-hidden className="h-4 w-4" /> Unlock Premium Now
       </button>
@@ -86,7 +99,74 @@ export function FunnelIntro({
   );
 }
 
-/** Step 2: the existing plan selector, in a sheet, with a way back to Step 1. */
+/** "1 month", "3 months", "12 months" -- how long a plan runs, said plainly. */
+function periodLabel(months: number): string {
+  return `${months} ${months === 1 ? 'month' : 'months'}`;
+}
+
+/** One plan as an offer card: the price per month big, what is billed small. */
+function OfferCard({
+  plan,
+  selected,
+  best,
+  saving,
+  onSelect,
+}: {
+  plan: CustomerPlanOffer;
+  selected: boolean;
+  best: boolean;
+  saving: number | null;
+  onSelect: () => void;
+}) {
+  const perMonthMinor = monthlyEquivalentMinor(plan);
+  const perMonth = perMonthMinor === null ? null : formatMoneyMinor(perMonthMinor, plan.currency);
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      data-testid={`offer-${plan.code}`}
+      data-best={best || undefined}
+      aria-label={`${periodLabel(plan.billingPeriodMonths)}, ${formatPlanPrice(plan)}${best ? ', best value' : ''}`}
+      className={`relative flex flex-col items-center rounded-2xl p-[1.5px] text-center transition-transform active:scale-[0.98] ${
+        selected
+          ? 'bg-gradient-to-b from-rose-500 via-red-600 to-rose-700 shadow-[0_8px_28px_rgba(225,29,72,0.45)]'
+          : 'bg-zinc-800'
+      } ${best ? 'mt-0' : 'mt-3'}`}
+    >
+      {best && (
+        <span data-testid="offer-best" className="absolute -top-3 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-full bg-gradient-to-r from-amber-300 to-amber-500 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-zinc-950 shadow">
+          Best value
+        </span>
+      )}
+      <span className={`flex h-full w-full flex-col items-center gap-1 rounded-[calc(1rem-1.5px)] px-2 pb-3 ${best ? 'pt-5' : 'pt-3'} ${selected ? 'bg-zinc-950/85' : 'bg-zinc-900'}`}>
+        <span className="text-xs font-semibold text-zinc-300">{periodLabel(plan.billingPeriodMonths)}</span>
+        {perMonth && (
+          <span className="flex flex-col items-center leading-none">
+            <span className="text-xl font-black tracking-tight text-white tabular-nums">{perMonth}</span>
+            <span className="mt-0.5 text-[11px] text-zinc-400">per month</span>
+          </span>
+        )}
+        <span className={`mt-1 min-h-[1.25rem] rounded-full px-2 py-0.5 text-[11px] font-bold ${saving !== null ? 'bg-emerald-400/15 text-emerald-300' : 'invisible'}`}>
+          Save {saving ?? 0}%
+        </span>
+        <span className="text-[10px] leading-tight text-zinc-500">{formatPlanPrice(plan)}</span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * Step 2: the Premium OFFER -- a continuation of Step 1, not a settings page.
+ *
+ * Presentation made for the funnel; the facts are the existing ones: plans and
+ * prices from the catalog (`offeredPlans`), the recommendation from
+ * `bestValuePlan`, savings from `savingsPercent`, per-month prices from
+ * `monthlyEquivalentMinor`, and the benefits from `premiumBenefitFacts` -- the
+ * same selectors the Premium page's `PlanCatalog` uses. Choosing continues into
+ * the existing payment-method sheet and checkout (see `PremiumFunnel`).
+ */
 export function FunnelPlans({
   state,
   onBack,
@@ -98,28 +178,117 @@ export function FunnelPlans({
   onClose: () => void;
   onChoose: (planCode: string) => void;
 }) {
+  const overview = state.status === 'ready' ? state.overview : null;
+  const plans = overview ? [...offeredPlans(overview)].sort((a, b) => a.billingPeriodMonths - b.billingPeriodMonths) : [];
+  const best = bestValuePlan(plans);
+  const [picked, setPicked] = useState<string | null>(null);
+  const selected = plans.find((p) => p.code === picked) ?? best ?? plans[0] ?? null;
+  const facts = overview ? premiumBenefitFacts(overview) : null;
+  const premium = overview ? commercialTier(overview) === 'premium' : false;
+
   return (
     <div
       data-testid="premium-funnel-plans"
-      className="flex max-h-[92dvh] w-full max-w-lg flex-col gap-4 overflow-y-auto rounded-t-3xl border border-zinc-800 bg-zinc-950 p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-3xl"
+      className="flex max-h-[94dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl border border-rose-500/20 bg-zinc-950 shadow-2xl sm:rounded-3xl"
     >
-      <div className="flex items-center justify-between gap-3">
-        <button type="button" onClick={onBack} data-testid="premium-funnel-back" className="flex min-h-11 items-center gap-1 pr-3 text-sm font-medium text-zinc-300 hover:text-white">
-          <span aria-hidden>‹</span> Back
-        </button>
-        <button type="button" onClick={onClose} aria-label="Close" className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-900 text-lg text-zinc-300 hover:text-white">
-          ×
-        </button>
+      <div className="overflow-y-auto">
+        {/* The visual: OVER18's own non-nude hero, in Premium colours. */}
+        <div className="relative h-44 overflow-hidden sm:h-48">
+          <img src={DEFAULT_HERO.poster} alt="" aria-hidden className="absolute inset-0 h-full w-full object-cover object-[center_22%]" />
+          <div aria-hidden className="absolute inset-0 bg-gradient-to-b from-red-950/30 via-rose-950/45 to-zinc-950" />
+          <div className="absolute inset-x-0 top-0 flex items-center justify-between p-3">
+            <button
+              type="button"
+              onClick={onBack}
+              data-testid="premium-funnel-back"
+              aria-label="Back"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-black/45 text-xl text-white backdrop-blur hover:bg-black/60"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-black/45 text-lg text-white backdrop-blur hover:bg-black/60"
+            >
+              ×
+            </button>
+          </div>
+          <div className="absolute inset-x-0 bottom-0 px-5 pb-3">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-rose-600 to-red-600 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-white shadow-lg shadow-rose-950/50">
+              <CrownIcon aria-hidden className="h-3 w-3" /> Premium
+            </span>
+            <h2 id="premium-funnel-title" className="mt-1.5 text-[1.75rem] font-black uppercase leading-[1.02] tracking-tight text-white drop-shadow">
+              Unlock{' '}
+              <span className="text-rose-500">everything</span>
+            </h2>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-4 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-2">
+          {state.status !== 'ready' ? (
+            <EconomyStateNotice state={state} />
+          ) : (
+            <>
+              <p className="text-sm leading-relaxed text-zinc-300">Every companion, every Premium post and conversations without limits.</p>
+
+              {facts && (
+                <ul data-testid="premium-offer-benefits" className="flex flex-col gap-2">
+                  {facts.map((fact) => (
+                    <li key={fact.key} className="flex items-center gap-2.5 text-sm font-medium text-white">
+                      <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-400/20 text-xs font-black text-emerald-300">
+                        ✓
+                      </span>
+                      {fact.text}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {plans.length === 0 ? (
+                <p className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4 text-center text-sm text-zinc-400">No plans are offered right now.</p>
+              ) : premium ? (
+                <p data-testid="already-premium" className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-center text-sm text-emerald-100">
+                  You&rsquo;re on Premium &mdash; there&rsquo;s nothing to buy here.
+                </p>
+              ) : (
+                <>
+                  <div
+                    role="radiogroup"
+                    aria-label="Choose a plan"
+                    className="grid items-end gap-2 pt-1"
+                    // One column per plan (up to three), so one or two plans never sit in an empty row.
+                    style={{ gridTemplateColumns: `repeat(${Math.min(plans.length, 3)}, minmax(0, 1fr))` }}
+                  >
+                    {plans.map((plan) => (
+                      <OfferCard
+                        key={plan.code}
+                        plan={plan}
+                        selected={plan.code === selected?.code}
+                        best={plan.code === best?.code && plans.length > 1}
+                        saving={savingsPercent(plans, plan)}
+                        onSelect={() => setPicked(plan.code)}
+                      />
+                    ))}
+                  </div>
+                  {selected && (
+                    <button
+                      type="button"
+                      onClick={() => onChoose(selected.code)}
+                      data-testid="premium-offer-continue"
+                      className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-600 to-red-600 px-5 text-base font-bold text-white shadow-[0_10px_30px_rgba(225,29,72,0.45)] transition-transform active:scale-[0.98]"
+                    >
+                      <CrownIcon aria-hidden className="h-4 w-4" />
+                      Continue · {periodLabel(selected.billingPeriodMonths)} for {formatPlanPrice(selected).split(' / ')[0]}
+                    </button>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
       </div>
-      <div>
-        <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-rose-400">
-          <CrownIcon aria-hidden className="h-3.5 w-3.5" /> Premium
-        </p>
-        <h2 id="premium-funnel-title" className="mt-1 text-2xl font-bold tracking-tight text-white">
-          Choose your plan
-        </h2>
-      </div>
-      {state.status === 'ready' ? <PlanCatalog overview={state.overview} onBuy={onChoose} /> : <EconomyStateNotice state={state} />}
     </div>
   );
 }

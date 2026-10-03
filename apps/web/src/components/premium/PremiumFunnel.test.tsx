@@ -54,47 +54,93 @@ describe('Step 1 -- the Premium moment', () => {
   });
 });
 
-describe('Step 2 -- the plans, in place', () => {
-  it('the existing plan selector: every offered plan, the best value marked, one clear action', () => {
-    const html = render(<FunnelPlans state={ready()} onBack={noop} onClose={noop} onChoose={noop} />);
-    for (const code of ['premium_monthly', 'premium_quarterly', 'premium_annual']) expect(html).toContain(`data-testid="plan-${code}"`);
-    expect(html).toContain('Best value');
-    expect(html).toContain('$12.99 / month');
-    expect(html).toMatch(/data-testid="buy-premium_[a-z]+"/);
-    expect(html).toContain('Choose your plan');
+describe('Step 2 -- the Premium offer, in place', () => {
+  const offer = () => render(<FunnelPlans state={ready()} onBack={noop} onClose={noop} onChoose={noop} />);
+
+  it('a Premium visual, an exciting headline and a short value proposition -- not a settings form', () => {
+    const html = offer();
+    expect(html).toMatch(/<img[^>]*src="\/media\/store\/default-hero-poster\.jpg"/);
+    expect(html).toMatch(/Unlock .*everything/);
+    expect(html).toContain('Every companion, every Premium post and conversations without limits.');
+    expect(html).not.toMatch(/Choose your plan|type="radio"|Billing period/);
+  });
+
+  it("a checklist of the product's real Premium benefits", () => {
+    const html = offer();
+    expect(html).toContain('data-testid="premium-offer-benefits"');
+    for (const fact of ['Unlimited text chat', 'Premium content included while your plan is active', '200 Credits every billing cycle', 'Spend Credits on anything priced in Credits']) {
+      expect(html).toContain(fact);
+    }
+  });
+
+  it('the three real plans as offer cards, shortest first, with the per-month price big and the billed price small', () => {
+    const html = offer();
+    const order = ['premium_monthly', 'premium_quarterly', 'premium_annual'].map((code) => html.indexOf(`data-testid="offer-${code}"`));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    for (const label of ['1 month', '3 months', '12 months']) expect(html).toContain(label);
+    // Per month (derived from the catalog price) and what is actually billed.
+    expect(html).toContain('$12.99');
+    expect(html).toContain('$10.00');
+    expect(html).toContain('$7.50');
+    for (const billed of ['$12.99 / month', '$29.99 / 3 months', '$89.99 / year']) expect(html).toContain(billed);
+    expect(html).toContain('Save 23%');
+    expect(html).toContain('Save 42%');
+  });
+
+  it('the best-value plan is obvious and chosen by default; ONE CTA carries its terms', () => {
+    const html = offer();
+    expect(html.match(/data-testid="offer-best"/g)).toHaveLength(1);
+    expect(html).toMatch(/data-testid="offer-premium_annual"[^>]*data-best="true"|data-best="true"[^>]*data-testid="offer-premium_annual"/);
+    expect(html).toMatch(/aria-checked="true"[^>]*data-testid="offer-premium_annual"/);
+    expect(html.match(/data-testid="premium-offer-continue"/g)).toHaveLength(1);
+    expect(html).toMatch(/Continue · 12 months for \$89\.99/);
   });
 
   it('a way back to Step 1, and a way out', () => {
-    const html = render(<FunnelPlans state={ready()} onBack={noop} onClose={noop} onChoose={noop} />);
+    const html = offer();
     expect(html).toContain('data-testid="premium-funnel-back"');
     expect(html).toContain('aria-label="Close"');
   });
 
   it('never a link to /subscription', () => {
-    expect(render(<FunnelPlans state={ready()} onBack={noop} onClose={noop} onChoose={noop} />)).not.toContain('/subscription');
+    expect(offer()).not.toContain('/subscription');
   });
 
-  it('a Premium customer is not sold Premium (the selector refuses, as on the Premium page)', () => {
+  it('no invented urgency, social proof or discount', () => {
+    expect(offer()).not.toMatch(/watching|% off|ends in|hurry|limited time|only today/i);
+  });
+
+  it('a Premium customer is not sold Premium (as on the Premium page)', () => {
     const html = render(<FunnelPlans state={ready('premium')} onBack={noop} onClose={noop} onChoose={noop} />);
     expect(html).toContain('data-testid="already-premium"');
-    expect(html).not.toMatch(/data-testid="buy-/);
+    expect(html).not.toMatch(/premium-offer-continue|data-testid="offer-/);
   });
 
   it('while the plans load or fail, the existing notice -- no invented plan', () => {
-    expect(render(<FunnelPlans state={{ status: 'loading' }} onBack={noop} onClose={noop} onChoose={noop} />)).not.toMatch(/plan-premium/);
+    expect(render(<FunnelPlans state={{ status: 'loading' }} onBack={noop} onClose={noop} onChoose={noop} />)).not.toMatch(/data-testid="offer-|premium-offer-continue/);
   });
 });
 
 describe('one checkout, not two', () => {
   const funnel = read('components/premium/PremiumFunnel.tsx');
 
-  it('reuses the plan selector, the payment-method sheet and the existing checkout hook', () => {
-    expect(funnel).toMatch(/<PlanCatalog overview=\{state\.overview\} onBuy=\{onChoose\} \/>/);
+  it("the offer is built from the existing catalog and the same selectors the Premium page's PlanCatalog uses", () => {
+    for (const selector of ['offeredPlans(overview)', 'bestValuePlan(plans)', 'savingsPercent(plans, plan)', 'monthlyEquivalentMinor(plan)', 'formatPlanPrice(plan)', 'premiumBenefitFacts(overview)']) {
+      expect(funnel).toContain(selector);
+    }
+  });
+
+  it('reuses the payment-method sheet and the existing checkout hook', () => {
     expect(funnel).toMatch(/<PaymentMethodSheet/);
     expect(funnel).toMatch(/const checkout = useCheckout\(\);/);
     expect(funnel).toMatch(/checkout\.start\(plan\.code, method\)/);
     // No payments API call of its own, no price sent, no second implementation.
     expect(funnel).not.toMatch(/paymentsApi|startCheckout\(|priceMinor:/);
+  });
+
+  it('the Premium page keeps its own selector, unchanged', () => {
+    expect(read('pages/SubscriptionPage.tsx')).toMatch(/<PlanCatalog/);
   });
 
   it('never navigates to /subscription itself', () => {
