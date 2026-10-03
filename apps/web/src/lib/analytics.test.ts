@@ -67,17 +67,14 @@ describe('where the browser reports', () => {
   it('reports exactly the planned events from exactly the planned surfaces', () => {
     expect(reported().sort()).toEqual(
       [
-        'components/PremiumGate.tsx: paywall_viewed',
-        'components/PremiumGate.tsx: paywall_dismissed',
-        'components/PremiumGate.tsx: paywall_dismissed',
-        'components/PremiumGate.tsx: subscription_cta_clicked',
         'pages/SubscriptionPage.tsx: paywall_viewed',
         'pages/SubscriptionPage.tsx: subscription_cta_clicked',
         'pages/SubscriptionPage.tsx: paywall_dismissed',
         'pages/CreditsStorePage.tsx: credit_purchase_viewed',
         'pages/CreditsStorePage.tsx: paywall_dismissed',
         'components/profile/PostsTab.tsx: locked_content_viewed',
-        // The Premium feed funnel (Home feed and Swipe Mode): seen, plan chosen, closed / sheet cancelled.
+        // The Premium funnel (Home feed, Swipe Mode, and a character profile's Premium button --
+        // which used to open the placeholder PremiumGate sheet): seen, plan chosen, closed / sheet cancelled.
         'components/premium/PremiumFunnel.tsx: paywall_viewed',
         'components/premium/PremiumFunnel.tsx: subscription_cta_clicked',
         'components/premium/PremiumFunnel.tsx: paywall_dismissed',
@@ -87,7 +84,7 @@ describe('where the browser reports', () => {
   });
 
   it('never sends a server-owned fact: tier, balance state, access decision, price or the recommended pack', () => {
-    for (const rel of ['components/PremiumGate.tsx', 'pages/SubscriptionPage.tsx', 'pages/CreditsStorePage.tsx', 'components/profile/PostsTab.tsx']) {
+    for (const rel of ['components/premium/PremiumFunnel.tsx', 'pages/SubscriptionPage.tsx', 'pages/CreditsStorePage.tsx', 'components/profile/PostsTab.tsx']) {
       // Only the reports themselves: the unlock flow uses a price for its own purposes.
       const calls = [...read(rel).matchAll(/(?:track|useTrackView)\(\s*'[a-z_]+',\s*\{[^}]*\}/g)].map((m) => m[0]);
       expect(calls.length).toBeGreaterThan(0);

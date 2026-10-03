@@ -18,7 +18,8 @@ import ProfileTabs, { type ProfileTab } from '../components/profile/ProfileTabs'
 import AboutTab from '../components/profile/AboutTab';
 import PostsTab from '../components/profile/PostsTab';
 import MediaViewer from '../components/MediaViewer';
-import PremiumGate from '../components/PremiumGate';
+import PremiumFunnel from '../components/premium/PremiumFunnel';
+import { commercialTier, useCustomerEconomy, type CustomerEconomyState } from '../lib/customerEconomy';
 import CreditsPill from '../components/CreditsPill';
 
 type VisualState =
@@ -41,7 +42,7 @@ type ProfileState =
  * paywall. Data loading (character + public Visual Identity), the Start-chat
  * flow, and the profile states are all preserved from the prior implementation;
  * only the presentation changed. Media flows through the existing provider-
- * agnostic resolver and the US-19 MediaViewer / PremiumGate.
+ * agnostic resolver, the US-19 MediaViewer and the Premium funnel.
  */
 export default function CharacterDetailPage() {
   const { characterId } = useParams<{ characterId: string }>();
@@ -58,7 +59,8 @@ export default function CharacterDetailPage() {
   const [tab, setTab] = useState<ProfileTab>(() => (params.get('tab') === 'posts' ? 'posts' : 'about'));
   const resumeUnlock = params.get('unlock');
   const [viewer, setViewer] = useState<{ items: CharacterMediaItem[]; index: number } | null>(null);
-  const [gateOpen, setGateOpen] = useState(false);
+  const [funnelOpen, setFunnelOpen] = useState(false);
+  const [economy] = useCustomerEconomy();
   /**
    * Her real content collection, for the Posts tab.
    *
@@ -268,6 +270,10 @@ export default function CharacterDetailPage() {
         ? first.src
         : absoluteMediaUrl(character.profileImage);
   const relationship = mockRelationship(character);
+  const upgrade = upgradeAction(economy, {
+    openFunnel: () => setFunnelOpen(true),
+    signIn: () => navigate('/login', { state: { from: location.pathname } }),
+  });
 
   return (
     <div className="flex flex-col pb-10">
@@ -290,7 +296,7 @@ export default function CharacterDetailPage() {
         )}
 
         <ProfileActions
-          onUpgrade={() => setGateOpen(true)}
+          onUpgrade={upgrade ?? undefined}
           onChat={() => startChat(character)}
           onCall={() => startCall(character)}
           chatting={starting}
@@ -334,7 +340,26 @@ export default function CharacterDetailPage() {
           videoFit="contain"
         />
       )}
-      {gateOpen && <PremiumGate name={character.displayName} characterId={character.id} onClose={() => setGateOpen(false)} />}
+      <PremiumFunnel open={funnelOpen} surface="premium_gate" startAt="plans" onClose={() => setFunnelOpen(false)} />
     </div>
   );
+}
+
+/**
+ * What the profile's Premium button does -- or null for no button.
+ *
+ * DECIDED BY THE SERVER'S TIER, never guessed. A Premium member has nothing to
+ * upgrade to, so gets no button (it used to show to everyone and open a
+ * placeholder sheet). A signed-in Free customer opens the real Premium funnel;
+ * a signed-out visitor is sent to sign in first, as Chat does. While the
+ * economy is loading, or when it is unavailable or switched off, there is no
+ * button: better a moment without it than flashing it at a member.
+ */
+export function upgradeAction(
+  economy: CustomerEconomyState,
+  actions: { openFunnel: () => void; signIn: () => void },
+): (() => void) | null {
+  if (economy.status === 'signed-out') return actions.signIn;
+  if (economy.status !== 'ready') return null;
+  return commercialTier(economy.overview) === 'free' ? actions.openFunnel : null;
 }
