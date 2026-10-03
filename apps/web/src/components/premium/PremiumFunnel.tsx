@@ -199,11 +199,11 @@ export function FunnelPlans({
     >
       <div className="overflow-y-auto">
         {/* The visual: OVER18's own non-nude hero, in Premium colours. */}
-        <div className="relative h-44 overflow-hidden sm:h-48">
+        <div className="relative h-64 overflow-hidden sm:h-72">
           <RotatingHeaderClip
             clips={rotation}
-            className="absolute inset-0 h-full w-full object-cover object-[center_22%]"
-            fallback={<img src={DEFAULT_HERO.poster} alt="" aria-hidden className="absolute inset-0 h-full w-full object-cover object-[center_22%]" />}
+            className="absolute inset-0 h-full w-full object-cover object-top"
+            fallback={<img src={DEFAULT_HERO.poster} alt="" aria-hidden className="absolute inset-0 h-full w-full object-cover object-top" />}
           />
           <div aria-hidden className="absolute inset-0 bg-gradient-to-b from-zinc-950/40 via-transparent via-40% to-zinc-950" />
           <div className="absolute inset-x-0 top-0 flex items-center justify-between p-3">
