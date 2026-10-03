@@ -118,16 +118,29 @@ export function PlanSummary({ overview }: { overview: CustomerEconomyOverview })
  * in the economy configuration changes this line too. With no plan to read it
  * from this renders nothing rather than guessing a number.
  */
-export function PremiumBenefits({ overview }: { overview: CustomerEconomyOverview }) {
+export function premiumBenefitFacts(overview: CustomerEconomyOverview): Array<{ key: 'chat' | 'content' | 'credits' | 'spend'; text: string }> | null {
   const plans = offeredPlans(overview);
   const credits = plans.length > 0 ? plans[0]!.monthlyIncludedCredits : null;
   if (credits === null) return null;
-  const benefits = [
-    { key: 'chat', icon: <PhoneIcon className="h-4 w-4" />, text: 'Unlimited text chat' },
-    { key: 'content', icon: <CrownIcon className="h-4 w-4" />, text: 'Premium content included while your plan is active' },
-    { key: 'credits', icon: <SparkleIcon className="h-4 w-4" />, text: `${credits} Credits every billing cycle` },
-    { key: 'spend', icon: <SparkleIcon className="h-4 w-4" />, text: 'Spend Credits on anything priced in Credits' },
+  return [
+    { key: 'chat', text: 'Unlimited text chat' },
+    { key: 'content', text: 'Premium content included while your plan is active' },
+    { key: 'credits', text: `${credits} Credits every billing cycle` },
+    { key: 'spend', text: 'Spend Credits on anything priced in Credits' },
   ];
+}
+
+const BENEFIT_ICON = {
+  chat: <PhoneIcon className="h-4 w-4" />,
+  content: <CrownIcon className="h-4 w-4" />,
+  credits: <SparkleIcon className="h-4 w-4" />,
+  spend: <SparkleIcon className="h-4 w-4" />,
+} as const;
+
+export function PremiumBenefits({ overview }: { overview: CustomerEconomyOverview }) {
+  const facts = premiumBenefitFacts(overview);
+  if (facts === null) return null;
+  const benefits = facts.map((fact) => ({ ...fact, icon: BENEFIT_ICON[fact.key] }));
   return (
     <section aria-label="What Premium includes" data-testid="premium-benefits" className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-rose-400">What Premium includes</h3>

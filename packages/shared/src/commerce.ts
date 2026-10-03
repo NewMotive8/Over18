@@ -776,7 +776,7 @@ export type PurchaseOriginAction = (typeof PURCHASE_ORIGIN_ACTIONS)[number];
 
 /* ---- analytics property allow-lists (PR 3), beside the purchase vocabulary they use ---- */
 
-const SURFACES = ['premium_gate', 'subscription_page', 'credits_store', 'posts'] as const;
+const SURFACES = ['premium_gate', 'subscription_page', 'credits_store', 'posts', 'home_feed', 'swipe'] as const;
 const TIERS = ['free', 'premium'] as const;
 const PURCHASE_CONTEXT = {
   origin: PURCHASE_ORIGINS,

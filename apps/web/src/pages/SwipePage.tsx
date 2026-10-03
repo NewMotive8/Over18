@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { PublicPlayWithMeCard } from '../lib/api';
 import { usePlayWithMe } from '../hooks/usePlayWithMe';
@@ -9,6 +9,8 @@ import DiscoverActions from '../components/DiscoverActions';
 import EmptyState from '../components/EmptyState';
 import { DiscoverIcon, LikeIcon, SparkleIcon } from '../components/icons';
 import type { SwipeDecision } from '../lib/swipe';
+import PremiumFunnel from '../components/premium/PremiumFunnel';
+import { admit, canMeet, usePremiumGate } from '../lib/premiumGate';
 
 /**
  * Swipe discovery — the Tinder-style deck, kept as a secondary interaction
@@ -41,6 +43,14 @@ import type { SwipeDecision } from '../lib/swipe';
  * and passing works; the heart is simply unavailable, and a right swipe says so
  * rather than pretending to save. That is why `useFavourites` reports
  * 'signed-out' as a state distinct from an error.
+ *
+ * ── THE PREMIUM GATE ─────────────────────────────────────────────────────────
+ *
+ * A signed-in Free customer meets up to ten characters here (`lib/premiumGate`).
+ * The card on screen is what counts, once per character. Trying to move on to
+ * an eleventh opens the Premium funnel in place: her card is never shown -- not
+ * even as the peek behind the tenth -- and the deck is left exactly where it
+ * was, so closing the funnel or starting over still works.
  */
 function DeckSkeleton() {
   return (
@@ -71,8 +81,27 @@ export default function SwipePage() {
   const feedbackTimer = useRef<number | null>(null);
 
   const characters = state.status === 'ready' ? state.characters : [];
+  const gate = usePremiumGate('swipe');
+  const [funnelOpen, setFunnelOpen] = useState(false);
   const current: PublicPlayWithMeCard | undefined = characters[index];
-  const next: PublicPlayWithMeCard | undefined = characters[index + 1];
+  // Beyond the allowance: her card stays hidden, and the funnel takes over.
+  const blocked = gate.enforced && current !== undefined && !canMeet(gate.seen, current.id);
+  const upcoming: PublicPlayWithMeCard | undefined = characters[index + 1];
+  // Never peek at a character the customer may not meet yet.
+  // (The current card counts first: it is met the moment it is on screen.)
+  const metWithCurrent = current && !blocked ? admit(gate.seen, [current.id]) : gate.seen;
+  const next = upcoming && (!gate.enforced || canMeet(metWithCurrent, upcoming.id)) ? upcoming : undefined;
+
+  // The card on screen is a character met -- once, by id.
+  useEffect(() => {
+    if (gate.enforced && current && !blocked) gate.record([current.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gate.enforced, current?.id, blocked]);
+
+  // Arriving at the eleventh: the Premium funnel, once per arrival.
+  useEffect(() => {
+    if (blocked) setFunnelOpen(true);
+  }, [blocked, current?.id]);
   const signedOut = favourites.status === 'signed-out';
   const currentFavourited = current ? favourites.favourited.has(current.id) : false;
   /**
@@ -170,7 +199,7 @@ export default function SwipePage() {
     [state.status, characters.length, current, index],
   );
 
-  if (state.status === 'loading') {
+  if (state.status === 'loading' || gate.pending) {
     return (
       <div className="flex flex-1 min-h-0 flex-col gap-3">
         {backLink}
@@ -216,6 +245,34 @@ export default function SwipePage() {
           description="New characters are on their way. Check back soon."
           badge="Coming soon"
         />
+      </div>
+    );
+  }
+
+  if (blocked) {
+    return (
+      <div className="flex flex-1 min-h-0 flex-col gap-3">
+        {backLink}
+        {header}
+        <div
+          data-testid="swipe-premium-locked"
+          className="relative flex min-h-[420px] flex-1 flex-col items-center justify-center gap-4 overflow-hidden rounded-3xl border border-rose-500/25 bg-gradient-to-b from-rose-500/15 via-zinc-950 to-zinc-950 px-6 text-center"
+        >
+          <span aria-hidden className="text-4xl">👀</span>
+          <p className="text-lg font-bold text-white">More companions are waiting</p>
+          <p className="max-w-xs text-sm text-zinc-400">You&rsquo;ve met your free companions. Premium keeps the deck going.</p>
+          <button
+            type="button"
+            onClick={() => setFunnelOpen(true)}
+            className="rounded-xl bg-gradient-to-r from-rose-500 to-fuchsia-600 px-5 py-2.5 text-sm font-bold text-white"
+          >
+            Unlock Premium Now
+          </button>
+          <button type="button" onClick={restart} className="text-sm font-medium text-zinc-400 hover:text-white">
+            Start over
+          </button>
+        </div>
+        <PremiumFunnel open={funnelOpen} surface="swipe" onClose={() => setFunnelOpen(false)} />
       </div>
     );
   }
