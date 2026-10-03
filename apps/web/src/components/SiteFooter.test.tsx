@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import SiteFooter, { REQUIRED_LEGAL_PAGES, availableLegalPages, type LegalPage } from './SiteFooter';
+import { legalDocument } from '../legal/legalContent';
 
 /** Static markup escapes `&`; these assertions are about the words, not entities. */
 const decode = (html: string) => html.replace(/&amp;/g, '&').replace(/&#x27;/g, "'");
@@ -47,40 +48,68 @@ describe('what the footer always says', () => {
 });
 
 /**
- * THE GAP, NOW CLOSED.
+ * THE SHORT SET.
  *
- * These three assertions used to pin the opposite: that every required page was
- * missing and that the footer therefore linked none of them. The pages are
- * written and routed, so they now pin the other half of the same contract —
- * every declared page exists, has a route, and is reachable from the footer.
- * The rule itself never changed: a page is linked exactly when it exists.
+ * The footer shows the four links a visitor scans for, under plain names. Every
+ * document still exists and every route still resolves — the Cookie Policy and
+ * the Adult / 18+ Policy are reached by route and by the sibling nav on each
+ * legal page, and "Trust & Safety" is the Adult / 18+ Policy under a plainer
+ * name. These tests pin what is VISIBLE; `legal/legal.test.tsx` pins that every
+ * document is still routed and reachable.
  */
 describe('legal links', () => {
-  it('declares every page an adult site of this kind needs', () => {
+  it('shows exactly four, in order', () => {
     expect(REQUIRED_LEGAL_PAGES.map((p) => p.label)).toEqual([
-      'Privacy Policy',
-      'Terms & Conditions',
-      'Adult / 18+ Policy',
-      'Cookie Policy',
-      'Contact / Legal',
+      'Terms',
+      'Privacy',
+      'Trust & Safety',
+      'Contact',
     ]);
   });
 
-  it('has all of them, each with a route', () => {
-    expect(availableLegalPages()).toHaveLength(REQUIRED_LEGAL_PAGES.length);
+  it('points each one at the right document', () => {
+    expect(REQUIRED_LEGAL_PAGES.map((p) => p.path)).toEqual([
+      '/terms',
+      '/privacy',
+      '/adult-policy',
+      '/legal',
+    ]);
+  });
+
+  it('has all four available, each with a route', () => {
+    expect(availableLegalPages()).toHaveLength(4);
     for (const page of availableLegalPages()) {
       expect(page.available, page.label).toBe(true);
       expect(page.path, page.label).toMatch(/^\/[a-z-]+$/);
     }
   });
 
-  it('renders every one of them as a working link', () => {
+  /** A label may be chosen freely; a destination may not be invented. */
+  it('points every link at a document that actually exists', () => {
+    for (const page of REQUIRED_LEGAL_PAGES) {
+      const slug = (page.path ?? '').replace('/', '');
+      expect(legalDocument(slug), page.label).toBeDefined();
+    }
+  });
+
+  it('renders all four as working links', () => {
     const html = render();
     expect(html).toContain('Legal and safety');
     for (const page of REQUIRED_LEGAL_PAGES) {
       expect(html, page.label).toContain(`href="${page.path}"`);
       expect(html, page.label).toContain(page.label);
     }
+  });
+
+  /**
+   * NOT SHOWN, AND NOT GONE. Neither appears as its own footer link; both are
+   * still routed, which `legal/legal.test.tsx` asserts.
+   */
+  it('shows no separate Cookie Policy or Adult / 18+ Policy link', () => {
+    const html = render();
+    expect(html).not.toContain('Cookie Policy');
+    expect(html).not.toContain('Adult / 18+ Policy');
+    expect(html).not.toContain('href="/cookies"');
   });
 
   /** And the other half of the contract: a page that exists IS linked. */

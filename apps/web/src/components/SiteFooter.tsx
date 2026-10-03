@@ -6,47 +6,56 @@ import { LEGAL_DOCUMENTS } from '../legal/legalContent';
 /**
  * The site footer.
  *
- * ── IT LINKS TO PAGES THAT EXIST, AND TO NO OTHERS ───────────────────────────
+ * ── FOUR LINKS, NOT FIVE ─────────────────────────────────────────────────────
  *
- * A footer full of Terms / Privacy / Cookies links is the normal shape, and
- * writing that shape here would have meant either inventing the pages or
- * linking to routes that 404. Both are worse than an honest gap: a link to
- * "Terms of Service" tells a visitor that terms exist and have been agreed,
- * and a 404 behind it tells them so for exactly as long as it takes to click.
+ * The footer shows the short set a visitor actually scans for: Terms, Privacy,
+ * Trust & Safety, Contact. Every document still exists and every route still
+ * resolves -- this is a presentation decision about what belongs in a footer,
+ * not a removal.
  *
- * So the pages are DECLARED rather than linked, in `REQUIRED_LEGAL_PAGES`, and
- * only the ones marked available are rendered. The list is the gap, in code:
- * when a page is written, its entry flips to `available: true` with its route,
- * one line, and the footer picks it up. The test asserts both halves -- that an
- * unavailable page is never rendered, and that an available one is.
+ * TWO DOCUMENTS ARE REACHED BY A ROUTE RATHER THAN BY THIS LIST. `/cookies` is
+ * live and `/adult-policy` is live; the latter is what "Trust & Safety" points
+ * at, so the Adult / 18+ Policy is one click away under a plainer name. The
+ * Cookie Policy is linked from the Privacy Policy's own text and from the
+ * sibling nav on every legal page, which is where somebody looking for it
+ * actually goes.
+ *
+ * ── A LINK STILL NEVER POINTS AT A ROUTE THAT DOES NOT EXIST ─────────────────
+ *
+ * The original contract survives the simplification: every entry below names a
+ * document in `LEGAL_DOCUMENTS` by slug, and a test resolves each one. A label
+ * can be chosen freely; a destination cannot be invented.
  */
 
 export interface LegalPage {
-  /** What the link would say. */
+  /** What the link says. */
   readonly label: string;
-  /** The route, once the page exists. */
+  /** The route it points at. */
   readonly path: string | null;
-  /** False until the page has actually been written and routed. */
+  /** False when the page has not been written and routed. */
   readonly available: boolean;
 }
 
+/** The slug each footer link points at, and the short label it carries. */
+const FOOTER_LINKS: ReadonlyArray<{ label: string; slug: string }> = [
+  { label: 'Terms', slug: 'terms' },
+  { label: 'Privacy', slug: 'privacy' },
+  { label: 'Trust & Safety', slug: 'adult-policy' },
+  { label: 'Contact', slug: 'legal' },
+];
+
 /**
- * The pages an adult site of this kind needs, and whether we have them.
+ * The visible footer links, resolved against the documents that exist.
  *
- * NOW WRITTEN AND ROUTED, which is what this list was built to wait for. Each
- * entry is derived from `LEGAL_DOCUMENTS` rather than restated here, so a
- * document and its footer link cannot drift apart: adding one adds its link,
- * and a link can never point at a route that does not exist.
- *
- * The documents themselves are drafts carrying marked placeholders — see
- * `legal/legalContent.ts`. The footer links to them regardless, because the
- * alternative is a site with no reachable privacy policy at all.
+ * `available` is false for anything whose slug has no document, so a footer
+ * entry pointing nowhere renders nothing rather than a dead link -- the same
+ * rule this list has always enforced, now with labels chosen for the footer
+ * rather than taken from each document's own title.
  */
-export const REQUIRED_LEGAL_PAGES: readonly LegalPage[] = LEGAL_DOCUMENTS.map((doc) => ({
-  label: doc.label,
-  path: `/${doc.slug}`,
-  available: true,
-}));
+export const REQUIRED_LEGAL_PAGES: readonly LegalPage[] = FOOTER_LINKS.map(({ label, slug }) => {
+  const exists = LEGAL_DOCUMENTS.some((doc) => doc.slug === slug);
+  return { label, path: exists ? `/${slug}` : null, available: exists };
+});
 
 /** The ones with somewhere to point. */
 export function availableLegalPages(
