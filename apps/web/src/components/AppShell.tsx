@@ -170,6 +170,7 @@ export default function AppShell() {
   // The Credits Store alone is laid out in two columns on a wide screen (hero
   // left, store right); every other screen keeps the phone-width column.
   const isWide = pathname === '/credits' || pathname === '/wallet';
+  const hideNavOnPhone = pathname === '/credits';
 
   return (
     <div className={`mx-auto flex min-h-dvh w-full flex-col bg-zinc-950 text-zinc-100 ${isWide ? 'max-w-lg lg:max-w-6xl' : 'max-w-lg'}`}>
@@ -201,7 +202,10 @@ export default function AppShell() {
         <SiteFooter />
       </main>
 
-      <div className="sticky bottom-0 z-10">
+      {/* The Credits Store is a checkout: on a phone its own sticky purchase bar
+          takes the bottom of the screen, so the app navigation steps aside
+          there. Desktop keeps it. */}
+      <div className={`sticky bottom-0 z-10 ${hideNavOnPhone ? 'hidden lg:block' : ''}`}>
         <MobileNavigation />
       </div>
     </div>

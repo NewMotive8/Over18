@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { BellIcon, ProfileIcon, SearchIcon, SparkleIcon } from '../icons';
+import CreditsPill from '../CreditsPill';
 
 /**
  * Lobby top navigation (US-28 / v2 brief §1).
@@ -23,16 +24,21 @@ export default function LobbyTopBar({
 }) {
   return (
     <header className="sticky top-0 z-30 flex items-center justify-between gap-2 border-b border-white/5 bg-zinc-950/85 px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl">
-      <Link to="/characters" aria-label="Over18 — Lobby" className="flex items-center gap-1.5">
+      <Link to="/characters" aria-label="Over18 — Lobby" className="flex shrink-0 items-center gap-1.5">
         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-rose-500 to-fuchsia-600 text-white shadow-lg shadow-rose-950/40">
           <SparkleIcon className="h-4 w-4" />
         </span>
-        <span className="text-lg font-black italic uppercase tracking-tight text-white">
+        {/* On a narrow phone the mark alone, so the Credits balance fits beside
+            every existing action; the wordmark returns from \`sm\` up. */}
+        <span className="hidden text-lg font-black italic uppercase tracking-tight text-white sm:inline">
           Over<span className="text-rose-500">18</span>
         </span>
       </Link>
 
       <div className="flex items-center gap-1.5">
+        {/* The customer's Credits, one tap from the Credits Store. Coin and number
+            only on a narrow phone; nothing at all while unknown. */}
+        <CreditsPill tight />
         <button
           type="button"
           onClick={onSearch}

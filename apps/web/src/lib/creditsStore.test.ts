@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CustomerEconomyCatalog, CustomerPackOffer } from '@over18/shared';
+import type { CustomerEconomyCatalog, CustomerPackOffer, CustomerPlanOffer } from '@over18/shared';
 import {
   CREDITS_CHANGED_EVENT,
   LOW_BALANCE,
@@ -20,7 +20,12 @@ import {
   resumeUnlockAction,
   returnOutcome,
   returnTarget,
-  showPremiumNote,
+  balanceLine,
+  packCtaLabel,
+  packSavings,
+  packThatUnlocks,
+  premiumAnchor,
+  storeHeroCopy,
 } from './creditsStore';
 import { afterCheckoutPath } from './payments';
 
@@ -76,10 +81,106 @@ describe('which packs the store offers', () => {
     expect(purchasablePacks(catalogOf(pack({ code: 'gone', isPurchasable: false })))).toEqual([]);
   });
 
-  it('recommends the pack the operator marked, and none when none is marked', () => {
-    const packs = [pack({ code: 'starter' }), pack({ code: 'plus', isBestValue: true })];
-    expect(recommendedPack(packs)?.code).toBe('plus');
-    expect(recommendedPack([pack({ code: 'starter' })])).toBeNull();
+});
+
+describe('which pack the store recommends (store conversion)', () => {
+  const ladder = [
+    pack({ code: 'p100', credits: 100, priceMinor: 999, sortOrder: 1 }),
+    pack({ code: 'p320', credits: 300, bonusCredits: 20, priceMinor: 2499, sortOrder: 2 }),
+    pack({ code: 'p825', credits: 750, bonusCredits: 75, priceMinor: 4999, sortOrder: 3 }),
+    pack({ code: 'p1700', credits: 1500, bonusCredits: 200, priceMinor: 8999, sortOrder: 4 }),
+  ];
+
+  it('1. the pack the operator marked as best value wins, even arriving to unlock something', () => {
+    const marked = ladder.map((p) => (p.code === 'p1700' ? { ...p, isBestValue: true } : p));
+    expect(recommendedPack(marked)?.code).toBe('p1700');
+    expect(recommendedPack(marked, 20)?.code).toBe('p1700');
+  });
+
+  it('2. arriving to unlock: the smallest pack that covers what is still needed', () => {
+    expect(recommendedPack(ladder, 20)?.code).toBe('p100');
+    expect(recommendedPack(ladder, 101)?.code).toBe('p320');
+    expect(recommendedPack(ladder, 500)?.code).toBe('p825');
+  });
+
+  it('3. otherwise the second-cheapest; the only pack when there is one; none when none is for sale', () => {
+    expect(recommendedPack(ladder)?.code).toBe('p320');
+    expect(recommendedPack(ladder, 0)?.code).toBe('p320'); // nothing needed: no covering rule
+    expect(recommendedPack(ladder, 99_999)?.code).toBe('p320'); // nothing covers it
+    expect(recommendedPack([pack({ code: 'only' })])?.code).toBe('only');
+    expect(recommendedPack([pack({ code: 'gone', isPurchasable: false })])).toBeNull();
+  });
+
+  it('"Unlocks this" marks the smallest covering pack -- and nothing when nothing is needed', () => {
+    expect(packThatUnlocks(ladder, 20)).toBe('p100');
+    expect(packThatUnlocks(ladder, 321)).toBe('p825');
+    expect(packThatUnlocks(ladder, 0)).toBeNull();
+    expect(packThatUnlocks(ladder, null)).toBeNull();
+    expect(packThatUnlocks(ladder, 99_999)).toBeNull();
+  });
+});
+
+describe('what each pack is worth (store conversion)', () => {
+  const now = Date.parse('2026-10-02T12:00:00Z');
+  const views = [
+    pack({ code: 'p100', credits: 100, priceMinor: 999 }),
+    pack({ code: 'p320', credits: 300, bonusCredits: 20, priceMinor: 2499 }),
+    pack({ code: 'p825', credits: 750, bonusCredits: 75, priceMinor: 4999 }),
+    pack({ code: 'p4100', credits: 3500, bonusCredits: 600, priceMinor: 17999 }),
+  ].map((p) => packView(p, now));
+
+  it('the CTA carries what is received and the catalog price', () => {
+    expect(packCtaLabel(views[2]!)).toBe('Get 825 Credits · $49.99');
+    expect(packCtaLabel(packView(pack({ code: 'one', credits: 1, priceMinor: 99 }), now))).toBe('Get 1 Credit · $0.99');
+  });
+
+  it('savings per Credit against the cheapest pack, rounded DOWN; none for the reference pack', () => {
+    const savings = packSavings(views);
+    expect(savings.has('p100')).toBe(false);
+    // $9.99/100 = 9.99c; $24.99/320 = 7.81c (21.8%); $49.99/825 = 6.06c (39.3%); $179.99/4100 = 4.39c (56.0%)
+    expect(Object.fromEntries(savings)).toEqual({ p320: 21, p825: 39, p4100: 56 });
+  });
+
+  it('follows the price on screen: a running promotion counts, and an ended one does not', () => {
+    const promo = pack({ code: 'promo', credits: 100, priceMinor: 499, wasPriceMinor: 999, promotionEndsAt: '2026-10-02T13:00:00Z' });
+    const base = pack({ code: 'base', credits: 200, priceMinor: 1998 });
+    // While the promotion runs, the promotional pack is the cheapest per Credit: the other saves nothing.
+    expect(Object.fromEntries(packSavings([packView(promo, now), packView(base, now)]))).toEqual({});
+    // Once it ends, both cost the same per Credit: still nothing to claim.
+    expect(Object.fromEntries(packSavings([packView(promo, now + 2 * 3_600_000), packView(base, now)]))).toEqual({});
+  });
+
+  it('never compares across currencies, and claims nothing under 5%', () => {
+    const usd = packView(pack({ code: 'usd', credits: 100, priceMinor: 1000 }), now);
+    const eur = packView(pack({ code: 'eur', credits: 200, priceMinor: 1000, currency: 'EUR' }), now);
+    const slight = packView(pack({ code: 'slight', credits: 103, priceMinor: 1000 }), now);
+    expect(Object.fromEntries(packSavings([usd, eur, slight]))).toEqual({});
+  });
+});
+
+describe('what the store says (store conversion)', () => {
+  it('the balance in one line; low and zero say what to do, with no alarm', () => {
+    expect(balanceLine(balanceState(42))).toBe('You have 42 Credits');
+    expect(balanceLine(balanceState(5))).toBe('Only 5 left: top up to keep going.');
+    expect(balanceLine(balanceState(0))).toBe("You're out of Credits: top up to keep going.");
+    expect(balanceLine(balanceState(null))).toBeNull();
+    for (const n of [0, 5, 42]) expect(balanceLine(balanceState(n))).not.toMatch(/hurry|now!|last chance|expires/i);
+  });
+
+  it('the hero: the post being unlocked and what it still needs; a known character; or the generic line', () => {
+    expect(storeHeroCopy({ characterName: 'Amara', unlock: { mediaType: 'video', creditsNeeded: 20 } })).toMatchObject({
+      title: "Unlock Amara's private video",
+      subtitle: 'You need 20 more Credits.',
+    });
+    expect(storeHeroCopy({ characterName: 'Amara', unlock: { mediaType: 'image', creditsNeeded: 1 } }).subtitle).toBe('You need 1 more Credit.');
+    expect(storeHeroCopy({ characterName: 'Amara', unlock: { mediaType: 'image', creditsNeeded: 0 } })).toMatchObject({
+      title: "Unlock Amara's private photo",
+      subtitle: 'You already have enough Credits to unlock it.',
+    });
+    // The price is not known yet: no number is invented.
+    expect(storeHeroCopy({ characterName: 'Amara', unlock: { mediaType: null, creditsNeeded: null } }).subtitle).not.toMatch(/[0-9]/);
+    expect(storeHeroCopy({ characterName: 'Camila', unlock: null }).title).toBe("She's waiting for you");
+    expect(storeHeroCopy({ characterName: null, unlock: null }).title).toBe('Keep the experience going');
   });
 });
 
@@ -251,11 +352,23 @@ describe('finishing the unlock that sent them here', () => {
   });
 });
 
-describe('Premium and Credits stay apart', () => {
-  it('Premium is mentioned only to someone known not to have it', () => {
-    expect(showPremiumNote('free')).toBe(true);
-    expect(showPremiumNote('premium')).toBe(false);
-    expect(showPremiumNote(null)).toBe(false);
+describe('Premium as a value anchor (store conversion)', () => {
+  const plan = (over: Partial<CustomerPlanOffer>): CustomerPlanOffer => ({
+    code: 'premium_monthly', version: 1, versionId: 'v', displayName: 'Premium monthly', billingPeriodMonths: 1,
+    priceMinor: 1299, currency: 'USD', monthlyIncludedCredits: 200, isPurchasable: true, effectiveFrom: '', ...over,
+  });
+
+  it("quotes the catalog's monthly plan -- its Credits and price -- to someone known not to have Premium", () => {
+    expect(premiumAnchor([plan({}), plan({ code: 'annual', billingPeriodMonths: 12, priceMinor: 8999 })], 'free')).toEqual({ credits: 200, price: '$12.99' });
+    expect(premiumAnchor([plan({ monthlyIncludedCredits: 350, priceMinor: 1599 })], 'free')).toEqual({ credits: 350, price: '$15.99' });
+  });
+
+  it('says nothing to a subscriber, while the tier is unknown, or when there is no monthly plan to quote', () => {
+    expect(premiumAnchor([plan({})], 'premium')).toBeNull();
+    expect(premiumAnchor([plan({})], null)).toBeNull();
+    expect(premiumAnchor([plan({ isPurchasable: false })], 'free')).toBeNull();
+    expect(premiumAnchor([plan({ billingPeriodMonths: 12 })], 'free')).toBeNull();
+    expect(premiumAnchor([], 'free')).toBeNull();
   });
 });
 

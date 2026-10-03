@@ -1,22 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import type { PaymentMethod } from '@over18/shared';
+import { creditsNeededFor, type PaymentMethod } from '@over18/shared';
 import PaymentMethodSheet from '../components/PaymentMethodSheet';
 import { EconomyStateNotice } from '../components/CustomerEconomy';
 import {
   BackLink,
-  BalanceCard,
-  ContextNotice,
+  BalanceLine,
   CreditUses,
   NoPacks,
   PackCard,
-  PremiumNote,
+  PremiumAnchor,
+  PurchaseCta,
   PurchaseResult,
+  StickyPurchaseBar,
   StoreHero,
+  TrustRow,
   type HeroMedia,
   type PurchaseOutcome,
 } from '../components/credits/CreditsStoreParts';
 import { charactersApi, paymentsApi } from '../lib/api';
+import { accessFor, useContentAccess } from '../lib/contentAccess';
 import {
   announceCreditsChanged,
   balanceState,
@@ -24,14 +27,17 @@ import {
   creditsStoreHref,
   heroCharacterId,
   lastCharacter,
+  packSavings,
+  packThatUnlocks,
   packView,
   pendingPayment,
+  premiumAnchor,
   purchasablePacks,
   readStoreContext,
   recommendedPack,
   returnOutcome,
   returnTarget,
-  showPremiumNote,
+  storeHeroCopy,
 } from '../lib/creditsStore';
 import { commercialTier, spendableCredits, useCustomerEconomy } from '../lib/customerEconomy';
 import { absoluteMediaUrl } from '../lib/media';
@@ -39,59 +45,76 @@ import { track, useTrackView } from '../lib/analytics';
 import { usePackCheckout } from '../lib/payments';
 
 /**
- * THE CREDITS STORE (`/credits`, Credits Store PR 2).
+ * THE CREDITS STORE (`/credits`, Credits Store PR 2 + the store-conversion PR).
  *
- * Answers three things at a glance -- how many Credits you have, what they are
- * for, and what you can buy for how much -- and then gets out of the way.
+ * Built to sell in one glance: who it is for (a character-aware hero, or the
+ * exact post being unlocked and how many Credits it still needs), how many
+ * Credits you have (one line), one recommended pack already selected, and one
+ * button that says what you get and what it costs.
  *
  * EVERY COMMERCIAL VALUE IS THE SERVER'S. Packs, prices, bonuses, badges and
  * promotions come from `GET /api/economy/catalog`; the balance and Premium from
- * `GET /api/me/commercial-state`. Retired packs, which the catalog includes on
- * purpose, are never offered. Buying starts the existing checkout with the
+ * `GET /api/me/commercial-state`; an unlock's price from the content-access
+ * resolver. The page only CHOOSES and WORDS: which pack to recommend (the
+ * shared rule the server also applies), how much cheaper per Credit a bigger
+ * pack is, what the hero says. Buying starts the existing checkout with the
  * pack's CODE -- never a price -- and the server charges what it charges.
  *
  * ONLY THE PROVIDER CONFIRMS A PURCHASE. Coming back from the checkout, the
- * page reads the payment from the server and shows what it says; the Credits
- * appear because the server granted them, and the balance is read again.
+ * page reads the payment from the server and shows what it says.
  *
- * BACK TO WHERE THEY WERE. The purchase context (where the customer came from,
- * what they were doing) travels with the payment, and the way back is built
- * from its ids into a path of this app -- never a URL from anywhere.
+ * BACK TO WHERE THEY WERE. The purchase context travels with the payment, and
+ * the way back -- including the automatic unlock -- is unchanged from PR 2.
  */
 export default function CreditsStorePage() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const [economy, refreshEconomy] = useCustomerEconomy();
   const checkout = usePackCheckout();
-  const [chosen, setChosen] = useState<string | null>(null);
+  /** The pack the customer picked; null means the recommended one. */
+  const [picked, setPicked] = useState<string | null>(null);
+  const [paying, setPaying] = useState(false);
 
   const context = useMemo(() => readStoreContext(params), [params]);
   const returningFromCheckout = params.get('from') === 'checkout';
   const overview = economy.status === 'ready' ? economy.overview : null;
-  const premium = commercialTier(overview) === 'premium';
+  const tier = commercialTier(overview);
+  const premium = tier === 'premium';
   const now = useNow(overview);
-
-  const packs = useMemo(() => {
-    const purchasable = purchasablePacks(overview?.catalog);
-    const recommended = recommendedPack(purchasable);
-    const views = purchasable.map((pack) => packView(pack, now, recommended));
-    return { featured: views.find((v) => v.recommended) ?? null, rest: views.filter((v) => !v.recommended) };
-  }, [overview, now]);
-  const all = packs.featured ? [packs.featured, ...packs.rest] : packs.rest;
-  const selected = all.find((p) => p.code === chosen) ?? null;
-
-  const hero = useHero(context);
-  const outcome = usePurchaseOutcome(returningFromCheckout ? params.get('payment') : null, returningFromCheckout, refreshEconomy);
-  // The balance shown after a purchase is the one the server reports now.
+  // The balance shown is the one the server reports now.
   const balanceNow = spendableCredits(overview);
 
+  // Arriving to unlock a post: its price is the content-access resolver's.
+  const unlockAssetId = context?.originAction === 'content_unlock' ? context.assetId : null;
+  const [access] = useContentAccess(unlockAssetId ? [unlockAssetId] : []);
+  const unlockItem = unlockAssetId ? accessFor(access, unlockAssetId) : null;
+  const creditsNeeded =
+    unlockItem && NEEDS_CREDITS.has(unlockItem.decision) ? creditsNeededFor(unlockItem.creditPrice, balanceNow) : null;
+
+  const hero = useHero(context, unlockAssetId);
+  const heroCopy = storeHeroCopy({
+    characterName: hero.name,
+    unlock: unlockAssetId ? { mediaType: hero.unlockMediaType, creditsNeeded } : null,
+  });
+
+  const ladder = useMemo(() => {
+    const purchasable = purchasablePacks(overview?.catalog);
+    const recommended = recommendedPack(purchasable, creditsNeeded);
+    const views = purchasable.map((pack) => packView(pack, now, recommended));
+    // The recommended pack leads; the rest keep the catalog's ladder order.
+    const ordered = [...views.filter((v) => v.recommended), ...views.filter((v) => !v.recommended)];
+    return { views: ordered, savings: packSavings(views), unlocks: packThatUnlocks(purchasable, creditsNeeded) };
+  }, [overview, now, creditsNeeded]);
+  const selected = ladder.views.find((v) => v.code === picked) ?? ladder.views[0] ?? null;
+
+  const outcome = usePurchaseOutcome(returningFromCheckout ? params.get('payment') : null, returningFromCheckout, refreshEconomy);
+
   // Funnel B/C (PR 3): the store seen once its packs are known -- not on the
-  // return from a checkout, which is the end of a visit rather than a new one.
-  // Starting and completing a purchase are the server's to record, and the
-  // tier and balance state are stated by the server, not sent from here.
+  // return from a checkout. Tier, balance state and the recommended pack are
+  // stated by the server, not sent from here.
   useTrackView(
     'credit_purchase_viewed',
-    { ...(context ?? {}), packCount: all.length },
+    { ...(context ?? {}), packCount: ladder.views.length },
     overview !== null && !returningFromCheckout,
   );
 
@@ -100,12 +123,17 @@ export default function CreditsStorePage() {
     const started = await checkout.start(selected.code, method, context);
     if (!started?.redirectUrl) return;
     pendingPayment.set(started.payment.id);
-    setChosen(null);
+    setPaying(false);
     // The provider decides where to pay. The simulated one is this app; a real
     // one is another site, reached by a full navigation.
     const url = new URL(started.redirectUrl, window.location.origin);
     if (url.origin === window.location.origin) navigate(`${url.pathname}${url.search}`);
     else window.location.assign(url.toString());
+  };
+  const openSheet = () => {
+    if (!selected) return;
+    checkout.reset();
+    setPaying(true);
   };
 
   const dismissResult = useCallback(() => {
@@ -118,9 +146,11 @@ export default function CreditsStorePage() {
   const continueTo = settled ? returnTarget(outcome.payment.context) : null;
   const continueLabel = settled && outcome.payment.context?.originAction === 'content_unlock' ? 'Continue to unlock' : 'Continue';
   const backTo = returnTarget(context);
+  const shopping = overview !== null && !returningFromCheckout && ladder.views.length > 0;
+  const busy = checkout.state.status === 'starting';
 
   const content = (
-    <div className="flex flex-col gap-5">
+    <div className={`flex flex-col gap-4 ${shopping ? 'pb-28 lg:pb-0' : ''}`}>
       {returningFromCheckout ? (
         <PurchaseResult
           outcome={outcome.kind === 'added' ? { ...outcome, balance: balanceNow ?? outcome.balance } : outcome}
@@ -133,16 +163,13 @@ export default function CreditsStorePage() {
           }}
         />
       ) : (
-        <>
-          {backTo && <BackLink to={backTo} label="Back" />}
-          <ContextNotice context={context} />
-        </>
+        backTo && <BackLink to={backTo} label="Back" />
       )}
 
       <EconomyStateNotice state={economy} retry={refreshEconomy} />
       {overview && (
         <>
-          <BalanceCard balance={balanceState(balanceNow)} premium={premium} />
+          <BalanceLine balance={balanceState(balanceNow)} premium={premium} />
           {!returningFromCheckout && (
             <section aria-labelledby="store-packs" className="flex flex-col gap-3">
               <div className="flex items-baseline justify-between">
@@ -151,27 +178,29 @@ export default function CreditsStorePage() {
                 </h2>
                 <span className="text-xs text-zinc-500">One-time · no renewal</span>
               </div>
-              {all.length === 0 ? (
+              {ladder.views.length === 0 ? (
                 <NoPacks />
               ) : (
                 <div data-testid="store-packs" className="grid grid-cols-2 gap-3">
-                  {all.map((view) => (
+                  {ladder.views.map((view) => (
                     <PackCard
                       key={view.code}
                       view={view}
-                      disabled={checkout.state.status === 'starting'}
-                      onSelect={() => {
-                        checkout.reset();
-                        setChosen(view.code);
-                      }}
+                      selected={view.code === selected?.code}
+                      savingPercent={ladder.savings.get(view.code) ?? null}
+                      unlocksThis={view.code === ladder.unlocks}
+                      disabled={busy}
+                      onSelect={() => setPicked(view.code)}
                     />
                   ))}
                 </div>
               )}
+              <PurchaseCta view={selected} onBuy={openSheet} busy={busy} />
+              <TrustRow />
             </section>
           )}
-          {/* Premium is mentioned to someone without it, as a footnote. A subscriber never sees it. */}
-          {showPremiumNote(commercialTier(overview)) && <PremiumNote />}
+          {/* Premium as a value anchor, for someone known not to have it -- secondary, under the packs. */}
+          {!returningFromCheckout && <PremiumAnchor anchor={premiumAnchor(overview.catalog.plans, tier)} />}
           <CreditUses />
           <p className="text-center text-xs text-zinc-500">One-time purchase. Credits are added as soon as your payment is confirmed.</p>
           <p
@@ -190,21 +219,24 @@ export default function CreditsStorePage() {
       {/* Phone: the hero opens the page, full width. Desktop: hero left, store right. */}
       <div className="lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-8">
         <div className="lg:sticky lg:top-20 lg:self-start">
-          <StoreHero media={hero} />
+          <StoreHero media={hero} copy={heroCopy} />
         </div>
         <div className="px-4 pt-4 lg:px-0 lg:pt-0">{content}</div>
       </div>
 
-      {selected && (
+      {/* The phone's purchase bar steps aside while the payment sheet is open. */}
+      {shopping && !paying && <StickyPurchaseBar view={selected} onBuy={openSheet} busy={busy} />}
+
+      {paying && selected && (
         <PaymentMethodSheet
           planName={credits(selected.totalCredits)}
-          price={`${selected.price} · one-time${selected.bonusCredits > 0 ? ` · includes ${credits(selected.bonusCredits)} bonus` : ''}`}
-          busy={checkout.state.status === 'starting'}
+          price={`${selected.price} · one-time${selected.bonusCredits > 0 ? ` · includes ${credits(selected.bonusCredits)} free` : ''}`}
+          busy={busy}
           error={checkout.state.status === 'failed' ? checkout.state.message : null}
           onChoose={(method) => void buy(method)}
           onCancel={() => {
             track('paywall_dismissed', { surface: 'credits_store', packCode: selected.code });
-            setChosen(null);
+            setPaying(false);
             checkout.reset();
           }}
         />
@@ -212,6 +244,9 @@ export default function CreditsStorePage() {
     </div>
   );
 }
+
+/** Content-access decisions under which an unlock still needs Credits. */
+const NEEDS_CREDITS = new Set(['credits_required', 'insufficient_credits']);
 
 /* ------------------------------------------------------------------ *
  * Hooks local to the page
@@ -229,9 +264,15 @@ function useNow(overview: { catalog: { packs: { promotionEndsAt: string | null; 
   return now;
 }
 
-/** The character the store opens on: where they came from, else who they last chatted with, else the default. */
-function useHero(context: ReturnType<typeof readStoreContext>): HeroMedia {
+/**
+ * The character the store opens on: where they came from, else who they last
+ * chatted with, else the default. Arriving to unlock one of her posts, it also
+ * learns whether that post is a video or a photo -- for the WORDS only; the
+ * post itself is never shown here, only her own (non-nude) hero image.
+ */
+function useHero(context: ReturnType<typeof readStoreContext>, unlockAssetId: string | null): HeroMedia & { unlockMediaType: 'image' | 'video' | null } {
   const [hero, setHero] = useState<HeroMedia>({ imageUrl: null, name: null });
+  const [unlockMediaType, setUnlockMediaType] = useState<'image' | 'video' | null>(null);
   const id = heroCharacterId(context, lastCharacter.get());
   useEffect(() => {
     if (!id) return;
@@ -247,7 +288,20 @@ function useHero(context: ReturnType<typeof readStoreContext>): HeroMedia {
       cancelled = true;
     };
   }, [id]);
-  return hero;
+  useEffect(() => {
+    if (!id || !unlockAssetId) return;
+    let cancelled = false;
+    charactersApi
+      .clips(id)
+      .then(({ clips }) => {
+        if (!cancelled) setUnlockMediaType(clips.find((clip) => clip.id === unlockAssetId)?.mediaType ?? null);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [id, unlockAssetId]);
+  return { ...hero, unlockMediaType };
 }
 
 /**

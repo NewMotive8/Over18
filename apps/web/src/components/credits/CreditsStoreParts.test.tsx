@@ -2,19 +2,21 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { CustomerPackOffer, CustomerPaymentView } from '@over18/shared';
-import { balanceState, packView, purchasablePacks, recommendedPack, returnTarget } from '../../lib/creditsStore';
+import { balanceState, packView, purchasablePacks, recommendedPack, returnTarget, storeHeroCopy } from '../../lib/creditsStore';
 import {
-  BalanceCard,
-  ContextNotice,
+  BalanceLine,
   DEFAULT_HERO,
   PackCard,
-  PremiumNote,
+  PremiumAnchor,
+  PurchaseCta,
   PurchaseResult,
+  StickyPurchaseBar,
   StoreHero,
+  TrustRow,
 } from './CreditsStoreParts';
 
 /**
- * Credits Store PR 2 -- what the store's pieces show, rendered statically.
+ * The Credits Store's pieces, rendered statically (PR 2 + store conversion).
  * Every value is handed in, as the page hands in what the server said.
  */
 
@@ -32,96 +34,136 @@ function pack(over: Partial<CustomerPackOffer> & { code: string }): CustomerPack
     bonusCredits, totalCredits: credits + bonusCredits, wasPriceMinor: null, promotionEndsAt: null, ...over,
   };
 }
-const card = (p: CustomerPackOffer, recommended: CustomerPackOffer | null = null) =>
-  render(<PackCard view={packView(p, NOW, recommended)} onSelect={() => undefined} />);
+const card = (p: CustomerPackOffer, extra: { recommended?: CustomerPackOffer | null; selected?: boolean; saving?: number | null; unlocks?: boolean } = {}) =>
+  render(
+    <PackCard
+      view={packView(p, NOW, extra.recommended ?? null)}
+      selected={extra.selected ?? false}
+      savingPercent={extra.saving ?? null}
+      unlocksThis={extra.unlocks ?? false}
+      onSelect={() => undefined}
+    />,
+  );
 
 describe('the packs', () => {
   it('render only purchasable packs: a retired one never reaches the page', () => {
     const offered = purchasablePacks({ asOf: '', plans: [], packs: [pack({ code: 'starter' }), pack({ code: 'qa_plain', isPurchasable: false })] });
-    const html = render(<>{offered.map((p) => <PackCard key={p.code} view={packView(p, NOW)} onSelect={() => undefined} />)}</>);
+    const html = render(<>{offered.map((p) => <PackCard key={p.code} view={packView(p, NOW)} selected={false} onSelect={() => undefined} />)}</>);
     expect(html).toContain('data-testid="pack-starter"');
     expect(html).not.toContain('qa_plain');
   });
 
-  it('a CTA that says what is received, the price, and the bonus shown clearly', () => {
-    const html = card(pack({ code: 'plus', displayName: 'Plus', credits: 750, bonusCredits: 100, priceMinor: 4999 }));
-    expect(html).toContain('Get 850 Credits');
+  it('a card is a CHOICE (no buy button of its own) and says what is received, the price and the bonus as "+N free"', () => {
+    const html = card(pack({ code: 'plus', credits: 750, bonusCredits: 75, priceMinor: 4999 }));
+    expect(html).toMatch(/<button[^>]*aria-pressed="false"[^>]*data-testid="pack-plus"/);
+    expect(html).toContain('aria-label="Get 825 Credits · $49.99"');
     expect(html).toContain('$49.99');
-    expect(html).toContain('data-testid="pack-bonus"');
-    expect(html).toContain('+100 bonus');
-    expect(html).toContain('750 + 100 bonus');
+    expect(html).toContain('+75 free');
+    expect(html).toContain('750 + 75 free');
     expect(html).not.toMatch(/>Buy</);
+    // One button, the card itself: no nested purchase button.
+    expect(html.match(/<button/g)).toHaveLength(1);
   });
 
-  it('no bonus, no badge, no promotion: none of their marks', () => {
-    const html = card(pack({ code: 'starter' }));
-    for (const id of ['pack-bonus', 'pack-badge', 'pack-was-price', 'pack-countdown']) expect(html).not.toContain(`data-testid="${id}"`);
+  it('the saving and "Unlocks this ✓" appear only when they are handed in', () => {
+    const html = card(pack({ code: 'plus' }), { saving: 39, unlocks: true });
+    expect(html).toContain('Save 39%');
+    expect(html).toContain('Unlocks this ✓');
+    const plain = card(pack({ code: 'plus' }));
+    for (const id of ['pack-saving', 'pack-unlocks-this', 'pack-bonus', 'pack-badge', 'pack-was-price', 'pack-countdown']) {
+      expect(plain).not.toContain(`data-testid="${id}"`);
+    }
   });
 
-  it('the badge the catalog configured -- never one of its own', () => {
+  it('the badge the catalog configured; "Recommended" only on the recommended pack without one', () => {
     expect(card(pack({ code: 'plus', badge: 'Most popular' }))).toContain('Most popular');
-    expect(card(pack({ code: 'plus' }))).not.toMatch(/most popular|best value/i);
+    const plus = pack({ code: 'plus' });
+    expect(card(plus, { recommended: plus })).toContain('Recommended');
+    expect(card(pack({ code: 'starter' }), { recommended: plus })).not.toMatch(/recommended|most popular|best value/i);
   });
 
-  it('a running promotion: struck-through regular price and a countdown', () => {
-    const html = card(pack({ code: 'promo', priceMinor: 4999, wasPriceMinor: 7999, promotionEndsAt: '2026-10-02T14:14:37Z' }));
-    expect(html).toMatch(/<s[^>]*data-testid="pack-was-price"[^>]*>\$79\.99<\/s>/);
-    expect(html).toContain('$49.99');
-    expect(html).toContain('Offer ends in 02:14:37');
+  it('a running promotion: struck-through regular price and a countdown; an ended one: neither', () => {
+    const running = card(pack({ code: 'promo', priceMinor: 4999, wasPriceMinor: 7999, promotionEndsAt: '2026-10-02T14:14:37Z' }));
+    expect(running).toMatch(/<s[^>]*data-testid="pack-was-price"[^>]*>\$79\.99<\/s>/);
+    expect(running).toContain('Offer ends in 02:14:37');
+    const ended = card(pack({ code: 'ended', priceMinor: 4999, wasPriceMinor: 7999, promotionEndsAt: '2026-10-02T11:00:00Z' }));
+    expect(ended).toContain('$79.99');
+    expect(ended).not.toContain('pack-was-price');
+    expect(ended).not.toContain('Offer ends');
   });
 
-  it('an ended promotion: the regular price, nothing struck through, no countdown', () => {
-    const html = card(pack({ code: 'ended', priceMinor: 4999, wasPriceMinor: 7999, promotionEndsAt: '2026-10-02T11:00:00Z' }));
-    expect(html).toContain('$79.99');
-    expect(html).not.toContain('pack-was-price');
-    expect(html).not.toContain('Offer ends');
-  });
-
-  it('the recommended pack is highlighted; the others are not', () => {
+  it('the recommended pack is the wide primary card; the selected one is marked', () => {
     const plus = pack({ code: 'plus', isBestValue: true });
     const rec = recommendedPack([pack({ code: 'starter' }), plus]);
-    expect(card(plus, rec)).toContain('data-recommended="true"');
-    expect(card(pack({ code: 'starter' }), rec)).not.toContain('data-recommended');
+    expect(card(plus, { recommended: rec })).toMatch(/data-recommended="true"[^>]*class="[^"]*col-span-2/);
+    expect(card(pack({ code: 'starter' }), { recommended: rec })).not.toContain('data-recommended');
+    expect(card(plus, { recommended: rec, selected: true })).toContain('aria-pressed="true"');
   });
 });
 
-describe('the balance', () => {
+describe('buying the selected pack', () => {
+  const view = packView(pack({ code: 'plus', credits: 750, bonusCredits: 75, priceMinor: 4999 }), NOW);
+
+  it('the desktop CTA carries the selected pack and its catalog price -- and is desktop-only', () => {
+    const html = render(<PurchaseCta view={view} onBuy={() => undefined} />);
+    expect(html).toContain('Get 825 Credits · $49.99');
+    expect(html).toMatch(/data-testid="store-cta"[^>]*class="[^"]*\bhidden\b[^"]*\blg:flex\b/);
+  });
+
+  it('the sticky bar on a phone: the pack, its price and Continue -- fixed above the safe area, hidden on desktop', () => {
+    const html = render(<StickyPurchaseBar view={view} onBuy={() => undefined} />);
+    expect(html).toContain('825 Credits');
+    expect(html).toContain('$49.99');
+    expect(html).toContain('>Continue<');
+    expect(html).toContain('aria-label="Get 825 Credits · $49.99"');
+    expect(html).toMatch(/data-testid="store-sticky-bar"[^>]*class="[^"]*\bfixed\b[^"]*bottom-0[^"]*safe-area-inset-bottom[^"]*\blg:hidden\b/);
+  });
+
+  it('with nothing selected, neither renders', () => {
+    expect(render(<PurchaseCta view={null} onBuy={() => undefined} />)).toBe('');
+    expect(render(<StickyPurchaseBar view={null} onBuy={() => undefined} />)).toBe('');
+  });
+
+  it('the trust row claims only what the payment architecture supports', () => {
+    const html = render(<TrustRow />);
+    expect(html).toContain('Added instantly');
+    expect(html).toContain('Secure checkout');
+    // No processor is chosen yet, so no statement descriptor can be promised.
+    expect(html).not.toMatch(/discreet|anonymous|untraceable/i);
+  });
+});
+
+describe('the balance, in one line', () => {
   it.each([
-    [0, 'zero', 're out of Credits'],
-    [7, 'low', '7 Credits remaining'],
-    [347, 'normal', 'Available to use now'],
+    [0, 'zero', "You're out of Credits: top up to keep going."],
+    [5, 'low', 'Only 5 left: top up to keep going.'],
+    [347, 'normal', 'You have 347 Credits'],
   ] as const)('%i Credits reads as %s', (n, kind, text) => {
-    const html = render(<BalanceCard balance={balanceState(n)} premium={false} />);
+    const html = render(<BalanceLine balance={balanceState(n)} premium={false} />);
     expect(html).toContain(`data-balance="${kind}"`);
-    expect(html).toContain(text);
+    expect(html).toContain(text.replace("'", '&#x27;'));
   });
 
-  it('a normal balance shows the one combined number, never the sources', () => {
-    const html = render(<BalanceCard balance={balanceState(347)} premium />);
-    expect(html).toContain('347');
+  it('one combined number, never the sources; Premium a quiet mark for a subscriber only', () => {
+    const html = render(<BalanceLine balance={balanceState(347)} premium />);
     expect(html).not.toMatch(/bonus|purchased|included|earned/i);
-  });
-
-  it('Premium is a quiet chip on the balance -- for a subscriber only', () => {
-    expect(render(<BalanceCard balance={balanceState(347)} premium />)).toContain('Premium');
-    expect(render(<BalanceCard balance={balanceState(347)} premium={false} />)).not.toContain('Premium');
+    expect(html).toContain('Premium');
+    expect(render(<BalanceLine balance={balanceState(347)} premium={false} />)).not.toContain('Premium');
   });
 });
 
-describe('Premium and the Credit shortage', () => {
-  it('the Premium note offers to view Premium -- secondary, and never "Subscribe"', () => {
-    const html = render(<PremiumNote />);
-    expect(html).toContain('Want unlimited conversations?');
+describe('Premium as a value anchor', () => {
+  it("the catalog's numbers, linking to Premium -- secondary, and never \"Subscribe\"", () => {
+    const html = render(<PremiumAnchor anchor={{ credits: 200, price: '$12.99' }} />);
+    expect(html).toContain('Better value:');
+    expect(html).toContain('Premium gives you 200 Credits every');
+    expect(html).toContain('month + unlimited chat, $12.99/mo');
     expect(html).toContain('href="/subscription"');
-    expect(html).toContain('View Premium');
     expect(html).not.toMatch(/subscribe/i);
   });
 
-  it('arriving short of Credits says why, and offers Credits -- not a subscription', () => {
-    const html = render(<ContextNotice context={{ origin: 'profile', originAction: 'content_unlock', assetId: ASSET, conversationId: null, characterId: CHARACTER }} />);
-    expect(html).toContain('You need a few more Credits');
-    expect(html).not.toMatch(/subscribe|premium/i);
-    expect(render(<ContextNotice context={null} />)).toBe('');
+  it('renders nothing when there is no anchor (a subscriber, or no plan to quote)', () => {
+    expect(render(<PremiumAnchor anchor={null} />)).toBe('');
   });
 });
 
@@ -175,18 +217,33 @@ describe('after the payment', () => {
 });
 
 describe('the hero', () => {
-  it('the approved default clip when there is no character to show, muted and looping', () => {
-    const html = render(<StoreHero media={{ imageUrl: null, name: null }} />);
+  it('the approved default clip when there is no character to show, muted and looping, with the generic line', () => {
+    const html = render(<StoreHero media={{ imageUrl: null, name: null }} copy={storeHeroCopy({ characterName: null, unlock: null })} />);
     expect(html).toContain(`src="${DEFAULT_HERO.video}"`);
     expect(html).toContain(`poster="${DEFAULT_HERO.poster}"`);
     expect(html).toMatch(/muted/);
     expect(html).toContain('Keep the experience going');
   });
 
-  it('the character they came from, when there is one', () => {
-    const html = render(<StoreHero media={{ imageUrl: 'https://api.example/media/camila.png', name: 'Camila' }} />);
+  it('a known character: her image and "She\'s waiting for you"; about 300px tall on a phone', () => {
+    const html = render(<StoreHero media={{ imageUrl: 'https://api.example/media/camila.png', name: 'Camila' }} copy={storeHeroCopy({ characterName: 'Camila', unlock: null })} />);
     expect(html).toContain('data-testid="store-hero-image"');
     expect(html).toContain('alt="Camila"');
     expect(html).not.toContain(DEFAULT_HERO.video);
+    expect(html).toContain('She&#x27;s waiting for you');
+    expect(html).toMatch(/data-testid="store-hero"[^>]*class="[^"]*h-\[18\.75rem\]/);
+  });
+
+  it('arriving to unlock: the post and what it still needs -- her own hero image, never the post itself', () => {
+    const copy = storeHeroCopy({ characterName: 'Amara', unlock: { mediaType: 'video', creditsNeeded: 20 } });
+    const html = render(<StoreHero media={{ imageUrl: 'https://api.example/media/amara.png', name: 'Amara' }} copy={copy} />);
+    expect(html).toContain('Unlock Amara&#x27;s private video');
+    expect(html).toContain('You need 20 more Credits.');
+    expect(html).toContain('src="https://api.example/media/amara.png"');
+  });
+
+  it('decorative coins are still: no spinning, no slot effects', () => {
+    const html = render(<StoreHero media={{ imageUrl: null, name: null }} copy={storeHeroCopy({ characterName: null, unlock: null })} />);
+    expect(html).not.toMatch(/animate-spin|animate-bounce|slot|jackpot/i);
   });
 });

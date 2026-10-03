@@ -1,6 +1,14 @@
 import { Link } from 'react-router-dom';
-import type { CustomerPaymentView, PurchaseContext } from '@over18/shared';
-import { credits, formatCountdown, type BalanceState, type PackView } from '../../lib/creditsStore';
+import type { CustomerPaymentView } from '@over18/shared';
+import {
+  balanceLine,
+  credits,
+  formatCountdown,
+  packCtaLabel,
+  type BalanceState,
+  type PackView,
+  type StoreHeroCopy,
+} from '../../lib/creditsStore';
 import { ChevronLeftIcon, CrownIcon, LockIcon, PhoneIcon, SparkleIcon } from '../icons';
 
 /**
@@ -28,11 +36,25 @@ export interface HeroMedia {
 
 export const DEFAULT_HERO = { video: '/media/store/default-hero.mp4', poster: '/media/store/default-hero-poster.jpg' } as const;
 
-export function StoreHero({ media, wide = false }: { media: HeroMedia; wide?: boolean }) {
+/** Gold coins drifting over the hero -- still, decorative, and never spinning. */
+function HeroCoins() {
+  const coin = 'absolute rounded-full bg-[radial-gradient(circle_at_34%_30%,#fef3c7_0%,#fbbf24_38%,#d97706_72%,#92400e_100%)]';
+  return (
+    <div aria-hidden className="pointer-events-none absolute inset-0">
+      <span className={`${coin} right-5 top-14 flex h-12 w-12 rotate-12 items-center justify-center shadow-[0_0_28px_rgba(251,191,36,0.55)]`}>
+        <SparkleIcon className="h-6 w-6 text-white/85" />
+      </span>
+      <span className={`${coin} left-3 top-28 h-8 w-8 -rotate-12 blur-[0.6px] shadow-[0_0_20px_rgba(251,191,36,0.5)]`} />
+      <span className={`${coin} right-2 top-44 h-5 w-5 opacity-85 blur-[1.2px]`} />
+    </div>
+  );
+}
+
+export function StoreHero({ media, copy, wide = false }: { media: HeroMedia; copy: StoreHeroCopy; wide?: boolean }) {
   return (
     <section
       data-testid="store-hero"
-      className={`relative overflow-hidden bg-zinc-900 ${wide ? 'h-full min-h-[34rem] rounded-3xl border border-zinc-800' : 'h-[24rem] sm:h-[28rem] lg:h-[40rem] lg:rounded-3xl lg:border lg:border-zinc-800'}`}
+      className={`relative overflow-hidden bg-zinc-900 ${wide ? 'h-full min-h-[34rem] rounded-3xl border border-zinc-800' : 'h-[18.75rem] sm:h-[22rem] lg:h-[40rem] lg:rounded-3xl lg:border lg:border-zinc-800'}`}
     >
       {media.imageUrl ? (
         <img
@@ -54,59 +76,41 @@ export function StoreHero({ media, wide = false }: { media: HeroMedia; wide?: bo
           className="absolute inset-0 h-full w-full object-cover object-[center_20%]"
         />
       )}
-      <div aria-hidden className="absolute inset-0 bg-gradient-to-b from-zinc-950/40 via-transparent via-45% to-zinc-950" />
-      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-2 p-5 sm:p-7">
-        <p className="text-xs font-semibold uppercase tracking-widest text-rose-300">Credits Store</p>
-        <h1 className="text-3xl font-extrabold uppercase leading-[1.05] tracking-tight text-white drop-shadow sm:text-4xl">
-          Keep the experience going
+      <div aria-hidden className="absolute inset-0 bg-gradient-to-b from-zinc-950/40 via-transparent via-40% to-zinc-950" />
+      <HeroCoins />
+      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-5 sm:p-7">
+        <p className="text-xs font-semibold uppercase tracking-widest text-rose-300">{copy.eyebrow}</p>
+        <h1 data-testid="store-hero-title" className="text-[1.75rem] font-extrabold uppercase leading-[1.05] tracking-tight text-white drop-shadow sm:text-4xl">
+          {copy.title}
         </h1>
-        <p className="max-w-sm text-sm leading-relaxed text-zinc-200">Get Credits for photos, videos, voice and premium content.</p>
+        <p data-testid="store-hero-subtitle" className="max-w-sm text-sm leading-relaxed text-zinc-200">
+          {copy.subtitle}
+        </p>
       </div>
     </section>
   );
 }
 
 /* ------------------------------------------------------------------ *
- * The balance
+ * The balance -- one line, so the packs come first
  * ------------------------------------------------------------------ */
 
-export function BalanceCard({ balance, premium }: { balance: BalanceState; premium: boolean }) {
+export function BalanceLine({ balance, premium }: { balance: BalanceState; premium: boolean }) {
+  const line = balanceLine(balance);
+  if (line === null && !premium) return null;
   return (
     <section
       aria-label="Your Credits"
       data-testid="store-balance"
       data-balance={balance.kind}
-      className="flex items-center gap-4 rounded-3xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 p-5"
+      className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-2.5"
     >
-      <span aria-hidden className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-amber-500/25 bg-amber-400/15 text-amber-300">
-        <SparkleIcon className="h-6 w-6" />
-      </span>
-      <div className="min-w-0 flex-1">
-        {balance.kind === 'zero' && (
-          <>
-            <p className="text-lg font-bold text-white">You're out of Credits</p>
-            <p className="text-sm text-zinc-400">Get Credits to continue with photos, videos, voice and premium content.</p>
-          </>
-        )}
-        {balance.kind === 'low' && (
-          <>
-            <p className="text-lg font-bold text-white">{credits(balance.credits)} remaining</p>
-            <p className="text-sm text-zinc-400">Top up whenever you like.</p>
-          </>
-        )}
-        {balance.kind === 'normal' && (
-          <>
-            <p className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold tracking-tight text-white tabular-nums">{balance.credits.toLocaleString('en-US')}</span>
-              <span className="text-sm font-medium text-amber-200">Credits</span>
-            </p>
-            <p className="text-sm text-zinc-400">Available to use now</p>
-          </>
-        )}
-        {balance.kind === 'unknown' && <p className="text-sm text-zinc-400">Your Credit balance isn't available right now.</p>}
-      </div>
+      <p className="flex items-center gap-2 text-sm text-zinc-300">
+        <SparkleIcon aria-hidden className="h-4 w-4 shrink-0 text-amber-300" />
+        <span>{line ?? "Your Credit balance isn't available right now."}</span>
+      </p>
       {premium && (
-        <span className="inline-flex shrink-0 items-center gap-1 self-start rounded-full border border-amber-500/25 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200">
+        <span className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-amber-200">
           <CrownIcon className="h-3 w-3" />
           Premium
         </span>
@@ -115,44 +119,33 @@ export function BalanceCard({ balance, premium }: { balance: BalanceState; premi
   );
 }
 
-/* ------------------------------------------------------------------ *
- * Why they are here
- * ------------------------------------------------------------------ */
-
-/** Said only when the customer arrived because something needed Credits. */
-export function ContextNotice({ context }: { context: PurchaseContext | null }) {
-  if (context?.originAction !== 'content_unlock') return null;
-  return (
-    <div role="status" data-testid="store-context" className="flex items-start gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4">
-      <span aria-hidden className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-800 text-rose-300">
-        <LockIcon className="h-4 w-4" />
-      </span>
-      <div>
-        <p className="text-sm font-semibold text-white">You need a few more Credits</p>
-        <p className="mt-0.5 text-sm text-zinc-400">Pick a pack and we'll take you straight back to unlock it.</p>
-      </div>
-    </div>
-  );
-}
-
 /**
- * Premium, as a secondary note for someone who does not have it. A subscriber
- * never sees it: this page sells Credits, and they already have Premium.
+ * Premium as a value anchor -- one line under the packs, for a customer known
+ * not to have it. The numbers are the catalog's monthly plan. Secondary: it
+ * links away, it never replaces buying Credits.
  */
-export function PremiumNote() {
+export function PremiumAnchor({ anchor }: { anchor: { credits: number; price: string } | null }) {
+  if (!anchor) return null;
   return (
-    <section data-testid="store-premium-note" className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
-      <p className="text-sm font-semibold text-amber-100">Want unlimited conversations?</p>
-      <p className="mt-0.5 text-sm text-zinc-400">Premium includes unlimited messaging plus recurring Credits.</p>
-      <Link to="/subscription" className="mt-2 inline-flex min-h-8 items-center text-sm font-semibold text-amber-300 hover:text-amber-200">
-        View Premium →
-      </Link>
-    </section>
+    <Link
+      to="/subscription"
+      data-testid="store-premium-anchor"
+      className="flex items-center gap-2 rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-amber-100 transition-colors hover:bg-amber-500/10"
+    >
+      <CrownIcon aria-hidden className="h-4 w-4 shrink-0 text-amber-300" />
+      <span>
+        <strong className="font-semibold">Better value:</strong> Premium gives you {anchor.credits.toLocaleString('en-US')} Credits every
+        month + unlimited chat, {anchor.price}/mo
+      </span>
+      <span aria-hidden className="ml-auto text-amber-300">
+        ›
+      </span>
+    </Link>
   );
 }
 
 /* ------------------------------------------------------------------ *
- * One pack
+ * The packs -- choose one, then one button buys it
  * ------------------------------------------------------------------ */
 
 function Coin({ size = 'md' }: { size?: 'sm' | 'md' }) {
@@ -166,29 +159,70 @@ function Coin({ size = 'md' }: { size?: 'sm' | 'md' }) {
   );
 }
 
-export function PackCard({ view, onSelect, disabled }: { view: PackView; onSelect: () => void; disabled?: boolean }) {
+/**
+ * One pack, as a choice. Tapping it SELECTS it; the store's one purchase button
+ * (inline on desktop, the sticky bar on a phone) buys whichever is selected.
+ */
+export function PackCard({
+  view,
+  selected,
+  onSelect,
+  savingPercent = null,
+  unlocksThis = false,
+  disabled,
+}: {
+  view: PackView;
+  selected: boolean;
+  onSelect: () => void;
+  savingPercent?: number | null;
+  unlocksThis?: boolean;
+  disabled?: boolean;
+}) {
   const featured = view.recommended;
+  const label = view.badge ?? (featured ? 'Recommended' : null);
+  const saving = savingPercent !== null && savingPercent > 0 ? savingPercent : null;
+  const hasChips = label !== null || view.bonusCredits > 0 || saving !== null || view.endsInMs !== null;
   return (
-    <article
+    <button
+      type="button"
+      onClick={onSelect}
+      disabled={disabled}
+      aria-pressed={selected}
       data-testid={`pack-${view.code}`}
       data-recommended={featured || undefined}
-      aria-label={`${view.cta} for ${view.price}`}
-      className={
-        featured
-          ? 'relative rounded-3xl bg-gradient-to-br from-rose-400 via-amber-400 to-pink-600 p-[1.5px] shadow-[0_10px_40px_rgba(225,29,72,0.25)] col-span-2'
-          : 'relative rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950'
-      }
+      data-selected={selected || undefined}
+      aria-label={`${packCtaLabel(view)}${saving ? `, save ${saving}%` : ''}${unlocksThis ? ', unlocks this' : ''}`}
+      className={`relative w-full text-left transition-transform active:scale-[0.99] disabled:opacity-60 ${
+        featured ? 'col-span-2 rounded-3xl p-[1.5px] shadow-[0_10px_40px_rgba(225,29,72,0.25)]' : 'rounded-2xl p-[1.5px]'
+      } ${
+        selected
+          ? 'bg-gradient-to-br from-rose-400 via-amber-400 to-pink-600'
+          : featured
+            ? 'bg-gradient-to-br from-rose-400/50 via-amber-400/40 to-pink-600/50'
+            : 'bg-zinc-800'
+      }`}
     >
-      <div className={`flex h-full flex-col gap-3 p-4 ${featured ? 'rounded-[calc(1.5rem-1.5px)] bg-[radial-gradient(120%_90%_at_0%_0%,rgba(225,29,72,0.2)_0%,#18181b_60%)]' : ''}`}>
-        <div className="flex min-h-6 flex-wrap items-center gap-1.5">
-          {view.badge && (
+      <span
+        className={`flex h-full flex-col gap-2.5 p-4 ${
+          featured
+            ? 'rounded-[calc(1.5rem-1.5px)] bg-[radial-gradient(120%_90%_at_0%_0%,rgba(225,29,72,0.2)_0%,#18181b_60%)]'
+            : 'rounded-[calc(1rem-1.5px)] bg-gradient-to-b from-zinc-900 to-zinc-950'
+        }`}
+      >
+        <span className={`flex-wrap items-center gap-1.5 pr-6 ${hasChips ? 'flex' : 'hidden'}`}>
+          {label && (
             <span data-testid="pack-badge" className="rounded-full bg-rose-600 px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-wider text-white">
-              {view.badge}
+              {label}
             </span>
           )}
           {view.bonusCredits > 0 && (
             <span data-testid="pack-bonus" className="rounded-full bg-amber-500/15 px-2.5 py-0.5 text-xs font-bold text-amber-200">
-              +{view.bonusCredits.toLocaleString('en-US')} bonus
+              +{view.bonusCredits.toLocaleString('en-US')} free
+            </span>
+          )}
+          {saving !== null && (
+            <span data-testid="pack-saving" className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-bold text-emerald-300">
+              Save {saving}%
             </span>
           )}
           {view.endsInMs !== null && (
@@ -196,27 +230,26 @@ export function PackCard({ view, onSelect, disabled }: { view: PackView; onSelec
               Offer ends in {formatCountdown(view.endsInMs)}
             </span>
           )}
-        </div>
+        </span>
 
-        <div className="flex items-center gap-3">
+        <span className="flex items-center gap-3">
           <Coin size={featured ? 'md' : 'sm'} />
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">{view.name}</p>
-            <p className="flex items-baseline gap-1.5">
+          <span className="min-w-0">
+            <span className="flex items-baseline gap-1.5">
               <span className={`font-extrabold tracking-tight text-white tabular-nums ${featured ? 'text-3xl' : 'text-2xl'}`}>
                 {view.totalCredits.toLocaleString('en-US')}
               </span>
               <span className="text-sm font-semibold text-amber-200">Credits</span>
-            </p>
+            </span>
             {view.bonusCredits > 0 && (
-              <p className="text-xs text-zinc-400">
-                {view.credits.toLocaleString('en-US')} + {view.bonusCredits.toLocaleString('en-US')} bonus
-              </p>
+              <span className="block text-xs text-zinc-400">
+                {view.credits.toLocaleString('en-US')} + {view.bonusCredits.toLocaleString('en-US')} free
+              </span>
             )}
-          </div>
-        </div>
+          </span>
+        </span>
 
-        <p className="mt-auto flex items-baseline gap-2">
+        <span className="mt-auto flex items-baseline gap-2">
           {view.wasPrice && (
             <s data-testid="pack-was-price" className="text-sm text-zinc-500">
               {view.wasPrice}
@@ -225,23 +258,82 @@ export function PackCard({ view, onSelect, disabled }: { view: PackView; onSelec
           <span data-testid="pack-price" className={`font-bold text-white ${featured ? 'text-xl' : 'text-lg'}`}>
             {view.price}
           </span>
-        </p>
+        </span>
 
+        {unlocksThis && (
+          <span data-testid="pack-unlocks-this" className="text-xs font-semibold text-emerald-300">
+            Unlocks this ✓
+          </span>
+        )}
+      </span>
+      {selected && (
+        <span aria-hidden className="absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-[11px] font-bold text-white">
+          ✓
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** The desktop purchase button: the selected pack's own terms, from the catalog. */
+export function PurchaseCta({ view, onBuy, busy }: { view: PackView | null; onBuy: () => void; busy?: boolean }) {
+  if (!view) return null;
+  return (
+    <button
+      type="button"
+      onClick={onBuy}
+      disabled={busy}
+      data-testid="store-cta"
+      className="hidden min-h-14 w-full items-center justify-center rounded-2xl bg-gradient-to-r from-rose-600 to-pink-600 px-4 text-base font-bold text-white shadow-[0_6px_20px_rgba(225,29,72,0.4)] transition-colors hover:from-rose-500 hover:to-pink-500 disabled:opacity-60 lg:flex"
+    >
+      {packCtaLabel(view)}
+    </button>
+  );
+}
+
+/**
+ * The phone's sticky purchase bar: the selected pack, its price, Continue.
+ * Fixed to the bottom with the safe area respected; the page reserves room for
+ * it, and it steps aside while the payment sheet is open.
+ */
+export function StickyPurchaseBar({ view, onBuy, busy }: { view: PackView | null; onBuy: () => void; busy?: boolean }) {
+  if (!view) return null;
+  return (
+    <div
+      data-testid="store-sticky-bar"
+      className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-800 bg-zinc-950/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur lg:hidden"
+    >
+      <div className="mx-auto flex max-w-lg items-center gap-3">
+        <p className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-bold text-white">{credits(view.totalCredits)}</span>
+          <span className="block text-sm text-zinc-300">{view.price}</span>
+        </p>
         <button
           type="button"
-          onClick={onSelect}
-          disabled={disabled}
-          data-testid={`buy-${view.code}`}
-          className={`min-h-12 w-full rounded-xl px-3 text-sm font-bold text-white transition-colors disabled:opacity-60 ${
-            featured
-              ? 'bg-gradient-to-r from-rose-600 to-pink-600 shadow-[0_6px_20px_rgba(225,29,72,0.35)] hover:from-rose-500 hover:to-pink-500'
-              : 'border border-zinc-700 bg-zinc-800 hover:bg-zinc-700'
-          }`}
+          onClick={onBuy}
+          disabled={busy}
+          aria-label={packCtaLabel(view)}
+          className="min-h-12 shrink-0 rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 px-6 text-base font-bold text-white shadow-[0_6px_20px_rgba(225,29,72,0.4)] disabled:opacity-60"
         >
-          {view.cta}
+          Continue
         </button>
       </div>
-    </article>
+    </div>
+  );
+}
+
+/**
+ * Reassurance under the packs -- ONLY what the payment architecture supports:
+ * Credits land the moment the provider confirms, and the checkout is the
+ * provider's own, so no card is ever entered here. ("Discreet billing" waits
+ * for a chosen processor whose statement descriptor can be confirmed.)
+ */
+export function TrustRow() {
+  return (
+    <p data-testid="store-trust" className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-zinc-400">
+      <span>⚡ Added instantly</span>
+      <span>🔒 Secure checkout</span>
+    </p>
   );
 }
 

@@ -1,113 +1,76 @@
 import { Link, useNavigate } from 'react-router-dom';
 import PageContainer from '../components/PageContainer';
-import PageHeader from '../components/PageHeader';
 import { useAuth } from '../auth/AuthContext';
 import { ProfileIcon } from '../components/icons';
-import { CreditBalance, EconomyStateNotice } from '../components/CustomerEconomy';
-import { commercialTier, spendableCredits, useCustomerEconomy, type CustomerEconomyState } from '../lib/customerEconomy';
+import { EconomyStateNotice } from '../components/CustomerEconomy';
+import { CreditsCard, IdentityHeader, MembershipCard, SignOutLink } from '../components/account/ProfileCards';
+import { spendableCredits, useCustomerEconomy } from '../lib/customerEconomy';
+import { membershipView } from '../lib/membership';
 
 /**
- * Profile / Account (US-18) — the third primary destination.
+ * Profile / Account (US-18; profile redesign).
  *
- * UI foundation only: a coherent home for future account info, membership,
- * settings, notifications and preferences. Auth that used to live in the shell
- * nav now lives here (sign in / sign out). Everything not yet real is shown as a
- * clearly-marked placeholder row — no billing, no backend, no invented APIs.
+ * Who you are, what plan you are on, and your Credits -- each said once, from
+ * the server's facts, with the one action that makes sense for THIS customer:
+ * a Free customer is offered Premium; a Premium customer is never sold what
+ * they already have. The Credits balance stays in the app bar on every screen;
+ * here it is a card with the way to top up.
+ *
+ * Only what works is shown. There are no placeholder rows: settings arrive
+ * when they exist. Sign out is always reachable, and deliberately quiet.
  */
-function PlaceholderRow({ label, hint }: { label: string; hint: string }) {
-  return (
-    <div className="flex items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-900/50 px-4 py-3">
-      <span className="text-sm text-zinc-200">{label}</span>
-      <span className="text-[11px] uppercase tracking-wide text-zinc-500">{hint}</span>
-    </div>
-  );
-}
-
-/** The membership line: the server's tier when it is known, and never a default. */
-function membershipLabel(state: CustomerEconomyState): string {
-  if (state.status === 'loading') return 'Plan details loading';
-  const tier = state.status === 'ready' ? commercialTier(state.overview) : null;
-  if (tier === null) return "Plan details aren't available yet";
-  return tier === 'premium' ? 'Premium plan' : 'Free plan';
-}
-
 export default function ProfilePage() {
   const { user, status, logout } = useAuth();
   const navigate = useNavigate();
   const [economyState, retryEconomy] = useCustomerEconomy();
+  const membership = membershipView(economyState);
+  const credits = economyState.status === 'ready' ? spendableCredits(economyState.overview) : null;
+  const showEconomyNotice = economyState.status === 'error' || economyState.status === 'unavailable' || economyState.status === 'disabled';
 
   async function handleLogout() {
     await logout();
     navigate('/characters', { replace: true });
   }
 
+  if (status === 'loading') {
+    // The page's shape while the session is checked -- and no plan, balance or
+    // name is claimed before the server has answered.
+    return (
+      <PageContainer>
+        <div aria-busy data-testid="profile-loading" className="flex items-center gap-3">
+          <span className="h-12 w-12 shrink-0 animate-pulse rounded-2xl bg-zinc-800/60" />
+          <span className="h-5 flex-1 animate-pulse rounded-lg bg-zinc-800/60" />
+        </div>
+        <MembershipCard view={{ kind: 'loading' }} />
+      </PageContainer>
+    );
+  }
+
+  if (status !== 'authenticated' || !user) {
+    return (
+      <PageContainer>
+        <section data-testid="profile-guest" className="flex items-center gap-3 rounded-3xl border border-zinc-800 bg-zinc-900/50 p-4">
+          <span aria-hidden className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900 text-rose-400">
+            <ProfileIcon className="h-6 w-6" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-white">You're browsing as a guest</p>
+            <Link to="/login" className="text-sm font-medium text-rose-400 hover:underline">
+              Sign in or create an account →
+            </Link>
+          </div>
+        </section>
+      </PageContainer>
+    );
+  }
+
   return (
     <PageContainer>
-      <PageHeader eyebrow="Account" title="Profile" subtitle="Manage your account and preferences." />
-
-      {/* Identity / auth card */}
-      <div className="flex items-center gap-4 rounded-3xl border border-zinc-800 bg-gradient-to-b from-zinc-900/70 to-zinc-950 p-4">
-        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900 text-rose-400">
-          <ProfileIcon className="h-7 w-7" />
-        </div>
-        <div className="min-w-0 flex-1">
-          {status === 'authenticated' && user ? (
-            <>
-              <p className="truncate text-sm font-semibold text-white" title={user.email}>
-                {user.email}
-              </p>
-              <p className="text-xs text-zinc-400">Signed in</p>
-            </>
-          ) : status === 'loading' ? (
-            <p className="text-sm text-zinc-400">Checking your session…</p>
-          ) : (
-            <>
-              <p className="text-sm font-semibold text-white">You're browsing as a guest</p>
-              <Link to="/login" className="text-xs font-medium text-rose-500 hover:underline">
-                Sign in or create an account →
-              </Link>
-            </>
-          )}
-        </div>
-      </div>
-
-      <EconomyStateNotice state={economyState} retry={retryEconomy} />
-      {/* Membership shows only what the server states: no tier is assumed. */}
-      <div className="rounded-3xl border border-zinc-800 bg-zinc-900/50 p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Membership</h3>
-            <p className="mt-1 text-sm text-zinc-200">{membershipLabel(economyState)}</p>
-          </div>
-          <Link
-            to="/subscription"
-            className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
-          >
-            Go Premium
-          </Link>
-        </div>
-        {economyState.status === 'ready' && spendableCredits(economyState.overview) !== null && (
-          <div className="mt-4 border-t border-zinc-800 pt-4"><CreditBalance overview={economyState.overview} /></div>
-        )}
-      </div>
-
-      {/* Future account surfaces — clearly marked placeholders */}
-      <div className="flex flex-col gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Settings</h3>
-        <PlaceholderRow label="Notifications" hint="Coming soon" />
-        <PlaceholderRow label="Preferences" hint="Coming soon" />
-        <PlaceholderRow label="Privacy & data" hint="Coming soon" />
-      </div>
-
-      {status === 'authenticated' && (
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="mt-1 w-full rounded-xl border border-zinc-800 py-3 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-900 hover:text-white"
-        >
-          Sign out
-        </button>
-      )}
+      <IdentityHeader email={user.email} premium={membership.kind === 'premium'} />
+      {showEconomyNotice && <EconomyStateNotice state={economyState} retry={retryEconomy} />}
+      <MembershipCard view={membership} />
+      <CreditsCard credits={credits} />
+      <SignOutLink onSignOut={() => void handleLogout()} />
     </PageContainer>
   );
 }

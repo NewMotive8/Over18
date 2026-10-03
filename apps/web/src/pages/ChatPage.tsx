@@ -16,7 +16,8 @@ import { createScrollFollower } from '../lib/chatScroll';
 import { createViewportAnchor, type ViewportAnchor } from '../lib/chatViewport';
 import { mergeOpeningMessage, shouldRequestOpening } from '../lib/chatOpening';
 import MessageMedia from '../components/MessageMedia';
-import { CreditBalance, PaidActionButton } from '../components/CustomerEconomy';
+import { PaidActionButton } from '../components/CustomerEconomy';
+import CreditsPill from '../components/CreditsPill';
 import { getAction, useCustomerEconomy } from '../lib/customerEconomy';
 import { lastCharacter } from '../lib/creditsStore';
 import CallOverlay, { CallButton } from '../components/CallOverlay';
@@ -370,7 +371,8 @@ export default function ChatPage() {
         </Link>
         <div className="flex items-center gap-2">
           <CallButton state={call.state} characterName={character.displayName} onStart={call.start} />
-          {economyState.status === 'ready' && <CreditBalance overview={economyState.overview} compact />}
+          {/* Re-reads on navigation, on a purchase or spend, and on return to the tab. */}
+          <CreditsPill />
         </div>
       </header>
 

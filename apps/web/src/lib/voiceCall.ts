@@ -1,4 +1,5 @@
 import { API_URL, callsApi, type VoiceCallSession } from './api';
+import { announceCreditsChanged } from './creditsStore';
 
 /**
  * The browser half of a live voice call (Phase 2B).
@@ -471,6 +472,8 @@ export function createCallController(deps: CallControllerDeps): CallController {
         /* the server settles it from the closed socket, or the deadline does */
       }
     }
+    // A call may have spent Credits: every balance on screen asks the server again.
+    announceCreditsChanged();
   };
 
   const handleMessage = (raw: string): void => {

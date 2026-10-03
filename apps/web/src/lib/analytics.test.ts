@@ -81,12 +81,12 @@ describe('where the browser reports', () => {
     );
   });
 
-  it('never sends a server-owned fact: tier, balance state, access decision or price', () => {
+  it('never sends a server-owned fact: tier, balance state, access decision, price or the recommended pack', () => {
     for (const rel of ['components/PremiumGate.tsx', 'pages/SubscriptionPage.tsx', 'pages/CreditsStorePage.tsx', 'components/profile/PostsTab.tsx']) {
       // Only the reports themselves: the unlock flow uses a price for its own purposes.
       const calls = [...read(rel).matchAll(/(?:track|useTrackView)\(\s*'[a-z_]+',\s*\{[^}]*\}/g)].map((m) => m[0]);
       expect(calls.length).toBeGreaterThan(0);
-      for (const call of calls) expect(call).not.toMatch(/\b(tier|balanceState|decision|creditPrice)\b/);
+      for (const call of calls) expect(call).not.toMatch(/\b(tier|balanceState|decision|creditPrice|recommendedPackCode)\b/);
     }
   });
 });
