@@ -71,6 +71,20 @@ describe('the action row', () => {
   it('with one, the Premium button is there', () => {
     expect(row(() => {})).toContain('Premium');
   });
+
+  it('Chat and a green "Call me" share the row 4:3', () => {
+    const html = row();
+    expect(html).toMatch(/<button[^>]*class="[^"]*flex-\[4\][^"]*bg-rose-600[^>]*>.*Chat/);
+    expect(html).toMatch(/<button[^>]*data-testid="profile-call"[^>]*class="[^"]*flex-\[3\][^"]*from-emerald-500[^"]*to-green-600/);
+    expect(html).toContain('Call me');
+  });
+
+  it('with Premium in the row too, Call stays green but shows only its icon (no room for the label)', () => {
+    const html = row(() => {});
+    expect(html).toMatch(/data-testid="profile-call"[^>]*from-emerald-500/);
+    expect(html).not.toContain('Call me');
+    expect(html).toContain('aria-label="Call"');
+  });
 });
 
 describe('the profile opens the real funnel, not the placeholder', () => {
