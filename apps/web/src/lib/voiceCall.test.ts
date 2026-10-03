@@ -3,6 +3,7 @@ import {
   CAPTURE_FRAME_MS,
   CLIENT_EVENT,
   IDLE_CALL_STATE,
+  PICKUP_GRACE_MS,
   INPUT_SAMPLE_RATE,
   OUTPUT_SAMPLE_RATE,
   audioAppendFrame,
@@ -621,6 +622,54 @@ describe('what a person is told', () => {
       secondsRemaining: null,
       transcript: [],
       message: null,
+      answered: false,
     });
+  });
+});
+
+describe('she picks up: "Calling…" until her first word', () => {
+  const connected = async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    await h.controller.start();
+    h.socket.deliver({ type: 'relay.connected' });
+    return h;
+  };
+
+  it('the call is active at once -- microphone streaming -- but not yet answered', async () => {
+    const h = await connected();
+    expect(h.controller.state.phase).toBe('active');
+    expect(h.controller.state.answered).toBe(false);
+    h.audio.emitFrame('QUJD');
+    expect(h.socket.sent).toHaveLength(1); // nothing about the call waits for the screen
+  });
+
+  it('answered on her first audio', async () => {
+    const h = await connected();
+    h.socket.deliver({ type: 'response.audio.delta', delta: pcm16ToBase64(Int16Array.from([1, 2])) });
+    expect(h.controller.state.answered).toBe(true);
+  });
+
+  it('answered if he speaks first', async () => {
+    const h = await connected();
+    h.socket.deliver({ type: 'input_audio_buffer.speech_started' });
+    expect(h.controller.state.answered).toBe(true);
+  });
+
+  it('never stuck on "Calling…": answered after the grace period anyway', async () => {
+    const h = await connected();
+    await vi.advanceTimersByTimeAsync(PICKUP_GRACE_MS - 1);
+    expect(h.controller.state.answered).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.controller.state.answered).toBe(true);
+  });
+
+  it('a call that ends before she answers leaves no timer behind', async () => {
+    const h = await connected();
+    await h.controller.hangUp();
+    const after = h.states.length;
+    await vi.advanceTimersByTimeAsync(PICKUP_GRACE_MS * 2);
+    expect(h.states.length).toBe(after);
+    expect(h.controller.state.phase).toBe('ended');
   });
 });
