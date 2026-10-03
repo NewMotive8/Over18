@@ -24,7 +24,7 @@ export default function FeedGate({ onContinue }: { onContinue: () => void }) {
   }, []);
 
   return (
-    <div className="col-span-2 flex flex-col">
+    <div className="col-span-2 flex flex-col lg:col-span-full">
       <button
         type="button"
         onClick={onContinue}

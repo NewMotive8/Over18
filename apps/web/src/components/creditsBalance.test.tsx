@@ -84,10 +84,13 @@ describe('the balance cannot go stale', () => {
 });
 
 describe('the Credits Store is a checkout on a phone', () => {
-  it('the app navigation steps aside on /credits on a phone only -- desktop keeps it', () => {
+  it('the app navigation steps aside on /credits on a phone; on a desktop the header carries it', () => {
     const shell = read('components/AppShell.tsx');
     expect(shell).toMatch(/const hideNavOnPhone = pathname === '\/credits';/);
-    expect(shell).toMatch(/hideNavOnPhone \? 'hidden lg:block' : ''/);
+    // The phone bar: hidden on /credits, and from lg up on every screen, where
+    // the desktop header (rendered on every route) carries the navigation.
+    expect(shell).toContain("sticky bottom-0 z-10 mx-auto w-full max-w-lg lg:hidden ${hideNavOnPhone ? 'hidden' : ''}");
+    expect(shell).toMatch(/<DesktopHeader/);
   });
 
   it('the page reserves room for the sticky bar, and the bar steps aside while paying', () => {

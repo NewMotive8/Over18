@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { PublicClip } from '../../lib/api';
 import ClipMedia from './ClipMedia';
@@ -21,31 +21,67 @@ import ClipMedia from './ClipMedia';
  * Native scroll-snap for paging, as before, so a natural horizontal swipe works
  * and the layout stays usable on desktop.
  */
+/**
+ * The distance from one slide's start to the next: the slide width plus the
+ * gap. On a phone that is the scroller's own width (one slide fills it, no
+ * gap), exactly what the index used to be computed from; on a desktop several
+ * portrait slides share the row, so it is measured from the slides themselves
+ * rather than assumed from a breakpoint.
+ */
+function slideStep(el: HTMLElement): number {
+  const first = el.children[0] as HTMLElement | undefined;
+  const second = el.children[1] as HTMLElement | undefined;
+  const step = first && second ? second.offsetLeft - first.offsetLeft : 0;
+  return step > 0 ? step : el.clientWidth;
+}
+
 export default function HeroCarousel({ clips }: { clips: PublicClip[] }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  /** The first slide in view. */
   const [active, setActive] = useState(0);
+  /** How many slides are in view at once: 1 on a phone, 3-4 on a desktop. */
+  const [perView, setPerView] = useState(1);
+
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const measure = () => setPerView(Math.max(1, Math.round(el.clientWidth / slideStep(el))));
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [clips.length]);
 
   const onScroll = () => {
     const el = scrollerRef.current;
     if (!el) return;
-    const i = Math.round(el.scrollLeft / el.clientWidth);
+    const i = Math.round(el.scrollLeft / slideStep(el));
     if (i !== active) setActive(i);
   };
 
   const goTo = (i: number) => {
     const el = scrollerRef.current;
     if (!el) return;
-    el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
+    el.scrollTo({ left: i * slideStep(el), behavior: 'smooth' });
   };
 
   if (clips.length === 0) return null;
+  const lastStart = Math.max(0, clips.length - perView);
+  /**
+   * The desktop row never shows an empty slot: 4 across from xl only when
+   * there are 4 or more clips to fill it (an operator may assign just 3 -- the
+   * fallback is 3), and fewer than 3 are centred rather than left-aligned.
+   */
+  const desktopRow = `${clips.length >= 4 ? 'xl:w-[calc((100%-3rem)/4)]' : ''}`;
+  const desktopAlign = clips.length < 3 ? 'lg:justify-center' : '';
 
   return (
     <section aria-label="Featured" className="relative">
       <div
         ref={scrollerRef}
         onScroll={onScroll}
-        className="flex snap-x snap-mandatory overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className={`flex snap-x snap-mandatory overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:gap-4 ${desktopAlign}`}
       >
         {/*
           SQUARE, NOT 16:11 -- the banner ZOOMS OUT rather than cropping harder.
@@ -68,8 +104,19 @@ export default function HeroCarousel({ clips }: { clips: PublicClip[] }) {
           never letterboxes -- wider than every clip, so `object-cover` fills it
           edge to edge with no side gutters at any viewport width.
         */}
+        {/*
+          DESKTOP (lg+): PORTRAIT, SEVERAL AT ONCE. A square as wide as a
+          desktop container would be 1200px tall; a wide band would crop the
+          faces the square was chosen to protect. Every clip is portrait, so
+          the desktop row shows 3 (lg) or 4 (xl+) 3:4 slides side by side --
+          more of each clip than the phone's square, and more characters in
+          the first screen. The phone keeps the square above, untouched.
+        */}
         {clips.map((clip, i) => (
-          <div key={clip.id} className="relative aspect-square w-full shrink-0 snap-center">
+          <div
+            key={clip.id}
+            className={`relative aspect-square w-full shrink-0 snap-center lg:aspect-[3/4] lg:w-[calc((100%-2rem)/3)] lg:snap-start lg:overflow-hidden lg:rounded-3xl ${desktopRow}`}
+          >
             <div className="absolute inset-0">
               {/* ONLY THE ACTIVE SLIDE PLAYS. All three used to autoplay at
                   once: measured at readyState=4 with slides 2 and 3 decoding
@@ -101,7 +148,7 @@ export default function HeroCarousel({ clips }: { clips: PublicClip[] }) {
               <ClipMedia
                 clip={clip}
                 autoPlay
-                active={i === active}
+                active={i >= active && i < active + perView}
                 className="h-full w-full object-cover object-[center_12%]"
               />
             </div>
@@ -121,8 +168,35 @@ export default function HeroCarousel({ clips }: { clips: PublicClip[] }) {
         ))}
       </div>
 
+      {/* Desktop: arrows, since a mouse cannot swipe. Shown only when there is
+          more than fits in the row. The phone keeps its dots. */}
+      {clips.length > perView && (
+        <>
+          <button
+            type="button"
+            aria-label="Previous featured"
+            data-testid="hero-prev"
+            disabled={active <= 0}
+            onClick={() => goTo(Math.max(0, active - 1))}
+            className="absolute left-3 top-1/2 z-10 hidden h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-zinc-950/70 text-2xl text-white shadow-lg shadow-black/40 backdrop-blur transition-opacity hover:bg-zinc-900 disabled:pointer-events-none disabled:opacity-0 lg:flex"
+          >
+            <span aria-hidden>‹</span>
+          </button>
+          <button
+            type="button"
+            aria-label="Next featured"
+            data-testid="hero-next"
+            disabled={active >= lastStart}
+            onClick={() => goTo(Math.min(lastStart, active + 1))}
+            className="absolute right-3 top-1/2 z-10 hidden h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-zinc-950/70 text-2xl text-white shadow-lg shadow-black/40 backdrop-blur transition-opacity hover:bg-zinc-900 disabled:pointer-events-none disabled:opacity-0 lg:flex"
+          >
+            <span aria-hidden>›</span>
+          </button>
+        </>
+      )}
+
       {clips.length > 1 && (
-        <div className="absolute right-4 top-4 flex gap-1.5">
+        <div className="absolute right-4 top-4 flex gap-1.5 lg:hidden">
           {clips.map((clip, i) => (
             <button
               key={clip.id}

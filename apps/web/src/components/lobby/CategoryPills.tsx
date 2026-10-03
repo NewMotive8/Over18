@@ -52,7 +52,7 @@ export default function CategoryPills({
   };
 
   return (
-    <div className="-mx-4 flex items-center gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="-mx-4 flex items-center gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:mx-0 lg:flex-wrap lg:justify-center lg:overflow-visible lg:px-0">
       {leading}
       {pill('__all__', 'All', null)}
       {categories.map((category) => pill(category.slug, category.name, category.slug))}

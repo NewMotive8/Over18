@@ -1,5 +1,7 @@
+import { useRef } from 'react';
 import { Link } from 'react-router-dom';
 import type { PublicPlayWithMeCard } from '../../lib/api';
+import RailArrows from './RailArrows';
 import { resolveRailMedia } from '../../lib/media';
 import { adultAgeFromBand } from '../../lib/lobbyContent';
 import HeroMedia from '../HeroMedia';
@@ -37,7 +39,7 @@ function PlayWithMeCard({ character }: { character: PublicPlayWithMeCard }) {
     <Link
       to={`/characters/${character.id}`}
       aria-label={`Open ${character.displayName}, ${age}`}
-      className="group relative block aspect-[3/4] w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-white/5 bg-zinc-900"
+      className="group relative block aspect-[3/4] w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-white/5 bg-zinc-900 lg:w-48 xl:w-52"
     >
       {/* Deferred loading: a rail mounts a card per character, and off-screen
           cards were downloading and playing before anyone swiped to them. The
@@ -97,19 +99,27 @@ export default function PlayWithMeCarousel({
 }: {
   characters: PublicPlayWithMeCard[];
 }) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
   if (characters.length === 0) return null;
   return (
     <section aria-label="Play with me" className="flex flex-col gap-3">
-      <div className="flex items-center justify-between px-4">
-        <h3 className="text-base font-bold text-white">Play with me</h3>
-        <Link to="/discover/swipe" className="text-xs font-semibold text-rose-400 hover:text-rose-300">
+      <div className="flex items-center justify-between px-4 lg:px-0">
+        <h3 className="text-base font-bold text-white lg:text-xl">Play with me</h3>
+        <Link to="/discover/swipe" className="text-xs font-semibold text-rose-400 hover:text-rose-300 lg:text-sm">
           Swipe mode →
         </Link>
       </div>
-      <div className="flex snap-x gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {characters.map((character) => (
-          <PlayWithMeCard key={character.id} character={character} />
-        ))}
+      {/* Desktop: bigger cards, and arrows so a mouse can reach the rest. */}
+      <div className="relative">
+        <div
+          ref={scrollerRef}
+          className="flex snap-x gap-3 overflow-x-auto px-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:gap-4 lg:px-0"
+        >
+          {characters.map((character) => (
+            <PlayWithMeCard key={character.id} character={character} />
+          ))}
+        </div>
+        <RailArrows scrollerRef={scrollerRef} label="Play with me" />
       </div>
     </section>
   );
