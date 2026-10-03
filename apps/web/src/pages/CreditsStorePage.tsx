@@ -26,7 +26,6 @@ import {
   credits,
   creditsStoreHref,
   heroCharacterId,
-  lastCharacter,
   packSavings,
   packThatUnlocks,
   packView,
@@ -41,6 +40,7 @@ import {
 } from '../lib/creditsStore';
 import { commercialTier, spendableCredits, useCustomerEconomy } from '../lib/customerEconomy';
 import { absoluteMediaUrl } from '../lib/media';
+import { useHeaderRotation } from '../lib/headerRotation';
 import { track, useTrackView } from '../lib/analytics';
 import { usePackCheckout } from '../lib/payments';
 
@@ -92,6 +92,7 @@ export default function CreditsStorePage() {
     unlockItem && NEEDS_CREDITS.has(unlockItem.decision) ? creditsNeededFor(unlockItem.creditPrice, balanceNow) : null;
 
   const hero = useHero(context, unlockAssetId);
+  const rotation = useHeaderRotation();
   const heroCopy = storeHeroCopy({
     characterName: hero.name,
     unlock: unlockAssetId ? { mediaType: hero.unlockMediaType, creditsNeeded } : null,
@@ -219,7 +220,7 @@ export default function CreditsStorePage() {
       {/* Phone: the hero opens the page, full width. Desktop: hero left, store right. */}
       <div className="lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-8">
         <div className="lg:sticky lg:top-20 lg:self-start">
-          <StoreHero media={hero} copy={heroCopy} />
+          <StoreHero media={hero} copy={heroCopy} rotation={rotation} />
         </div>
         <div className="px-4 pt-4 lg:px-0 lg:pt-0">{content}</div>
       </div>
@@ -273,7 +274,7 @@ function useNow(overview: { catalog: { packs: { promotionEndsAt: string | null; 
 function useHero(context: ReturnType<typeof readStoreContext>, unlockAssetId: string | null): HeroMedia & { unlockMediaType: 'image' | 'video' | null } {
   const [hero, setHero] = useState<HeroMedia>({ imageUrl: null, name: null });
   const [unlockMediaType, setUnlockMediaType] = useState<'image' | 'video' | null>(null);
-  const id = heroCharacterId(context, lastCharacter.get());
+  const id = heroCharacterId(context, null);
   useEffect(() => {
     if (!id) return;
     let cancelled = false;

@@ -9,6 +9,8 @@ import {
   type PackView,
   type StoreHeroCopy,
 } from '../../lib/creditsStore';
+import type { PublicClip } from '../../lib/api';
+import RotatingHeaderClip from '../RotatingHeaderClip';
 import { ChevronLeftIcon, CrownIcon, LockIcon, PhoneIcon, SparkleIcon } from '../icons';
 
 /**
@@ -50,7 +52,35 @@ function HeroCoins() {
   );
 }
 
-export function StoreHero({ media, copy, wide = false }: { media: HeroMedia; copy: StoreHeroCopy; wide?: boolean }) {
+/**
+ * The hero: the character the store opened on, if any; otherwise the session's
+ * six rotating characters (`rotation`); otherwise -- while they load, or if
+ * there are none -- OVER18's own default clip.
+ */
+export function StoreHero({
+  media,
+  copy,
+  wide = false,
+  rotation = [],
+}: {
+  media: HeroMedia;
+  copy: StoreHeroCopy;
+  wide?: boolean;
+  rotation?: readonly PublicClip[];
+}) {
+  const defaultVideo = (
+    <video
+      data-testid="store-hero-video"
+      src={DEFAULT_HERO.video}
+      poster={DEFAULT_HERO.poster}
+      autoPlay
+      muted
+      loop
+      playsInline
+      aria-hidden
+      className="absolute inset-0 h-full w-full object-cover object-[center_20%]"
+    />
+  );
   return (
     <section
       data-testid="store-hero"
@@ -64,15 +94,9 @@ export function StoreHero({ media, copy, wide = false }: { media: HeroMedia; cop
           className="absolute inset-0 h-full w-full object-cover object-[center_15%]"
         />
       ) : (
-        <video
-          data-testid="store-hero-video"
-          src={DEFAULT_HERO.video}
-          poster={DEFAULT_HERO.poster}
-          autoPlay
-          muted
-          loop
-          playsInline
-          aria-hidden
+        <RotatingHeaderClip
+          clips={rotation}
+          fallback={defaultVideo}
           className="absolute inset-0 h-full w-full object-cover object-[center_20%]"
         />
       )}
