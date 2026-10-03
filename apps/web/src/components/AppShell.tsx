@@ -183,22 +183,39 @@ export default function AppShell() {
    * has no desktop layout yet KEEPS the phone column, centred under the desktop
    * header, rather than being stretched into something nobody designed:
    *
-   *   Home (desktop Pass 1) -> the 1280px desktop container
-   *   Credits Store         -> its two-column 1152px layout, as before
-   *   everything else       -> the phone column, unchanged
+   *   Home (desktop Pass 1)              -> the 1280px desktop container
+   *   Character profile (desktop Pass 2) -> a 1152px two-column layout
+   *   Credits Store                      -> its two-column 1152px layout, as before
+   *   everything else                    -> the phone column, unchanged
+   *
+   * `lg:overflow-visible` ON THE PROFILE. `<main>` is `overflow-y-auto`, which
+   * makes it the reference box for `position: sticky` even though it never
+   * scrolls (the document does). The profile's media column is sticky, so on
+   * that route, on a desktop, `<main>` stops clipping and the column follows the
+   * real page scroll. Nothing else about `<main>` changes, and no other route
+   * or width is affected.
    */
-  const frame = isLobby ? 'max-w-lg lg:max-w-7xl lg:px-8' : isWide ? 'max-w-lg lg:max-w-6xl' : 'max-w-lg';
+  const frame = isLobby
+    ? 'max-w-lg lg:max-w-7xl lg:px-8'
+    : isProfile
+      ? 'max-w-lg lg:max-w-6xl lg:overflow-visible lg:px-8'
+      : isWide
+        ? 'max-w-lg lg:max-w-6xl'
+        : 'max-w-lg';
 
   /**
    * ONE CREDITS BALANCE ON A DESKTOP SCREEN, NEVER TWO.
    *
-   * The desktop header shows the balance on every route -- but two screens
-   * already carry their own, in their own chrome: the character profile (in its
-   * hero) and the chat (in its chat header). On those the header leaves its
-   * pill out, so the balance appears once, where that screen has always put
-   * it. Decided here, in the shell, so neither page changes.
+   * The desktop header shows the balance on every route -- except a screen
+   * that still carries its own on a desktop: the chat, in its chat header
+   * (not redesigned yet). There the header leaves its pill out.
+   *
+   * The character profile used to be the other exception. Its desktop layout
+   * (Pass 2) now hides the hero's own pill from `lg` instead, so on a desktop
+   * its balance is in the header like Home's; on a phone it is in the hero as
+   * it always was. Either way: once.
    */
-  const pageShowsCredits = isProfile || pathname.startsWith('/chat/');
+  const pageShowsCredits = pathname.startsWith('/chat/');
 
   return (
     <div className="flex min-h-dvh w-full flex-col bg-zinc-950 text-zinc-100">
