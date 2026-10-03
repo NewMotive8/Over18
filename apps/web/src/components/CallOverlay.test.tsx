@@ -53,11 +53,11 @@ describe('each phase says what is happening', () => {
   });
 
   it('distinguishes who is speaking while active', () => {
-    expect(statusLine(state({ phase: 'active', characterSpeaking: true }), 'Luna')).toBe(
+    expect(statusLine(state({ phase: 'active', answered: true, characterSpeaking: true }), 'Luna')).toBe(
       'Luna is speaking…',
     );
-    expect(statusLine(state({ phase: 'active', userSpeaking: true }), 'Luna')).toBe('Listening…');
-    expect(statusLine(state({ phase: 'active' }), 'Luna')).toBe('Connected');
+    expect(statusLine(state({ phase: 'active', answered: true, userSpeaking: true }), 'Luna')).toBe('Listening…');
+    expect(statusLine(state({ phase: 'active', answered: true }), 'Luna')).toBe('Connected');
   });
 
   it('announces status changes to a screen reader', () => {
@@ -75,7 +75,7 @@ describe('the time left', () => {
   });
 
   it('appears while active and not before', () => {
-    expect(render({ phase: 'active', secondsRemaining: 780 })).toContain('13:00 left');
+    expect(render({ phase: 'active', answered: true, secondsRemaining: 780 })).toContain('13:00 left');
     expect(render({ phase: 'connecting', secondsRemaining: 780 })).not.toContain('left');
   });
 });
@@ -149,7 +149,7 @@ describe('the call screen: her portrait, full screen, and one red button', () =>
   it('name, status and time stay over the visual, with the legibility gradient', () => {
     const html = renderToStaticMarkup(
       <CallOverlay
-        state={state({ phase: 'active', secondsRemaining: 754 })}
+        state={state({ phase: 'active', answered: true, secondsRemaining: 754 })}
         characterName="Kim"
         media={{ kind: 'video', src: 'https://api.example/v.mp4' }}
         onStart={() => {}}
@@ -187,7 +187,7 @@ describe('the call screen: her portrait, full screen, and one red button', () =>
   });
 
   it('who is speaking is still said, in the status line', () => {
-    expect(withImage({ phase: 'active', characterSpeaking: true })).toContain('Luna is speaking…');
+    expect(withImage({ phase: 'active', answered: true, characterSpeaking: true })).toContain('Luna is speaking…');
   });
 });
 
@@ -223,5 +223,25 @@ describe('the call button', () => {
 
   it.each(['ended', 'error'] as const)('is available again after %s', (phase) => {
     expect(button({ phase })).not.toContain('disabled=""');
+  });
+});
+
+describe('like a phone: "Calling…" until she picks up', () => {
+  it('active but not yet answered still reads "Calling Luna…", with no timer yet', () => {
+    expect(statusLine(state({ phase: 'active', answered: false }), 'Luna')).toBe('Calling Luna…');
+    const html = render({ phase: 'active', answered: false, secondsRemaining: 780 });
+    expect(html).toContain('Calling Luna…');
+    expect(html).not.toContain('Connected');
+    expect(html).not.toContain('13:00 left');
+  });
+
+  it('End call is there the whole time, answered or not', () => {
+    expect(render({ phase: 'active', answered: false })).toContain('aria-label="End call"');
+  });
+
+  it('once she picks up: "Connected" and the time left', () => {
+    const html = render({ phase: 'active', answered: true, secondsRemaining: 780 });
+    expect(html).toContain('Connected');
+    expect(html).toContain('13:00 left');
   });
 });

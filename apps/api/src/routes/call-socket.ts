@@ -130,13 +130,17 @@ export default async function callSocketRoutes(
       /**
        * SHE SPEAKS FIRST -- once per call, when the call is genuinely usable.
        *
-       * Two conditions, which can arrive in either order: the row went active
-       * (`connected`) and the provider said its session exists
-       * (`session.created`, documented as its first event). The CUE is sent on
-       * whichever comes second; the RESPONSE only once the provider confirms the
-       * cue joined the conversation (`conversation.item.created`) -- sent
-       * together, the response arrives first and is refused, which is why the
-       * first version stayed silent (see `callOpeningItemFrame`).
+       * The CUE is sent the moment the call is active (`connected`: the upstream
+       * socket is open and the row went active) -- NOT on `session.created`.
+       * Measured on Staging (2026-10-03): the provider accepts a cue sent on
+       * open, confirms it ~0.4s sooner than one sent on `session.created`, and
+       * still greets in the session's voice and persona. Every second of
+       * silence after "Connected" is felt, so it goes as early as it can.
+       *
+       * The RESPONSE only once the provider confirms the cue joined the
+       * conversation (`conversation.item.created`) -- sent together, the
+       * response arrives first and is refused, which is why the first version
+       * stayed silent (see `callOpeningItemFrame`).
        *
        * `openingStage` makes it once per socket -- a call is one socket, so no
        * rerender or retry in the browser can trigger it again. If he starts
@@ -145,7 +149,6 @@ export default async function callSocketRoutes(
        * `openingPending` is the window in which a provider error about it is
        * held back; see `isOpeningError`.
        */
-      let sessionReady = false;
       let openingStage: 'none' | 'cue_sent' | 'done' = 'none';
       let openingPending = false;
       const sendUpstream = (frame: string): boolean => {
@@ -158,7 +161,7 @@ export default async function callSocketRoutes(
         }
       };
       const sendOpeningCue = (): void => {
-        if (openingStage !== 'none' || closed || !connected || !sessionReady) return;
+        if (openingStage !== 'none' || closed || !connected) return;
         if (upstream?.readyState !== WebSocket.OPEN) return;
         openingStage = 'cue_sent';
         openingPending = true;
@@ -686,10 +689,7 @@ export default async function callSocketRoutes(
         } catch {
           /* browser gone; its close handler tears down */
         }
-        if (decision.type === 'session.created') {
-          sessionReady = true;
-          sendOpeningCue();
-        } else if (decision.type === 'input_audio_buffer.speech_started' && openingStage === 'cue_sent') {
+        if (decision.type === 'input_audio_buffer.speech_started' && openingStage === 'cue_sent') {
           // He spoke before the cue landed: no opening, his turn is first.
           openingStage = 'done';
           openingPending = false;

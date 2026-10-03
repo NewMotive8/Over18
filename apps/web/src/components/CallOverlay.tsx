@@ -46,6 +46,8 @@ export function statusLine(state: CallState, characterName: string): string {
     case 'connecting':
       return `Calling ${characterName}…`;
     case 'active':
+      // Like a phone: still "Calling…" until she picks up (see `answered`).
+      if (!state.answered) return `Calling ${characterName}…`;
       if (state.characterSpeaking) return `${characterName} is speaking…`;
       if (state.userSpeaking) return 'Listening…';
       return 'Connected';
@@ -158,7 +160,7 @@ export default function CallOverlay({
             <p aria-live="polite" className="text-sm text-white/85 drop-shadow">
               {statusLine(state, characterName)}
             </p>
-            {state.secondsRemaining !== null && state.phase === 'active' && (
+            {state.secondsRemaining !== null && state.phase === 'active' && state.answered && (
               <p className="font-mono text-xs text-white/70 drop-shadow">
                 {formatRemaining(state.secondsRemaining)} left
               </p>

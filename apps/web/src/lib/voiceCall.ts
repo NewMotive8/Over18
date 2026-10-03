@@ -262,7 +262,20 @@ export interface CallState {
   transcript: CallTranscriptLine[];
   /** Set in `error`, and only ever one of our own sentences. */
   message: string | null;
+  /**
+   * She has PICKED UP -- for the screen only. The call is `active` (socket
+   * open, microphone streaming) a couple of seconds before she can speak,
+   * because the provider still has to set up and screen her opening cue. A
+   * phone shows "Calling…" until the other side answers, so this does too: it
+   * turns true on her first audio, on his first speech, or after
+   * PICKUP_GRACE_MS so a call can never look stuck. It changes nothing about
+   * what the call does.
+   */
+  answered: boolean;
 }
+
+/** The longest "Calling…" may stay up once the call is active. */
+export const PICKUP_GRACE_MS = 4_000;
 
 export const IDLE_CALL_STATE: CallState = {
   phase: 'idle',
@@ -271,6 +284,7 @@ export const IDLE_CALL_STATE: CallState = {
   secondsRemaining: null,
   transcript: [],
   message: null,
+  answered: false,
 };
 
 /**
@@ -412,10 +426,24 @@ export function createCallController(deps: CallControllerDeps): CallController {
   let finished = false;
   let countdown: ReturnType<typeof setInterval> | null = null;
   let deadline: number | null = null;
+  let pickup: ReturnType<typeof setTimeout> | null = null;
 
   const emit = (patch: Partial<CallState>): void => {
     state = { ...state, ...patch };
     deps.onState(state);
+  };
+
+  const clearPickup = (): void => {
+    if (pickup !== null) {
+      clearTimeout(pickup);
+      pickup = null;
+    }
+  };
+
+  /** She picked up (or it is time to stop saying "Calling…"). Once. */
+  const markAnswered = (): void => {
+    clearPickup();
+    if (!state.answered) emit({ answered: true });
   };
 
   const clearCountdown = (): void => {
@@ -437,6 +465,7 @@ export function createCallController(deps: CallControllerDeps): CallController {
     if (finished) return;
     finished = true;
     clearCountdown();
+    clearPickup();
 
     try {
       socket?.close();
@@ -481,12 +510,15 @@ export function createCallController(deps: CallControllerDeps): CallController {
     const message = decodeRelayFrame(raw);
     switch (message.kind) {
       case 'connected':
-        emit({ phase: 'active' });
+        emit({ phase: 'active', answered: false });
+        clearPickup();
+        pickup = setTimeout(markAnswered, PICKUP_GRACE_MS);
         return;
 
       case 'audio':
         if (message.delta.length === 0) return;
         emit({ characterSpeaking: true });
+        markAnswered();
         deps.audio.play(base64ToPcm16(message.delta));
         return;
 
@@ -507,6 +539,7 @@ export function createCallController(deps: CallControllerDeps): CallController {
           }
         }
         emit({ userSpeaking: true, characterSpeaking: false });
+        markAnswered();
         return;
 
       case 'speechStopped':
@@ -618,6 +651,7 @@ export function createCallController(deps: CallControllerDeps): CallController {
 
     async dispose(): Promise<void> {
       clearCountdown();
+      clearPickup();
       // Unmount and navigation both land here. No state is emitted: the
       // component is going away and React would warn about updating it.
       finished = true;

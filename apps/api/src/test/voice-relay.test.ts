@@ -198,6 +198,14 @@ class FakeUpstream {
   }
 }
 
+/**
+ * What the BROWSER sent upstream, without the relay's own opening-line frames
+ * (tagged over18_opening_*), which go out the moment a call is active. Tests
+ * about relaying browser frames assert on this, so the greeting can neither
+ * break them nor make them pass by accident.
+ */
+const fromBrowser = (up: FakeUpstream) => up.sent.filter((raw) => !raw.includes('"over18_opening_'));
+
 beforeAll(async () => {
   migrateTestDb();
   ctx = await createTestContext({
@@ -593,8 +601,8 @@ describe('a connected relay', () => {
     const { client, up } = await live('relay.audio@example.com');
 
     client.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: 'QUJD' }));
-    await vi.waitFor(() => expect(up.sent.length).toBeGreaterThan(0));
-    expect(JSON.parse(up.sent[0]!).type).toBe('input_audio_buffer.append');
+    await vi.waitFor(() => expect(fromBrowser(up).length).toBeGreaterThan(0));
+    expect(JSON.parse(fromBrowser(up)[0]!).type).toBe('input_audio_buffer.append');
 
     up.deliver({ type: 'response.audio.delta', delta: 'WllY' });
     const frame = await client.waitFor('response.audio.delta');
@@ -611,6 +619,9 @@ describe('a connected relay', () => {
       session: { instructions: `You are Luna. ${CANARY}`, url: PROVIDER_URL },
     });
     await client.waitFor('session.updated');
+    // Her opening turn has begun, so the error below is a real one and reaches
+    // the browser (while the opening is outstanding, errors are held back).
+    up.deliver({ type: 'response.created' });
     up.deliver({ type: 'error', error: { code: 'content_blocked', message: CANARY } });
     await client.waitFor('error');
 
@@ -627,9 +638,9 @@ describe('a connected relay', () => {
 
     client.ws.send(JSON.stringify({ type: 'session.update', session: { instructions: 'pirate' } }));
     client.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-    await vi.waitFor(() => expect(up.sent.length).toBe(1));
+    await vi.waitFor(() => expect(fromBrowser(up).length).toBe(1));
 
-    expect(JSON.parse(up.sent[0]!).type).toBe('input_audio_buffer.commit');
+    expect(JSON.parse(fromBrowser(up)[0]!).type).toBe('input_audio_buffer.commit');
     expect(up.sent.join()).not.toContain('session.update');
     client.close();
   });
@@ -640,7 +651,7 @@ describe('a connected relay', () => {
     client.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: 'A'.repeat(70_000) }));
 
     expect(await client.waitClosed()).toBe(1000);
-    expect(up.sent).toHaveLength(0);
+    expect(fromBrowser(up)).toHaveLength(0);
     client.close();
   });
 
@@ -650,7 +661,7 @@ describe('a connected relay', () => {
     client.ws.send('not json at all');
     client.ws.send(JSON.stringify({ nope: true }));
     client.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-    await vi.waitFor(() => expect(up.sent.length).toBe(1));
+    await vi.waitFor(() => expect(fromBrowser(up).length).toBe(1));
 
     expect(client.closeCode).toBeNull(); // still up
     client.close();
@@ -1820,11 +1831,9 @@ describe('she answers the phone: the opening line', () => {
     await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
   };
 
-  it('sends the cue once the call is active and the session exists, on the same upstream session', async () => {
+  it('sends the cue the moment the call is active, without waiting for session.created, on the same upstream session', async () => {
     const { client, up } = await live('relay.opening@example.com');
-    expect(opening(up)).toHaveLength(0); // not before the session exists
-    up.deliver({ type: 'session.created', session: { id: 's1' } });
-    await client.waitFor('session.created');
+    // Measured on Staging: a cue sent on open is accepted and confirmed sooner.
     await vi.waitFor(() => expect(opening(up)).toHaveLength(1));
     const [item] = opening(up);
     expect(item!.type).toBe('conversation.item.create');
@@ -1853,7 +1862,7 @@ describe('she answers the phone: the opening line', () => {
     client.close();
   });
 
-  it('waits for activation when the session arrives first, then sends exactly once', async () => {
+  it('never before the call is active, then exactly once', async () => {
     const user = await setup(ctx, 'relay.opening.early@example.com');
     const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
     const up = await waitForUpstream();
