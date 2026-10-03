@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import CallOverlay, { CallButton, formatRemaining, statusLine } from './CallOverlay';
 import { IDLE_CALL_STATE, type CallState } from '../lib/voiceCall';
+import type { HeroMedia } from '../lib/media';
 
 /**
  * What a person sees during a call.
@@ -115,16 +116,51 @@ describe('the call screen: her portrait, full screen, and one red button', () =>
       <CallOverlay
         state={state(over)}
         characterName="Luna"
-        characterImage="https://api.example/media/luna.png"
+        media={{ kind: 'image', src: 'https://api.example/media/luna.png' }}
         onStart={() => {}}
         onHangUp={() => {}}
         onClose={() => {}}
       />,
     );
+  const withMedia = (media: HeroMedia) =>
+    renderToStaticMarkup(
+      <CallOverlay state={state({ phase: 'active' })} characterName="Luna" media={media} onStart={() => {}} onHangUp={() => {}} onClose={() => {}} />,
+    );
 
   it('fills the screen with her portrait, anchored at the top so her face stays in frame', () => {
     const html = withImage({ phase: 'active' });
     expect(html).toMatch(/<img[^>]*src="https:\/\/api\.example\/media\/luna\.png"[^>]*class="[^"]*inset-0[^"]*h-full[^"]*w-full[^"]*object-cover[^"]*object-top/);
+  });
+
+  it('her own clip fills the screen, MUTED and looping: her voice comes from the call, never the clip', () => {
+    const html = withMedia({ kind: 'video', src: 'https://api.example/api/media/assets/a/file' });
+    expect(html).toMatch(/<video[^>]*src="https:\/\/api\.example\/api\/media\/assets\/a\/file"/);
+    expect(html).toMatch(/<video[^>]*muted=""/);
+    expect(html).toMatch(/<video[^>]*loop=""/);
+    expect(html).toMatch(/<video[^>]*playsInline=""|<video[^>]*playsinline=""/);
+    expect(html).toMatch(/<video[^>]*class="[^"]*object-cover[^"]*object-top/);
+  });
+
+  it('with no clip and no portrait: her initial, never an empty black screen', () => {
+    const html = withMedia({ kind: 'placeholder', initial: 'L' });
+    expect(html).toMatch(/data-testid="call-portrait"[^>]*>L</);
+  });
+
+  it('name, status and time stay over the visual, with the legibility gradient', () => {
+    const html = renderToStaticMarkup(
+      <CallOverlay
+        state={state({ phase: 'active', secondsRemaining: 754 })}
+        characterName="Kim"
+        media={{ kind: 'video', src: 'https://api.example/v.mp4' }}
+        onStart={() => {}}
+        onHangUp={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(html).toContain('>Kim</h2>');
+    expect(html).toContain('Connected');
+    expect(html).toContain('12:34 left');
+    expect(html).toContain('from-black/60');
   });
 
   it('without a portrait: a dark screen, never a broken image', () => {
