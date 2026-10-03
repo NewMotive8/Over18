@@ -20,6 +20,7 @@ import AboutTab from '../components/profile/AboutTab';
 import PostsTab from '../components/profile/PostsTab';
 import MediaViewer from '../components/MediaViewer';
 import PremiumFunnel from '../components/premium/PremiumFunnel';
+import { cameFromSwipe } from '../lib/swipeReturn';
 import { commercialTier, useCustomerEconomy, type CustomerEconomyState } from '../lib/customerEconomy';
 import CreditsPill from '../components/CreditsPill';
 
@@ -170,7 +171,19 @@ export default function CharacterDetailPage() {
   }, [characterId, attempt]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
-  const goBack = useCallback(() => navigate('/characters'), [navigate]);
+  /**
+   * BACK GOES WHERE SHE WAS OPENED FROM.
+   *
+   * Opened from Swipe mode, Back steps back one history entry -- to that same
+   * Swipe screen, which restores the card (see lib/swipeReturn). It used to go
+   * to the lobby from everywhere, which threw a visitor out of Swipe mode every
+   * time they looked at a profile. From anywhere else it is unchanged: Home.
+   */
+  const fromSwipe = cameFromSwipe(location.state);
+  const goBack = useCallback(
+    () => (fromSwipe ? navigate(-1) : navigate('/characters')),
+    [navigate, fromSwipe],
+  );
 
   const backLink = (
     <button
@@ -178,7 +191,7 @@ export default function CharacterDetailPage() {
       onClick={goBack}
       className="inline-flex w-fit items-center gap-1 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
     >
-      <span aria-hidden>←</span> Back to lobby
+      <span aria-hidden>←</span> {fromSwipe ? 'Back to Swipe' : 'Back to lobby'}
     </button>
   );
 
