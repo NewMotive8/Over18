@@ -34,7 +34,7 @@ export default function FeedGate({ onContinue }: { onContinue: () => void }) {
         <span aria-hidden className="text-3xl">👀</span>
         <span className="text-base font-bold text-white">More companions are waiting</span>
         <span className="text-sm text-zinc-400">You&rsquo;ve met your free companions. Premium unlocks the whole feed.</span>
-        <span className="mt-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 px-5 py-2.5 text-sm font-bold text-white">Unlock Premium Now</span>
+        <span className="mt-2 rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 px-5 py-2.5 text-sm font-bold text-white shadow-[0_6px_20px_rgba(225,29,72,0.4)]">Unlock Premium Now</span>
       </button>
       <div ref={lineRef} data-testid="feed-premium-line" aria-hidden className="h-px w-full" />
     </div>
