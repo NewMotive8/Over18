@@ -3,9 +3,12 @@ import { CrownIcon, MessageIcon, PhoneIcon } from '../icons';
 /**
  * Primary profile action row (US-29 / brief §2).
  *
- * Two large CTA pills — Premium Upgrade and Chat — plus two compact circular
- * actions (Call, Gift). Call and Premium lead into the existing PremiumGate /
- * subscription placeholder; Chat drives the existing conversation flow.
+ * Up to two large CTA pills — Premium and Chat — plus the compact Call action.
+ *
+ * PREMIUM ONLY WHEN IT MEANS SOMETHING. `onUpgrade` is passed only for a
+ * visitor who can actually upgrade (a signed-in Free customer, or a signed-out
+ * visitor who is sent to sign in first). A Premium member gets no button, and
+ * Chat takes the row.
  */
 export default function ProfileActions({
   onUpgrade,
@@ -13,13 +16,14 @@ export default function ProfileActions({
   onCall,
   chatting = false,
 }: {
-  onUpgrade: () => void;
+  onUpgrade?: () => void;
   onChat: () => void;
   onCall: () => void;
   chatting?: boolean;
 }) {
   return (
     <div className="flex items-center gap-2">
+      {onUpgrade && (
       <button
         type="button"
         onClick={onUpgrade}
@@ -27,6 +31,7 @@ export default function ProfileActions({
       >
         <CrownIcon className="h-4 w-4" /> Premium
       </button>
+      )}
       <button
         type="button"
         onClick={onChat}

@@ -303,8 +303,31 @@ export function FunnelPlans({
   );
 }
 
-export default function PremiumFunnel({ open, surface, onClose }: { open: boolean; surface: GateSurface; onClose: () => void }) {
-  const [step, setStep] = useState<'intro' | 'plans'>('intro');
+/**
+ * Where the funnel was opened from, for analytics. The feed gates use their own
+ * surface; a character's profile reports as "premium_gate", the name that
+ * button's events have always carried (it used to open the old placeholder
+ * sheet), so its history stays one series.
+ */
+export type FunnelSurface = GateSurface | 'premium_gate';
+
+export default function PremiumFunnel({
+  open,
+  surface,
+  onClose,
+  startAt = 'intro',
+}: {
+  open: boolean;
+  surface: FunnelSurface;
+  onClose: () => void;
+  /**
+   * "plans" opens straight on the offer (Step 2) and Back then closes: Step 1
+   * speaks to the feed allowance ("you've met your free companions"), which is
+   * only true where the feed gate opened it.
+   */
+  startAt?: 'intro' | 'plans';
+}) {
+  const [step, setStep] = useState<'intro' | 'plans'>(startAt);
   const [chosen, setChosen] = useState<string | null>(null);
   const [economy] = useCustomerEconomy();
   const checkout = useCheckout();
@@ -314,10 +337,10 @@ export default function PremiumFunnel({ open, surface, onClose }: { open: boolea
   const overview = economy.status === 'ready' ? economy.overview : null;
   const plan = overview && chosen ? offeredPlans(overview).find((p) => p.code === chosen) ?? null : null;
 
-  // Every opening starts at Step 1, and is reported once.
+  // Every opening starts at its first step, and is reported once.
   useEffect(() => {
     if (!open) return;
-    setStep('intro');
+    setStep(startAt);
     setChosen(null);
     checkout.reset();
     track('paywall_viewed', { surface });
@@ -334,7 +357,7 @@ export default function PremiumFunnel({ open, surface, onClose }: { open: boolea
     if (!open || chosen) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
-      if (step === 'plans') setStep('intro');
+      if (step === 'plans' && startAt === 'intro') setStep('intro');
       else close();
     };
     window.addEventListener('keydown', onKey);
@@ -368,7 +391,7 @@ export default function PremiumFunnel({ open, surface, onClose }: { open: boolea
         <FunnelPlans
           state={economy}
           rotation={rotation}
-          onBack={() => setStep('intro')}
+          onBack={() => (startAt === 'plans' ? close() : setStep('intro'))}
           onClose={close}
           onChoose={(code) => {
             track('subscription_cta_clicked', { surface, planCode: code });
