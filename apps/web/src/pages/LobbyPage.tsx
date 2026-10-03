@@ -7,6 +7,7 @@ import HomeBannerSlot from '../components/lobby/HomeBannerSlot';
 import PlayWithMeCarousel from '../components/lobby/PlayWithMeCarousel';
 import ClipGridCard from '../components/lobby/ClipGridCard';
 import CategoryPills from '../components/lobby/CategoryPills';
+import { LOBBY_SEARCH_ID } from '../components/lobby/LobbyActions';
 import ClipRail from '../components/lobby/ClipRail';
 import CommunityPromoCard from '../components/lobby/CommunityPromoCard';
 import EmptyState from '../components/EmptyState';
@@ -59,14 +60,20 @@ import { feedWindow, usePremiumGate } from '../lib/premiumGate';
 
 function LobbySkeleton() {
   return (
-    <div className="flex flex-col gap-6 pb-8 pt-3" data-testid="lobby-skeleton">
+    <div className="flex flex-col gap-6 pb-8 pt-3 lg:gap-10 lg:pt-8" data-testid="lobby-skeleton">
       {/* SQUARE, matching HeroCarousel. It was 16:11 while the hero was, and
           when the hero became square this had to follow or the page would jump
           258px -> 375px the moment Home resolved. */}
-      <div className="aspect-square w-full animate-pulse bg-zinc-900" />
-      <div className="flex gap-3 overflow-hidden px-4">
+      <div className="aspect-square w-full animate-pulse bg-zinc-900 lg:hidden" />
+      {/* Desktop: the portrait hero row it will become, so nothing jumps. */}
+      <div className="hidden gap-4 lg:grid lg:grid-cols-3 xl:grid-cols-4">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div key={i} className={`aspect-[3/4] animate-pulse rounded-3xl bg-zinc-900 ${i === 3 ? 'lg:hidden xl:block' : ''}`} />
+        ))}
+      </div>
+      <div className="flex gap-3 overflow-hidden px-4 lg:gap-4 lg:px-0">
         {Array.from({ length: 3 }, (_, i) => (
-          <div key={i} className="aspect-[3/4] w-40 shrink-0 animate-pulse rounded-2xl bg-zinc-900" />
+          <div key={i} className="aspect-[3/4] w-40 shrink-0 animate-pulse rounded-2xl bg-zinc-900 lg:w-48 xl:w-52" />
         ))}
       </div>
       <span className="sr-only">Loading Home…</span>
@@ -75,6 +82,16 @@ function LobbySkeleton() {
 }
 
 type Status = 'loading' | 'ready' | 'error';
+
+/**
+ * THE RESULTS GRID. Two columns on a phone and tablet, exactly as before; on a
+ * desktop it uses the width -- 4 columns at lg, 5 at xl, 6 at 2xl -- with the
+ * cards keeping their 3:4 frame and growing to ~200-240px. The cards stay in
+ * data order, row by row: no masonry, no reordering, so the Premium feed gate
+ * (which counts characters in that order) and the promo's position after the
+ * second clip are exactly what they were.
+ */
+const FEED_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5 2xl:grid-cols-6';
 
 export default function LobbyPage() {
   const [status, setStatus] = useState<Status>('loading');
@@ -231,7 +248,7 @@ export default function LobbyPage() {
     <div className="flex flex-1 flex-col">
       <LobbyTopBar onSearch={focusSearch} />
 
-      <div className="flex flex-col gap-6 pb-8 pt-3">
+      <div className="flex flex-col gap-6 pb-8 pt-3 lg:gap-10 lg:pt-8">
         {/* ── Home: composed entirely from published CMS configuration ── */}
         <HeroCarousel clips={home.hero} />
 
@@ -246,14 +263,15 @@ export default function LobbyPage() {
         <HomeBannerSlot banners={home.banners.before_search} label="Featured" />
 
         {/* ── Over18 AI Companions: heading, search, pills ── */}
-        <section aria-label="Discover companions" className="flex flex-col gap-3 px-4">
-          <h2 className="text-center text-xl font-black tracking-tight text-white">
+        <section aria-label="Discover companions" className="flex flex-col gap-3 px-4 lg:gap-4 lg:px-0">
+          <h2 className="text-center text-xl font-black tracking-tight text-white lg:text-3xl">
             Over18 <span className="text-rose-500">AI Companions</span>
           </h2>
 
-          <div className="relative">
+          <div className="relative lg:mx-auto lg:w-full lg:max-w-2xl">
             <input
               ref={searchRef}
+              id={LOBBY_SEARCH_ID}
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -300,10 +318,10 @@ export default function LobbyPage() {
         </section>
 
         {/* Results grid, with the separate Get 20 For Free card mixed in. */}
-        <div className="px-4">
+        <div className="px-4 lg:px-0">
           {gate.pending ? (
             // Until it is known whether the gate applies, the feed waits rather than over-shows.
-            <div data-testid="feed-pending" className="grid grid-cols-2 gap-3">
+            <div data-testid="feed-pending" className={FEED_GRID}>
               {Array.from({ length: 4 }, (_, i) => (
                 <div key={i} className="aspect-[3/4] animate-pulse rounded-2xl bg-zinc-900" />
               ))}
@@ -327,7 +345,7 @@ export default function LobbyPage() {
               }
             />
           ) : (
-            <div className="grid grid-cols-2 gap-3">
+            <div className={FEED_GRID}>
               {shownClips.slice(0, 2).map((clip) => (
                 <ClipGridCard key={clip.id} clip={clip} />
               ))}

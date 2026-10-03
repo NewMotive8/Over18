@@ -3,6 +3,8 @@ import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom';
 import AgeGate from './AgeGate';
 import CreditsPill from './CreditsPill';
 import MobileNavigation from './MobileNavigation';
+import DesktopHeader from './nav/DesktopHeader';
+import LobbyActions, { focusLobbySearch } from './lobby/LobbyActions';
 import SiteFooter from './SiteFooter';
 import StagingBanner from './StagingBanner';
 import { initialStatus, writeConfirmation, type GateStatus } from '../lib/ageGate';
@@ -168,14 +170,35 @@ export default function AppShell() {
   const isProfile = /^\/characters\/[^/]+$/.test(pathname);
   const isImmersive = isLobby || isProfile;
   // The Credits Store alone is laid out in two columns on a wide screen (hero
-  // left, store right); every other screen keeps the phone-width column.
+  // left, store right).
   const isWide = pathname === '/credits' || pathname === '/wallet';
   const hideNavOnPhone = pathname === '/credits';
 
+  /**
+   * HOW WIDE EACH SCREEN MAY BE ON A DESKTOP (`lg`, 1024px and up).
+   *
+   * Below `lg` every screen is the phone column it has always been
+   * (`max-w-lg`) -- nothing about a phone or tablet changes. From `lg` a screen
+   * gets the width its own desktop layout was designed for, and a screen that
+   * has no desktop layout yet KEEPS the phone column, centred under the desktop
+   * header, rather than being stretched into something nobody designed:
+   *
+   *   Home (desktop Pass 1) -> the 1280px desktop container
+   *   Credits Store         -> its two-column 1152px layout, as before
+   *   everything else       -> the phone column, unchanged
+   */
+  const frame = isLobby ? 'max-w-lg lg:max-w-7xl lg:px-8' : isWide ? 'max-w-lg lg:max-w-6xl' : 'max-w-lg';
+
   return (
-    <div className={`mx-auto flex min-h-dvh w-full flex-col bg-zinc-950 text-zinc-100 ${isWide ? 'max-w-lg lg:max-w-6xl' : 'max-w-lg'}`}>
+    <div className="flex min-h-dvh w-full flex-col bg-zinc-950 text-zinc-100">
+      {/* Desktop only: the header with the primary navigation, which replaces
+          the phone's bottom tab bar from `lg` up. Home adds its own actions. */}
+      <DesktopHeader
+        extras={isLobby ? <LobbyActions onSearch={focusLobbySearch} withAccount={false} /> : undefined}
+      />
+
       {!isImmersive && (
-        <header className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur pt-[max(0.75rem,env(safe-area-inset-top))]">
+        <header className="sticky top-0 z-10 mx-auto flex w-full max-w-lg items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur pt-[max(0.75rem,env(safe-area-inset-top))] lg:hidden">
           <Link
             to="/characters"
             aria-label="Over18 — Discover"
@@ -191,10 +214,12 @@ export default function AppShell() {
 
       {/* Immediately below the header -- and at the very top on the immersive
           routes, which have no header of their own. Renders nothing outside a
-          staging build. */}
-      <StagingBanner />
+          staging build. Full width on a desktop, like the header above it. */}
+      <div className="mx-auto w-full max-w-lg lg:max-w-none">
+        <StagingBanner />
+      </div>
 
-      <main className={`flex flex-1 flex-col overflow-y-auto ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}>
+      <main className={`mx-auto flex w-full flex-1 flex-col overflow-y-auto ${frame} ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}>
         <Outlet />
         {/* Inside the scroll region and after the outlet, so it sits at the end
             of the content rather than competing with the sticky primary nav
@@ -202,10 +227,11 @@ export default function AppShell() {
         <SiteFooter />
       </main>
 
-      {/* The Credits Store is a checkout: on a phone its own sticky purchase bar
-          takes the bottom of the screen, so the app navigation steps aside
-          there. Desktop keeps it. */}
-      <div className={`sticky bottom-0 z-10 ${hideNavOnPhone ? 'hidden lg:block' : ''}`}>
+      {/* The phone's primary navigation. The Credits Store is a checkout: on a
+          phone its own sticky purchase bar takes the bottom of the screen, so
+          the app navigation steps aside there. From `lg` up the desktop
+          header above carries the navigation instead, on every screen. */}
+      <div className={`sticky bottom-0 z-10 mx-auto w-full max-w-lg lg:hidden ${hideNavOnPhone ? 'hidden' : ''}`}>
         <MobileNavigation />
       </div>
     </div>

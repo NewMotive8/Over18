@@ -11,7 +11,7 @@ import { Link } from 'react-router-dom';
 export default function CommunityPromoCard() {
   const avatars = ['from-rose-500 to-fuchsia-600', 'from-sky-500 to-indigo-600', 'from-amber-400 to-orange-600', 'from-emerald-400 to-teal-600'];
   return (
-    <div className="col-span-2 flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-gradient-to-br from-indigo-950 via-zinc-950 to-fuchsia-950 p-5 text-center">
+    <div className="col-span-2 flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-gradient-to-br from-indigo-950 via-zinc-950 to-fuchsia-950 p-5 text-center lg:justify-center">
       <div className="flex -space-x-2">
         {avatars.map((g, i) => (
           <span

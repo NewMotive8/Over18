@@ -27,7 +27,7 @@ export default function HomeBannerSlot({
   if (banners.length === 0) return null;
 
   return (
-    <section aria-label={label} className="flex flex-col gap-3 px-4">
+    <section aria-label={label} className="flex flex-col gap-3 px-4 lg:mx-auto lg:w-full lg:max-w-4xl lg:px-0">
       {banners.map((banner) => (
         <BannerCard key={banner.id} banner={banner} />
       ))}
