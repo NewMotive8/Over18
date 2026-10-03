@@ -42,7 +42,7 @@ function HeroCoins() {
   return (
     <div aria-hidden className="pointer-events-none absolute inset-0">
       <span className={`${coin} right-5 top-14 flex h-12 w-12 rotate-12 items-center justify-center shadow-[0_0_28px_rgba(251,191,36,0.55)]`}>
-        <SparkleIcon className="h-6 w-6 text-white/85" />
+        <SparkleIcon className="h-6 w-6 text-rose-600" />
       </span>
       <span className={`${coin} left-3 top-28 h-8 w-8 -rotate-12 blur-[0.6px] shadow-[0_0_20px_rgba(251,191,36,0.5)]`} />
       <span className={`${coin} right-2 top-44 h-5 w-5 opacity-85 blur-[1.2px]`} />
@@ -154,7 +154,7 @@ function Coin({ size = 'md' }: { size?: 'sm' | 'md' }) {
       aria-hidden
       className={`flex items-center justify-center rounded-full bg-[radial-gradient(circle_at_34%_30%,#fef3c7_0%,#fbbf24_38%,#d97706_72%,#92400e_100%)] shadow-[0_0_14px_rgba(251,191,36,0.4)] ${size === 'sm' ? 'h-6 w-6' : 'h-9 w-9'}`}
     >
-      <SparkleIcon className={`text-white/90 ${size === 'sm' ? 'h-3 w-3' : 'h-4 w-4'}`} />
+      <SparkleIcon className={`text-rose-600 ${size === 'sm' ? 'h-3 w-3' : 'h-4 w-4'}`} />
     </span>
   );
 }
