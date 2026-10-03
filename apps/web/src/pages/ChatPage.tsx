@@ -8,8 +8,8 @@ import {
   type ConversationSummary,
   type SendMessageResult,
 } from '@over18/shared';
-import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
-import { absoluteMediaUrl } from '../lib/media';
+import { ApiRequestError, charactersApi, conversationsApi, messagesApi, type PublicClip } from '../lib/api';
+import { absoluteMediaUrl, characterHeaderItems } from '../lib/media';
 import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
 import { createPacedSend } from '../lib/chatPacing';
 import { createScrollFollower } from '../lib/chatScroll';
@@ -45,6 +45,27 @@ export default function ChatPage() {
    * microphone across to somebody else's conversation.
    */
   const call = useVoiceCall(conversationId ?? '');
+
+  /**
+   * Her own released clips, for the call screen's backdrop -- the same list her
+   * profile header plays. Fetched the first time a call starts (most chats
+   * never call), and kept per character so a second call does not refetch.
+   */
+  const callCharacterId = state.status === 'ready' ? state.conversation.character.id : null;
+  const onCall = call.state.phase !== 'idle';
+  const [callClips, setCallClips] = useState<{ characterId: string; clips: PublicClip[] } | null>(null);
+  useEffect(() => {
+    if (!onCall || !callCharacterId || callClips?.characterId === callCharacterId) return;
+    let cancelled = false;
+    charactersApi
+      .clips(callCharacterId)
+      .then((res) => !cancelled && setCallClips({ characterId: callCharacterId, clips: res.clips }))
+      // No clips: her portrait or initial stands in. Never an error on a call.
+      .catch(() => !cancelled && setCallClips({ characterId: callCharacterId, clips: [] }));
+    return () => {
+      cancelled = true;
+    };
+  }, [onCall, callCharacterId, callClips]);
 
   /**
    * Arriving from the profile's phone button, which navigates here with
@@ -382,7 +403,7 @@ export default function ChatPage() {
       <CallOverlay
         state={call.state}
         characterName={character.displayName}
-        characterImage={showImage ? avatar : null}
+        media={characterHeaderItems(character, callClips?.characterId === character.id ? callClips.clips : [])[0]?.media ?? null}
         onStart={call.start}
         onHangUp={call.hangUp}
         onClose={call.close}

@@ -20,6 +20,8 @@ import {
   sanitiseProviderFrame,
   RELAY_EVENTS,
   UPSTREAM_CONNECT_TIMEOUT_MS,
+  callOpeningFrames,
+  isOpeningError,
 } from '../voice/relay-protocol.js';
 import {
   VoiceProviderError,
@@ -124,6 +126,32 @@ export default async function callSocketRoutes(
       let closed = false;
       /** True once the upstream socket opened and the row went `active`. */
       let connected = false;
+      /**
+       * SHE SPEAKS FIRST -- once per call, when the call is genuinely usable.
+       *
+       * Two conditions, which can arrive in either order: the row went active
+       * (`connected`) and the provider said its session exists
+       * (`session.created`, documented as its first event). The opening is sent
+       * on whichever comes second, and `openingSent` makes it once per socket --
+       * a call is one socket, so no rerender or retry in the browser can
+       * trigger it again. `openingPending` is the window in which a provider
+       * error about it is held back; see `isOpeningError`.
+       */
+      let sessionReady = false;
+      let openingSent = false;
+      let openingPending = false;
+      const sendOpening = (): void => {
+        if (openingSent || closed || !connected || !sessionReady) return;
+        if (upstream?.readyState !== WebSocket.OPEN) return;
+        openingSent = true;
+        openingPending = true;
+        try {
+          for (const frame of callOpeningFrames()) upstream.send(frame);
+        } catch {
+          // Not delivered: the call carries on and he simply speaks first.
+          openingPending = false;
+        }
+      };
       /**
        * True once THIS socket won `beginConnect`.
        *
@@ -584,6 +612,7 @@ export default async function callSocketRoutes(
             } catch {
               /* already gone */
             }
+            sendOpening();
             // The provider's own ceiling, enforced locally too: a socket
             // that outlives it is closed rather than left running. Reaching
             // the ceiling is an expiry, not a failure: the call did everything
@@ -622,12 +651,23 @@ export default async function callSocketRoutes(
       upstream.addEventListener('message', (event) => {
         if (closed) return;
         if (typeof event.data !== 'string') return; // transport is json
+        // A refused opening must not end the call: held back, and he speaks first.
+        if (isOpeningError(event.data, openingPending)) {
+          openingPending = false;
+          return;
+        }
         const decision = sanitiseProviderFrame(event.data);
         if (decision.action === 'drop') return;
         try {
           socket.send(JSON.stringify(decision.payload));
         } catch {
           /* browser gone; its close handler tears down */
+        }
+        if (decision.type === 'session.created') {
+          sessionReady = true;
+          sendOpening();
+        } else if (decision.type === 'response.created') {
+          openingPending = false;
         }
 
         /**

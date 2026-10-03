@@ -302,3 +302,70 @@ export const RELAY_EVENTS = {
   closed: (reason: string) => ({ type: 'relay.closed', reason }),
   error: (reason: string) => ({ type: 'relay.error', reason }),
 } as const;
+
+/* ------------------------------------------------------------------ *
+ * She answers: the opening line
+ * ------------------------------------------------------------------ */
+
+/**
+ * The cue that makes her speak first.
+ *
+ * A call where the person says nothing after "Connected" used to stay silent:
+ * the provider only answers a turn, and nobody had taken one. So the RELAY takes
+ * the first turn, server-side, on the same upstream session the person is
+ * connected to -- her configured voice, her persona, nothing simulated.
+ *
+ * WHY A USER-ROLE TEXT ITEM. It is the only kind the provider documents for
+ * `conversation.item.create` ("a user message with input_text parts only,
+ * screened before it is sent"). It is written as a stage cue rather than as
+ * words he said, so she answers the phone in her own words instead of replying
+ * to a line nobody spoke. No phrase is scripted.
+ *
+ * NEVER STORED, NEVER SHOWN. The transcript store reads only the two finished
+ * turn events (`...input_audio_transcription.completed` from his AUDIO, and
+ * `response.audio_transcript.done`), and the browser receives no event for a
+ * created item -- so the cue cannot reach the call transcript, the memory
+ * extractor, or the screen. Her spoken greeting is stored like any other turn.
+ */
+export const CALL_OPENING_CUE =
+  '[The call has just connected. He has not said anything yet. Answer the phone the way you naturally would: one short line in your own words, then let him talk.]';
+
+/** Tags our own frames, so a provider error about them can be recognised. */
+export const CALL_OPENING_EVENT_PREFIX = 'over18_opening_';
+
+/** The two upstream frames, in order: the cue, then the turn it asks for. */
+export function callOpeningFrames(): string[] {
+  return [
+    JSON.stringify({
+      event_id: `${CALL_OPENING_EVENT_PREFIX}item`,
+      type: 'conversation.item.create',
+      item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: CALL_OPENING_CUE }] },
+    }),
+    JSON.stringify({ event_id: `${CALL_OPENING_EVENT_PREFIX}response`, type: 'response.create' }),
+  ];
+}
+
+/**
+ * Whether a provider frame is the error that a refused opening produces.
+ *
+ * The browser ends the call on ANY provider error, which is right for a real
+ * fault and wrong here: an opening the provider screens out or rejects must
+ * leave the call usable, with the person simply speaking first as before. So
+ * while the opening is outstanding -- sent, and no response yet begun -- an
+ * error frame is held back from the browser. One that names one of our own
+ * event ids is always ours. A fault that genuinely ends the session still closes
+ * the provider socket, and that path is untouched.
+ */
+export function isOpeningError(raw: string, openingPending: boolean): boolean {
+  let event: unknown;
+  try {
+    event = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (typeof event !== 'object' || event === null || (event as { type?: unknown }).type !== 'error') return false;
+  const detail = (event as { error?: unknown }).error;
+  const eventId = detail && typeof detail === 'object' ? (detail as { event_id?: unknown }).event_id : undefined;
+  if (typeof eventId === 'string' && eventId.startsWith(CALL_OPENING_EVENT_PREFIX)) return true;
+  return openingPending;
+}

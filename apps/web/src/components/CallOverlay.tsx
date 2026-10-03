@@ -1,4 +1,5 @@
 import { IDLE_CALL_STATE, type CallState } from '../lib/voiceCall';
+import type { HeroMedia } from '../lib/media';
 import { PhoneIcon } from './icons';
 
 /**
@@ -18,8 +19,12 @@ import { PhoneIcon } from './icons';
 export interface CallOverlayProps {
   state: CallState;
   characterName: string;
-  /** Her portrait, full screen behind the call; a dark screen without one. */
-  characterImage?: string | null;
+  /**
+   * What fills the screen behind the call: the same media her profile header
+   * shows (`characterHeaderItems`) -- her own released, non-explicit clip,
+   * else her portrait, else her initial. A dark screen without any.
+   */
+  media?: HeroMedia | null;
   onStart: () => void;
   onHangUp: () => void;
   /** Dismisses the overlay once a call is over. */
@@ -89,7 +94,7 @@ export function CallButton({
 export default function CallOverlay({
   state,
   characterName,
-  characterImage = null,
+  media = null,
   onStart,
   onHangUp,
   onClose,
@@ -113,15 +118,36 @@ export default function CallOverlay({
     >
       {/* Phone-shaped on a wide screen, full bleed on a phone. */}
       <div className="relative h-full w-full max-w-md overflow-hidden bg-gradient-to-b from-zinc-800 to-zinc-950">
-        {characterImage && (
+        {/* MUTED, ALWAYS: her voice comes from the call, never from the clip. */}
+        {media?.kind === 'video' ? (
+          <video
+            src={media.src}
+            poster={media.poster}
+            autoPlay
+            muted
+            loop
+            playsInline
+            aria-hidden
+            data-testid="call-portrait"
+            className="absolute inset-0 h-full w-full object-cover object-top"
+          />
+        ) : media?.kind === 'image' ? (
           <img
-            src={characterImage}
+            src={media.src}
             alt=""
             aria-hidden
             data-testid="call-portrait"
             className="absolute inset-0 h-full w-full object-cover object-top"
           />
-        )}
+        ) : media?.kind === 'placeholder' ? (
+          <div
+            aria-hidden
+            data-testid="call-portrait"
+            className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-rose-950 via-zinc-900 to-zinc-950 text-[9rem] font-bold text-rose-500/30"
+          >
+            {media.initial}
+          </div>
+        ) : null}
         {/* Legibility: darker at the top for the name, at the bottom for the button. */}
         <div aria-hidden className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent via-35% to-black/70" />
 

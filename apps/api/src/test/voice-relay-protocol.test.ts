@@ -6,6 +6,9 @@ import {
   decideClientFrame,
   describeError,
   sanitiseProviderFrame,
+  CALL_OPENING_CUE,
+  callOpeningFrames,
+  isOpeningError,
 } from '../voice/relay-protocol.js';
 
 /**
@@ -443,5 +446,39 @@ describe('an error reduced to what is safe to log', () => {
     const b: Record<string, unknown> = { name: 'B', cause: a };
     a.cause = b;
     expect(describeError(a)).toEqual({ errorName: 'object' });
+  });
+});
+
+describe('the opening line', () => {
+  it('is a documented user text item followed by one response request, both tagged as ours', () => {
+    const frames = callOpeningFrames().map((raw) => JSON.parse(raw));
+    expect(frames.map((f) => f.type)).toEqual(['conversation.item.create', 'response.create']);
+    expect(frames[0].item).toEqual({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: CALL_OPENING_CUE }],
+    });
+    for (const f of frames) expect(f.event_id).toMatch(/^over18_opening_/);
+    // No response-level instructions: they would replace her persona for that turn.
+    expect(frames[1].response).toBeUndefined();
+  });
+
+  it('scripts no greeting: the cue asks for one line in her own words', () => {
+    expect(CALL_OPENING_CUE).toMatch(/own words/);
+    expect(CALL_OPENING_CUE).not.toMatch(/"/);
+  });
+
+  it('recognises an error about the opening, and only while it is outstanding otherwise', () => {
+    const ours = JSON.stringify({ type: 'error', error: { code: 'x', event_id: 'over18_opening_item' } });
+    const other = JSON.stringify({ type: 'error', error: { code: 'x' } });
+    expect(isOpeningError(ours, false)).toBe(true);
+    expect(isOpeningError(other, true)).toBe(true);
+    expect(isOpeningError(other, false)).toBe(false);
+    expect(isOpeningError(JSON.stringify({ type: 'response.created' }), true)).toBe(false);
+    expect(isOpeningError('not json', true)).toBe(false);
+  });
+
+  it('the browser still cannot send an item of its own', () => {
+    expect(CLIENT_TO_PROVIDER_ALLOWLIST.has('conversation.item.create')).toBe(false);
   });
 });
