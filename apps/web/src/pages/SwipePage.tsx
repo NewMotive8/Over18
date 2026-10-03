@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import type { PublicPlayWithMeCard } from '../lib/api';
 import { usePlayWithMe } from '../hooks/usePlayWithMe';
 import { useFavourites } from '../hooks/useFavourites';
@@ -11,6 +11,7 @@ import { DiscoverIcon, LikeIcon, SparkleIcon } from '../components/icons';
 import type { SwipeDecision } from '../lib/swipe';
 import PremiumFunnel from '../components/premium/PremiumFunnel';
 import { admit, canMeet, usePremiumGate } from '../lib/premiumGate';
+import { SWIPE_PATH, resolveSwipeIndex, swipePosition } from '../lib/swipeReturn';
 
 /**
  * Swipe discovery — the Tinder-style deck, kept as a secondary interaction
@@ -74,13 +75,34 @@ export default function SwipePage() {
   const { state, reload } = usePlayWithMe();
   const favourites = useFavourites();
   const navigate = useNavigate();
+  const location = useLocation();
   const deckRef = useRef<SwipeDeckHandle>(null);
 
-  const [index, setIndex] = useState(0);
+  // The deck's place is remembered for THIS visit (history entry), so coming
+  // back from a profile lands on the same card. A fresh visit starts at 0.
+  const [index, setIndex] = useState(() => swipePosition.read(location.key)?.index ?? 0);
   const [feedback, setFeedback] = useState<string | null>(null);
   const feedbackTimer = useRef<number | null>(null);
 
   const characters = state.status === 'ready' ? state.characters : [];
+  const positionResolved = useRef(false);
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    // Once, when the list arrives: make sure the remembered index still holds
+    // the remembered character (the list may have changed while she was away).
+    if (!positionResolved.current) {
+      positionResolved.current = true;
+      const target = resolveSwipeIndex(swipePosition.read(location.key), state.characters.map((c) => c.id));
+      if (target !== index) {
+        setIndex(target);
+        return;
+      }
+    }
+    // The end of the deck has no card to come back to; the last card stays remembered.
+    const onScreen = state.characters[index];
+    if (onScreen) swipePosition.write(location.key, { index, characterId: onScreen.id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.status, index, location.key]);
   const gate = usePremiumGate('swipe');
   const [funnelOpen, setFunnelOpen] = useState(false);
   const current: PublicPlayWithMeCard | undefined = characters[index];
@@ -120,8 +142,9 @@ export default function SwipePage() {
     feedbackTimer.current = window.setTimeout(() => setFeedback(null), 1400);
   }, []);
 
+  // `from` tells the profile that Back should return HERE, not to Home.
   const openProfile = useCallback(
-    (character: PublicPlayWithMeCard) => navigate(`/characters/${character.id}`),
+    (character: PublicPlayWithMeCard) => navigate(`/characters/${character.id}`, { state: { from: SWIPE_PATH } }),
     [navigate],
   );
 
@@ -319,7 +342,19 @@ export default function SwipePage() {
       {backLink}
       {header}
 
-      <div className="relative min-h-[420px] flex-1">
+      {/*
+        DESKTOP (lg+): THE CARD TAKES THE CLIP'S OWN SHAPE.
+        Her clips are 9:16 portraits. On a phone the deck fills a tall, narrow
+        screen, so the card is already portrait. On a desktop the same rule
+        ("whatever height is left") produced a box WIDER than it was tall --
+        measured 576x500 -- and filling that with a portrait clip crops top and
+        bottom equally: the head goes. So from lg the deck is 9:16 and centred;
+        the whole clip shows. Its height is the screen height minus the chrome
+        above and the action buttons below (19rem), so the buttons are never
+        pushed off screen -- between 26rem and 46rem. Still one card at a time,
+        same gestures, same gate.
+      */}
+      <div className="relative min-h-[420px] flex-1 lg:aspect-[9/16] lg:h-[clamp(26rem,calc(100dvh_-_19rem),46rem)] lg:min-h-0 lg:flex-none lg:self-center">
         <div className="absolute inset-0">
           <SwipeDeck
             ref={deckRef}
