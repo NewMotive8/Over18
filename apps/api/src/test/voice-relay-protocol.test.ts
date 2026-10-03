@@ -7,7 +7,8 @@ import {
   describeError,
   sanitiseProviderFrame,
   CALL_OPENING_CUE,
-  callOpeningFrames,
+  callOpeningItemFrame,
+  callOpeningResponseFrame,
   isOpeningError,
 } from '../voice/relay-protocol.js';
 
@@ -451,7 +452,7 @@ describe('an error reduced to what is safe to log', () => {
 
 describe('the opening line', () => {
   it('is a documented user text item followed by one response request, both tagged as ours', () => {
-    const frames = callOpeningFrames().map((raw) => JSON.parse(raw));
+    const frames = [callOpeningItemFrame(), callOpeningResponseFrame()].map((raw) => JSON.parse(raw));
     expect(frames.map((f) => f.type)).toEqual(['conversation.item.create', 'response.create']);
     expect(frames[0].item).toEqual({
       type: 'message',

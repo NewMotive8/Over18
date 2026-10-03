@@ -1812,21 +1812,44 @@ describe('existing lifecycle behaviour is intact', () => {
 describe('she answers the phone: the opening line', () => {
   const opening = (up: FakeUpstream) =>
     up.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>).filter((f) => String(f.event_id ?? '').startsWith('over18_opening_'));
+  /** The provider's real order, measured on Staging: session, cue sent, cue confirmed, response sent. */
+  const greet = async (up: FakeUpstream) => {
+    up.deliver({ type: 'session.created', session: { id: 's1' } });
+    await vi.waitFor(() => expect(opening(up)).toHaveLength(1));
+    up.deliver({ type: 'conversation.item.created', item: { role: 'user', type: 'message' } });
+    await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
+  };
 
-  it('once the call is active and the session exists, asks her for one opening turn upstream', async () => {
+  it('sends the cue once the call is active and the session exists, on the same upstream session', async () => {
     const { client, up } = await live('relay.opening@example.com');
     expect(opening(up)).toHaveLength(0); // not before the session exists
-
     up.deliver({ type: 'session.created', session: { id: 's1' } });
     await client.waitFor('session.created');
-    await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
-
-    const [item, response] = opening(up);
+    await vi.waitFor(() => expect(opening(up)).toHaveLength(1));
+    const [item] = opening(up);
     expect(item!.type).toBe('conversation.item.create');
     expect((item!.item as { role: string }).role).toBe('user');
-    expect(response!.type).toBe('response.create');
-    // The same upstream session the person is connected to: no second socket.
     expect(upstreams).toHaveLength(1);
+    client.close();
+  });
+
+  /**
+   * THE REGRESSION. Sent together, the provider refused the response ("Cannot
+   * create response without input, history, or instructions") because the cue
+   * was still being screened -- and she said nothing. The response must wait
+   * for the cue's confirmation.
+   */
+  it('asks for her turn only AFTER the provider confirms the cue', async () => {
+    const { client, up } = await live('relay.opening.order@example.com');
+    up.deliver({ type: 'session.created' });
+    up.deliver({ type: 'session.updated' });
+    await client.waitFor('session.updated');
+    expect(opening(up).map((f) => f.type)).toEqual(['conversation.item.create']);
+
+    up.deliver({ type: 'conversation.item.created', item: { role: 'user', type: 'message' } });
+    await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
+    expect(opening(up).map((f) => f.type)).toEqual(['conversation.item.create', 'response.create']);
+    expect(opening(up)[1]!.response).toBeUndefined(); // her persona, untouched
     client.close();
   });
 
@@ -1839,28 +1862,43 @@ describe('she answers the phone: the opening line', () => {
     expect(opening(up)).toHaveLength(0); // not active yet
     up.open();
     await client.waitFor('relay.connected');
+    await vi.waitFor(() => expect(opening(up)).toHaveLength(1));
+    up.deliver({ type: 'conversation.item.created' });
     await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
     client.close();
   });
 
-  it('never repeats: later session events do not ask again', async () => {
+  it('never repeats: later session events and later items do not ask again', async () => {
     const { client, up } = await live('relay.opening.once@example.com');
+    await greet(up);
     up.deliver({ type: 'session.created' });
-    await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
-    up.deliver({ type: 'session.created' });
+    up.deliver({ type: 'conversation.item.created' });
+    up.deliver({ type: 'conversation.item.created' });
     up.deliver({ type: 'session.updated' });
-    up.deliver({ type: 'response.created' });
     await client.waitFor('session.updated');
     expect(opening(up)).toHaveLength(2);
+    client.close();
+  });
+
+  it('if he speaks before the cue is confirmed, there is no opening: his turn is first', async () => {
+    const { client, up } = await live('relay.opening.barge@example.com');
+    up.deliver({ type: 'session.created' });
+    await vi.waitFor(() => expect(opening(up)).toHaveLength(1));
+    up.deliver({ type: 'input_audio_buffer.speech_started' });
+    await client.waitFor('input_audio_buffer.speech_started');
+    up.deliver({ type: 'conversation.item.created' });
+    up.deliver({ type: 'session.updated' });
+    await client.waitFor('session.updated');
+    expect(opening(up)).toHaveLength(1); // no response.create
     client.close();
   });
 
   it('a refused opening leaves the call usable: the error is held back and audio still flows', async () => {
     const { user, client, up } = await live('relay.opening.refused@example.com');
     up.deliver({ type: 'session.created' });
-    await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
+    await vi.waitFor(() => expect(opening(up)).toHaveLength(1));
 
-    up.deliver({ type: 'error', error: { code: 'content_blocked', event_id: 'over18_opening_item' } });
+    up.deliver({ type: 'error', error: { type: 'invalid_request_error', message: 'refused', param: 'response' } });
     up.deliver({ type: 'response.audio.delta', delta: 'WllY' });
     await client.waitFor('response.audio.delta');
 
@@ -1872,8 +1910,7 @@ describe('she answers the phone: the opening line', () => {
 
   it('a real provider error after she has begun is still passed through', async () => {
     const { client, up } = await live('relay.opening.later@example.com');
-    up.deliver({ type: 'session.created' });
-    await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
+    await greet(up);
     up.deliver({ type: 'response.created' });
     up.deliver({ type: 'error', error: { code: 'rate_limited' } });
     const frame = await client.waitFor('error');
@@ -1883,12 +1920,11 @@ describe('she answers the phone: the opening line', () => {
 
   it('the cue never reaches the browser or the transcript; her spoken greeting is stored like any turn', async () => {
     const { user, client, up } = await live('relay.opening.private@example.com');
-    up.deliver({ type: 'session.created' });
-    await vi.waitFor(() => expect(opening(up)).toHaveLength(2));
-    up.deliver({ type: 'conversation.item.created', item: { content: [{ text: 'cue' }] } });
-    up.deliver(sheSaid('Hey, you called.'));
+    await greet(up);
+    up.deliver({ type: 'response.created' });
+    up.deliver(sheSaid("Hey, what's up?"));
     const turns = await waitForTurns(user.callSessionId, 1);
-    expect(turns.map((t) => [t.speaker, t.content])).toEqual([['character', 'Hey, you called.']]);
+    expect(turns.map((t) => [t.speaker, t.content])).toEqual([['character', "Hey, what's up?"]]);
     expect(JSON.stringify(client.frames)).not.toContain('The call has just connected');
     expect(client.frames.some((f) => f.type === 'conversation.item.created')).toBe(false);
     client.close();

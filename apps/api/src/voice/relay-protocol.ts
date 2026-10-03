@@ -333,16 +333,29 @@ export const CALL_OPENING_CUE =
 /** Tags our own frames, so a provider error about them can be recognised. */
 export const CALL_OPENING_EVENT_PREFIX = 'over18_opening_';
 
-/** The two upstream frames, in order: the cue, then the turn it asks for. */
-export function callOpeningFrames(): string[] {
-  return [
-    JSON.stringify({
-      event_id: `${CALL_OPENING_EVENT_PREFIX}item`,
-      type: 'conversation.item.create',
-      item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: CALL_OPENING_CUE }] },
-    }),
-    JSON.stringify({ event_id: `${CALL_OPENING_EVENT_PREFIX}response`, type: 'response.create' }),
-  ];
+/**
+ * THE TWO FRAMES ARE SENT AT DIFFERENT MOMENTS, NOT TOGETHER.
+ *
+ * Measured against the live provider on Staging (2026-10-03): the cue is
+ * screened before it joins the conversation, and `conversation.item.created`
+ * arrives ~0.8s after it is sent. A `response.create` sent alongside it reaches
+ * the provider first and is refused -- "Cannot create response without input,
+ * history, or instructions" -- so she stayed silent. Sent on
+ * `conversation.item.created` instead, the same session answered in her voice
+ * ~0.6s later. So: the cue on `session.created`, the response on the cue's
+ * confirmation.
+ */
+export function callOpeningItemFrame(): string {
+  return JSON.stringify({
+    event_id: `${CALL_OPENING_EVENT_PREFIX}item`,
+    type: 'conversation.item.create',
+    item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: CALL_OPENING_CUE }] },
+  });
+}
+
+/** The turn the cue asks for. No response-level instructions: they would replace her persona. */
+export function callOpeningResponseFrame(): string {
+  return JSON.stringify({ event_id: `${CALL_OPENING_EVENT_PREFIX}response`, type: 'response.create' });
 }
 
 /**
