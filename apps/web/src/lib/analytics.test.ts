@@ -77,6 +77,11 @@ describe('where the browser reports', () => {
         'pages/CreditsStorePage.tsx: credit_purchase_viewed',
         'pages/CreditsStorePage.tsx: paywall_dismissed',
         'components/profile/PostsTab.tsx: locked_content_viewed',
+        // The Premium feed funnel (Home feed and Swipe Mode): seen, plan chosen, closed / sheet cancelled.
+        'components/premium/PremiumFunnel.tsx: paywall_viewed',
+        'components/premium/PremiumFunnel.tsx: subscription_cta_clicked',
+        'components/premium/PremiumFunnel.tsx: paywall_dismissed',
+        'components/premium/PremiumFunnel.tsx: paywall_dismissed',
       ].sort(),
     );
   });

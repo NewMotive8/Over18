@@ -621,11 +621,12 @@ describe('Home fetches what Home needs, and nothing else', () => {
   it('keeps the original results markup, byte for byte', () => {
     // Same two-column grid, same cards, same promo tile in third place, and the
     // same no-matches state with its Clear filters button. Only the array the
-    // grid reads from changed name.
+    // grid reads from changed name -- now `shownClips`, the Premium-gated view
+    // of `gridClips` (identical to it for Premium and unknown tiers).
     expect(code).toContain('<div className="grid grid-cols-2 gap-3">');
-    expect(code).toContain('gridClips.slice(0, 2).map');
+    expect(code).toContain('shownClips.slice(0, 2).map');
     expect(code).toContain('<CommunityPromoCard />');
-    expect(code).toContain('gridClips.slice(2).map');
+    expect(code).toContain('shownClips.slice(2).map');
     expect(code).toContain('No clips match');
     expect(code).toContain('Try a different category or clear your search.');
     expect(code).toContain('Clear filters');
