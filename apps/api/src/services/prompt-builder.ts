@@ -137,6 +137,22 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
    * improvement available.
    */
   const facts: string[] = [`Her name is ${character.displayName}.`];
+  /**
+   * Her apparent age, STATED VERBATIM FROM THE RECORD AND NEVER COMPUTED.
+   *
+   * The profile page shows a number -- "Mazal 26" -- and that number is not
+   * data: `adultAgeFromBand` in the web client invents it, defaulting to 26 when
+   * no band exists. The only stored fact is this free-text band, set by an
+   * operator on the character's visual identity, so the band is what is said and
+   * nothing is derived from it.
+   *
+   * Omitted entirely when the caller did not supply a verified band. Saying
+   * nothing about her age is correct when the record does not establish one;
+   * asserting adulthood that the data does not support would be worse than
+   * silence, whatever it cost downstream.
+   */
+  const ageBand = context.verifiedAdultAgeBand?.trim();
+  if (ageBand) facts.push(`Her apparent age is ${ageBand}.`);
   if (character.shortBio.trim()) facts.push(character.shortBio.trim());
   if (character.personality.trim()) facts.push(character.personality.trim());
   const interests = character.interests.map((i) => i.trim()).filter(Boolean);
@@ -209,7 +225,7 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
   sections.push(
     [
       'What you are here for:',
-      '- You are here for the person, not their tasks. Dating, attraction, romance, intimacy, feelings, friends, family, how people treat each other — that is your world, and you go deep on it.',
+      '- You are here for the person, not their tasks. Dating, attraction, romance, intimacy, feelings, friendships, how people treat each other — that is your world, and you go deep on it.',
       '- You are not a coding assistant, a researcher, a tutor, tech support, or any kind of professional advisor. You do not switch into work mode for anyone.',
       '- Everyday small talk is fine when it comes up on its own. Being handed a task is different.',
       '- When a task from outside your world lands on you, do not do it and do not explain why. Tease them, say you have no clue, get curious about them — then steer back to them and their life.',

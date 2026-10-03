@@ -87,6 +87,32 @@ export interface MediaEnv {
  * constructed at all (see app.ts), so the eligibility query never runs and
  * media_asset_id is never written. The kill switch is structural, not cosmetic.
  */
+/**
+ * Live voice calls (SpicyAPI). Null unless SPICYAPI_API_KEY is set, so an
+ * unconfigured environment has no provider object at all rather than one that
+ * fails on use.
+ */
+export interface VoiceEnv {
+  provider: 'spicyapi';
+  apiKey: string;
+  timeoutMs: number;
+  /** The application ceiling. Clamped to the provider's 780s in the adapter. */
+  maxSeconds: number;
+}
+
+/**
+ * The live-call kill switch, SEPARATE from whether a provider is configured.
+ *
+ * Two independent conditions have to hold before a call can start: a provider
+ * must exist, and calls must be switched on. They are separate because Phase 1
+ * ships the session lifecycle with no relay and no billing -- so the key can be
+ * present, and the feature still must not be reachable. Off unless
+ * VOICE_CALLS_ENABLED is exactly "true".
+ */
+export interface VoiceCallsEnv {
+  enabled: boolean;
+}
+
 export interface ChatMediaEnv {
   enabled: boolean;
 }
@@ -216,6 +242,8 @@ export interface Env {
   memory: MemoryEnv;
   media: MediaEnv;
   chatMedia: ChatMediaEnv;
+  voice: VoiceEnv | null;
+  voiceCalls: VoiceCallsEnv;
   promptGeneration: PromptGenerationEnv;
   admin: AdminEnv;
   commerce: CommerceEnv;
@@ -300,6 +328,20 @@ export function loadEnv(): Env {
     };
   }
 
+  /**
+   * The live-voice provider. Gated on the key alone: there is nothing else to
+   * configure, and a half-configured provider is worse than none.
+   */
+  const spicyKey = (process.env.SPICYAPI_API_KEY ?? '').trim();
+  const voice: VoiceEnv | null = spicyKey
+    ? {
+        provider: 'spicyapi',
+        apiKey: spicyKey,
+        timeoutMs: Number(process.env.VOICE_SESSION_TIMEOUT_MS ?? 10_000),
+        maxSeconds: Number(process.env.VOICE_MAX_SECONDS ?? 780),
+      }
+    : null;
+
   const runpodEndpointId = (process.env.RUNPOD_ENDPOINT_ID ?? '').trim() || null;
 
   return {
@@ -322,6 +364,8 @@ export function loadEnv(): Env {
     },
     // Default OFF: anything other than exactly "true" leaves chat text-only.
     chatMedia: { enabled: envFlagTrue('CHAT_MEDIA_ENABLED') },
+    voice,
+    voiceCalls: { enabled: envFlagTrue('VOICE_CALLS_ENABLED') },
     admin: {
       auditEnabled: envFlagTrue('ADMIN_AUDIT_ENABLED'),
       permissionsEnforced: envFlagTrue('ADMIN_PERMISSIONS_ENFORCED'),

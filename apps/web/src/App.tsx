@@ -11,9 +11,11 @@ import FavouritesPage from './pages/FavouritesPage';
 import ProfilePage from './pages/ProfilePage';
 import SubscriptionPage from './pages/SubscriptionPage';
 import SimulatedCheckoutPage from './pages/SimulatedCheckoutPage';
-import WalletPage from './pages/WalletPage';
+import CreditsStorePage from './pages/CreditsStorePage';
 import ChatPage from './pages/ChatPage';
 import NotFoundPage from './pages/NotFoundPage';
+import LegalPage from './legal/LegalPage';
+import { LEGAL_DOCUMENTS } from './legal/legalContent';
 import AdminShell from './admin/AdminShell';
 import RequireAdmin from './admin/RequireAdmin';
 import AdminHomePage from './pages/admin/AdminHomePage';
@@ -27,6 +29,7 @@ import BannerEditorPage from './pages/admin/BannerEditorPage';
 import HomeComposerPage from './pages/admin/HomeComposerPage';
 import GenerationPage from './pages/admin/GenerationPage';
 import AdminAuditPage from './pages/admin/AdminAuditPage';
+import AdminAnalyticsPage from './pages/admin/AdminAnalyticsPage';
 import EconomyPage from './pages/admin/EconomyPage';
 import AdminWalletPage from './pages/admin/AdminWalletPage';
 import AdminUsersPage from './pages/admin/AdminUsersPage';
@@ -88,6 +91,9 @@ export default function App() {
             server enforces access); only LISTED in the navigation once the
             audit switch is on and the operator holds audit.read. */}
         <Route path="audit" element={<AdminAuditPage />} />
+        {/* Credits Store PR 3 -- the commercial funnels. Listed for operators
+            holding analytics.read; the server enforces it. */}
+        <Route path="analytics" element={<AdminAnalyticsPage />} />
         {/* PRD v1.2 §31, P1.4 -- the economy console. Listed in the navigation
             for operators holding economy.manage; the server enforces it. */}
         <Route path="economy" element={<EconomyPage />} />
@@ -101,6 +107,26 @@ export default function App() {
         <Route path="users" element={<AdminUsersPage />} />
         <Route path="users/:userId" element={<AdminUserDetailPage />} />
       </Route>
+
+      {/*
+        LEGAL AND COMPLIANCE — OUTSIDE THE APP SHELL, DELIBERATELY.
+
+        The shell renders the age gate instead of its outlet until a visitor
+        confirms they are 18. That is right for every screen carrying adult
+        content and wrong for these: a privacy policy behind an adult warning
+        cannot be read by the person most likely to need it — somebody deciding
+        whether to enter, somebody under 18 looking for how to report, or a
+        regulator. These pages carry no adult content to withhold.
+
+        Declared here rather than as an exception inside the gate, so the gate
+        itself gains no branch and still guards every route it guarded before.
+        No authentication either: all five are public.
+      */}
+      {LEGAL_DOCUMENTS.map((doc) => (
+        <Route key={doc.slug} path={`/${doc.slug}`} element={<LegalPage document={doc} />} />
+      ))}
+      {/* The brief named /contact or /legal; both resolve to the same page. */}
+      <Route path="/contact" element={<Navigate to="/legal" replace />} />
 
       <Route element={<AppShell />}>
         {/* Discover is the primary entry point */}
@@ -130,10 +156,10 @@ export default function App() {
         {/* P9: where the payment provider's hosted checkout will be. The
             server refuses it unless the simulated provider is selected. */}
         <Route path="/fake-checkout/:checkoutRef" element={<SimulatedCheckoutPage />} />
-        {/* Credits is the customer-facing name (P8.1). The original path keeps
+        {/* The Credits Store (Credits Store PR 2). Credits is the customer-facing name (P8.1); the original path keeps
             working so nothing already linked to it breaks. */}
-        <Route path="/credits" element={<WalletPage />} />
-        <Route path="/wallet" element={<WalletPage />} />
+        <Route path="/credits" element={<CreditsStorePage />} />
+        <Route path="/wallet" element={<CreditsStorePage />} />
 
         {/* Auth */}
         <Route path="/login" element={<LoginPage />} />

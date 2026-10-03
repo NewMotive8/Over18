@@ -15,6 +15,7 @@ import { refundContentUnlock, unlockContent } from '../services/content-unlock-s
 import { uploadLibraryAsset } from '../services/library-upload-service.js';
 import { approveVisualAsset } from '../services/visual-asset-service.js';
 import { reconcileWallet } from '../services/wallet-reconciliation.js';
+import { readCommercialWallet } from '../services/wallet-service.js';
 import {
   TEST_DATABASE_URL,
   createTestContext,
@@ -463,6 +464,82 @@ describe('what is bought stays bought', () => {
     expect((await accessOf(customer, clip)).decision).toBe('age_restricted');
     await setContentOffer(dark.db, ON, { assetId: clip, state: 'unavailable' });
     expect((await accessOf(customer, clip)).decision).toBe('unavailable');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * An unlock paid from several Credit sources
+ * ------------------------------------------------------------------ */
+
+describe('an unlock whose price spans Credit sources', () => {
+  type Classes = { bonus: number; included: number; earned: number; purchased: number };
+  async function fundBy(userId: string, classes: Partial<Classes>) {
+    await q("INSERT INTO wallets (user_id, currency) VALUES ($1, 'credits') ON CONFLICT DO NOTHING", [userId]);
+    for (const [creditClass, amount] of Object.entries(classes)) {
+      if (!amount) continue;
+      await q(
+        `INSERT INTO wallet_transactions (user_id, currency, entry_type, direction, amount, credit_class, idempotency_key)
+         VALUES ($1, 'credits', 'grant', 'credit', $2, $3, $4)`,
+        [userId, amount, creditClass, `fixture:${randomUUID()}`],
+      );
+    }
+  }
+  const classesOf = async (userId: string) => {
+    const w = (await readCommercialWallet(live.db, userId, 'credits'))!;
+    return { bonus: w.bonus, included: w.included, earned: w.earned, purchased: w.purchased, held: w.held, spendable: w.spendable };
+  };
+  const rowsOf = async (userId: string, entryType: string) =>
+    (
+      await q<{ credit_class: string; amount: number }>(
+        'SELECT credit_class, amount FROM wallet_transactions WHERE user_id = $1 AND entry_type = $2 ORDER BY sequence',
+        [userId, entryType],
+      )
+    ).rows.map((r) => [r.credit_class, r.amount]);
+
+  // A price of 50 against each wallet: where it is paid from, and what is left.
+  it.each([
+    ['one source', { purchased: 80 }, [['purchased', 50]], { bonus: 0, included: 0, earned: 0, purchased: 30 }],
+    ['two sources', { bonus: 30, purchased: 30 }, [['bonus', 30], ['purchased', 20]], { bonus: 0, included: 0, earned: 0, purchased: 10 }],
+    [
+      'three sources',
+      { bonus: 20, included: 20, purchased: 30 },
+      [['bonus', 20], ['included', 20], ['purchased', 10]],
+      { bonus: 0, included: 0, earned: 0, purchased: 20 },
+    ],
+  ] as Array<[string, Partial<Classes>, Array<[string, number]>, Classes]>)(
+    'covered by %s: unlocks, opens, and refunds back to every source',
+    async (_label, wallet, paidFrom, left) => {
+      const { customer, clip } = await priced(50, 0);
+      await fundBy(customer.id, wallet);
+      const startedWith = await classesOf(customer.id);
+
+      const res = await unlockVia(live, customer, clip);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json()).toMatchObject({ creditPrice: 50, replayed: false });
+      // A retry buys nothing more.
+      expect((await unlockVia(live, customer, clip)).json()).toMatchObject({ replayed: true });
+
+      expect(await rowsOf(customer.id, 'hold')).toEqual(paidFrom);
+      expect(await rowsOf(customer.id, 'capture')).toEqual(paidFrom);
+      expect(await classesOf(customer.id)).toEqual({ ...left, held: 0, spendable: left.bonus + left.included + left.earned + left.purchased });
+      expect(await paidActionRows()).toEqual([expect.objectContaining({ status: 'captured', amount: 50 })]);
+      expect((await accessOf(customer, clip)).decision).not.toBe('credits_required');
+
+      await refundContentUnlock(live.db, ON, { userId: customer.id, assetId: clip, reason: 'bought by mistake' });
+      expect(await classesOf(customer.id)).toEqual(startedWith);
+      expect((await rowsOf(customer.id, 'refund')).reduce((sum, r) => sum + (r[1] as number), 0)).toBe(50);
+      expect(await entitlements(customer.id)).toBe(0);
+      expect((await reconcileWallet(live.db, customer.id, 'credits')).status).toBe('clean');
+    },
+  );
+
+  it('is still refused, charging nothing, when every source together falls short', async () => {
+    const { customer, clip } = await priced(50, 0);
+    await fundBy(customer.id, { bonus: 20, included: 10, purchased: 19 });
+    const res = await unlockVia(live, customer, clip);
+    expect(res.statusCode).toBe(402);
+    expect(await rowsOf(customer.id, 'hold')).toEqual([]);
+    expect(await classesOf(customer.id)).toMatchObject({ bonus: 20, included: 10, purchased: 19, held: 0, spendable: 49 });
   });
 });
 

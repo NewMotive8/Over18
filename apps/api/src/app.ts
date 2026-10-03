@@ -14,12 +14,17 @@ import conversationRoutes from './routes/conversations.js';
 import { randomBytes } from 'node:crypto';
 import customerEconomyRoutes from './routes/customer-economy.js';
 import customerPaymentRoutes from './routes/customer-payments.js';
+import analyticsRoutes from './routes/analytics.js';
+import adminAnalyticsRoutes from './routes/admin-analytics.js';
+import { createAnalytics, createDbAnalyticsSink, type AnalyticsSink } from './services/analytics-service.js';
 import { selectPaymentProvider } from './commerce/select-providers.js';
 import adminWalletRoutes from './routes/admin-wallets.js';
 import adminContentAccessRoutes from './routes/admin-content-access.js';
 import adminUserRoutes from './routes/admin-users.js';
 import favouriteRoutes from './routes/favourites.js';
 import messageRoutes from './routes/messages.js';
+import callRoutes from './routes/calls.js';
+import callSocketRoutes, { voiceSocketErrorHandler } from './routes/call-socket.js';
 import conversationMediaRoutes from './routes/conversation-media.js';
 import internalMediaRoutes from './routes/internal-media.js';
 import generationRoutes from './routes/generation.js';
@@ -49,6 +54,10 @@ import {
   type PersonaGenerator,
 } from './services/character-persona-generator.js';
 import type { MediaProviders } from './media-pipeline/types.js';
+import fastifyWebsocket from '@fastify/websocket';
+import { createSpicyApiProvider } from './voice/spicyapi.js';
+import { MAX_CLIENT_FRAME_BYTES } from './voice/relay-protocol.js';
+import { unconfiguredVoiceProvider, type VoiceSessionProvider } from './voice/types.js';
 
 export interface BuildAppOptions {
   /** Reply provider for chat messages. Defaults to the deterministic fallback. */
@@ -76,6 +85,11 @@ export interface BuildAppOptions {
    */
   mediaSelector?: MediaSelector;
   /**
+   * Live-voice session provider override, for tests. Still gated by
+   * env.voiceCalls.enabled -- injecting one cannot switch the feature on.
+   */
+  voiceProvider?: VoiceSessionProvider;
+  /**
    * Character profile Autofill. Defaults to the unconfigured author, which
    * reports Autofill as unavailable rather than inventing a profile — the same
    * "fail clearly, never fake" rule the reply provider follows.
@@ -95,6 +109,11 @@ export interface BuildAppOptions {
    * failures and restart recovery without a network or a bill.
    */
   promptGeneration?: PromptRunnerDeps;
+  /**
+   * Where analytics events go. Defaults to `analytics_events`. Still gated by
+   * ANALYTICS_ENABLED -- injecting a sink cannot switch analytics on.
+   */
+  analyticsSink?: AnalyticsSink;
 }
 
 /**
@@ -214,7 +233,17 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // The customer economy READ API: session-only, GET-only, and 503
   // `economy_unavailable` while ECONOMY_ENABLED is off. Serves only what the
   // P1.2 resolver says is published and in effect; writes nothing.
-  await app.register(customerEconomyRoutes, { db, commerce: env.commerce });
+  // PR 3 funnel analytics. OFF unless ANALYTICS_ENABLED; fail-open always -- a
+  // failing write is logged and the purchase, unlock or page carries on.
+  const analytics = createAnalytics({
+    enabled: env.commerce.analyticsEnabled,
+    sink: options.analyticsSink ?? createDbAnalyticsSink(db),
+    onError: (error, name) => app.log.warn({ err: error, event: name }, 'analytics event not recorded'),
+  });
+  await app.register(analyticsRoutes, { db, analytics });
+  // Funnels (`analytics.read`) and a bounded export (`analytics.export`). Read-only.
+  await app.register(adminAnalyticsRoutes, { db, analyticsEnabled: env.commerce.analyticsEnabled });
+  await app.register(customerEconomyRoutes, { db, commerce: env.commerce, analytics });
   // P9.1 customer payments. The provider is whatever `PAYMENT_PROVIDER`
   // selects -- `none` (every route 503) or the fake one, which
   // commerce/fake-provider-policy.ts refuses to build in production or on
@@ -227,6 +256,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     commerce: env.commerce,
     provider: selectPaymentProvider(env.commerce.paymentProvider, { secret: fakeSecret, baseUrl: env.corsOrigin }),
     fakeSecret,
+    analytics,
   });
   // P2.4 admin wallet support: read with `users.commercial.read`; Credit or
   // Debit with `users.credits.adjust`, refused while ECONOMY_ENABLED is off.
@@ -258,6 +288,75 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
     memoryMaxStored: env.memory.maxStored,
     mediaSelector,
+  });
+
+  /**
+   * Live voice calls (Phase 1: session lifecycle only).
+   *
+   * TWO INDEPENDENT CONDITIONS, both required. A provider must be configured
+   * AND calls must be switched on. They are separate because this phase ships
+   * the lifecycle with no relay and no billing: the key can be present in an
+   * environment and the feature must still be unreachable.
+   *
+   * Registered unconditionally so the routes exist and answer 503 rather than
+   * 404 -- an operator switching this on should not also have to wonder
+   * whether the code shipped.
+   */
+  const voiceProvider = env.voice
+    ? (options.voiceProvider ??
+      createSpicyApiProvider({
+        apiKey: env.voice.apiKey,
+        timeoutMs: env.voice.timeoutMs,
+        maxSeconds: env.voice.maxSeconds,
+      }))
+    : (options.voiceProvider ?? unconfiguredVoiceProvider);
+
+  const voiceEnabled = env.voiceCalls.enabled && env.voice !== null;
+
+  await app.register(callRoutes, {
+    db,
+    provider: voiceProvider,
+    enabled: voiceEnabled,
+    // Starting a call is also where pending extractions get retried.
+    memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
+    memoryMaxStored: env.memory.maxStored,
+    maxSeconds: env.voice?.maxSeconds ?? 780,
+  });
+
+  /**
+   * The voice relay (Phase 2A).
+   *
+   * The WebSocket plugin is registered in the same scope as the route that
+   * uses it, and nowhere else -- no other part of the API speaks WebSocket, and
+   * registering it globally would expose an upgrade path from every route.
+   *
+   * `maxPayload` is the transport's hard backstop and sits deliberately ABOVE
+   * the relay's own limit. The relay's check is the policy -- it refuses an
+   * over-limit frame and closes cleanly, so the client learns why. The plugin's
+   * is the thing that stops a genuinely abusive frame from ever being buffered,
+   * at the cost of an abrupt close. Setting them equal would mean the polite
+   * path could never run.
+   *
+   * `errorHandler` replaces the plugin's default, which logs the raw error. A
+   * database fault during relay setup would otherwise write the failing SQL and
+   * its bound parameters into the log. Scoped here, so no other route's error
+   * handling is affected.
+   */
+  await app.register(async (voiceScope) => {
+    await voiceScope.register(fastifyWebsocket, {
+      options: { maxPayload: MAX_CLIENT_FRAME_BYTES * 2 },
+      errorHandler: voiceSocketErrorHandler,
+    });
+    await voiceScope.register(callSocketRoutes, {
+      db,
+      provider: voiceProvider,
+      enabled: voiceEnabled,
+      allowedOrigin: env.corsOrigin,
+      // The same extractor and the same cap as the text path: one memory,
+      // filled from both channels.
+      memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
+      memoryMaxStored: env.memory.maxStored,
+    });
   });
 
   // Character Media Messages (commit 1) — serves the media attached to a

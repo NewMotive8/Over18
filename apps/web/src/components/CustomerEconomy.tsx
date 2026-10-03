@@ -20,18 +20,36 @@ import { CrownIcon, LockIcon, PhoneIcon, SparkleIcon } from './icons';
  * available", never as a default (no 0 Credits, no "Free", no invented plan).
  */
 
-/** The server's spendable balance. Renders nothing while it is not available. */
-export function CreditBalance({ overview, compact = false }: { overview: CustomerEconomyOverview; compact?: boolean }) {
+/**
+ * The server's spendable balance, as ONE tappable control that opens the
+ * Credits Store. Renders nothing while it is not available.
+ *
+ * `tight` is for crowded headers (the lobby): on a narrow phone it shows the
+ * coin and the number only; the label stays in its accessible name.
+ */
+export function CreditBalance({
+  overview,
+  compact = false,
+  tight = false,
+}: {
+  overview: CustomerEconomyOverview;
+  compact?: boolean;
+  tight?: boolean;
+}) {
   const credits = spendableCredits(overview);
   if (credits === null) return null;
   return (
     <Link
       to="/credits"
+      data-testid="credits-balance"
       aria-label={`${credits} Credits available. View your Credits.`}
-      className={`inline-flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 font-medium text-amber-100 transition-colors hover:bg-amber-500/20 ${compact ? 'px-2.5 py-1 text-xs' : 'px-3 py-2 text-sm'}`}
+      className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-xl border border-amber-500/20 bg-amber-500/10 font-medium text-amber-100 transition-colors hover:bg-amber-500/20 ${compact ? 'px-2.5 py-1 text-xs' : 'px-3 py-2 text-sm'}`}
     >
       <span aria-hidden className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/20 text-amber-300">✦</span>
-      <span>{credits} Credits</span>
+      <span>
+        {credits.toLocaleString('en-US')}
+        <span className={tight ? 'hidden sm:inline' : undefined}> Credits</span>
+      </span>
     </Link>
   );
 }
@@ -100,16 +118,29 @@ export function PlanSummary({ overview }: { overview: CustomerEconomyOverview })
  * in the economy configuration changes this line too. With no plan to read it
  * from this renders nothing rather than guessing a number.
  */
-export function PremiumBenefits({ overview }: { overview: CustomerEconomyOverview }) {
+export function premiumBenefitFacts(overview: CustomerEconomyOverview): Array<{ key: 'chat' | 'content' | 'credits' | 'spend'; text: string }> | null {
   const plans = offeredPlans(overview);
   const credits = plans.length > 0 ? plans[0]!.monthlyIncludedCredits : null;
   if (credits === null) return null;
-  const benefits = [
-    { key: 'chat', icon: <PhoneIcon className="h-4 w-4" />, text: 'Unlimited text chat' },
-    { key: 'content', icon: <CrownIcon className="h-4 w-4" />, text: 'Premium content included while your plan is active' },
-    { key: 'credits', icon: <SparkleIcon className="h-4 w-4" />, text: `${credits} Credits every billing cycle` },
-    { key: 'spend', icon: <SparkleIcon className="h-4 w-4" />, text: 'Spend Credits on anything priced in Credits' },
+  return [
+    { key: 'chat', text: 'Unlimited text chat' },
+    { key: 'content', text: 'Premium content included while your plan is active' },
+    { key: 'credits', text: `${credits} Credits every billing cycle` },
+    { key: 'spend', text: 'Spend Credits on anything priced in Credits' },
   ];
+}
+
+const BENEFIT_ICON = {
+  chat: <PhoneIcon className="h-4 w-4" />,
+  content: <CrownIcon className="h-4 w-4" />,
+  credits: <SparkleIcon className="h-4 w-4" />,
+  spend: <SparkleIcon className="h-4 w-4" />,
+} as const;
+
+export function PremiumBenefits({ overview }: { overview: CustomerEconomyOverview }) {
+  const facts = premiumBenefitFacts(overview);
+  if (facts === null) return null;
+  const benefits = facts.map((fact) => ({ ...fact, icon: BENEFIT_ICON[fact.key] }));
   return (
     <section aria-label="What Premium includes" data-testid="premium-benefits" className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-rose-400">What Premium includes</h3>

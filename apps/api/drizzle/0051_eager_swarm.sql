@@ -1,0 +1,1 @@
+ALTER TABLE "call_sessions" ADD COLUMN "memories_extraction_claimed_at" timestamp with time zone;

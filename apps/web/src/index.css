@@ -1,1 +1,14 @@
 @import 'tailwindcss';
+
+/*
+ * The page itself is dark. The app column has always painted its own
+ * `bg-zinc-950`, but nothing painted the page around it -- so on any screen
+ * wider than the column, the sides were the browser's default white. Desktop
+ * layouts make that space visible; it must be OVER18's dark, not white.
+ */
+@layer base {
+  html,
+  body {
+    background-color: var(--color-zinc-950);
+  }
+}

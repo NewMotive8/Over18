@@ -160,7 +160,7 @@ describe('reading a wallet', () => {
       balance: 0,
       held: 0,
       version: 0,
-      classes: { included: { spendable: 0, held: 0 }, earned: { spendable: 0, held: 0 }, purchased: { spendable: 0, held: 0 } },
+      classes: { included: { spendable: 0, held: 0 }, earned: { spendable: 0, held: 0 }, purchased: { spendable: 0, held: 0 }, bonus: { spendable: 0, held: 0 } },
     });
     expect(body.allowances.find((a) => a.currency === 'credits')).toEqual({
       currency: 'credits',
@@ -255,7 +255,6 @@ describe('adjusting a wallet', () => {
     expect((debit.json() as AdminWalletAdjustmentResult).transaction).toMatchObject({ direction: 'debit', creditClass: 'included', balanceAfter: 40 });
 
     const refusals: Array<[Record<string, unknown>, string]> = [
-      [{ direction: 'debit', amount: 35 }, 'credit_class_split_required'],
       [{ direction: 'debit', amount: 41 }, 'insufficient_credits'],
       [{ direction: 'credit', amount: 501 }, 'adjustment_cap_exceeded'],
     ];
@@ -268,6 +267,24 @@ describe('adjusting a wallet', () => {
     expect((await post(live, ADJUST(empty.id), support, adjustment({ direction: 'debit', amount: 1 }))).json()).toMatchObject({ error: 'wallet_not_found' });
     // Only the one successful Debit was recorded.
     expect(await adjustmentAudits()).toHaveLength(1);
+
+    // 10 included + 30 earned are left: a Debit of 35 spans both, and is audited whole.
+    const split = await post(live, ADJUST(customer.id), support, adjustment({ direction: 'debit', amount: 35 }));
+    expect(split.statusCode, split.body).toBe(200);
+    expect((split.json() as AdminWalletAdjustmentResult).wallet).toMatchObject({ balance: 5 });
+    const audits = await adjustmentAudits();
+    expect(audits).toHaveLength(2);
+    expect(audits.at(-1)).toMatchObject({
+      before: { balance: 40, held: 0 },
+      after: { balance: 5, held: 0 },
+      metadata: expect.objectContaining({
+        amount: 35,
+        classes: [
+          expect.objectContaining({ creditClass: 'included', amount: 10 }),
+          expect.objectContaining({ creditClass: 'earned', amount: 25 }),
+        ],
+      }),
+    });
   });
 
   it('validates the request: a reason, an amount, a direction, a key -- and a known user and currency', async () => {
@@ -353,6 +370,6 @@ describe('after an adjustment', () => {
     await post(live, ADJUST(customer.id), support, adjustment({ direction: 'debit', amount: 5 }));
     expect((await reconcileWallet(live.db, customer.id, 'credits')).status).toBe('clean');
     const state = (await get(live, '/api/me/commercial-state', customer)).json() as CustomerCommercialState;
-    expect(state.wallet).toEqual({ available: true, value: { included: 5, earned: 25, purchased: 0, held: 0, spendable: 30 } });
+    expect(state.wallet).toEqual({ available: true, value: { included: 5, earned: 25, purchased: 0, bonus: 0, held: 0, spendable: 30 } });
   });
 });

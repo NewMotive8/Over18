@@ -24,6 +24,15 @@ export {
   ADMIN_ROLES,
   ANALYTICS_EVENT_NAMES,
   isAnalyticsEventName,
+  ANALYTICS_CLIENT_EVENTS,
+  ANALYTICS_EVENT_PROPERTIES,
+  allowedAnalyticsProperties,
+  creditBalanceState,
+  creditsNeededFor,
+  packCoveringNeed,
+  recommendCreditPack,
+  LOW_CREDIT_BALANCE,
+  isAnalyticsClientEvent,
   type AdminAccessView,
   type AdminAdjustmentAllowance,
   type AdminAdjustmentLimit,
@@ -53,6 +62,12 @@ export {
   type PaymentStatus,
   type CustomerPaymentView,
   type CustomerCheckout,
+  PURCHASE_ORIGINS,
+  PURCHASE_ORIGIN_ACTIONS,
+  type PurchaseOrigin,
+  type PurchaseOriginAction,
+  type PurchaseContext,
+  type CreditPackTerms,
   SIMULATED_OUTCOMES,
   type SimulatedOutcome,
   type SimulatedPaymentResult,
@@ -72,6 +87,13 @@ export {
   type WalletDirection,
   type WalletEntryType,
   type AnalyticsEventName,
+  type AnalyticsClientEventName,
+  type AnalyticsPropertyKind,
+  type CreditBalanceState,
+  type RecommendablePack,
+  type AnalyticsFunnel,
+  type AnalyticsFunnelStep,
+  type AnalyticsFunnelsView,
   type AuditEntryView,
   type CommercialAgeStatus,
   type CommercialFactUnavailable,
@@ -526,3 +548,14 @@ export function audienceMatches(audience: BannerAudience, viewer: BannerViewer):
   return audience === 'returning_users' ? viewer.isReturning : !viewer.isReturning;
 }
 export * from './profileDivergence.js';
+
+/**
+ * The live-call voice catalogue. Shared so the admin selector offers exactly
+ * the list the server validates against; `resolveVoice` stays on the API side.
+ */
+export {
+  VOICE_CATALOGUE,
+  DEFAULT_LIVE_CALL_VOICE,
+  isKnownVoice,
+  type LiveCallVoice,
+} from './voice.js';

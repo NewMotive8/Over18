@@ -4,6 +4,7 @@ import type { Db } from '../db/client.js';
 import type { CommerceEnv } from '../env.js';
 import { FAKE_SIGNATURE_HEADER, signFakePayload } from '../commerce/fake-providers.js';
 import type { PaymentProvider } from '../commerce/payment-provider.js';
+import type { Analytics } from './analytics-service.js';
 import { PaymentError, ingestPaymentEvent, type IngestOutcome } from './payment-service.js';
 
 /**
@@ -77,6 +78,7 @@ export async function simulatePaymentEvent(
   provider: PaymentProvider,
   secret: string,
   input: SimulateInput,
+  options: { analytics?: Analytics } = {},
 ): Promise<IngestOutcome> {
   if (provider.name !== 'fake') {
     throw new PaymentError('payments_unavailable', 'Simulated payments exist only for the fake provider.');
@@ -106,5 +108,5 @@ export async function simulatePaymentEvent(
   return ingestPaymentEvent(db, commerce, provider, {
     headers: { [FAKE_SIGNATURE_HEADER]: signFakePayload(secret, rawBody) },
     rawBody,
-  });
+  }, options);
 }

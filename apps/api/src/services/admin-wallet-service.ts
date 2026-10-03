@@ -181,15 +181,18 @@ export async function adjustUserWallet(
       requestId: ctx.requestId,
     });
     if (!adjusted.replayed) {
+      // A Debit may span classes: the audit records the whole adjustment, and
+      // the wallet as the LAST of its rows left it.
       const t = adjusted.transaction;
-      const delta = t.direction === 'credit' ? t.amount : -t.amount;
+      const last = adjusted.entries[adjusted.entries.length - 1]!;
+      const delta = t.direction === 'credit' ? adjusted.amount : -adjusted.amount;
       await recordAudit(tx, {
         actor: ctx.actor,
         action: `wallet.adjust.${t.direction}`,
         objectType: WALLET_AUDIT_OBJECT_TYPE,
         objectId: walletAuditObjectId(userId, currency),
-        before: { balance: t.balanceAfter - delta, held: t.heldAfter },
-        after: { balance: t.balanceAfter, held: t.heldAfter },
+        before: { balance: last.balanceAfter - delta, held: last.heldAfter },
+        after: { balance: last.balanceAfter, held: last.heldAfter },
         reason: t.reason,
         requestId: ctx.requestId,
         metadata: {
@@ -198,8 +201,11 @@ export async function adjustUserWallet(
           transactionId: t.id,
           sequence: t.sequence,
           direction: t.direction,
-          amount: t.amount,
+          amount: adjusted.amount,
           creditClass: t.creditClass,
+          ...(adjusted.entries.length > 1
+            ? { classes: adjusted.entries.map((e) => ({ transactionId: e.id, creditClass: e.creditClass, amount: e.amount })) }
+            : {}),
           reference: request.reference,
         },
       });

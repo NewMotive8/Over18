@@ -29,6 +29,14 @@ app.log.info(
       : 'AI replies: no LLM configured — using deterministic fallback provider (development only)',
 );
 
+app.log.info(
+  env.voiceCalls.enabled && env.voice
+    ? `Live voice calls: ENABLED (${env.voice.provider}, max ${env.voice.maxSeconds}s)`
+    : env.voice
+      ? 'Live voice calls: provider configured but DISABLED (set VOICE_CALLS_ENABLED=true to switch on)'
+      : 'Live voice calls: no provider configured (SPICYAPI_API_KEY unset) — calls will report unavailable',
+);
+
 const mediaMode =
   env.media.runpod.live && env.media.runpod.preferForImages
     ? 'Media generation: RunPod ComfyUI LIVE for images' +

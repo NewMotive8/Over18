@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import type { PublicPlayWithMeCard } from '../lib/api';
 import { usePlayWithMe } from '../hooks/usePlayWithMe';
 import { useFavourites } from '../hooks/useFavourites';
@@ -9,6 +9,9 @@ import DiscoverActions from '../components/DiscoverActions';
 import EmptyState from '../components/EmptyState';
 import { DiscoverIcon, LikeIcon, SparkleIcon } from '../components/icons';
 import type { SwipeDecision } from '../lib/swipe';
+import PremiumFunnel from '../components/premium/PremiumFunnel';
+import { admit, canMeet, usePremiumGate } from '../lib/premiumGate';
+import { SWIPE_PATH, resolveSwipeIndex, swipePosition } from '../lib/swipeReturn';
 
 /**
  * Swipe discovery — the Tinder-style deck, kept as a secondary interaction
@@ -41,6 +44,14 @@ import type { SwipeDecision } from '../lib/swipe';
  * and passing works; the heart is simply unavailable, and a right swipe says so
  * rather than pretending to save. That is why `useFavourites` reports
  * 'signed-out' as a state distinct from an error.
+ *
+ * ── THE PREMIUM GATE ─────────────────────────────────────────────────────────
+ *
+ * A signed-in Free customer meets up to ten characters here (`lib/premiumGate`).
+ * The card on screen is what counts, once per character. Trying to move on to
+ * an eleventh opens the Premium funnel in place: her card is never shown -- not
+ * even as the peek behind the tenth -- and the deck is left exactly where it
+ * was, so closing the funnel or starting over still works.
  */
 function DeckSkeleton() {
   return (
@@ -64,15 +75,55 @@ export default function SwipePage() {
   const { state, reload } = usePlayWithMe();
   const favourites = useFavourites();
   const navigate = useNavigate();
+  const location = useLocation();
   const deckRef = useRef<SwipeDeckHandle>(null);
 
-  const [index, setIndex] = useState(0);
+  // The deck's place is remembered for THIS visit (history entry), so coming
+  // back from a profile lands on the same card. A fresh visit starts at 0.
+  const [index, setIndex] = useState(() => swipePosition.read(location.key)?.index ?? 0);
   const [feedback, setFeedback] = useState<string | null>(null);
   const feedbackTimer = useRef<number | null>(null);
 
   const characters = state.status === 'ready' ? state.characters : [];
+  const positionResolved = useRef(false);
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    // Once, when the list arrives: make sure the remembered index still holds
+    // the remembered character (the list may have changed while she was away).
+    if (!positionResolved.current) {
+      positionResolved.current = true;
+      const target = resolveSwipeIndex(swipePosition.read(location.key), state.characters.map((c) => c.id));
+      if (target !== index) {
+        setIndex(target);
+        return;
+      }
+    }
+    // The end of the deck has no card to come back to; the last card stays remembered.
+    const onScreen = state.characters[index];
+    if (onScreen) swipePosition.write(location.key, { index, characterId: onScreen.id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.status, index, location.key]);
+  const gate = usePremiumGate('swipe');
+  const [funnelOpen, setFunnelOpen] = useState(false);
   const current: PublicPlayWithMeCard | undefined = characters[index];
-  const next: PublicPlayWithMeCard | undefined = characters[index + 1];
+  // Beyond the allowance: her card stays hidden, and the funnel takes over.
+  const blocked = gate.enforced && current !== undefined && !canMeet(gate.seen, current.id);
+  const upcoming: PublicPlayWithMeCard | undefined = characters[index + 1];
+  // Never peek at a character the customer may not meet yet.
+  // (The current card counts first: it is met the moment it is on screen.)
+  const metWithCurrent = current && !blocked ? admit(gate.seen, [current.id]) : gate.seen;
+  const next = upcoming && (!gate.enforced || canMeet(metWithCurrent, upcoming.id)) ? upcoming : undefined;
+
+  // The card on screen is a character met -- once, by id.
+  useEffect(() => {
+    if (gate.enforced && current && !blocked) gate.record([current.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gate.enforced, current?.id, blocked]);
+
+  // Arriving at the eleventh: the Premium funnel, once per arrival.
+  useEffect(() => {
+    if (blocked) setFunnelOpen(true);
+  }, [blocked, current?.id]);
   const signedOut = favourites.status === 'signed-out';
   const currentFavourited = current ? favourites.favourited.has(current.id) : false;
   /**
@@ -91,8 +142,9 @@ export default function SwipePage() {
     feedbackTimer.current = window.setTimeout(() => setFeedback(null), 1400);
   }, []);
 
+  // `from` tells the profile that Back should return HERE, not to Home.
   const openProfile = useCallback(
-    (character: PublicPlayWithMeCard) => navigate(`/characters/${character.id}`),
+    (character: PublicPlayWithMeCard) => navigate(`/characters/${character.id}`, { state: { from: SWIPE_PATH } }),
     [navigate],
   );
 
@@ -170,7 +222,7 @@ export default function SwipePage() {
     [state.status, characters.length, current, index],
   );
 
-  if (state.status === 'loading') {
+  if (state.status === 'loading' || gate.pending) {
     return (
       <div className="flex flex-1 min-h-0 flex-col gap-3">
         {backLink}
@@ -220,6 +272,34 @@ export default function SwipePage() {
     );
   }
 
+  if (blocked) {
+    return (
+      <div className="flex flex-1 min-h-0 flex-col gap-3">
+        {backLink}
+        {header}
+        <div
+          data-testid="swipe-premium-locked"
+          className="relative flex min-h-[420px] flex-1 flex-col items-center justify-center gap-4 overflow-hidden rounded-3xl border border-rose-500/25 bg-gradient-to-b from-rose-500/15 via-zinc-950 to-zinc-950 px-6 text-center"
+        >
+          <span aria-hidden className="text-4xl">👀</span>
+          <p className="text-lg font-bold text-white">More companions are waiting</p>
+          <p className="max-w-xs text-sm text-zinc-400">You&rsquo;ve met your free companions. Premium keeps the deck going.</p>
+          <button
+            type="button"
+            onClick={() => setFunnelOpen(true)}
+            className="rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 px-5 py-2.5 text-sm font-bold text-white shadow-[0_6px_20px_rgba(225,29,72,0.4)]"
+          >
+            Unlock Premium Now
+          </button>
+          <button type="button" onClick={restart} className="text-sm font-medium text-zinc-400 hover:text-white">
+            Start over
+          </button>
+        </div>
+        <PremiumFunnel open={funnelOpen} surface="swipe" onClose={() => setFunnelOpen(false)} />
+      </div>
+    );
+  }
+
   if (!current) {
     const savedCount = favourites.favourited.size;
     return (
@@ -262,7 +342,19 @@ export default function SwipePage() {
       {backLink}
       {header}
 
-      <div className="relative min-h-[420px] flex-1">
+      {/*
+        DESKTOP (lg+): THE CARD TAKES THE CLIP'S OWN SHAPE.
+        Her clips are 9:16 portraits. On a phone the deck fills a tall, narrow
+        screen, so the card is already portrait. On a desktop the same rule
+        ("whatever height is left") produced a box WIDER than it was tall --
+        measured 576x500 -- and filling that with a portrait clip crops top and
+        bottom equally: the head goes. So from lg the deck is 9:16 and centred;
+        the whole clip shows. Its height is the screen height minus the chrome
+        above and the action buttons below (19rem), so the buttons are never
+        pushed off screen -- between 26rem and 46rem. Still one card at a time,
+        same gestures, same gate.
+      */}
+      <div className="relative min-h-[420px] flex-1 lg:aspect-[9/16] lg:h-[clamp(26rem,calc(100dvh_-_19rem),46rem)] lg:min-h-0 lg:flex-none lg:self-center">
         <div className="absolute inset-0">
           <SwipeDeck
             ref={deckRef}

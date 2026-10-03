@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   deriveMediaContext,
   detectMediaRequest,
@@ -8,16 +8,20 @@ import {
   type ConversationSummary,
   type SendMessageResult,
 } from '@over18/shared';
-import { ApiRequestError, conversationsApi, messagesApi } from '../lib/api';
-import { absoluteMediaUrl } from '../lib/media';
+import { ApiRequestError, charactersApi, conversationsApi, messagesApi, type PublicClip } from '../lib/api';
+import { absoluteMediaUrl, characterHeaderItems } from '../lib/media';
 import { createChatSendController, IDLE_SEND_STATE, type ChatSendState } from '../lib/chatSend';
 import { createPacedSend } from '../lib/chatPacing';
 import { createScrollFollower } from '../lib/chatScroll';
 import { createViewportAnchor, type ViewportAnchor } from '../lib/chatViewport';
 import { mergeOpeningMessage, shouldRequestOpening } from '../lib/chatOpening';
 import MessageMedia from '../components/MessageMedia';
-import { CreditBalance, PaidActionButton } from '../components/CustomerEconomy';
+import { PaidActionButton } from '../components/CustomerEconomy';
+import CreditsPill from '../components/CreditsPill';
 import { getAction, useCustomerEconomy } from '../lib/customerEconomy';
+import { lastCharacter } from '../lib/creditsStore';
+import CallOverlay, { CallButton } from '../components/CallOverlay';
+import { useVoiceCall } from '../hooks/useVoiceCall';
 
 type ChatState =
   | { status: 'loading' }
@@ -35,6 +39,54 @@ export default function ChatPage() {
   const [state, setState] = useState<ChatState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [imageFailed, setImageFailed] = useState(false);
+  /**
+   * The voice call. Keyed on the route's conversation id, so navigating to a
+   * different chat tears down any call in progress rather than carrying the
+   * microphone across to somebody else's conversation.
+   */
+  const call = useVoiceCall(conversationId ?? '');
+
+  /**
+   * Her own released clips, for the call screen's backdrop -- the same list her
+   * profile header plays. Fetched the first time a call starts (most chats
+   * never call), and kept per character so a second call does not refetch.
+   */
+  const callCharacterId = state.status === 'ready' ? state.conversation.character.id : null;
+  const onCall = call.state.phase !== 'idle';
+  const [callClips, setCallClips] = useState<{ characterId: string; clips: PublicClip[] } | null>(null);
+  useEffect(() => {
+    if (!onCall || !callCharacterId || callClips?.characterId === callCharacterId) return;
+    let cancelled = false;
+    charactersApi
+      .clips(callCharacterId)
+      .then((res) => !cancelled && setCallClips({ characterId: callCharacterId, clips: res.clips }))
+      // No clips: her portrait or initial stands in. Never an error on a call.
+      .catch(() => !cancelled && setCallClips({ characterId: callCharacterId, clips: [] }));
+    return () => {
+      cancelled = true;
+    };
+  }, [onCall, callCharacterId, callClips]);
+
+  /**
+   * Arriving from the profile's phone button, which navigates here with
+   * `state.autoCall` because a call needs a conversation and that page may not
+   * have had one.
+   *
+   * Fired once and then forgotten: the history entry is replaced so that going
+   * back, or refreshing, does not place a second call. `autoCalledRef` guards
+   * the same tick, since React may run this effect twice in development.
+   */
+  const location = useLocation();
+  const navigate = useNavigate();
+  const autoCalledRef = useRef(false);
+  const autoCall = (location.state as { autoCall?: boolean } | null)?.autoCall === true;
+
+  useEffect(() => {
+    if (!autoCall || autoCalledRef.current || !conversationId) return;
+    autoCalledRef.current = true;
+    navigate(location.pathname, { replace: true, state: null });
+    call.start();
+  }, [autoCall, conversationId, navigate, location.pathname, call]);
   const [economyState] = useCustomerEconomy();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -86,6 +138,8 @@ export default function ChatPage() {
         if (cancelled) return;
         setMessages(history);
         setState({ status: 'ready', conversation });
+        // Who the Credits Store opens on, when the customer goes there next.
+        lastCharacter.set(conversation.character.id);
         if (!shouldRequestOpening(history)) return;
 
         const key = `${conversationId}:${attempt}`;
@@ -336,8 +390,24 @@ export default function ChatPage() {
             <p className="text-xs text-zinc-500">Tap to view profile</p>
           </div>
         </Link>
-        {economyState.status === 'ready' && <CreditBalance overview={economyState.overview} compact />}
+        <div className="flex items-center gap-2">
+          <CallButton state={call.state} characterName={character.displayName} onStart={call.start} />
+          {/* Re-reads on navigation, on a purchase or spend, and on return to the tab. */}
+          <CreditsPill />
+        </div>
       </header>
+
+      {/* Renders nothing while idle; it is a full-screen dialog once a call
+          starts. Kept here rather than at the app root so it is unmounted -- and
+          therefore cleaned up -- by the same navigation that leaves this chat. */}
+      <CallOverlay
+        state={call.state}
+        characterName={character.displayName}
+        media={characterHeaderItems(character, callClips?.characterId === character.id ? callClips.clips : [])[0]?.media ?? null}
+        onStart={call.start}
+        onHangUp={call.hangUp}
+        onClose={call.close}
+      />
 
       {/* No onScroll here on purpose. This element does not scroll (measured:
           scrollHeight === clientHeight), so its scroll handler never fired and

@@ -323,6 +323,62 @@
       "when": 1790152153330,
       "tag": "0045_tiresome_captain_flint",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1790763020504,
+      "tag": "0046_naive_jamie_braddock",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1790765264223,
+      "tag": "0047_melodic_revanche",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1790804934525,
+      "tag": "0048_certain_gunslinger",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1790866322338,
+      "tag": "0049_curious_machine_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1790879294710,
+      "tag": "0050_faithful_greymalkin",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1790882658379,
+      "tag": "0051_eager_swarm",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790889539318,
+      "tag": "0052_credit_pack_purchases",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1790938089075,
+      "tag": "0053_analytics_events",
+      "breakpoints": true
     }
   ]
 }

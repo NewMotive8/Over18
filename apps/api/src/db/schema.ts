@@ -96,6 +96,20 @@ export const characters = pgTable(
     interests: text('interests').array().notNull().default([]),
     conversationStyle: text('conversation_style').notNull(),
     systemPrompt: text('system_prompt').notNull(),
+    /**
+     * Which SpicyAPI live-call voice she speaks with, or null for the server
+     * default.
+     *
+     * DELIBERATELY NOT a general "voice" column. This names a provider voice
+     * for REAL-TIME CALLS only; a future prerecorded-TTS voice is a different
+     * setting with a different catalogue and must get its own column rather
+     * than overloading this one.
+     *
+     * Validated server-side against the published catalogue on every use --
+     * see VOICE_CATALOGUE. A value that is no longer offered falls back to the
+     * default rather than failing a call.
+     */
+    liveCallVoice: text('live_call_voice'),
     status: characterStatus('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1697,6 +1711,49 @@ export const auditLog = pgTable(
   ],
 );
 
+/**
+ * analytics_events -- the commercial funnel, as it happened (PRD §23, PR 3).
+ *
+ * WHAT PEOPLE DID, NOT WHAT HAPPENED TO THEIR MONEY. The ledger, payments and
+ * subscription history are the record of Credits and Premium; this table only
+ * says that a screen was seen, a button pressed, a purchase started or
+ * completed. Nothing reads it to decide anything, and losing a row loses a
+ * data point, never a purchase: events are written after the business
+ * transaction commits, fail-open (services/analytics-service.ts).
+ *
+ * NO PII BEYOND THE USER ID. `properties` holds only what the shared per-event
+ * allow-list permits -- ids, short codes, whole numbers, booleans and values of
+ * fixed lists; never an email, a name or free text. `user_id` is null for an
+ * anonymous visitor, and becomes null if the account is deleted. Retention is
+ * a later decision.
+ */
+export const analyticsEvents = pgTable(
+  'analytics_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    /** A name from the shared catalogue (`ANALYTICS_EVENT_NAMES`); checked by the service. */
+    name: text('name').notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    /**
+     * When it happened, as the emitter stated it (captured right after the
+     * commit). No default: a row without that time is refused rather than
+     * dated later by the database.
+     */
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    /** Who reported it: the server where a transaction committed, or a browser. */
+    source: text('source').notNull(),
+    properties: jsonb('properties').$type<Record<string, string | number | boolean>>().notNull().default({}),
+    requestId: text('request_id'),
+  },
+  (table) => [
+    index('analytics_events_name_occurred_idx').on(table.name, table.occurredAt),
+    index('analytics_events_user_occurred_idx').on(table.userId, table.occurredAt),
+    check('analytics_events_name_format', sql`${table.name} ~ '^[a-z][a-z_]{1,63}$'`),
+    check('analytics_events_source', sql`${table.source} in ('server', 'client')`),
+    check('analytics_events_properties_object', sql`jsonb_typeof(${table.properties}) = 'object'`),
+  ],
+);
+
 /* ------------------------------------------------------------------ *
  * Economy configuration (PRD v1.2 §8, §9, §17, §20, §31) -- P1.1
  *
@@ -1924,9 +1981,19 @@ export const economyPacks = pgTable(
  * economy_pack_versions -- one rung of the §17 ladder, from an instant on.
  *
  * The per-Credit rate is DERIVED (`price_minor / credits`), never stored, so it
- * cannot disagree with the two numbers it comes from. `sort_order` and
- * `is_best_value` are presentation, versioned with the price they describe.
- * `is_purchasable` = false retires a pack, as for plans.
+ * cannot disagree with the two numbers it comes from. `sort_order`,
+ * `is_best_value` and `badge` are presentation, versioned with the price they
+ * describe. `is_purchasable` = false retires a pack, as for plans.
+ *
+ * `bonus_credits` are given on top of `credits` and land in the ledger as their
+ * own `bonus` class, never as purchased Credits.
+ *
+ * A PROMOTION IS REAL OR ABSENT. `was_price_minor` is the regular price while
+ * `price_minor` is a promotional one, so it must be higher. `promotion_ends_at`
+ * bounds that promotion and therefore needs a `was_price_minor`: a countdown
+ * with nothing ending is fake urgency, and the database refuses it. Once the
+ * end has passed the promotion is over and the regular price is the price
+ * (`pack-terms.ts` decides that, on the database clock).
  */
 export const economyPackVersions = pgTable(
   'economy_pack_versions',
@@ -1943,6 +2010,13 @@ export const economyPackVersions = pgTable(
     sortOrder: integer('sort_order').notNull().default(0),
     isBestValue: boolean('is_best_value').notNull().default(false),
     isPurchasable: boolean('is_purchasable').notNull().default(true),
+    /** A short label the store shows on the pack ("Best value"); null for none. */
+    badge: text('badge'),
+    bonusCredits: integer('bonus_credits').notNull().default(0),
+    /** The regular price while `price_minor` is promotional; null when there is no promotion. */
+    wasPriceMinor: integer('was_price_minor'),
+    /** When the promotion ends; null for an open-ended one. Needs `was_price_minor`. */
+    promotionEndsAt: timestamp('promotion_ends_at', { withTimezone: true }),
     ...versionLifecycle(),
   },
   (t) => [
@@ -1957,6 +2031,19 @@ export const economyPackVersions = pgTable(
     check('economy_pack_versions_price_positive', sql`${t.priceMinor} > 0`),
     check('economy_pack_versions_currency', sql`${t.currency} ~ ${CURRENCY_PATTERN}`),
     check('economy_pack_versions_sort_order', sql`${t.sortOrder} >= 0`),
+    check(
+      'economy_pack_versions_badge',
+      sql`${t.badge} is null or (length(btrim(${t.badge})) > 0 and length(${t.badge}) <= 40)`,
+    ),
+    check('economy_pack_versions_bonus_credits', sql`${t.bonusCredits} >= 0`),
+    check(
+      'economy_pack_versions_was_price',
+      sql`${t.wasPriceMinor} is null or ${t.wasPriceMinor} > ${t.priceMinor}`,
+    ),
+    check(
+      'economy_pack_versions_promotion_needs_was_price',
+      sql`${t.promotionEndsAt} is null or ${t.wasPriceMinor} is not null`,
+    ),
     ...lifecycleChecks('economy_pack_versions', t),
   ],
 );
@@ -2394,8 +2481,17 @@ export const walletEntryType = pgEnum('wallet_entry_type', [
  * distinguishable in the ledger because they may carry different expiry and
  * refund treatment (§6.3). Which class is spent first is the spending
  * service's rule, not the schema's.
+ *
+ *   included    came with a subscription (the product's "subscription" Credits)
+ *   earned      earned in the product
+ *   purchased   bought in a Credit pack
+ *   bonus       given on top of a purchase, or as a promotion
+ *
+ * Classes are sources within ONE currency, not currencies. A new source
+ * (referral, campaign) is one more value here and one more place in the spend
+ * order.
  */
-export const creditClass = pgEnum('credit_class', ['included', 'earned', 'purchased']);
+export const creditClass = pgEnum('credit_class', ['included', 'earned', 'purchased', 'bonus']);
 
 /** Transaction types that settle or compensate an earlier transaction, and must name it. */
 const RELATED_TYPES = sql.raw(`('capture', 'release', 'refund', 'reversal')`);
@@ -2907,6 +3003,19 @@ export const payments = pgTable(
     idempotencyKey: text('idempotency_key').notNull(),
     /** Why it failed, as the provider said. Recorded, never used to decide anything. */
     failureReason: text('failure_reason'),
+    /**
+     * What was bought, as it stood at checkout (a Credit pack's version,
+     * Credits, bonus and price). The award is made from THIS, so a later
+     * catalog change never alters a purchase already started. Empty for a
+     * subscription, which is resolved from its plan.
+     */
+    terms: jsonb('terms').$type<Record<string, unknown>>().notNull().default({}),
+    /**
+     * Where the customer came from and what they were doing (origin, action,
+     * the asset or conversation it was for), validated against fixed lists so
+     * the app can take them back afterwards. Never a URL.
+     */
+    context: jsonb('context').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     /** When it stopped being pending. */
@@ -2922,6 +3031,8 @@ export const payments = pgTable(
     check('payments_currency_format', sql`${t.currency} ~ '^[A-Z]{3}$'`),
     /** Pending exactly while nothing has settled it. */
     check('payments_settled_by_status', sql`(${t.status} = 'pending') = (${t.settledAt} is null)`),
+    check('payments_terms_object', sql`jsonb_typeof(${t.terms}) = 'object'`),
+    check('payments_context_object', sql`jsonb_typeof(${t.context}) = 'object'`),
   ],
 );
 
@@ -3009,8 +3120,244 @@ export type ContentOfferRow = typeof contentOffers.$inferSelect;
 export type WalletCurrencyRow = typeof walletCurrencies.$inferSelect;
 export type WalletRow = typeof wallets.$inferSelect;
 export type WalletTransactionRow = typeof walletTransactions.$inferSelect;
+
+/* ------------------------------------------------------------------ *
+ * Live voice calls (Phase 1: session lifecycle only)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Where a call is in its life.
+ *
+ * `pending` exists because a provider session is created over the network and
+ * that call can fail. The row is written FIRST, so a provider session can never
+ * come into existence without a record of it; it becomes `active` only once the
+ * provider has confirmed, and `failed` if it did not.
+ *
+ * `expired` is the one nothing has to do: a call that reached its deadline
+ * without anyone ending it. Phase 1 has no relay watching the socket, so
+ * without this a crashed browser would leave a row reading `active` for ever.
+ */
+export const callSessionStatus = pgEnum('call_session_status', [
+  'pending',
+  'active',
+  'ended',
+  'failed',
+  'expired',
+]);
+
+/**
+ * call_sessions -- one row per attempted live voice call.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. No API key, no client secret, no provider
+ * WebSocket URL, no audio, and no compiled persona. The secret and the URL are
+ * short-lived credentials that grant a live session; the persona is internal
+ * prompt material that Phase 0 proved the provider will hand back to any
+ * connected client. None of it belongs in a durable row, and an operator
+ * reading this table must not be able to reconstruct a session from it.
+ *
+ * `provider_session_id` IS kept: it is an opaque correlation handle, useful for
+ * a support conversation with the provider, and it grants nothing on its own.
+ */
+export const callSessions = pgTable(
+  'call_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => conversations.id, { onDelete: 'cascade' }),
+    /** Denormalised from the conversation so history survives a re-point. */
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'restrict' }),
+    /** The vendor, named rather than assumed: a second one is foreseeable. */
+    provider: text('provider').notNull(),
+    /** Opaque provider handle (`rt_...`), null while pending or if creation failed. */
+    providerSessionId: text('provider_session_id'),
+    /** Resolved server-side from the character or the default -- never from the client. */
+    voice: text('voice').notNull(),
+    status: callSessionStatus('status').notNull().default('pending'),
+    /** The ceiling this call was created under, in seconds. */
+    maxSeconds: integer('max_seconds').notNull(),
+    /**
+     * When a WebSocket claimed this session and began establishing the
+     * provider connection.
+     *
+     * THE ATOMIC GUARD AGAINST TWO SOCKETS, ONE CALL. A row stays `pending`
+     * from the moment `POST /call` claims it until the upstream connection is
+     * live, which means two browser sockets could otherwise each decide to
+     * create a provider session for it. A conditional update that sets this
+     * column only while it is null lets exactly one of them win, and the loser
+     * is refused -- the same "let the database decide the race" rule the two
+     * unique indexes below follow.
+     *
+     * Kept OUT of the status enum on purpose. Connecting is still live, so the
+     * row must remain `pending` and stay inside the partial unique indexes; a
+     * separate status would fall out of them and let a second call start.
+     */
+    connectClaimedAt: timestamp('connect_claimed_at', { withTimezone: true }),
+    /** Set when the provider confirmed; null if it never did. */
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    /** Whole seconds, written at termination. Null while the call is open. */
+    durationSeconds: integer('duration_seconds'),
+    /**
+     * Why it stopped, as a SHORT CODE -- `user_ended`, `expired`,
+     * `provider_error`, `content_blocked`. Never a provider message body,
+     * which can echo the request and therefore the persona.
+     */
+    terminationReason: text('termination_reason'),
+    /**
+     * When this call's transcript was turned into remembered facts.
+     *
+     * NULL MEANS "STILL OWED", and that is the entire point of the column. It is
+     * set only after the extracted facts have been written, so every way the work
+     * can fail -- the model refusing, the write failing, the process being
+     * restarted mid-extraction -- leaves it null and leaves the call eligible to
+     * be processed later. A flag set before the work, or no flag at all, would
+     * have made "this call still needs extracting" unrepresentable.
+     *
+     * It is NOT a lock. The `memories` unique index already makes storing the
+     * same fact twice a no-op, so a second attempt cannot duplicate a memory --
+     * but it would repeat the inference, which is billable. This column is what
+     * stops that, by being checked before the model is called.
+     */
+    memoriesExtractedAt: timestamp('memories_extracted_at', { withTimezone: true }),
+    /**
+     * When somebody started extracting this call's memories.
+     *
+     * A LEASE, NOT A RESULT, and separate from `memories_extracted_at` on
+     * purpose. The completion marker cannot double as the claim: it is set only
+     * after the facts are stored, so claiming with it would mean a process that
+     * died mid-extraction had marked the call successfully processed and nothing
+     * would ever revisit it.
+     *
+     * Taken BEFORE the model is called, which is the point. The unique index on
+     * `memories` already makes a duplicate fact impossible, but nothing except
+     * this stops two callers both paying for the same inference -- and once
+     * recovery retries pending calls, a retry and a live teardown really can
+     * reach the same call at once.
+     *
+     * STALE AFTER EXTRACTION_CLAIM_STALE_SECONDS, so a crash cannot make a call
+     * permanently unclaimable. Released explicitly when extraction fails, so an
+     * ordinary failure does not have to wait out the lease.
+     */
+    memoriesExtractionClaimedAt: timestamp('memories_extraction_claimed_at', {
+      withTimezone: true,
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * ONE LIVE CALL PER CONVERSATION, enforced by the database.
+     *
+     * Partial, so only `pending` and `active` rows contend: a conversation may
+     * have any number of finished calls behind it. Modelled on
+     * `content_entitlements_live_idx`, which solves the same shape of problem.
+     */
+    uniqueIndex('call_sessions_live_idx')
+      .on(t.conversationId)
+      .where(sql`${t.status} in ('pending', 'active')`),
+    /**
+     * ONE LIVE CALL PER PERSON, across every conversation they have.
+     *
+     * The per-conversation index above cannot express this: a customer with
+     * twenty characters could hold twenty simultaneous calls, each one legal on
+     * its own. That is twenty concurrent provider sessions for one person, and
+     * once billing exists, twenty meters running at once.
+     *
+     * In the DATABASE rather than in a check-then-insert, because two requests
+     * that read "no active call" at the same moment would both pass an
+     * application check and both insert. Only a constraint decides a race.
+     */
+    uniqueIndex('call_sessions_user_live_idx')
+      .on(t.userId)
+      .where(sql`${t.status} in ('pending', 'active')`),
+    /** A customer's call history, newest first. */
+    index('call_sessions_user_idx').on(t.userId, t.createdAt),
+    /** For sweeping sessions that outlived their deadline. */
+    index('call_sessions_status_idx').on(t.status, t.startedAt),
+    /** A duration is only meaningful once, and only forwards. */
+    check('call_sessions_duration_nonneg', sql`${t.durationSeconds} is null or ${t.durationSeconds} >= 0`),
+    check('call_sessions_max_seconds_positive', sql`${t.maxSeconds} > 0`),
+  ],
+);
+
+
+/**
+ * Who spoke a transcript turn. Its own enum, not `message_sender`.
+ *
+ * The two share their values today and that is a coincidence of this moment,
+ * not a shared contract: a text message gaining a third sender -- a system
+ * notice, say -- must not silently become a legal speaker on a phone call. Every
+ * other table in this schema owns its own enum for the same reason.
+ */
+export const callTurnSpeaker = pgEnum('call_turn_speaker', ['user', 'character']);
+
+/**
+ * call_transcript_turns -- what was actually said on a voice call, in order.
+ *
+ * WHY THIS EXISTS. A call currently leaves no trace of its content, so a
+ * character cannot discuss on Tuesday what she was told on Monday. The provider
+ * already sends both sides' transcripts to this server -- it must, because the
+ * browser never connects to the provider directly -- and today they are
+ * forwarded to the browser and discarded. This is where they will land.
+ *
+ * NOTHING WRITES TO IT YET. The relay is unchanged in this step: the table is
+ * inert until a later commit adds the writes, exactly as `messages.media_asset_id`
+ * was inert when it was introduced.
+ *
+ * `seq` IS A BIGSERIAL FOR THE SAME REASON `messages.seq` IS. `created_at`
+ * alone cannot order a conversation: turns arriving inside one statement, or
+ * within the same microsecond of a fast exchange, share a timestamp and the
+ * order becomes whatever the planner returns. A sequence is monotonic by
+ * construction, so transcript order is a property of the data rather than of
+ * how it was queried.
+ *
+ * NO user_id AND NO character_id, DELIBERATELY. Both are reachable through
+ * `call_sessions`, and duplicating them here would create a second place for
+ * ownership to be true -- which is the shape that lets a query filter on the
+ * copy and miss a mismatch. Ownership is inherited through the parent, exactly
+ * as `messages` inherits it through `conversations`.
+ *
+ * ON DELETE CASCADE because a transcript has no meaning without its call: when
+ * the session goes -- with a deleted account, or a deleted character's sessions
+ * -- what was said on it goes too.
+ */
+export const callTranscriptTurns = pgTable(
+  'call_transcript_turns',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    callSessionId: uuid('call_session_id')
+      .notNull()
+      .references(() => callSessions.id, { onDelete: 'cascade' }),
+    /** Monotonic ordering key; see the note above on why not `created_at`. */
+    seq: bigserial('seq', { mode: 'number' }).notNull(),
+    speaker: callTurnSpeaker('speaker').notNull(),
+    /** What was said. Provider-transcribed text, never audio. */
+    content: text('content').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * One index, and it does both jobs.
+     *
+     * Reading a transcript is always "this call, in order", so the composite
+     * serves the retrieval directly. It also covers the foreign key, which
+     * Postgres does NOT index on its own -- so a separate index on
+     * `call_session_id` would be redundant with this one's leading column.
+     */
+    index('call_transcript_turns_call_seq_idx').on(t.callSessionId, t.seq),
+  ],
+);
+
 export type SubscriptionRow = typeof subscriptions.$inferSelect;
 export type PaidActionRow = typeof paidActions.$inferSelect;
 export type ContentEntitlementRow = typeof contentEntitlements.$inferSelect;
 export type PaymentRow = typeof payments.$inferSelect;
 export type PaymentEventRow = typeof paymentEvents.$inferSelect;
+export type CallSessionRow = typeof callSessions.$inferSelect;
+export type CallTranscriptTurnRow = typeof callTranscriptTurns.$inferSelect;

@@ -1,8 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigationType } from 'react-router-dom';
+import AgeGate from './AgeGate';
 import CreditsPill from './CreditsPill';
 import MobileNavigation from './MobileNavigation';
+import DesktopHeader from './nav/DesktopHeader';
+import LobbyActions, { focusLobbySearch } from './lobby/LobbyActions';
+import SiteFooter from './SiteFooter';
 import StagingBanner from './StagingBanner';
+import { initialStatus, writeConfirmation, type GateStatus } from '../lib/ageGate';
 import { applyScrollTarget, scrollActionFor, type NavigationKind } from '../lib/scrollRestoration';
 
 /**
@@ -49,6 +54,17 @@ export default function AppShell() {
   const positions = useRef(new Map<string, number>());
   const currentKey = useRef(location.key);
   const previousPathname = useRef<string | null>(null);
+
+  /**
+   * The age gate's answer for this browser.
+   *
+   * READ ONCE, LAZILY, AND NOT IN AN EFFECT. A `useState(() => ...)` initialiser
+   * runs during the first render, so the very first paint is already the gate
+   * for an unconfirmed visitor. Reading it in an effect instead would render
+   * the application first and replace it a tick later -- which is a flash of
+   * exactly the content the gate exists to withhold.
+   */
+  const [gate, setGate] = useState<GateStatus>(() => initialStatus());
 
   /**
    * RECORDED AS THE VISITOR SCROLLS, not as they leave.
@@ -113,6 +129,39 @@ export default function AppShell() {
     };
   }, [location.key, pathname, navigationType]);
 
+  /**
+   * BEFORE THE OUTLET, AND AFTER EVERY HOOK.
+   *
+   * After the hooks because their order may not change between renders; before
+   * the outlet because this is what makes the gate a barrier rather than a
+   * curtain. Returning here means no page component is constructed, no effect
+   * of theirs runs, and no request for a character or a clip is ever sent --
+   * so there is nothing explicit in the document to be found behind the gate,
+   * by a reader, a screen reader, or View Source.
+   *
+   * It gates the whole consumer shell rather than a list of adult routes. A
+   * list is a thing to forget to add to; the shell is every route there is.
+   * `/admin` sits outside this shell and is staff-authenticated separately.
+   *
+   * NO NAVIGATION, SO NO LOOP. The gate is a different render of the same
+   * route, not a redirect to a gate page -- nothing to bounce against
+   * `RequireAuth`, and the address a visitor arrived at is still the address
+   * they are on when they confirm.
+   */
+  if (gate !== 'confirmed') {
+    return (
+      <AgeGate
+        status={gate}
+        onConfirm={() => {
+          writeConfirmation();
+          setGate('confirmed');
+        }}
+        onDecline={() => setGate('declined')}
+        onBack={() => setGate('asking')}
+      />
+    );
+  }
+
   // The v2 lobby (US-28) and the v2 persona profile (US-29) own their own
   // top-of-screen chrome and full-bleed media, so on those routes the shell
   // drops its default brand bar and content padding. Every other screen keeps
@@ -120,11 +169,65 @@ export default function AppShell() {
   const isLobby = pathname === '/characters';
   const isProfile = /^\/characters\/[^/]+$/.test(pathname);
   const isImmersive = isLobby || isProfile;
+  // The Credits Store alone is laid out in two columns on a wide screen (hero
+  // left, store right).
+  const isWide = pathname === '/credits' || pathname === '/wallet';
+  const hideNavOnPhone = pathname === '/credits';
+
+  /**
+   * HOW WIDE EACH SCREEN MAY BE ON A DESKTOP (`lg`, 1024px and up).
+   *
+   * Below `lg` every screen is the phone column it has always been
+   * (`max-w-lg`) -- nothing about a phone or tablet changes. From `lg` a screen
+   * gets the width its own desktop layout was designed for, and a screen that
+   * has no desktop layout yet KEEPS the phone column, centred under the desktop
+   * header, rather than being stretched into something nobody designed:
+   *
+   *   Home (desktop Pass 1)              -> the 1280px desktop container
+   *   Character profile (desktop Pass 2) -> a 1152px two-column layout
+   *   Credits Store                      -> its two-column 1152px layout, as before
+   *   everything else                    -> the phone column, unchanged
+   *
+   * `lg:overflow-visible` ON THE PROFILE. `<main>` is `overflow-y-auto`, which
+   * makes it the reference box for `position: sticky` even though it never
+   * scrolls (the document does). The profile's media column is sticky, so on
+   * that route, on a desktop, `<main>` stops clipping and the column follows the
+   * real page scroll. Nothing else about `<main>` changes, and no other route
+   * or width is affected.
+   */
+  const frame = isLobby
+    ? 'max-w-lg lg:max-w-7xl lg:px-8'
+    : isProfile
+      ? 'max-w-lg lg:max-w-6xl lg:overflow-visible lg:px-8'
+      : isWide
+        ? 'max-w-lg lg:max-w-6xl'
+        : 'max-w-lg';
+
+  /**
+   * ONE CREDITS BALANCE ON A DESKTOP SCREEN, NEVER TWO.
+   *
+   * The desktop header shows the balance on every route -- except a screen
+   * that still carries its own on a desktop: the chat, in its chat header
+   * (not redesigned yet). There the header leaves its pill out.
+   *
+   * The character profile used to be the other exception. Its desktop layout
+   * (Pass 2) now hides the hero's own pill from `lg` instead, so on a desktop
+   * its balance is in the header like Home's; on a phone it is in the hero as
+   * it always was. Either way: once.
+   */
+  const pageShowsCredits = pathname.startsWith('/chat/');
 
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-lg flex-col bg-zinc-950 text-zinc-100">
+    <div className="flex min-h-dvh w-full flex-col bg-zinc-950 text-zinc-100">
+      {/* Desktop only: the header with the primary navigation, which replaces
+          the phone's bottom tab bar from `lg` up. Home adds its own actions. */}
+      <DesktopHeader
+        showCredits={!pageShowsCredits}
+        extras={isLobby ? <LobbyActions onSearch={focusLobbySearch} withAccount={false} /> : undefined}
+      />
+
       {!isImmersive && (
-        <header className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur pt-[max(0.75rem,env(safe-area-inset-top))]">
+        <header className="sticky top-0 z-10 mx-auto flex w-full max-w-lg items-center justify-between border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 backdrop-blur pt-[max(0.75rem,env(safe-area-inset-top))] lg:hidden">
           <Link
             to="/characters"
             aria-label="Over18 — Discover"
@@ -140,14 +243,24 @@ export default function AppShell() {
 
       {/* Immediately below the header -- and at the very top on the immersive
           routes, which have no header of their own. Renders nothing outside a
-          staging build. */}
-      <StagingBanner />
+          staging build. Full width on a desktop, like the header above it. */}
+      <div className="mx-auto w-full max-w-lg lg:max-w-none">
+        <StagingBanner />
+      </div>
 
-      <main className={`flex flex-1 flex-col overflow-y-auto ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}>
+      <main className={`mx-auto flex w-full flex-1 flex-col overflow-y-auto ${frame} ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}>
         <Outlet />
+        {/* Inside the scroll region and after the outlet, so it sits at the end
+            of the content rather than competing with the sticky primary nav
+            below it. */}
+        <SiteFooter />
       </main>
 
-      <div className="sticky bottom-0 z-10">
+      {/* The phone's primary navigation. The Credits Store is a checkout: on a
+          phone its own sticky purchase bar takes the bottom of the screen, so
+          the app navigation steps aside there. From `lg` up the desktop
+          header above carries the navigation instead, on every screen. */}
+      <div className={`sticky bottom-0 z-10 mx-auto w-full max-w-lg lg:hidden ${hideNavOnPhone ? 'hidden' : ''}`}>
         <MobileNavigation />
       </div>
     </div>

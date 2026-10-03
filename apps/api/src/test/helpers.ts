@@ -36,6 +36,11 @@ export const testEnv: Env = {
   // Messages opt in explicitly via createTestContext({ chatMediaEnabled: true }),
   // so every other suite proves the feature is genuinely inert when disabled.
   chatMedia: { enabled: false },
+  // Matches production's default: no provider, and calls switched OFF. Suites
+  // that exercise voice opt in explicitly via createTestContext, so every other
+  // suite proves the feature is genuinely unreachable.
+  voice: null,
+  voiceCalls: { enabled: false },
   media: {
     // US-36: media tests inject the mock provider; these paths are a writable
     // scratch area, and the internal token is fixed so tests can present it.
@@ -125,6 +130,13 @@ export interface TestContext {
 export async function createTestContext(
   options: BuildAppOptions & {
     chatMediaEnabled?: boolean;
+    /** Switches live calls on AND supplies a stub provider config. */
+    voiceCallsEnabled?: boolean;
+    /**
+     * Switches live calls on while leaving SPICYAPI_API_KEY unset -- the
+     * misconfiguration a real operator can make. The app must fail closed.
+     */
+    voiceCallsEnabledWithoutKey?: boolean;
     optimisedMediaEnabled?: boolean;
     adminAuditEnabled?: boolean;
     adminPermissionsEnforced?: boolean;
@@ -132,6 +144,8 @@ export async function createTestContext(
 ): Promise<TestContext> {
   const {
     chatMediaEnabled,
+    voiceCallsEnabled,
+    voiceCallsEnabledWithoutKey,
     optimisedMediaEnabled,
     adminAuditEnabled,
     adminPermissionsEnforced,
@@ -140,6 +154,19 @@ export async function createTestContext(
   const { db, pool } = createDb(TEST_DATABASE_URL);
   let env: Env = testEnv;
   if (chatMediaEnabled) env = { ...env, chatMedia: { enabled: true } };
+  if (voiceCallsEnabled) {
+    env = {
+      ...env,
+      // A placeholder credential so `env.voice` is non-null. No test reaches a
+      // real provider: createTestContext callers inject `voiceProvider`.
+      voice: { provider: 'spicyapi', apiKey: 'test-not-a-real-key', timeoutMs: 1_000, maxSeconds: 780 },
+      voiceCalls: { enabled: true },
+    };
+  }
+  if (voiceCallsEnabledWithoutKey) {
+    // The flag on, the provider absent. `env.voice` stays null.
+    env = { ...env, voiceCalls: { enabled: true } };
+  }
   if (optimisedMediaEnabled) {
     env = { ...env, media: { ...env.media, optimisedEnabled: true } };
   }
@@ -159,7 +186,7 @@ export async function createTestContext(
 export async function truncateAll(ctx: TestContext): Promise<void> {
   await ctx.pool.query(
     // wallet_currencies is reference data seeded by migration 0034: never truncated.
-    'TRUNCATE TABLE payment_events, payments, content_entitlements, paid_actions, subscription_history, subscriptions, wallet_transactions, wallets, content_offers, economy_ruleset_action_costs, economy_ruleset_allowances, economy_ruleset_rewards, economy_rulesets, economy_plan_versions, economy_plans, economy_pack_versions, economy_packs, audit_log, admin_role_grants, prompt_drive_connections, prompt_drive_oauth_states, prompt_drive_folders, prompt_job_outputs, prompt_jobs, prompt_batches, discovery_category_keywords, discovery_categories, asset_keywords, content_keywords, home_hero_clips, home_recent_characters, home_banners, banner_creatives, app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, favourites, messages, conversations, sessions, users, characters CASCADE',
+    'TRUNCATE TABLE analytics_events, call_sessions, payment_events, payments, content_entitlements, paid_actions, subscription_history, subscriptions, wallet_transactions, wallets, content_offers, economy_ruleset_action_costs, economy_ruleset_allowances, economy_ruleset_rewards, economy_rulesets, economy_plan_versions, economy_plans, economy_pack_versions, economy_packs, audit_log, admin_role_grants, prompt_drive_connections, prompt_drive_oauth_states, prompt_drive_folders, prompt_job_outputs, prompt_jobs, prompt_batches, discovery_category_keywords, discovery_categories, asset_keywords, content_keywords, home_hero_clips, home_recent_characters, home_banners, banner_creatives, app_category_assets, app_categories, content_inbox, character_visual_assets, character_visual_identities, memories, favourites, messages, conversations, sessions, users, characters CASCADE',
   );
 }
 

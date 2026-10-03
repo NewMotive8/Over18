@@ -12,6 +12,7 @@ import {
   hasDurationTiers,
   isCancellable,
   newActionCostRow,
+  localDateTime,
   packDraftFromForm,
   planDraftFromForm,
   planFormFrom,
@@ -60,7 +61,7 @@ describe('plan and pack forms', () => {
       features: { unlimited_text: false, full_character_access: false, advanced_media_access: false, voice_access: false },
       isPurchasable: true,
     });
-    expect(Object.values(EMPTY_PACK_FORM).filter((v) => typeof v === 'string')).toEqual(['', '', '', '', '']);
+    expect(Object.values(EMPTY_PACK_FORM).filter((v) => typeof v === 'string')).toEqual(['', '', '', '', '', '', '', '', '']);
   });
 
   it('round-trips a version through the form into the request the server expects', () => {
@@ -90,6 +91,19 @@ describe('plan and pack forms', () => {
       ok: false,
       errors: ['Credits is required.', 'Price (minor units) is required.', 'Ladder position is required.'],
     });
+  });
+
+  it('a pack draft carries badge, bonus and promotion -- and an empty one carries none', () => {
+    const base = { ...EMPTY_PACK_FORM, displayName: 'Plus', credits: '750', priceMinor: '4999', currency: 'USD', sortOrder: '2' };
+    expect(packDraftFromForm(base)).toMatchObject({ ok: true, body: { badge: null, bonusCredits: 0, wasPriceMinor: null, promotionEndsAt: null } });
+
+    const ends = new Date(2030, 0, 1, 10, 30);
+    const promo = packDraftFromForm({ ...base, badge: ' Best value ', bonusCredits: '100', wasPriceMinor: '7999', promotionEndsAt: localDateTime(ends.toISOString()) });
+    expect(promo).toEqual({
+      ok: true,
+      body: expect.objectContaining({ badge: 'Best value', bonusCredits: 100, wasPriceMinor: 7999, promotionEndsAt: ends.toISOString() }),
+    });
+    expect(packDraftFromForm({ ...base, bonusCredits: 'lots' })).toEqual({ ok: false, errors: ['Bonus Credits must be a whole number.'] });
   });
 });
 

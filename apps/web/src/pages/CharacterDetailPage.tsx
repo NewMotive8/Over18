@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import { API_URL, ApiRequestError, charactersApi, conversationsApi, type PublicClip } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
@@ -12,13 +12,17 @@ import {
 import { adultAgeFromBand } from '../lib/lobbyContent';
 import { mockRelationship } from '../lib/relationship';
 import ProfileHero from '../components/profile/ProfileHero';
+import ProfileIdentity from '../components/profile/ProfileIdentity';
 import ProfileActions from '../components/profile/ProfileActions';
 import RelationshipTracker from '../components/profile/RelationshipTracker';
 import ProfileTabs, { type ProfileTab } from '../components/profile/ProfileTabs';
 import AboutTab from '../components/profile/AboutTab';
 import PostsTab from '../components/profile/PostsTab';
 import MediaViewer from '../components/MediaViewer';
-import PremiumGate from '../components/PremiumGate';
+import PremiumFunnel from '../components/premium/PremiumFunnel';
+import { cameFromSwipe } from '../lib/swipeReturn';
+import { commercialTier, useCustomerEconomy, type CustomerEconomyState } from '../lib/customerEconomy';
+import CreditsPill from '../components/CreditsPill';
 
 type VisualState =
   | { status: 'loading' }
@@ -40,7 +44,7 @@ type ProfileState =
  * paywall. Data loading (character + public Visual Identity), the Start-chat
  * flow, and the profile states are all preserved from the prior implementation;
  * only the presentation changed. Media flows through the existing provider-
- * agnostic resolver and the US-19 MediaViewer / PremiumGate.
+ * agnostic resolver, the US-19 MediaViewer and the Premium funnel.
  */
 export default function CharacterDetailPage() {
   const { characterId } = useParams<{ characterId: string }>();
@@ -52,9 +56,13 @@ export default function CharacterDetailPage() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [visual, setVisual] = useState<VisualState>({ status: 'loading' });
-  const [tab, setTab] = useState<ProfileTab>('about');
+  const [params, setParams] = useSearchParams();
+  // `?tab=posts` opens on Posts -- the Credits Store sends a customer back here to finish an unlock.
+  const [tab, setTab] = useState<ProfileTab>(() => (params.get('tab') === 'posts' ? 'posts' : 'about'));
+  const resumeUnlock = params.get('unlock');
   const [viewer, setViewer] = useState<{ items: CharacterMediaItem[]; index: number } | null>(null);
-  const [gateOpen, setGateOpen] = useState(false);
+  const [funnelOpen, setFunnelOpen] = useState(false);
+  const [economy] = useCustomerEconomy();
   /**
    * Her real content collection, for the Posts tab.
    *
@@ -78,6 +86,38 @@ export default function CharacterDetailPage() {
         navigate(`/chat/${conversation.id}`);
       } catch {
         setStartError("Couldn't start the conversation. Please try again.");
+        setStarting(false);
+      }
+    },
+    [authStatus, navigate, location.pathname],
+  );
+
+  /**
+   * The phone button. Opens the conversation and starts the call there.
+   *
+   * WHY IT NAVIGATES RATHER THAN CALLING FROM HERE. A call belongs to a
+   * conversation -- that is where its transcript is stored and where the
+   * memories it produces are read back -- and this page may not have one yet.
+   * Routing through the chat page means one call implementation, one overlay and
+   * one cleanup path, and the person ends up where the conversation they just
+   * had actually lives.
+   *
+   * Shares `starting` with the Chat button, so pressing either twice, or both,
+   * cannot open two conversations.
+   */
+  const startCall = useCallback(
+    async (character: PublicCharacter) => {
+      if (authStatus !== 'authenticated') {
+        navigate('/login', { state: { from: location.pathname } });
+        return;
+      }
+      setStarting(true);
+      setStartError(null);
+      try {
+        const conversation = await conversationsApi.start(character.id);
+        navigate(`/chat/${conversation.id}`, { state: { autoCall: true } });
+      } catch {
+        setStartError("Couldn't start the call. Please try again.");
         setStarting(false);
       }
     },
@@ -131,7 +171,19 @@ export default function CharacterDetailPage() {
   }, [characterId, attempt]);
 
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
-  const goBack = useCallback(() => navigate('/characters'), [navigate]);
+  /**
+   * BACK GOES WHERE SHE WAS OPENED FROM.
+   *
+   * Opened from Swipe mode, Back steps back one history entry -- to that same
+   * Swipe screen, which restores the card (see lib/swipeReturn). It used to go
+   * to the lobby from everywhere, which threw a visitor out of Swipe mode every
+   * time they looked at a profile. From anywhere else it is unchanged: Home.
+   */
+  const fromSwipe = cameFromSwipe(location.state);
+  const goBack = useCallback(
+    () => (fromSwipe ? navigate(-1) : navigate('/characters')),
+    [navigate, fromSwipe],
+  );
 
   const backLink = (
     <button
@@ -139,13 +191,13 @@ export default function CharacterDetailPage() {
       onClick={goBack}
       className="inline-flex w-fit items-center gap-1 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
     >
-      <span aria-hidden>←</span> Back to lobby
+      <span aria-hidden>←</span> {fromSwipe ? 'Back to Swipe' : 'Back to lobby'}
     </button>
   );
 
   if (state.status === 'loading') {
     return (
-      <section className="flex flex-col gap-4 px-4 pb-8 pt-6" aria-busy>
+      <section className="flex flex-col gap-4 px-4 pb-8 pt-6 lg:mx-auto lg:w-full lg:max-w-lg lg:px-0" aria-busy>
         {backLink}
         <div className="animate-pulse overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900">
           <div className="aspect-[4/5] w-full bg-zinc-800" />
@@ -158,7 +210,7 @@ export default function CharacterDetailPage() {
   if (state.status === 'not-found' || state.status === 'error') {
     const notFound = state.status === 'not-found';
     return (
-      <section className="flex flex-col gap-4 px-4 pb-8 pt-6">
+      <section className="flex flex-col gap-4 px-4 pb-8 pt-6 lg:mx-auto lg:w-full lg:max-w-lg lg:px-0">
         {backLink}
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/60 px-6 py-14 text-center">
           <span aria-hidden className="text-3xl">
@@ -232,19 +284,39 @@ export default function CharacterDetailPage() {
         ? first.src
         : absoluteMediaUrl(character.profileImage);
   const relationship = mockRelationship(character);
+  const upgrade = upgradeAction(economy, {
+    openFunnel: () => setFunnelOpen(true),
+    signIn: () => navigate('/login', { state: { from: location.pathname } }),
+  });
 
   return (
-    <div className="flex flex-col pb-10">
-      <ProfileHero
-        items={heroItems}
-        name={character.displayName}
-        age={age}
-        avatarPoster={avatarPoster}
-        onBack={goBack}
-        onOpen={(index) => setViewer({ items: heroItems, index })}
-      />
+    /*
+      DESKTOP (lg+): TWO COLUMNS, ONE DOM. Her media on the left, staying in
+      view while the right column -- identity, actions, relationship, tabs --
+      scrolls; the same proportions as the Credits Store, so the two read as
+      one product. It is CSS only: nothing is rendered twice, so the Posts tab
+      still mounts exactly once (its unlock-resume and its analytics fire once)
+      and the phone layout below `lg` is untouched.
+    */
+    <div className="flex flex-col pb-10 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:items-start lg:gap-10 lg:pb-16 lg:pt-8">
+      <div className="lg:sticky lg:top-24">
+        <ProfileHero
+          items={heroItems}
+          name={character.displayName}
+          age={age}
+          avatarPoster={avatarPoster}
+          onBack={goBack}
+          onOpen={(index) => setViewer({ items: heroItems, index })}
+          // The customer's Credits, one tap from the Credits Store. Nothing while unknown.
+          // On a desktop the header carries the balance, and the hero hides this one.
+          topRight={<CreditsPill />}
+        />
+      </div>
 
-      <div className="flex flex-col gap-4 px-4 pt-4">
+      <div className="flex flex-col gap-4 px-4 pt-4 lg:gap-5 lg:px-0 lg:pt-0">
+        {/* Desktop only: her identity heads the right column (on a phone it overlays the media). */}
+        <ProfileIdentity name={character.displayName} age={age} avatarPoster={avatarPoster} />
+
         {startError && (
           <p role="alert" className="rounded-lg border border-red-900 bg-red-950/90 px-3 py-2 text-center text-sm text-red-300">
             {startError}
@@ -252,9 +324,9 @@ export default function CharacterDetailPage() {
         )}
 
         <ProfileActions
-          onUpgrade={() => setGateOpen(true)}
+          onUpgrade={upgrade ?? undefined}
           onChat={() => startChat(character)}
-          onCall={() => setGateOpen(true)}
+          onCall={() => startCall(character)}
           chatting={starting}
         />
 
@@ -267,6 +339,13 @@ export default function CharacterDetailPage() {
         ) : (
           <PostsTab
             clips={clips}
+            characterId={character.id}
+            resumeUnlockAssetId={resumeUnlock}
+            onResumeHandled={() => {
+              const next = new URLSearchParams(params);
+              next.delete('unlock');
+              setParams(next, { replace: true });
+            }}
             onOpenClip={(index) => setViewer({ items: postItems, index })}
           />
         )}
@@ -289,7 +368,26 @@ export default function CharacterDetailPage() {
           videoFit="contain"
         />
       )}
-      {gateOpen && <PremiumGate name={character.displayName} onClose={() => setGateOpen(false)} />}
+      <PremiumFunnel open={funnelOpen} surface="premium_gate" startAt="plans" onClose={() => setFunnelOpen(false)} />
     </div>
   );
+}
+
+/**
+ * What the profile's Premium button does -- or null for no button.
+ *
+ * DECIDED BY THE SERVER'S TIER, never guessed. A Premium member has nothing to
+ * upgrade to, so gets no button (it used to show to everyone and open a
+ * placeholder sheet). A signed-in Free customer opens the real Premium funnel;
+ * a signed-out visitor is sent to sign in first, as Chat does. While the
+ * economy is loading, or when it is unavailable or switched off, there is no
+ * button: better a moment without it than flashing it at a member.
+ */
+export function upgradeAction(
+  economy: CustomerEconomyState,
+  actions: { openFunnel: () => void; signIn: () => void },
+): (() => void) | null {
+  if (economy.status === 'signed-out') return actions.signIn;
+  if (economy.status !== 'ready') return null;
+  return commercialTier(economy.overview) === 'free' ? actions.openFunnel : null;
 }

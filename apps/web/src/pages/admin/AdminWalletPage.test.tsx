@@ -21,7 +21,7 @@ const wallet = (over: Partial<AdminWalletSummary> = {}): AdminWalletSummary => (
   balance: 37,
   held: 4,
   version: 6,
-  classes: { included: { spendable: 11, held: 4 }, earned: { spendable: 21, held: 0 }, purchased: { spendable: 5, held: 0 } },
+  classes: { included: { spendable: 11, held: 4 }, earned: { spendable: 21, held: 0 }, purchased: { spendable: 5, held: 0 }, bonus: { spendable: 0, held: 0 } },
   ...over,
 });
 
@@ -73,7 +73,7 @@ describe('the account and its balances', () => {
     const html = render(<WalletBalances wallet={wallet()} />);
     expect(html).toMatch(/data-testid="balance">37</);
     expect(html).toMatch(/data-testid="held">4</);
-    expect(html.match(/data-testid="class-row"/g)).toHaveLength(3);
+    expect(html.match(/data-testid="class-row"/g)).toHaveLength(4);
     expect(html).toContain('<td>21</td>');
   });
 

@@ -24,7 +24,9 @@ describe('Plans', () => {
     expect(html).toContain('Plan test_monthly');
     expect(html).toContain('Draft v2');
     expect(html).toContain('value="222"'); // the draft's price, not the active one's
-    expect(html).toContain('111 (USD minor units)'); // the active version in the history
+    // The active version in the history, priced the way the pack table prices
+    // one: the amount as money, with the stored integer kept beside it.
+    expect(html).toContain('$1.11 (111)');
     expect(html).toContain('Save draft');
     expect(html).toContain('Discard draft');
   });

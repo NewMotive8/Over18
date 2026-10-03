@@ -9,6 +9,8 @@ import {
   users,
 } from '../db/schema.js';
 import { seedCharacters } from '../db/seed.js';
+import { DEFAULT_LIVE_CALL_VOICE, VOICE_CATALOGUE } from '@over18/shared';
+import { resolveVoice } from '../voice/voice-catalogue.js';
 import type {
   ProfileAuthor,
   ProfileAuthorInput,
@@ -255,6 +257,143 @@ describe('character creation and editing', () => {
 /* ------------------------------------------------------------------ *
  * Visual identity versioning
  * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * Her live-call voice
+ * ------------------------------------------------------------------ */
+
+describe('assigning a live-call voice', () => {
+  /**
+   * THE COLUMN HAD NO WRITER UNTIL NOW, which is why every character sounded
+   * the same: `live_call_voice` was read by the call path and set by nothing,
+   * so all 40 took `resolveVoice`'s default. These cover the way in.
+   */
+  it('accepts every voice in the published catalogue', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+
+    for (const voice of VOICE_CATALOGUE) {
+      const res = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/admin/characters/${id}`,
+        payload: { liveCallVoice: voice },
+        cookies,
+      });
+      expect(res.statusCode, voice).toBe(200);
+      expect(res.json().liveCallVoice, voice).toBe(voice);
+    }
+  });
+
+  it('rejects a voice the catalogue does not have', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+
+    const res = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${id}`,
+      payload: { liveCallVoice: 'Bob' },
+      cookies,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('invalid_character');
+    expect(res.json().field).toBe('liveCallVoice');
+  });
+
+  /** Provider identifiers, so a near miss is a miss. */
+  it.each(['serena', 'SERENA', 'hana'])('rejects the wrong case: %s', async (voice) => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+
+    const res = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${id}`,
+      payload: { liveCallVoice: voice },
+      cookies,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field).toBe('liveCallVoice');
+  });
+
+  it.each([
+    ['null', null],
+    ['an empty string', ''],
+    ['whitespace', '   '],
+  ])('clears the assignment with %s', async (_label, value) => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+
+    await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${id}`,
+      payload: { liveCallVoice: 'Hana' },
+      cookies,
+    });
+    const res = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${id}`,
+      payload: { liveCallVoice: value },
+      cookies,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().liveCallVoice).toBeNull();
+  });
+
+  /** A partial update must not wipe a field it says nothing about. */
+  it('leaves the assignment alone when the key is absent', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+
+    await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${id}`,
+      payload: { liveCallVoice: 'Kiki' },
+      cookies,
+    });
+    const res = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${id}`,
+      payload: { displayName: 'Nova Reyes' },
+      cookies,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().displayName).toBe('Nova Reyes');
+    expect(res.json().liveCallVoice).toBe('Kiki');
+  });
+
+  it('reports null for a character with no assignment', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+
+    const res = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().character.liveCallVoice).toBeNull();
+  });
+
+  /**
+   * THE REGRESSION THIS FEATURE EXISTS TO PREVENT. Storing a voice is only
+   * worth anything if it reaches the provider request, and an unassigned
+   * character must still fall back rather than fail.
+   */
+  it('resolves an assigned voice, and still defaults without one', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+
+    const unassigned = await ctx.db.select().from(characters).where(eq(characters.id, id));
+    expect(unassigned[0]!.liveCallVoice).toBeNull();
+    expect(resolveVoice(unassigned[0]!.liveCallVoice)).toBe(DEFAULT_LIVE_CALL_VOICE);
+
+    await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${id}`,
+      payload: { liveCallVoice: 'Katerina' },
+      cookies,
+    });
+
+    const assigned = await ctx.db.select().from(characters).where(eq(characters.id, id));
+    expect(assigned[0]!.liveCallVoice).toBe('Katerina');
+    expect(resolveVoice(assigned[0]!.liveCallVoice)).toBe('Katerina');
+  });
+});
 
 describe('visual identity versions', () => {
   it('creates v1 as a draft, then v2 without touching v1', async () => {

@@ -23,14 +23,17 @@ export interface CommercialSubscription {
 }
 
 /**
- * Credits by class. The three classes stay distinguishable because they may
- * carry different expiry and refund treatment (PRD §6.3, §18). `held` is
- * reserved for in-flight paid actions and is NOT part of `spendable`.
+ * Credits by class. The classes stay distinguishable because they may carry
+ * different expiry and refund treatment (PRD §6.3, §18); a customer is shown
+ * one total, `spendable`. `included` is the subscription's allowance; `bonus`
+ * is given on top of a purchase or as a promotion. `held` is reserved for
+ * in-flight paid actions and is NOT part of `spendable`.
  */
 export interface CommercialWallet {
   included: number;
   earned: number;
   purchased: number;
+  bonus: number;
   held: number;
   spendable: number;
 }
@@ -108,6 +111,21 @@ export interface CustomerPackOffer {
   isBestValue: boolean;
   isPurchasable: boolean;
   effectiveFrom: string;
+  /** The store's label for the pack ("Best value"), as configured; null for none. */
+  badge: string | null;
+  /** Credits given on top of `credits`; 0 for none. */
+  bonusCredits: number;
+  /** `credits + bonusCredits`: what the customer receives. */
+  totalCredits: number;
+  /**
+   * The regular price, ONLY while a promotion is in effect at `asOf`, so the
+   * store can strike it through; `priceMinor` is then the promotional price.
+   * Null when there is no promotion or it has ended -- and once it has ended,
+   * `priceMinor` IS the regular price.
+   */
+  wasPriceMinor: number | null;
+  /** When the promotion in effect ends; null when there is none, or it has no end. */
+  promotionEndsAt: string | null;
 }
 
 /** GET /api/economy/catalog: the published, in-effect catalog. */
@@ -166,6 +184,12 @@ export const ANALYTICS_EVENT_NAMES = [
   'credit_purchase_viewed',
   'credit_purchase_started',
   'credit_purchase_completed',
+  /**
+   * A Credit pack payment the provider declined, or the customer cancelled
+   * (PR 3). No other name can say it: `completed` would be false and
+   * `spend_refunded` is about spending. Never emitted with `completed`.
+   */
+  'credit_purchase_failed',
   'credit_spend',
   'locked_content_viewed',
   'locked_content_unlocked',
@@ -181,6 +205,57 @@ export type AnalyticsEventName = (typeof ANALYTICS_EVENT_NAMES)[number];
 
 export function isAnalyticsEventName(value: string): value is AnalyticsEventName {
   return (ANALYTICS_EVENT_NAMES as readonly string[]).includes(value);
+}
+
+/**
+ * The events a BROWSER may report (PR 3): only what the server cannot see for
+ * itself -- a screen shown, a button pressed, a sheet dismissed. Purchases,
+ * spends and unlocks are reported by the server where they commit, and a
+ * client claiming one is refused, so a browser can never fake a conversion.
+ */
+export const ANALYTICS_CLIENT_EVENTS = [
+  'paywall_viewed',
+  'subscription_cta_clicked',
+  'paywall_dismissed',
+  'credit_purchase_viewed',
+  'locked_content_viewed',
+] as const satisfies readonly AnalyticsEventName[];
+export type AnalyticsClientEventName = (typeof ANALYTICS_CLIENT_EVENTS)[number];
+
+export function isAnalyticsClientEvent(value: string): value is AnalyticsClientEventName {
+  return (ANALYTICS_CLIENT_EVENTS as readonly string[]).includes(value);
+}
+
+/**
+ * What one property may hold: an id, a short code from a fixed vocabulary, a
+ * whole number, a boolean, or one value of a fixed list. Never free text --
+ * which is how an email or a message could never ride along in an event.
+ */
+export type AnalyticsPropertyKind = 'id' | 'code' | 'int' | 'bool' | readonly string[];
+
+/* ---- the funnels (GET /admin/analytics/funnels) ---- */
+
+export interface AnalyticsFunnelStep {
+  /** The event this step counts, and the filter on it, said plainly. */
+  label: string;
+  /** People who reached this step after every earlier one, within the window. */
+  users: number;
+}
+export interface AnalyticsFunnel {
+  key: 'free_to_premium' | 'free_to_credit_purchase' | 'locked_content_to_unlock' | 'purchase_to_spend';
+  title: string;
+  steps: AnalyticsFunnelStep[];
+}
+export interface AnalyticsFunnelsView {
+  from: string;
+  to: string;
+  funnels: AnalyticsFunnel[];
+  /** Every event in the window by name, signed in or not. */
+  eventCounts: Record<string, number>;
+  /** Credit pack payments that failed or were cancelled in the window. */
+  failedCreditPurchases: number;
+  /** Whether ANALYTICS_ENABLED is on now. Off: nothing new is being recorded. */
+  recording: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -281,7 +356,7 @@ export interface AuditEntryView {
  * Admin wallet support (P2.4, PRD §16, §18, §34)
  * ------------------------------------------------------------------ */
 
-export type WalletCreditClass = 'included' | 'earned' | 'purchased';
+export type WalletCreditClass = 'included' | 'earned' | 'purchased' | 'bonus';
 export type WalletDirection = 'credit' | 'debit';
 export type WalletEntryType =
   | 'grant'
@@ -455,6 +530,7 @@ export interface AdminUserWallet {
   included: number;
   earned: number;
   purchased: number;
+  bonus: number;
   /** Reserved for in-flight actions; not part of `spendable`. */
   held: number;
   spendable: number;
@@ -688,12 +764,203 @@ export const PAYMENT_METHOD_LABELS: Readonly<Record<PaymentMethod, string>> = {
 /** Where a payment stands. Mirrors the `payment_status` enum. */
 export type PaymentStatus = 'pending' | 'succeeded' | 'failed' | 'cancelled' | 'refunded' | 'disputed';
 
+/**
+ * Where a customer opened the Credits Store from, and what they were doing.
+ * Fixed lists: the app turns these back into one of its own pages afterwards,
+ * so nothing here is ever a URL.
+ */
+export const PURCHASE_ORIGINS = ['chat', 'store', 'header', 'profile', 'lobby', 'premium', 'content'] as const;
+export type PurchaseOrigin = (typeof PURCHASE_ORIGINS)[number];
+export const PURCHASE_ORIGIN_ACTIONS = ['content_unlock', 'image', 'video', 'voice_message', 'voice_call', 'browse'] as const;
+export type PurchaseOriginAction = (typeof PURCHASE_ORIGIN_ACTIONS)[number];
+
+/* ---- analytics property allow-lists (PR 3), beside the purchase vocabulary they use ---- */
+
+const SURFACES = ['premium_gate', 'subscription_page', 'credits_store', 'posts', 'home_feed', 'swipe'] as const;
+const TIERS = ['free', 'premium'] as const;
+const PURCHASE_CONTEXT = {
+  origin: PURCHASE_ORIGINS,
+  originAction: PURCHASE_ORIGIN_ACTIONS,
+  assetId: 'id',
+  conversationId: 'id',
+  characterId: 'id',
+} as const;
+const PACK_TERMS = {
+  paymentId: 'id',
+  packCode: 'code',
+  packVersion: 'int',
+  credits: 'int',
+  bonusCredits: 'int',
+  totalCredits: 'int',
+  priceMinor: 'int',
+  currency: 'code',
+  promoted: 'bool',
+  tier: TIERS,
+} as const;
+
+/**
+ * EVERY EVENT'S PROPERTIES, AS A FIXED ALLOW-LIST (PR 3). A key not listed for
+ * an event is dropped, and so is a value of the wrong kind -- whether it came
+ * from the server or a browser. An event not listed here carries no
+ * properties at all until it is given a list.
+ */
+export const ANALYTICS_EVENT_PROPERTIES: Readonly<Partial<Record<AnalyticsEventName, Readonly<Record<string, AnalyticsPropertyKind>>>>> = {
+  // Client-reported
+  paywall_viewed: { surface: SURFACES, characterId: 'id', tier: TIERS },
+  subscription_cta_clicked: { surface: SURFACES, planCode: 'code' },
+  paywall_dismissed: { surface: SURFACES, packCode: 'code', planCode: 'code' },
+  credit_purchase_viewed: {
+    ...PURCHASE_CONTEXT,
+    tier: TIERS,
+    balanceState: ['unknown', 'zero', 'low', 'normal'],
+    packCount: 'int',
+    /** The pack the store recommended -- stated by the server, from its own catalog and facts. */
+    recommendedPackCode: 'code',
+  },
+  locked_content_viewed: {
+    surface: SURFACES,
+    assetId: 'id',
+    characterId: 'id',
+    decision: ['credits_required', 'insufficient_credits', 'premium_required'],
+    creditPrice: 'int',
+  },
+  // Server-reported, where the business transaction commits
+  subscription_started: { paymentId: 'id', planCode: 'code', billingPeriodMonths: 'int', priceMinor: 'int', currency: 'code' },
+  credit_purchase_started: { ...PACK_TERMS, ...PURCHASE_CONTEXT, method: 'code' },
+  credit_purchase_completed: { ...PACK_TERMS, ...PURCHASE_CONTEXT },
+  credit_purchase_failed: { ...PACK_TERMS, ...PURCHASE_CONTEXT, status: ['failed', 'cancelled'] },
+  credit_spend: { paidActionId: 'id', actionType: 'code', amount: 'int' },
+  locked_content_unlocked: { assetId: 'id', offerId: 'id', entitlementId: 'id', creditPrice: 'int' },
+  spend_refunded: { paidActionId: 'id', actionType: 'code', amount: 'int' },
+};
+
+const ANALYTICS_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ANALYTICS_CODE = /^[A-Za-z0-9_]{1,64}$/;
+
+/** At or below this many spendable Credits, a balance is "low" (the store's notice and its analytics agree). */
+export const LOW_CREDIT_BALANCE = 10;
+
+export type CreditBalanceState = 'unknown' | 'zero' | 'low' | 'normal';
+
+export function creditBalanceState(spendable: number | null): CreditBalanceState {
+  if (spendable === null) return 'unknown';
+  if (spendable <= 0) return 'zero';
+  return spendable <= LOW_CREDIT_BALANCE ? 'low' : 'normal';
+}
+
+/* ---- which pack the Credits Store recommends (store conversion) ---- */
+
+/**
+ * What a pack needs to say for the store to recommend one. Every field is the
+ * catalog's; nothing here prices anything -- it only CHOOSES among the server's
+ * packs. Shared so the server states the same recommendation for analytics
+ * that the page shows (`credit_purchase_viewed.recommendedPackCode`).
+ */
+export interface RecommendablePack {
+  code: string;
+  totalCredits: number;
+  priceMinor: number;
+  isBestValue: boolean;
+  isPurchasable: boolean;
+  sortOrder?: number;
+}
+
+/** How many more Credits an unlock needs: the server's price less the server's balance. Null when either is unknown. */
+export function creditsNeededFor(creditPrice: number | null | undefined, spendable: number | null | undefined): number | null {
+  if (typeof creditPrice !== 'number' || typeof spendable !== 'number') return null;
+  return Math.max(0, creditPrice - spendable);
+}
+
+const byLadder = (a: RecommendablePack, b: RecommendablePack) =>
+  (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.code.localeCompare(b.code);
+
+/**
+ * The smallest purchasable pack whose Credits cover `creditsNeeded` ("Unlocks
+ * this ✓"). Null when nothing is needed or no pack is big enough.
+ */
+export function packCoveringNeed(packs: readonly RecommendablePack[], creditsNeeded: number | null): string | null {
+  if (creditsNeeded === null || creditsNeeded <= 0) return null;
+  const covering = packs
+    .filter((p) => p.isPurchasable && p.totalCredits >= creditsNeeded)
+    .sort((a, b) => a.totalCredits - b.totalCredits || a.priceMinor - b.priceMinor || byLadder(a, b));
+  return covering[0]?.code ?? null;
+}
+
+/**
+ * The pack the store puts first and selects by default:
+ *   1. the one the operator marked best value;
+ *   2. arriving to unlock something: the smallest pack that covers it;
+ *   3. otherwise the second-cheapest (the cheapest when there is only one).
+ */
+export function recommendCreditPack(packs: readonly RecommendablePack[], creditsNeeded: number | null): string | null {
+  const offered = packs.filter((p) => p.isPurchasable);
+  if (offered.length === 0) return null;
+  const best = offered.filter((p) => p.isBestValue).sort(byLadder)[0];
+  if (best) return best.code;
+  const covering = packCoveringNeed(offered, creditsNeeded);
+  if (covering) return covering;
+  const byPrice = [...offered].sort((a, b) => a.priceMinor - b.priceMinor || a.totalCredits - b.totalCredits || byLadder(a, b));
+  return (byPrice[1] ?? byPrice[0])!.code;
+}
+
+/**
+ * An event's properties with everything not on its allow-list removed. Pure,
+ * shared by the server (for every event it stores) and the client (before it
+ * sends anything).
+ */
+export function allowedAnalyticsProperties(
+  name: AnalyticsEventName,
+  properties: Readonly<Record<string, unknown>> | null | undefined,
+): Record<string, string | number | boolean> {
+  const allowed = ANALYTICS_EVENT_PROPERTIES[name];
+  const out: Record<string, string | number | boolean> = {};
+  if (!allowed || !properties) return out;
+  for (const [key, kind] of Object.entries(allowed)) {
+    const value = properties[key];
+    if (value === undefined || value === null) continue;
+    if (kind === 'id') {
+      if (typeof value === 'string' && ANALYTICS_ID.test(value)) out[key] = value.toLowerCase();
+    } else if (kind === 'code') {
+      if (typeof value === 'string' && ANALYTICS_CODE.test(value)) out[key] = value;
+    } else if (kind === 'int') {
+      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) out[key] = value;
+    } else if (kind === 'bool') {
+      if (typeof value === 'boolean') out[key] = value;
+    } else if (typeof value === 'string' && kind.includes(value)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+
+export interface PurchaseContext {
+  origin: PurchaseOrigin | null;
+  originAction: PurchaseOriginAction | null;
+  /** The content asset being unlocked, when that is the action. */
+  assetId: string | null;
+  /** The conversation it was in, when there is one. */
+  conversationId: string | null;
+  /** The character it was with, when there is one. */
+  characterId: string | null;
+}
+
+/** A Credit pack's terms as they stood at checkout: what the payment buys, whatever the catalog says later. */
+export interface CreditPackTerms {
+  packCode: string;
+  packVersion: number;
+  displayName: string;
+  credits: number;
+  bonusCredits: number;
+  totalCredits: number;
+}
+
 /** One payment, as its own customer may see it. No card data, ever. */
 export interface CustomerPaymentView {
   id: string;
   status: PaymentStatus;
   kind: 'subscription' | 'credit_pack';
-  /** Our product identifier -- a plan code. Never the processor's. */
+  /** Our product identifier -- a plan or pack code. Never the processor's. */
   productRef: string;
   /** Integer minor units. */
   amountMinor: number;
@@ -703,6 +970,10 @@ export interface CustomerPaymentView {
   provider: string;
   createdAt: string;
   settledAt: string | null;
+  /** A Credit pack's locked terms; null for a subscription. */
+  pack: CreditPackTerms | null;
+  /** Where the purchase started; null when it carried none. */
+  context: PurchaseContext | null;
 }
 
 /**

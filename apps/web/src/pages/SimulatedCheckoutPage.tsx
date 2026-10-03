@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { PAYMENT_METHOD_LABELS, SIMULATED_OUTCOMES, type PaymentMethod, type SimulatedOutcome } from '@over18/shared';
 import PageContainer from '../components/PageContainer';
-import { checkoutMessage, readCheckout, simulate, type SimulationState } from '../lib/payments';
+import { afterCheckoutPath, checkoutMessage, readCheckout, simulate, type SimulationState } from '../lib/payments';
 
 /**
  * THE SIMULATED PAYMENT SCREEN (P9, ahead of P9.D1).
@@ -63,8 +63,9 @@ export default function SimulatedCheckoutPage() {
       setState({ status: 'sending', payment: state.payment });
       try {
         await simulate(checkoutRef, outcome);
-        // Back to the account, which reads the server's answer rather than ours.
-        navigate('/subscription?from=checkout', { replace: true });
+        // Back to where this purchase belongs -- the Credits Store for a pack,
+        // Premium for a plan -- which reads the server's answer rather than ours.
+        navigate(afterCheckoutPath(state.payment), { replace: true });
       } catch (error: unknown) {
         setState({ status: 'failed', message: checkoutMessage(error) });
       }
@@ -101,7 +102,7 @@ export default function SimulatedCheckoutPage() {
         <section className="rounded-3xl border border-zinc-800 bg-zinc-900/60 p-5">
           <h1 className="text-lg font-semibold text-white">Simulated checkout</h1>
           <dl className="mt-4 divide-y divide-zinc-800 border-y border-zinc-800">
-            <Row label="Plan" value={state.payment.productRef} />
+            <Row label={state.payment.kind === 'credit_pack' ? 'Pack' : 'Plan'} value={state.payment.productRef} />
             <Row label="Amount" value={money(state.payment.amountMinor, state.payment.currency)} />
             <Row
               label="Method"

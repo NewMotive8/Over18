@@ -30,6 +30,19 @@ export interface ReplyContext {
    */
   memories?: string[];
   /**
+   * The character's apparent-age band, ONLY when it has already been verified to
+   * denote an adult by `isAdultAgeBand`.
+   *
+   * THE NAME CARRIES THE INVARIANT, because this renderer cannot check it: the
+   * validator lives in `visual-identity-service`, which reaches the database,
+   * and this module is a pure function that must stay that way. A caller that
+   * has not verified the band must not set this field.
+   *
+   * Absent for text chat, which does not read the visual identity -- so the
+   * chat prompt is unchanged by this field existing.
+   */
+  verifiedAdultAgeBand?: string | null;
+  /**
    * Phase 2 — avatar-derived identity data, if a persona has been generated
    * for this character. Rendered into WHO SHE IS / HER VOICE only (see
    * prompt-builder.ts's compilePersonaWhoSheIs/compilePersonaVoiceClause);

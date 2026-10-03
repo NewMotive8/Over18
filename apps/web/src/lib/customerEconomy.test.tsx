@@ -222,7 +222,7 @@ describe('the client decides nothing about affordability', () => {
     expect(spendableCredits(overviewOf())).toBeNull();
     expect(commercialTier(overviewOf())).toBeNull();
     expect(render(<CreditBalance overview={overviewOf()} />)).toBe('');
-    const known = overviewOf({ commercial: { ...TODAY, wallet: { available: true, value: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 42 } } } });
+    const known = overviewOf({ commercial: { ...TODAY, wallet: { available: true, value: { included: 0, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 42 } } } });
     expect(render(<CreditBalance overview={known} />)).toContain('42 Credits');
   });
 });

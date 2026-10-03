@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ANALYTICS_EVENT_NAMES, type AnalyticsEventName } from '@over18/shared';
+import {
+  ANALYTICS_CLIENT_EVENTS,
+  ANALYTICS_EVENT_NAMES,
+  ANALYTICS_EVENT_PROPERTIES,
+  allowedAnalyticsProperties,
+  type AnalyticsEventName,
+} from '@over18/shared';
 import {
   FAKE_SIGNATURE_HEADER,
   createFakeAgeVerificationProvider,
@@ -146,7 +152,7 @@ describe('the entitlement resolver, phase zero', () => {
   const FREE = {
     tier: 'free',
     subscription: null,
-    wallet: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 },
+    wallet: { included: 0, earned: 0, purchased: 0, bonus: 0, held: 0, spendable: 0 },
     age: { verified: false, expiresAt: null },
   };
 
@@ -190,6 +196,7 @@ describe('the analytics pipeline', () => {
       'credit_purchase_viewed',
       'credit_purchase_started',
       'credit_purchase_completed',
+      'credit_purchase_failed',
       'credit_spend',
       'locked_content_viewed',
       'locked_content_unlocked',
@@ -202,6 +209,38 @@ describe('the analytics pipeline', () => {
     ]);
   });
 
+  it('every event PR 3 emits has a property allow-list, and the browser may send only the five view/dismiss events', () => {
+    for (const name of Object.keys(ANALYTICS_EVENT_PROPERTIES)) expect(ANALYTICS_EVENT_NAMES).toContain(name);
+    expect([...ANALYTICS_CLIENT_EVENTS].sort()).toEqual(
+      ['credit_purchase_viewed', 'locked_content_viewed', 'paywall_dismissed', 'paywall_viewed', 'subscription_cta_clicked'],
+    );
+    // No allow-list names anything that could carry a person's details.
+    const keys = Object.values(ANALYTICS_EVENT_PROPERTIES).flatMap((p) => Object.keys(p));
+    for (const key of keys) expect(key).not.toMatch(/email|name|phone|address|ip|text|url|reason/i);
+  });
+
+  it('keeps only allow-listed properties of the right shape', () => {
+    const id = 'AAAAAAAA-0000-4000-8000-000000000001';
+    expect(
+      allowedAnalyticsProperties('credit_purchase_failed', {
+        paymentId: id, // lower-cased
+        packCode: 'starter',
+        credits: 100,
+        bonusCredits: -1, // negative: dropped
+        priceMinor: 4.5, // not whole: dropped
+        promoted: 'yes', // not a boolean: dropped
+        status: 'cancelled',
+        origin: 'nowhere', // not a listed origin: dropped
+        assetId: 'not-a-uuid', // dropped
+        packCodeX: 'x', // not on the list: dropped
+        email: 'a@b.c', // never
+        currency: 'US D', // not a code: dropped
+      }),
+    ).toEqual({ paymentId: id.toLowerCase(), packCode: 'starter', credits: 100, status: 'cancelled' });
+    expect(allowedAnalyticsProperties('credit_balance_viewed', { anything: 1 })).toEqual({});
+    expect(allowedAnalyticsProperties('credit_spend', null)).toEqual({});
+  });
+
   it('sends nothing while switched off', async () => {
     const sink = createMemoryAnalyticsSink();
     const analytics = createAnalytics({ enabled: false, sink });
@@ -209,15 +248,16 @@ describe('the analytics pipeline', () => {
     expect(sink.events).toEqual([]);
   });
 
-  it('delivers a timestamped event, snapshotting its properties', async () => {
+  it('delivers a timestamped event, snapshotting only its allow-listed properties', async () => {
     const sink = createMemoryAnalyticsSink();
     const at = new Date('2026-09-17T10:00:00Z');
     const analytics = createAnalytics({ enabled: true, sink, now: () => at });
-    const properties: Record<string, string | number> = { actionType: 'image', credits: 10 };
+    // `credits` is not on credit_spend's list, and an email never is: both dropped.
+    const properties: Record<string, string | number> = { actionType: 'image', amount: 10, credits: 10, email: 'a@b.c' };
     expect(await analytics.emit('credit_spend', { userId: 'u1', properties })).toBe(true);
-    properties.credits = 999;
+    properties.amount = 999;
     expect(sink.events).toEqual([
-      { name: 'credit_spend', userId: 'u1', occurredAt: at, properties: { actionType: 'image', credits: 10 } },
+      { name: 'credit_spend', userId: 'u1', occurredAt: at, properties: { actionType: 'image', amount: 10 }, source: 'server', requestId: null },
     ]);
   });
 

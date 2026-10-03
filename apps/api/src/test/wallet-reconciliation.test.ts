@@ -111,7 +111,7 @@ describe('a clean wallet', () => {
         balance: 0,
         held: 0,
         version: 0,
-        classes: { included: { spendable: 0, held: 0 }, earned: { spendable: 0, held: 0 }, purchased: { spendable: 0, held: 0 } },
+        classes: { included: { spendable: 0, held: 0 }, earned: { spendable: 0, held: 0 }, purchased: { spendable: 0, held: 0 }, bonus: { spendable: 0, held: 0 } },
       },
       actual: { balance: 0, held: 0, version: 0 },
       discrepancies: [],
@@ -134,7 +134,7 @@ describe('a clean wallet', () => {
       balance: 50,
       held: 0,
       version: 9,
-      classes: { included: { spendable: 27, held: 0 }, earned: { spendable: 18, held: 0 }, purchased: { spendable: 5, held: 0 } },
+      classes: { included: { spendable: 27, held: 0 }, earned: { spendable: 18, held: 0 }, purchased: { spendable: 5, held: 0 }, bonus: { spendable: 0, held: 0 } },
     };
     expect(await rebuildWallet(on.db, u, 'credits')).toEqual(expected);
     expect(await reconcileWallet(on.db, u, 'credits')).toEqual({

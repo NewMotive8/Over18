@@ -295,7 +295,7 @@ describe('the ledger', () => {
       ['negative amount', { type: 'paid_action', direction: 'debit', amount: -5 }, /amount_positive/],
       ['unknown type', { type: 'gift', direction: 'credit', amount: 1 }, /invalid input value for enum wallet_entry_type/],
       ['unknown direction', { type: 'grant', direction: 'sideways', amount: 1 }, /invalid input value for enum wallet_entry_direction/],
-      ['unknown Credit class', { type: 'grant', direction: 'credit', amount: 1, class: 'bonus' }, /invalid input value for enum credit_class/],
+      ['unknown Credit class', { type: 'grant', direction: 'credit', amount: 1, class: 'referral' }, /invalid input value for enum credit_class/],
       ['a grant that debits', { type: 'grant', direction: 'debit', amount: 1 }, /direction_by_type/],
       ['a purchase that debits', { type: 'purchase', direction: 'debit', amount: 1 }, /direction_by_type/],
       ['a paid action that credits', { type: 'paid_action', direction: 'credit', amount: 1 }, /direction_by_type/],

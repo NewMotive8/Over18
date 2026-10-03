@@ -7,10 +7,14 @@ import HomeBannerSlot from '../components/lobby/HomeBannerSlot';
 import PlayWithMeCarousel from '../components/lobby/PlayWithMeCarousel';
 import ClipGridCard from '../components/lobby/ClipGridCard';
 import CategoryPills from '../components/lobby/CategoryPills';
+import { LOBBY_SEARCH_ID } from '../components/lobby/LobbyActions';
 import ClipRail from '../components/lobby/ClipRail';
 import CommunityPromoCard from '../components/lobby/CommunityPromoCard';
 import EmptyState from '../components/EmptyState';
 import { DiscoverIcon, FilterIcon, SearchIcon, SparkleIcon } from '../components/icons';
+import FeedGate from '../components/premium/FeedGate';
+import PremiumFunnel from '../components/premium/PremiumFunnel';
+import { feedWindow, usePremiumGate } from '../lib/premiumGate';
 
 /**
  * Home.
@@ -46,18 +50,30 @@ import { DiscoverIcon, FilterIcon, SearchIcon, SparkleIcon } from '../components
  * deliberate: pre-selecting the first pill made every search return nothing
  * whenever that category happened to be empty, which looked exactly like a
  * broken search box.
+ *
+ * THE PREMIUM GATE. For a signed-in Free customer the companion feed shows the
+ * clips of up to ten different characters (`lib/premiumGate`); the feed then
+ * ends in a locked card, and scrolling on past it opens the Premium funnel in
+ * place. Characters already met stay in the feed on every visit. Premium
+ * customers -- and anyone whose tier is not known -- see the feed as before.
  */
 
 function LobbySkeleton() {
   return (
-    <div className="flex flex-col gap-6 pb-8 pt-3" data-testid="lobby-skeleton">
+    <div className="flex flex-col gap-6 pb-8 pt-3 lg:gap-10 lg:pt-8" data-testid="lobby-skeleton">
       {/* SQUARE, matching HeroCarousel. It was 16:11 while the hero was, and
           when the hero became square this had to follow or the page would jump
           258px -> 375px the moment Home resolved. */}
-      <div className="aspect-square w-full animate-pulse bg-zinc-900" />
-      <div className="flex gap-3 overflow-hidden px-4">
+      <div className="aspect-square w-full animate-pulse bg-zinc-900 lg:hidden" />
+      {/* Desktop: the portrait hero row it will become, so nothing jumps. */}
+      <div className="hidden gap-4 lg:grid lg:grid-cols-3 xl:grid-cols-4">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div key={i} className={`aspect-[3/4] animate-pulse rounded-3xl bg-zinc-900 ${i === 3 ? 'lg:hidden xl:block' : ''}`} />
+        ))}
+      </div>
+      <div className="flex gap-3 overflow-hidden px-4 lg:gap-4 lg:px-0">
         {Array.from({ length: 3 }, (_, i) => (
-          <div key={i} className="aspect-[3/4] w-40 shrink-0 animate-pulse rounded-2xl bg-zinc-900" />
+          <div key={i} className="aspect-[3/4] w-40 shrink-0 animate-pulse rounded-2xl bg-zinc-900 lg:w-48 xl:w-52" />
         ))}
       </div>
       <span className="sr-only">Loading Home…</span>
@@ -66,6 +82,23 @@ function LobbySkeleton() {
 }
 
 type Status = 'loading' | 'ready' | 'error';
+
+/**
+ * THE RESULTS GRID. Two columns on a phone and tablet, exactly as before; on a
+ * desktop it uses the width -- 4 columns at lg, 5 from xl -- with the cards
+ * keeping their 3:4 frame at ~225-230px.
+ *
+ * FIVE IS THE MAXIMUM. The desktop container stops growing at 1280px, so a
+ * sixth column on a wider screen would not use more space -- it would only
+ * make every card smaller (189px at 1920 against 230px at 1440), which is the
+ * wrong direction. More columns are only right if the container itself grows.
+ *
+ * The cards stay in
+ * data order, row by row: no masonry, no reordering, so the Premium feed gate
+ * (which counts characters in that order) and the promo's position after the
+ * second clip are exactly what they were.
+ */
+const FEED_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5';
 
 export default function LobbyPage() {
   const [status, setStatus] = useState<Status>('loading');
@@ -169,6 +202,22 @@ export default function LobbyPage() {
    */
   const gridClips = browsing ? results : (home?.browseClips ?? []);
 
+  const gate = usePremiumGate('home_feed');
+  const [funnelOpen, setFunnelOpen] = useState(false);
+  const feed = useMemo(
+    () => (gate.enforced ? feedWindow(gridClips, gate.seen) : { visible: gridClips, admitted: [] as string[], gated: false }),
+    [gate.enforced, gate.seen, gridClips],
+  );
+  // What the feed actually shows: everything, or -- for a Free customer -- up to the allowance.
+  const shownClips = feed.visible;
+  // The characters this feed shows are characters met -- each once, by id.
+  const admittedKey = feed.admitted.join(',');
+  useEffect(() => {
+    if (gate.enforced && feed.admitted.length > 0) gate.record(feed.admitted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gate.enforced, admittedKey]);
+  const openFunnel = useCallback(() => setFunnelOpen(true), []);
+
   if (status === 'loading') {
     return (
       <div className="flex flex-1 flex-col">
@@ -206,7 +255,7 @@ export default function LobbyPage() {
     <div className="flex flex-1 flex-col">
       <LobbyTopBar onSearch={focusSearch} />
 
-      <div className="flex flex-col gap-6 pb-8 pt-3">
+      <div className="flex flex-col gap-6 pb-8 pt-3 lg:gap-10 lg:pt-8">
         {/* ── Home: composed entirely from published CMS configuration ── */}
         <HeroCarousel clips={home.hero} />
 
@@ -221,14 +270,15 @@ export default function LobbyPage() {
         <HomeBannerSlot banners={home.banners.before_search} label="Featured" />
 
         {/* ── Over18 AI Companions: heading, search, pills ── */}
-        <section aria-label="Discover companions" className="flex flex-col gap-3 px-4">
-          <h2 className="text-center text-xl font-black tracking-tight text-white">
+        <section aria-label="Discover companions" className="flex flex-col gap-3 px-4 lg:gap-4 lg:px-0">
+          <h2 className="text-center text-xl font-black tracking-tight text-white lg:text-3xl">
             Over18 <span className="text-rose-500">AI Companions</span>
           </h2>
 
-          <div className="relative">
+          <div className="relative lg:mx-auto lg:w-full lg:max-w-2xl">
             <input
               ref={searchRef}
+              id={LOBBY_SEARCH_ID}
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -275,8 +325,15 @@ export default function LobbyPage() {
         </section>
 
         {/* Results grid, with the separate Get 20 For Free card mixed in. */}
-        <div className="px-4">
-          {gridClips.length === 0 ? (
+        <div className="px-4 lg:px-0">
+          {gate.pending ? (
+            // Until it is known whether the gate applies, the feed waits rather than over-shows.
+            <div data-testid="feed-pending" className={FEED_GRID}>
+              {Array.from({ length: 4 }, (_, i) => (
+                <div key={i} className="aspect-[3/4] animate-pulse rounded-2xl bg-zinc-900" />
+              ))}
+            </div>
+          ) : shownClips.length === 0 ? (
             <EmptyState
               icon={<DiscoverIcon />}
               title="No clips match"
@@ -295,18 +352,21 @@ export default function LobbyPage() {
               }
             />
           ) : (
-            <div className="grid grid-cols-2 gap-3">
-              {gridClips.slice(0, 2).map((clip) => (
+            <div className={FEED_GRID}>
+              {shownClips.slice(0, 2).map((clip) => (
                 <ClipGridCard key={clip.id} clip={clip} />
               ))}
               {/* Unchanged and separate from the CMS banner slots. */}
               <CommunityPromoCard />
-              {gridClips.slice(2).map((clip) => (
+              {shownClips.slice(2).map((clip) => (
                 <ClipGridCard key={clip.id} clip={clip} />
               ))}
+              {feed.gated && <FeedGate onContinue={openFunnel} />}
             </div>
           )}
         </div>
+
+        <PremiumFunnel open={funnelOpen} surface="home_feed" onClose={() => setFunnelOpen(false)} />
 
         {/* Slot two: below the search results, above the footer. */}
         <HomeBannerSlot banners={home.banners.below_results} label="More from Over18" />

@@ -1,6 +1,9 @@
+import { useEffect, useRef } from 'react';
 import type { PublicClip } from '../../lib/api';
+import { track } from '../../lib/analytics';
 import { accessFor, contentCardView, useContentAccess, type ContentAccessState } from '../../lib/contentAccess';
 import { useContentUnlock, type ContentUnlockClient } from '../../lib/contentUnlock';
+import { announceCreditsChanged, creditsStoreHref, pendingUnlock, resumeUnlockAction, withStoreLink } from '../../lib/creditsStore';
 import { spendableCredits, useCustomerEconomy, type CustomerEconomyClient } from '../../lib/customerEconomy';
 import ClipMedia from '../lobby/ClipMedia';
 import { CreditBalance } from '../CustomerEconomy';
@@ -55,6 +58,9 @@ import { LikeIcon } from '../icons';
  * and the tile changes because the server now says `owned` — not because
  * anything here decided it did. A failure changes nothing at all.
  */
+/** The decisions that mean a post is locked to this customer right now. */
+const LOCKED_DECISIONS = new Set<string>(['credits_required', 'insufficient_credits', 'premium_required']);
+
 export default function PostsTab({
   clips,
   onOpenClip,
@@ -62,6 +68,9 @@ export default function PostsTab({
   accessClient,
   economyClient,
   unlockClient,
+  characterId,
+  resumeUnlockAssetId,
+  onResumeHandled,
 }: {
   clips: PublicClip[];
   onOpenClip: (index: number) => void;
@@ -71,6 +80,11 @@ export default function PostsTab({
   accessClient?: Parameters<typeof useContentAccess>[1];
   economyClient?: CustomerEconomyClient;
   unlockClient?: ContentUnlockClient;
+  /** Whose posts these are: carried to the Credits Store so the customer comes back here. */
+  characterId?: string;
+  /** An unlock to pick up again, after the customer bought Credits for it (Credits Store PR 2). */
+  resumeUnlockAssetId?: string | null;
+  onResumeHandled?: () => void;
 }) {
   const [fetched, refreshAccess] = useContentAccess(
     clips.map((clip) => clip.id),
@@ -85,8 +99,69 @@ export default function PostsTab({
     onUnlocked: () => {
       refreshAccess();
       refreshEconomy();
+      // Every other balance on screen (the profile's, the app bar's) re-reads too.
+      announceCreditsChanged();
     },
   });
+
+  /**
+   * NOT ENOUGH CREDITS -> THE CREDITS STORE, AND BACK. "Get Credits" carries
+   * what was being unlocked, so the store can bring the customer straight back
+   * here; the price they were shown is remembered for this tab.
+   */
+  const shortOfCredits = unlock.failure?.code === 'insufficient_credits' && unlock.target !== null;
+  const storeHref = shortOfCredits
+    ? creditsStoreHref({ origin: 'profile', originAction: 'content_unlock', assetId: unlock.target!.assetId, characterId: characterId ?? null })
+    : null;
+  const failure = shortOfCredits && unlock.failure ? { ...unlock.failure, action: { label: 'Get Credits', to: storeHref! } } : unlock.failure;
+  useEffect(() => {
+    if (shortOfCredits && unlock.target?.creditPrice != null) {
+      pendingUnlock.set({ assetId: unlock.target.assetId, creditPrice: unlock.target.creditPrice });
+    }
+  }, [shortOfCredits, unlock.target]);
+
+  /**
+   * BACK FROM THE STORE: the unlock continues. Once the server's access answer
+   * is in, the confirmation reopens for that post -- and goes through on its
+   * own ONLY if the server's price is still the one the customer saw before
+   * buying. Anything else (a new price, no remembered price) is left for them
+   * to confirm. Content they already own needs nothing.
+   */
+  /**
+   * Funnel C (PR 3): each locked post this tab shows, reported once per visit
+   * once the server's access answers are in. The server states the access
+   * decision and price itself; unlocking is the server's to record, after the
+   * Credits move.
+   */
+  const reported = useRef(new Set<string>());
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    for (const clip of clips) {
+      const item = accessFor(state, clip.id);
+      if (!item || reported.current.has(clip.id) || !LOCKED_DECISIONS.has(item.decision)) continue;
+      reported.current.add(clip.id);
+      track('locked_content_viewed', {
+        surface: 'posts',
+        assetId: clip.id,
+        characterId,
+      });
+    }
+  }, [state, clips, characterId]);
+
+  const resumed = useRef(false);
+  useEffect(() => {
+    if (!resumeUnlockAssetId || resumed.current || state.status !== 'ready') return;
+    resumed.current = true;
+    const index = clips.findIndex((clip) => clip.id === resumeUnlockAssetId);
+    const item = accessFor(state, resumeUnlockAssetId);
+    const action = resumeUnlockAction(item, index >= 0, pendingUnlock.get(), resumeUnlockAssetId);
+    if (action !== 'none') {
+      unlock.open({ assetId: resumeUnlockAssetId, title: `Post ${index + 1}`, creditPrice: item?.creditPrice ?? null });
+      if (action === 'auto') unlock.confirm();
+    }
+    pendingUnlock.clear();
+    onResumeHandled?.();
+  }, [resumeUnlockAssetId, state, clips, unlock, onResumeHandled]);
 
   if (clips.length === 0) {
     // Said plainly rather than filled with invented tiles. An empty collection
@@ -101,12 +176,14 @@ export default function PostsTab({
       <div className="flex justify-end empty:hidden">
         {economy.status === 'ready' && <CreditBalance overview={economy.overview} compact />}
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         {clips.map((clip, index) => {
           const item = accessFor(state, clip.id);
           // This tab can carry an unlock through, so a Credit-priced tile
           // offers one rather than saying it is coming.
-          const view = contentCardView(item, { canUnlock: true, pending: state.status === 'loading' });
+          // A tile they cannot afford yet links to the Credits Store WITH this
+          // post, so the store brings them back here to finish the unlock.
+          const view = withStoreLink(contentCardView(item, { canUnlock: true, pending: state.status === 'loading' }), clip.id, characterId);
           const title = `Post ${index + 1}`;
           return (
             <LockedContentCard
@@ -115,6 +192,11 @@ export default function PostsTab({
               title={title}
               onOpen={() => onOpenClip(index)}
               onUnlock={() => unlock.open({ assetId: clip.id, title, creditPrice: item?.creditPrice ?? null })}
+              onFollowCta={() => {
+                if (view.state === 'insufficient_credits' && item?.creditPrice != null) {
+                  pendingUnlock.set({ assetId: clip.id, creditPrice: item.creditPrice });
+                }
+              }}
               media={
                 <ClipMedia
                   clip={clip}
@@ -165,7 +247,7 @@ export default function PostsTab({
           target={unlock.target}
           balance={spendableCredits(economy.status === 'ready' ? economy.overview : null)}
           busy={unlock.busy}
-          failure={unlock.failure}
+          failure={failure}
           onConfirm={unlock.confirm}
           onCancel={unlock.cancel}
         />

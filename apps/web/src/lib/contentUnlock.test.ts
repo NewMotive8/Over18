@@ -85,6 +85,12 @@ describe('what a refusal says to the customer', () => {
     expect(failure.retryable).toBe(false);
   });
 
+  it('a Credit shortage offers Credits -- "Get Credits" -- and never a subscription, Premium or not', () => {
+    const failure = failed(402, 'insufficient_credits');
+    expect(failure.action).toEqual({ label: 'Get Credits', to: '/credits' });
+    expect(`${failure.message} ${failure.action?.label}`).not.toMatch(/subscribe|premium/i);
+  });
+
   it.each([
     ['unavailable', 404],
     ['age_restricted', 403],

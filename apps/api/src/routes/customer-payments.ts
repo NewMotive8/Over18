@@ -12,6 +12,7 @@ import {
   type PaymentErrorCode,
 } from '../services/payment-service.js';
 import { simulatePaymentEvent } from '../services/simulated-payment.js';
+import type { Analytics } from '../services/analytics-service.js';
 
 const ECONOMY_UNAVAILABLE: EconomyUnavailableResponse = {
   error: 'economy_unavailable',
@@ -28,6 +29,8 @@ const STATUS: Partial<Record<PaymentErrorCode, number>> = {
   invalid_request: 400,
   unknown_plan: 404,
   plan_unavailable: 409,
+  unknown_pack: 404,
+  pack_unavailable: 409,
   already_subscribed: 409,
   payment_not_found: 404,
   economy_disabled: 503,
@@ -62,6 +65,8 @@ export default async function customerPaymentRoutes(
     provider: PaymentProvider | null;
     /** The secret the fake provider signs with. Only used to simulate. */
     fakeSecret: string;
+    /** Records the purchase funnel after each step commits. Off unless ANALYTICS_ENABLED. */
+    analytics?: Analytics;
   },
 ) {
   const failed = (reply: FastifyReply, error: unknown) => {
@@ -85,24 +90,31 @@ export default async function customerPaymentRoutes(
   };
 
   /**
-   * Starts a checkout for one plan. Records a PENDING payment and returns
-   * where to pay; activates nothing.
+   * Starts a checkout for one plan OR one Credit pack. Records a PENDING
+   * payment and returns where to pay; activates and grants nothing. A pack
+   * checkout may carry where the purchase started (`context`), validated
+   * against fixed lists and kept with the payment.
    */
-  app.post<{ Body: { planCode?: unknown; method?: unknown; idempotencyKey?: unknown; returnUrl?: unknown } }>(
+  app.post<{
+    Body: { planCode?: unknown; packCode?: unknown; method?: unknown; idempotencyKey?: unknown; returnUrl?: unknown; context?: unknown };
+  }>(
     '/api/payments/checkout',
     { preHandler: app.requireAuth },
     async (request, reply) => {
       reply.header('cache-control', 'private, no-store');
       const provider = ready(reply);
       if (!provider) return reply;
+      const code = (value: unknown) => (value == null || value === '' ? null : String(value));
       try {
         return await startCheckout(opts.db, opts.commerce, provider, {
           userId: request.currentUser!.id,
-          planCode: String(request.body?.planCode ?? ''),
+          planCode: code(request.body?.planCode),
+          packCode: code(request.body?.packCode),
           methodHint: String(request.body?.method ?? ''),
           idempotencyKey: typeof request.body?.idempotencyKey === 'string' ? request.body.idempotencyKey : '',
           returnUrl: typeof request.body?.returnUrl === 'string' ? request.body.returnUrl : '/subscription',
-        });
+          context: request.body?.context,
+        }, { analytics: opts.analytics, requestId: request.id });
       } catch (error) {
         return failed(reply, error);
       }
@@ -174,7 +186,7 @@ export default async function customerPaymentRoutes(
           amountMinor: payment.amountMinor,
           currency: payment.currency,
           eventRef: typeof request.body?.eventRef === 'string' ? request.body.eventRef : undefined,
-        });
+        }, { analytics: opts.analytics });
         return { status: result.status, payment: await readPayment(opts.db, request.currentUser!.id, payment.id) };
       } catch (error) {
         return failed(reply, error);

@@ -1,5 +1,6 @@
 import type {
   AdminAccessView,
+  AnalyticsFunnelsView,
   AdminAccountStatusChangeRequest,
   AdminCharacterContentAccess,
   AdminAccountStatusChangeResult,
@@ -29,6 +30,7 @@ import type {
   CustomerContentAccessResponse,
   CustomerContentUnlock,
   CustomerCheckout,
+  PurchaseContext,
   CustomerPaymentView,
   SimulatedPaymentResult,
   CustomerEconomyCatalog,
@@ -149,6 +151,58 @@ export const conversationsApi = {
   opening(conversationId: string): Promise<ConversationOpeningResult> {
     return request<ConversationOpeningResult>(
       `/api/conversations/${encodeURIComponent(conversationId)}/opening`,
+      { method: 'POST' },
+    );
+  },
+};
+
+/**
+ * One live voice call, as the API reports it.
+ *
+ * Mirrors the server's `PublicCallSession` (apps/api/src/services/
+ * call-session-service.ts). Declared here rather than in `@over18/shared`
+ * because the server does not share it either -- it is a response shape, and
+ * the credentials the server holds for the call are deliberately NOT part of
+ * it. Nothing in this object can reach the provider.
+ */
+export interface VoiceCallSession {
+  id: string;
+  status: 'pending' | 'active' | 'ended' | 'failed' | 'expired';
+  voice: string;
+  maxSeconds: number;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  terminationReason: string | null;
+}
+
+/**
+ * Live voice calls.
+ *
+ * THE BROWSER NEVER LEARNS WHERE THE PROVIDER IS. Starting a call returns a
+ * session id and nothing else; the provider's URL and its short-lived client
+ * secret are created by the server when our own relay socket connects, and are
+ * never serialised into any response. The only socket this app opens is to our
+ * API, carrying the session cookie.
+ */
+export const callsApi = {
+  /** Claim a call for a conversation. 201 with a `pending` session. */
+  start(conversationId: string): Promise<{ callSession: VoiceCallSession }> {
+    return request<{ callSession: VoiceCallSession }>(
+      `/api/conversations/${encodeURIComponent(conversationId)}/call`,
+      { method: 'POST' },
+    );
+  },
+  /** Current state of a call the caller owns. */
+  get(callSessionId: string): Promise<{ callSession: VoiceCallSession }> {
+    return request<{ callSession: VoiceCallSession }>(
+      `/api/calls/${encodeURIComponent(callSessionId)}`,
+    );
+  },
+  /** Hang up. Idempotent: ending an ended call is not an error. */
+  end(callSessionId: string): Promise<{ callSession: VoiceCallSession; alreadyEnded?: boolean }> {
+    return request<{ callSession: VoiceCallSession; alreadyEnded?: boolean }>(
+      `/api/calls/${encodeURIComponent(callSessionId)}/end`,
       { method: 'POST' },
     );
   },
@@ -1252,6 +1306,26 @@ export const adminAccessApi = {
   exportUrl: (filters: AuditFilters = {}) => `${API_URL}/admin/audit/export.csv${auditQuery(filters)}`,
 };
 
+/** Credits Store PR 3 -- the funnels (`analytics.read`) and the export (`analytics.export`). */
+export interface AnalyticsWindow {
+  from?: string;
+  to?: string;
+}
+
+function windowQuery(window: AnalyticsWindow): string {
+  const params = new URLSearchParams();
+  if (window.from) params.set('from', window.from);
+  if (window.to) params.set('to', window.to);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
+export const adminAnalyticsApi = {
+  funnels: (window: AnalyticsWindow = {}) => request<AnalyticsFunnelsView>(`/admin/analytics/funnels${windowQuery(window)}`),
+  /** A plain URL: the browser downloads it with the session cookie. */
+  exportUrl: (window: AnalyticsWindow = {}) => `${API_URL}/admin/analytics/events/export.csv${windowQuery(window)}`,
+};
+
 /* ------------------------------------------------------------------ *
  * Admin -> Economy preview: the P1.3 wire contract
  *
@@ -1491,7 +1565,8 @@ export const contentAccessApi = {
  * signed provider event does, on the server.
  */
 export const paymentsApi = {
-  startCheckout: (body: { planCode: string; method: string; idempotencyKey: string; returnUrl: string }) =>
+  /** A subscription plan (`planCode`) or a Credit pack (`packCode`, with where the purchase started). */
+  startCheckout: (body: { method: string; idempotencyKey: string; returnUrl: string } & ({ planCode: string } | { packCode: string; context?: PurchaseContext | null })) =>
     request<CustomerCheckout>('/api/payments/checkout', { method: 'POST', body: JSON.stringify(body) }),
   read: (paymentId: string) => request<CustomerPaymentView>(`/api/payments/${encodeURIComponent(paymentId)}`),
   readCheckout: (checkoutRef: string) => request<CustomerPaymentView>(`/api/payments/checkout/${encodeURIComponent(checkoutRef)}`),
@@ -1678,6 +1753,12 @@ export interface AdminCharacterView {
   profileComplete: boolean;
   /** The still-blank fields, named, so the UI can be specific rather than vague. */
   missingProfileFields: string[];
+  /**
+   * Her assigned live-call voice, or null when she has none. Null is a real
+   * value here, not a missing one: the server resolves it to the default, so
+   * the selector shows "Default (Serena)" rather than an empty box.
+   */
+  liveCallVoice: string | null;
 }
 
 import type { ProfileDivergenceStatus } from '@over18/shared';

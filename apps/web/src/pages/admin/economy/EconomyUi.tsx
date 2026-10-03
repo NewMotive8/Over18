@@ -61,6 +61,37 @@ export function Section({ title, children, actions }: { title: string; children:
   );
 }
 
+/**
+ * Minor units as money, for a console that otherwise prints the raw integer.
+ *
+ * ITS OWN, NOT THE CUSTOMER SIDE'S. The customer store has an identical
+ * formatter in its selectors, and importing it is exactly what the economy-admin
+ * boundary test forbids: this console must carry no customer economy module and
+ * no customer fixture. The rule is about values; this is four lines of `Intl`,
+ * and the cheap way to honour both is to not reach across the boundary for it.
+ */
+export function formatMinor(minor: number, currency: string): string {
+  const format = new Intl.NumberFormat('en-US', { style: 'currency', currency });
+  const digits = format.resolvedOptions().maximumFractionDigits ?? 2;
+  return format.format(minor / 10 ** digits);
+}
+
+/**
+ * When a version takes effect, as an operator reads dates everywhere else.
+ *
+ * THE RAW INSTANT IS KEPT, NOT DISCARDED. `2026-10-02T14:51:18.431860Z` is
+ * precise and unreadable, and this table sat next to a Promotion column already
+ * rendering `10/4/2026, 10:13:35 AM` -- so the same screen showed two dates in
+ * two formats and invited the reader to do the conversion. The exact value moves
+ * to the cell's `title`, where someone comparing two versions to the millisecond
+ * can still reach it.
+ */
+export function formatEffectiveFrom(value: string | null): string {
+  if (!value) return '—';
+  const at = new Date(value);
+  return Number.isNaN(at.getTime()) ? value : at.toLocaleString();
+}
+
 /** A version history table: the columns are given, the state and timestamps are standard. */
 export function VersionHistory<V extends { id: string; version: number; state: EconomyVersionState; effectiveFrom: string | null; publishReason: string | null }>({
   versions,
@@ -92,7 +123,9 @@ export function VersionHistory<V extends { id: string; version: number; state: E
               <td>
                 <StateBadge state={v.state} />
               </td>
-              <td className="text-xs text-zinc-400">{v.effectiveFrom ?? '—'}</td>
+              <td className="text-xs text-zinc-400" title={v.effectiveFrom ?? undefined}>
+                {formatEffectiveFrom(v.effectiveFrom)}
+              </td>
               {columns.map((c) => (
                 <td key={c.label}>{c.value(v)}</td>
               ))}

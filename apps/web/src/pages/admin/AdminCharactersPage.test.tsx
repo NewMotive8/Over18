@@ -31,6 +31,9 @@ const base: AdminCharacterListItem = {
   // Derived by the server; 'consistent' keeps every pre-existing case here
   // about what it was already about.
   profileDivergence: 'consistent',
+  // No assigned voice, which is every character's state today and keeps these
+  // cases about what they were already about.
+  liveCallVoice: null,
   id: 'c1',
   name: 'nova',
   displayName: 'Nova',
