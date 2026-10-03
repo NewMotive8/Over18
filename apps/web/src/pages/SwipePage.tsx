@@ -264,7 +264,7 @@ export default function SwipePage() {
           <button
             type="button"
             onClick={() => setFunnelOpen(true)}
-            className="rounded-xl bg-gradient-to-r from-rose-600 to-red-600 px-5 py-2.5 text-sm font-bold text-white"
+            className="rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 px-5 py-2.5 text-sm font-bold text-white shadow-[0_6px_20px_rgba(225,29,72,0.4)]"
           >
             Unlock Premium Now
           </button>

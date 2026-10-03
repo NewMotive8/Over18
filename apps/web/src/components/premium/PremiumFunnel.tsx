@@ -60,7 +60,7 @@ export function FunnelIntro({
   const facts = overview ? premiumBenefitFacts(overview) : null;
   return (
     <div data-testid="premium-funnel-intro" className="flex w-full max-w-md flex-col items-center gap-5 px-6 text-center">
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-rose-600 to-red-600 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white shadow-lg shadow-rose-950/50">
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-600 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white shadow-lg shadow-rose-950/50">
         <CrownIcon aria-hidden className="h-3.5 w-3.5" /> Premium only
       </span>
       <h2 id="premium-funnel-title" className="text-[2rem] font-black uppercase leading-[1.02] tracking-tight text-white drop-shadow">
@@ -88,7 +88,7 @@ export function FunnelIntro({
         type="button"
         onClick={onUnlock}
         data-testid="premium-funnel-unlock"
-        className="mt-1 flex min-h-14 w-full max-w-xs items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-600 to-red-600 px-6 text-base font-bold uppercase tracking-wide text-white shadow-[0_10px_30px_rgba(225,29,72,0.45)] transition-transform active:scale-[0.98]"
+        className="mt-1 flex min-h-14 w-full max-w-xs items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-600 to-pink-600 px-6 text-base font-bold uppercase tracking-wide text-white shadow-[0_6px_20px_rgba(225,29,72,0.4)] transition-transform active:scale-[0.98]"
       >
         <CrownIcon aria-hidden className="h-4 w-4" /> Unlock Premium Now
       </button>
@@ -131,7 +131,7 @@ function OfferCard({
       aria-label={`${periodLabel(plan.billingPeriodMonths)}, ${formatPlanPrice(plan)}${best ? ', best value' : ''}`}
       className={`relative flex flex-col items-center rounded-2xl p-[1.5px] text-center transition-transform active:scale-[0.98] ${
         selected
-          ? 'bg-gradient-to-b from-rose-500 via-red-600 to-rose-700 shadow-[0_8px_28px_rgba(225,29,72,0.45)]'
+          ? 'bg-gradient-to-br from-rose-400 via-amber-400 to-pink-600 shadow-[0_6px_20px_rgba(225,29,72,0.4)]'
           : 'bg-zinc-800'
       } ${best ? 'mt-0' : 'mt-3'}`}
     >
@@ -195,7 +195,7 @@ export function FunnelPlans({
         {/* The visual: OVER18's own non-nude hero, in Premium colours. */}
         <div className="relative h-44 overflow-hidden sm:h-48">
           <img src={DEFAULT_HERO.poster} alt="" aria-hidden className="absolute inset-0 h-full w-full object-cover object-[center_22%]" />
-          <div aria-hidden className="absolute inset-0 bg-gradient-to-b from-red-950/30 via-rose-950/45 to-zinc-950" />
+          <div aria-hidden className="absolute inset-0 bg-gradient-to-b from-zinc-950/40 via-transparent via-40% to-zinc-950" />
           <div className="absolute inset-x-0 top-0 flex items-center justify-between p-3">
             <button
               type="button"
@@ -216,7 +216,7 @@ export function FunnelPlans({
             </button>
           </div>
           <div className="absolute inset-x-0 bottom-0 px-5 pb-3">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-rose-600 to-red-600 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-white shadow-lg shadow-rose-950/50">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-600 px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider text-white shadow-lg shadow-rose-950/50">
               <CrownIcon aria-hidden className="h-3 w-3" /> Premium
             </span>
             <h2 id="premium-funnel-title" className="mt-1.5 text-[1.75rem] font-black uppercase leading-[1.02] tracking-tight text-white drop-shadow">
@@ -277,7 +277,7 @@ export function FunnelPlans({
                       type="button"
                       onClick={() => onChoose(selected.code)}
                       data-testid="premium-offer-continue"
-                      className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-600 to-red-600 px-5 text-base font-bold text-white shadow-[0_10px_30px_rgba(225,29,72,0.45)] transition-transform active:scale-[0.98]"
+                      className="flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-rose-600 to-pink-600 px-5 text-base font-bold text-white shadow-[0_6px_20px_rgba(225,29,72,0.4)] transition-transform active:scale-[0.98]"
                     >
                       <CrownIcon aria-hidden className="h-4 w-4" />
                       Continue · {periodLabel(selected.billingPeriodMonths)} for {formatPlanPrice(selected).split(' / ')[0]}
