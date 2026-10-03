@@ -1,4 +1,5 @@
 import { IDLE_CALL_STATE, type CallState } from '../lib/voiceCall';
+import { PhoneIcon } from './icons';
 
 /**
  * The call, as a person sees it.
@@ -17,6 +18,8 @@ import { IDLE_CALL_STATE, type CallState } from '../lib/voiceCall';
 export interface CallOverlayProps {
   state: CallState;
   characterName: string;
+  /** Her portrait, full screen behind the call; a dark screen without one. */
+  characterImage?: string | null;
   onStart: () => void;
   onHangUp: () => void;
   /** Dismisses the overlay once a call is over. */
@@ -86,6 +89,7 @@ export function CallButton({
 export default function CallOverlay({
   state,
   characterName,
+  characterImage = null,
   onStart,
   onHangUp,
   onClose,
@@ -95,92 +99,86 @@ export default function CallOverlay({
 
   const live = state.phase === 'permission' || state.phase === 'connecting' || state.phase === 'active';
   const over = state.phase === 'ended' || state.phase === 'error';
+  const round = 'flex h-[4.5rem] w-[4.5rem] items-center justify-center rounded-full text-white shadow-lg transition';
 
+  // A phone's call screen: her portrait fills it, her name and the status sit
+  // at the top, and the only control while the call is live is the red button.
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-label={`Call with ${characterName}`}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 bg-zinc-950/95 px-6"
+      data-testid="call-screen"
+      className="fixed inset-0 z-50 flex justify-center bg-black"
     >
-      <div className="flex flex-col items-center gap-2 text-center">
-        <h2 className="text-xl font-semibold text-zinc-100">{characterName}</h2>
-        <p aria-live="polite" className="text-sm text-zinc-400">
-          {statusLine(state, characterName)}
-        </p>
-        {state.secondsRemaining !== null && state.phase === 'active' && (
-          <p className="font-mono text-xs text-zinc-500">
-            {formatRemaining(state.secondsRemaining)} left
-          </p>
+      {/* Phone-shaped on a wide screen, full bleed on a phone. */}
+      <div className="relative h-full w-full max-w-md overflow-hidden bg-gradient-to-b from-zinc-800 to-zinc-950">
+        {characterImage && (
+          <img
+            src={characterImage}
+            alt=""
+            aria-hidden
+            data-testid="call-portrait"
+            className="absolute inset-0 h-full w-full object-cover object-top"
+          />
         )}
-      </div>
+        {/* Legibility: darker at the top for the name, at the bottom for the button. */}
+        <div aria-hidden className="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent via-35% to-black/70" />
 
-      {/* Speaking indicator. Deliberately not a waveform: this reflects the
-          provider's own turn detection, which is the thing that decides whose
-          turn it is, rather than a local volume meter that could disagree. */}
-      {state.phase === 'active' && (
-        <div
-          aria-hidden="true"
-          className={`h-16 w-16 rounded-full border-2 transition ${
-            state.characterSpeaking
-              ? 'animate-pulse border-rose-500 bg-rose-500/20'
-              : state.userSpeaking
-                ? 'border-emerald-500 bg-emerald-500/10'
-                : 'border-zinc-700'
-          }`}
-        />
-      )}
+        <div className="relative flex h-full flex-col items-center justify-between px-6 pb-[max(env(safe-area-inset-bottom),3rem)] pt-[max(env(safe-area-inset-top),3.5rem)] text-center">
+          <div className="flex flex-col items-center gap-1.5">
+            <h2 className="text-3xl font-semibold text-white drop-shadow-md">{characterName}</h2>
+            {/* Who is speaking comes from the provider's own turn detection, in words. */}
+            <p aria-live="polite" className="text-sm text-white/85 drop-shadow">
+              {statusLine(state, characterName)}
+            </p>
+            {state.secondsRemaining !== null && state.phase === 'active' && (
+              <p className="font-mono text-xs text-white/70 drop-shadow">
+                {formatRemaining(state.secondsRemaining)} left
+              </p>
+            )}
+          </div>
 
-      {state.message !== null && (
-        <p role="alert" className="max-w-sm text-center text-sm text-amber-300">
-          {state.message}
-        </p>
-      )}
+          <div className="flex flex-col items-center gap-5">
+            {state.message !== null && (
+              <p role="alert" className="max-w-sm rounded-xl bg-black/55 px-4 py-2 text-sm text-amber-300 backdrop-blur">
+                {state.message}
+              </p>
+            )}
 
-      {state.transcript.length > 0 && (
-        <ul className="max-h-48 w-full max-w-sm overflow-y-auto text-sm">
-          {state.transcript.slice(-8).map((line, index) => (
-            <li
-              key={`${index}-${line.speaker}`}
-              className={line.speaker === 'character' ? 'text-rose-200' : 'text-zinc-300'}
-            >
-              <span className="text-xs uppercase tracking-wide text-zinc-600">
-                {line.speaker === 'character' ? characterName : 'You'}
-              </span>{' '}
-              {line.text}
-            </li>
-          ))}
-        </ul>
-      )}
+            {live && (
+              <div className="flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onHangUp}
+                  aria-label="End call"
+                  data-testid="call-end"
+                  className={`${round} bg-red-600 hover:bg-red-500`}
+                >
+                  <PhoneIcon className="h-8 w-8 rotate-[135deg]" />
+                </button>
+                <span aria-hidden className="text-sm font-medium text-white drop-shadow">End call</span>
+              </div>
+            )}
 
-      <div className="flex items-center gap-3">
-        {live && (
-          <button
-            type="button"
-            onClick={onHangUp}
-            className="rounded-full bg-rose-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500"
-          >
-            End call
-          </button>
-        )}
-        {over && (
-          <>
-            <button
-              type="button"
-              onClick={onStart}
-              className="rounded-full border border-zinc-700 px-5 py-2.5 text-sm font-medium text-zinc-200 transition hover:border-rose-500/60"
-            >
-              Call again
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-full px-5 py-2.5 text-sm text-zinc-400 transition hover:text-zinc-200"
-            >
-              Close
-            </button>
-          </>
-        )}
+            {over && (
+              <div className="flex items-start gap-16">
+                <div className="flex flex-col items-center gap-2">
+                  <button type="button" onClick={onClose} aria-label="Close" className={`${round} bg-zinc-700/80 backdrop-blur hover:bg-zinc-600`}>
+                    <span aria-hidden className="text-3xl leading-none">&times;</span>
+                  </button>
+                  <span aria-hidden className="text-sm font-medium text-white drop-shadow">Close</span>
+                </div>
+                <div className="flex flex-col items-center gap-2">
+                  <button type="button" onClick={onStart} aria-label="Call again" className={`${round} bg-emerald-500 hover:bg-emerald-400`}>
+                    <PhoneIcon className="h-8 w-8" />
+                  </button>
+                  <span aria-hidden className="text-sm font-medium text-white drop-shadow">Call again</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

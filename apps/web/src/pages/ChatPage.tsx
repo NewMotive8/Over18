@@ -382,6 +382,7 @@ export default function ChatPage() {
       <CallOverlay
         state={call.state}
         characterName={character.displayName}
+        characterImage={showImage ? avatar : null}
         onStart={call.start}
         onHangUp={call.hangUp}
         onClose={call.close}

@@ -109,34 +109,49 @@ describe('the controls match the phase', () => {
   });
 });
 
-describe('the transcript', () => {
-  it('labels each line with who said it', () => {
-    const html = render({
+describe('the call screen: her portrait, full screen, and one red button', () => {
+  const withImage = (over: Partial<CallState> = {}) =>
+    renderToStaticMarkup(
+      <CallOverlay
+        state={state(over)}
+        characterName="Luna"
+        characterImage="https://api.example/media/luna.png"
+        onStart={() => {}}
+        onHangUp={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+  it('fills the screen with her portrait, anchored at the top so her face stays in frame', () => {
+    const html = withImage({ phase: 'active' });
+    expect(html).toMatch(/<img[^>]*src="https:\/\/api\.example\/media\/luna\.png"[^>]*class="[^"]*inset-0[^"]*h-full[^"]*w-full[^"]*object-cover[^"]*object-top/);
+  });
+
+  it('without a portrait: a dark screen, never a broken image', () => {
+    expect(render({ phase: 'active' })).not.toContain('<img');
+  });
+
+  it.each(['permission', 'connecting', 'active'] as const)('%s: the red round End call button is the ONLY control', (phase) => {
+    const html = withImage({ phase });
+    expect(html.match(/<button/g)).toHaveLength(1);
+    expect(html).toMatch(/<button[^>]*aria-label="End call"[^>]*class="[^"]*rounded-full[^"]*bg-red-600/);
+  });
+
+  it('the conversation is heard, not printed: no transcript on the screen', () => {
+    const html = withImage({
       phase: 'active',
       transcript: [
         { speaker: 'user', text: 'hello there' },
         { speaker: 'character', text: 'hello yourself' },
       ],
     });
-    expect(html).toContain('hello there');
-    expect(html).toContain('hello yourself');
-    expect(html).toContain('You');
+    expect(html).not.toContain('hello there');
+    expect(html).not.toContain('hello yourself');
+    expect(html).not.toContain('<ul');
   });
 
-  /** A long call must not grow the overlay without bound. */
-  it('shows only the most recent lines', () => {
-    const transcript = Array.from({ length: 20 }, (_, i) => ({
-      speaker: 'user' as const,
-      text: `line ${i}`,
-    }));
-    const html = render({ phase: 'active', transcript });
-    expect(html).toContain('line 19');
-    expect(html).not.toContain('line 0<');
-    expect(html).not.toContain('line 11');
-  });
-
-  it('renders no list when nothing has been said', () => {
-    expect(render({ phase: 'active' })).not.toContain('<ul');
+  it('who is speaking is still said, in the status line', () => {
+    expect(withImage({ phase: 'active', characterSpeaking: true })).toContain('Luna is speaking…');
   });
 });
 
