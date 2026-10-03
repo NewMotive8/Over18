@@ -1,5 +1,5 @@
 import { and, asc, eq } from 'drizzle-orm';
-import type { PublicCharacter } from '@over18/shared';
+import { isKnownVoice, type PublicCharacter } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { characters, type CharacterRow } from '../db/schema.js';
 import { resolveCharacterPortrait, resolveCharacterPortraits } from './character-portrait.js';
@@ -80,6 +80,11 @@ export interface AdminCharacter extends PublicCharacter {
   profileComplete: boolean;
   /** Which profile fields are still empty, so the UI can say so precisely. */
   missingProfileFields: ProfileField[];
+  /**
+   * Her assigned live-call voice, or null when she has none and therefore uses
+   * the default. Admin-facing only, like `systemPrompt`.
+   */
+  liveCallVoice: string | null;
 }
 
 /**
@@ -120,6 +125,9 @@ export function toAdminCharacter(row: CharacterRow, portrait: string | null): Ad
     updatedAt: row.updatedAt.toISOString(),
     profileComplete: missing.length === 0,
     missingProfileFields: missing,
+    // Null is a real answer here -- "no voice assigned, she uses the default" --
+    // so it is reported rather than omitted, and the selector can show it.
+    liveCallVoice: row.liveCallVoice,
   };
 }
 
@@ -169,6 +177,14 @@ export interface CharacterInput {
   systemPrompt: string;
   interests?: string[];
   status?: 'active' | 'inactive';
+  /**
+   * Her live-call voice, or null for none.
+   *
+   * OPTIONAL IN BOTH SENSES. Absent from a patch means "leave it alone", and
+   * null means "she has no assigned voice" -- which is a real choice, not a
+   * missing one, because `resolveVoice` turns it into the default.
+   */
+  liveCallVoice?: string | null;
 }
 
 const REQUIRED_TEXT: ReadonlyArray<[keyof CharacterInput, string]> = [
@@ -225,6 +241,40 @@ function normalise(
     out.interests = input.interests.map((i) => i.trim()).filter((i) => i.length > 0);
   }
   if (input.status !== undefined) out.status = input.status;
+
+  /**
+   * Her live-call voice.
+   *
+   * THIS IS THE POINT THAT REFUSES, which is what `voice-catalogue` always said
+   * it was waiting for: `resolveVoice` substitutes the default for an unknown
+   * name so a retired voice cannot make a character uncallable, and that
+   * forgiveness is exactly why the value has to be checked on the way IN.
+   * Otherwise a typo is stored, silently ignored at call time, and the operator
+   * is left wondering why she still sounds like everyone else.
+   *
+   * NULL AND EMPTY BOTH MEAN "NO ASSIGNED VOICE". An empty string is what a
+   * `<select>` sends for its blank option, and storing it would be storing a
+   * value that is neither a voice nor an absence. Both become NULL, which is
+   * the state the existing fallback already handles.
+   *
+   * Case matters, because these are provider identifiers: `serena` is not
+   * `Serena`, and accepting it would store something the provider will not
+   * recognise.
+   */
+  if (input.liveCallVoice !== undefined) {
+    const raw = input.liveCallVoice;
+    const trimmed = typeof raw === 'string' ? raw.trim() : raw;
+    if (trimmed === null || trimmed === '') {
+      out.liveCallVoice = null;
+    } else if (!isKnownVoice(trimmed)) {
+      throw new CharacterValidationError(
+        'liveCallVoice',
+        'Choose a voice from the published catalogue.',
+      );
+    } else {
+      out.liveCallVoice = trimmed;
+    }
+  }
 
   return out;
 }

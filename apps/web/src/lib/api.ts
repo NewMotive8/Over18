@@ -1753,6 +1753,12 @@ export interface AdminCharacterView {
   profileComplete: boolean;
   /** The still-blank fields, named, so the UI can be specific rather than vague. */
   missingProfileFields: string[];
+  /**
+   * Her assigned live-call voice, or null when she has none. Null is a real
+   * value here, not a missing one: the server resolves it to the default, so
+   * the selector shows "Default (Serena)" rather than an empty box.
+   */
+  liveCallVoice: string | null;
 }
 
 import type { ProfileDivergenceStatus } from '@over18/shared';

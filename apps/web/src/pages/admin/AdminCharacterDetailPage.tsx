@@ -4,6 +4,7 @@ import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib
 import CharacterEligibilityPanel from '../../admin/CharacterEligibilityPanel';
 import ProfileDivergencePanel from '../../admin/ProfileDivergencePanel';
 import CharacterAccessSection from './CharacterAccessPanel';
+import { voiceOptions, voicePatch, voiceSelectValue } from '../../admin/characterVoice';
 import {
   addKeywords,
   keywordsDiffer,
@@ -119,6 +120,8 @@ export default function AdminCharacterDetailPage() {
 
   const [personaOpen, setPersonaOpen] = useState(false);
   const [personaDraft, setPersonaDraft] = useState({ displayName: '', shortBio: '', personality: '', conversationStyle: '', systemPrompt: '' });
+  /** The voice select's value: '' is "Default (Serena)", otherwise a catalogue name. */
+  const [voiceDraft, setVoiceDraft] = useState('');
   const [interestsText, setInterestsText] = useState('');
 
   // Phase 2 — avatar-derived persona.
@@ -262,6 +265,7 @@ export default function AdminCharacterDetailPage() {
           conversationStyle: next.character.conversationStyle,
           systemPrompt: next.character.systemPrompt,
         });
+        setVoiceDraft(voiceSelectValue(next.character.liveCallVoice));
         setInterestsText(next.character.interests.join(', '));
       })
       .then(() => adminCharactersApi.content(characterId))
@@ -880,6 +884,32 @@ export default function AdminCharacterDetailPage() {
               />
               <span className="mt-1 block text-xs text-zinc-500">Comma separated.</span>
             </label>
+            {/*
+              HER LIVE-CALL VOICE. The list is the shared catalogue the server
+              validates against, so the form cannot offer something the PATCH
+              would refuse. "Default (Serena)" saves null, which is what the
+              existing fallback already handles -- and is what makes an
+              assignment reversible without database access.
+            */}
+            <label className="block">
+              <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Live-call voice
+              </span>
+              <select
+                value={voiceDraft}
+                onChange={(e) => setVoiceDraft(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+              >
+                {voiceOptions().map((option) => (
+                  <option key={option.value || 'default'} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block text-xs text-zinc-500">
+                Used for live voice calls. Leave on the default if she has no assigned voice.
+              </span>
+            </label>
             <button
               type="button"
               disabled={busy}
@@ -891,6 +921,7 @@ export default function AdminCharacterDetailPage() {
                       .split(',')
                       .map((i) => i.trim())
                       .filter(Boolean),
+                    ...voicePatch(voiceDraft),
                   });
                   setPersonaOpen(false);
                 }, "Couldn't save the character.")
