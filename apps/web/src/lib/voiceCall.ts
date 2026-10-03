@@ -372,6 +372,8 @@ export interface CallControllerDeps {
   api?: Pick<typeof callsApi, 'start' | 'end'>;
   /** Injected so the duration countdown is testable. */
   now?: () => number;
+  /** The ringback tone while she has not picked up. Optional: no ring without one. */
+  ringback?: { start(): void; stop(): void };
 }
 
 export interface CallController {
@@ -440,9 +442,18 @@ export function createCallController(deps: CallControllerDeps): CallController {
     }
   };
 
+  const stopRinging = (): void => {
+    try {
+      deps.ringback?.stop();
+    } catch {
+      /* a ring that will not stop is not a reason to touch the call */
+    }
+  };
+
   /** She picked up (or it is time to stop saying "Calling…"). Once. */
   const markAnswered = (): void => {
     clearPickup();
+    stopRinging();
     if (!state.answered) emit({ answered: true });
   };
 
@@ -466,6 +477,7 @@ export function createCallController(deps: CallControllerDeps): CallController {
     finished = true;
     clearCountdown();
     clearPickup();
+    stopRinging();
 
     try {
       socket?.close();
@@ -583,6 +595,14 @@ export function createCallController(deps: CallControllerDeps): CallController {
     try {
       await deps.audio.start((frame) => {
         if (finished || socket === null) return;
+        /**
+         * NOT HEARD WHILE IT RINGS -- like a phone. The ringback plays out of the
+         * same speaker the microphone listens to, and the provider's VAD would
+         * take the ring for him speaking: that cancels her opening line. So his
+         * audio goes upstream only once she has picked up (her first audio, or
+         * the PICKUP_GRACE_MS fallback). Before that, nobody is on the line.
+         */
+        if (!state.answered) return;
         try {
           socket.send(audioAppendFrame(frame));
         } catch {
@@ -596,6 +616,12 @@ export function createCallController(deps: CallControllerDeps): CallController {
     }
 
     emit({ phase: 'connecting' });
+    // Ringing from "Calling…" until she picks up (markAnswered stops it).
+    try {
+      deps.ringback?.start();
+    } catch {
+      /* no ring is never a reason to fail a call */
+    }
 
     let session: VoiceCallSession;
     try {
@@ -652,6 +678,7 @@ export function createCallController(deps: CallControllerDeps): CallController {
     async dispose(): Promise<void> {
       clearCountdown();
       clearPickup();
+      stopRinging();
       // Unmount and navigation both land here. No state is emitted: the
       // component is going away and React would warn about updating it.
       finished = true;

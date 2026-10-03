@@ -6,6 +6,7 @@ import {
   type CallState,
 } from '../lib/voiceCall';
 import { createBrowserCallAudio, openRelaySocket } from '../lib/voiceCallAudio';
+import { createBrowserRingback } from '../lib/ringback';
 
 /**
  * Owns one call's lifetime for one conversation.
@@ -52,6 +53,7 @@ export function useVoiceCall(conversationId: string) {
       controllerRef.current = createCallController({
         conversationId,
         audio: createBrowserCallAudio(),
+        ringback: createBrowserRingback(),
         openSocket: openRelaySocket,
         onState: (next) => {
           if (mountedRef.current) setState(next);

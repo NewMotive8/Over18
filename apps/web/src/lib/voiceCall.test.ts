@@ -136,6 +136,17 @@ function harness(
   };
 
   let clock = 0;
+  const ring = { starts: 0, stops: 0, ringing: false };
+  const ringback = {
+    start: () => {
+      ring.starts += 1;
+      ring.ringing = true;
+    },
+    stop: () => {
+      ring.stops += 1;
+      ring.ringing = false;
+    },
+  };
   const controller = createCallController({
     conversationId: 'conv-1',
     audio: audio.audio,
@@ -143,10 +154,12 @@ function harness(
     onState: (state) => states.push(state),
     api,
     now: () => clock,
+    ringback,
   });
 
   return {
     controller,
+    ring,
     audio,
     socket,
     api,
@@ -318,10 +331,12 @@ describe('starting a call', () => {
     expect(h.controller.state.phase).toBe('active');
   });
 
-  it('streams microphone frames once the socket is open', async () => {
+  /** Like a phone: nothing he says is sent while it rings (see the ringback tests). */
+  it('streams microphone frames once she has picked up', async () => {
     const h = harness();
     await h.controller.start();
     h.socket.deliver({ type: 'relay.connected' });
+    h.socket.deliver({ type: 'response.audio.delta', delta: pcm16ToBase64(Int16Array.from([1])) });
 
     h.audio.emitFrame('QUJD');
     expect(h.socket.sent).toEqual([
@@ -636,12 +651,10 @@ describe('she picks up: "Calling…" until her first word', () => {
     return h;
   };
 
-  it('the call is active at once -- microphone streaming -- but not yet answered', async () => {
+  it('the call is active at once, but not yet answered', async () => {
     const h = await connected();
     expect(h.controller.state.phase).toBe('active');
     expect(h.controller.state.answered).toBe(false);
-    h.audio.emitFrame('QUJD');
-    expect(h.socket.sent).toHaveLength(1); // nothing about the call waits for the screen
   });
 
   it('answered on her first audio', async () => {
@@ -671,5 +684,76 @@ describe('she picks up: "Calling…" until her first word', () => {
     await vi.advanceTimersByTimeAsync(PICKUP_GRACE_MS * 2);
     expect(h.states.length).toBe(after);
     expect(h.controller.state.phase).toBe('ended');
+  });
+});
+
+describe('the ringback tone, and the line is open only once she answers', () => {
+  const herFirstWords = () => ({ type: 'response.audio.delta', delta: pcm16ToBase64(Int16Array.from([1, 2])) });
+  const ringing = async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    await h.controller.start();
+    return h;
+  };
+
+  it('rings from "Calling…" -- before the socket even connects', async () => {
+    const h = await ringing();
+    expect(h.controller.state.phase).toBe('connecting');
+    expect(h.ring.ringing).toBe(true);
+    expect(h.ring.starts).toBe(1);
+  });
+
+  it('keeps ringing once connected, until she picks up', async () => {
+    const h = await ringing();
+    h.socket.deliver({ type: 'relay.connected' });
+    expect(h.ring.ringing).toBe(true);
+    h.socket.deliver(herFirstWords());
+    expect(h.ring.ringing).toBe(false);
+    expect(h.controller.state.answered).toBe(true);
+  });
+
+  it('nothing he says is sent while it rings; everything after she answers is', async () => {
+    const h = await ringing();
+    h.socket.deliver({ type: 'relay.connected' });
+    h.audio.emitFrame('UklORw=='); // the ring, or him, before she picked up
+    expect(h.socket.sent).toHaveLength(0);
+    h.socket.deliver(herFirstWords());
+    h.audio.emitFrame('QUJD');
+    expect(h.socket.sent).toEqual([JSON.stringify({ type: 'input_audio_buffer.append', audio: 'QUJD' })]);
+  });
+
+  it('if she never speaks, the ring stops and the line opens after the grace period', async () => {
+    const h = await ringing();
+    h.socket.deliver({ type: 'relay.connected' });
+    await vi.advanceTimersByTimeAsync(PICKUP_GRACE_MS);
+    expect(h.ring.ringing).toBe(false);
+    h.audio.emitFrame('QUJD');
+    expect(h.socket.sent).toHaveLength(1);
+  });
+
+  it.each([
+    ['hanging up while it rings', async (h: Awaited<ReturnType<typeof ringing>>) => h.controller.hangUp()],
+    ['the call failing while it rings', async (h: Awaited<ReturnType<typeof ringing>>) => h.socket.deliver({ type: 'relay.error', reason: 'provider_unavailable' })],
+    ['leaving the page while it rings', async (h: Awaited<ReturnType<typeof ringing>>) => h.controller.dispose()],
+  ])('the ring stops on %s', async (_label, end) => {
+    const h = await ringing();
+    await end(h);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(h.ring.ringing).toBe(false);
+  });
+
+  it('a call with no ringback (tests, or no audio) still works', async () => {
+    vi.useFakeTimers();
+    const audio = { start: vi.fn(async () => {}), play: vi.fn(), stopPlayback: vi.fn(), dispose: vi.fn(async () => {}) };
+    const controller = createCallController({
+      conversationId: 'c',
+      audio,
+      openSocket: () => ({ send: () => {}, close: () => {} }),
+      onState: () => {},
+      api: { start: vi.fn(async () => ({ callSession: { id: 'x', maxSeconds: 60 } })) as never, end: vi.fn(async () => ({})) as never },
+    });
+    await controller.start();
+    expect(controller.state.phase).toBe('connecting');
+    await controller.dispose();
   });
 });
