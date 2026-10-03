@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom';
 import { MINIMUM_AGE } from '../lib/ageGate';
+import { AdultsOnlyBadge } from '../legal/LegalPage';
+import { LEGAL_DOCUMENTS } from '../legal/legalContent';
 
 /**
  * The site footer.
@@ -31,19 +33,20 @@ export interface LegalPage {
 /**
  * The pages an adult site of this kind needs, and whether we have them.
  *
- * EVERY ONE IS CURRENTLY FALSE. None of these routes exist in `App.tsx`; the
- * report lists what each needs before it can be written, and none of it is
- * something code can decide -- company identity, data processing, refund terms
- * and governing law are answers a person has to give.
+ * NOW WRITTEN AND ROUTED, which is what this list was built to wait for. Each
+ * entry is derived from `LEGAL_DOCUMENTS` rather than restated here, so a
+ * document and its footer link cannot drift apart: adding one adds its link,
+ * and a link can never point at a route that does not exist.
+ *
+ * The documents themselves are drafts carrying marked placeholders — see
+ * `legal/legalContent.ts`. The footer links to them regardless, because the
+ * alternative is a site with no reachable privacy policy at all.
  */
-export const REQUIRED_LEGAL_PAGES: readonly LegalPage[] = [
-  { label: 'Terms of Service', path: null, available: false },
-  { label: 'Privacy Policy', path: null, available: false },
-  { label: 'Cookie Policy', path: null, available: false },
-  { label: 'AI & content disclosure', path: null, available: false },
-  { label: 'Safety & reporting', path: null, available: false },
-  { label: 'Contact', path: null, available: false },
-];
+export const REQUIRED_LEGAL_PAGES: readonly LegalPage[] = LEGAL_DOCUMENTS.map((doc) => ({
+  label: doc.label,
+  path: `/${doc.slug}`,
+  available: true,
+}));
 
 /** The ones with somewhere to point. */
 export function availableLegalPages(
@@ -64,9 +67,15 @@ export default function SiteFooter({
   return (
     <footer className="mt-10 border-t border-zinc-800 px-4 py-8 text-xs leading-relaxed text-zinc-500">
       <div className="flex flex-col gap-4">
-        <p className="text-sm font-semibold tracking-tight text-zinc-300">
-          Over<span className="text-rose-500">18</span>
-        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm font-semibold tracking-tight text-zinc-300">
+            Over<span className="text-rose-500">18</span>
+          </p>
+          {/* OUR OWN DESIGNATION, not a borrowed badge. No regulator, no
+              certification body and no payment network is implied here, because
+              we hold no mark from any of them. */}
+          <AdultsOnlyBadge />
+        </div>
 
         {/* The notice, stated once and stated plainly. */}
         <p className="font-medium text-zinc-400">

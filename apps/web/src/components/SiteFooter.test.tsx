@@ -3,11 +3,16 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import SiteFooter, { REQUIRED_LEGAL_PAGES, availableLegalPages, type LegalPage } from './SiteFooter';
 
+/** Static markup escapes `&`; these assertions are about the words, not entities. */
+const decode = (html: string) => html.replace(/&amp;/g, '&').replace(/&#x27;/g, "'");
+
 const render = (pages?: readonly LegalPage[], year?: number) =>
-  renderToStaticMarkup(
-    <MemoryRouter>
-      <SiteFooter {...(pages ? { pages } : {})} {...(year ? { year } : {})} />
-    </MemoryRouter>,
+  decode(
+    renderToStaticMarkup(
+      <MemoryRouter>
+        <SiteFooter {...(pages ? { pages } : {})} {...(year ? { year } : {})} />
+      </MemoryRouter>,
+    ),
   );
 
 describe('what the footer always says', () => {
@@ -42,34 +47,39 @@ describe('what the footer always says', () => {
 });
 
 /**
- * THE GAP, HELD OPEN DELIBERATELY.
+ * THE GAP, NOW CLOSED.
  *
- * Every required page is currently missing, and the footer's contract is that a
- * missing page is never linked. A link saying "Terms of Service" asserts that
- * terms exist; a 404 behind it tells the visitor otherwise one click later.
+ * These three assertions used to pin the opposite: that every required page was
+ * missing and that the footer therefore linked none of them. The pages are
+ * written and routed, so they now pin the other half of the same contract —
+ * every declared page exists, has a route, and is reachable from the footer.
+ * The rule itself never changed: a page is linked exactly when it exists.
  */
 describe('legal links', () => {
   it('declares every page an adult site of this kind needs', () => {
     expect(REQUIRED_LEGAL_PAGES.map((p) => p.label)).toEqual([
-      'Terms of Service',
       'Privacy Policy',
+      'Terms & Conditions',
+      'Adult / 18+ Policy',
       'Cookie Policy',
-      'AI & content disclosure',
-      'Safety & reporting',
-      'Contact',
+      'Contact / Legal',
     ]);
   });
 
-  it('has none of them yet', () => {
-    expect(availableLegalPages()).toEqual([]);
+  it('has all of them, each with a route', () => {
+    expect(availableLegalPages()).toHaveLength(REQUIRED_LEGAL_PAGES.length);
+    for (const page of availableLegalPages()) {
+      expect(page.available, page.label).toBe(true);
+      expect(page.path, page.label).toMatch(/^\/[a-z-]+$/);
+    }
   });
 
-  it('renders no link, and no nav, while none exist', () => {
+  it('renders every one of them as a working link', () => {
     const html = render();
-    expect(html).not.toContain('<a');
-    expect(html).not.toContain('Legal and safety');
+    expect(html).toContain('Legal and safety');
     for (const page of REQUIRED_LEGAL_PAGES) {
-      expect(html).not.toContain(page.label);
+      expect(html, page.label).toContain(`href="${page.path}"`);
+      expect(html, page.label).toContain(page.label);
     }
   });
 

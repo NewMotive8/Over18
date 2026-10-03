@@ -14,6 +14,8 @@ import SimulatedCheckoutPage from './pages/SimulatedCheckoutPage';
 import CreditsStorePage from './pages/CreditsStorePage';
 import ChatPage from './pages/ChatPage';
 import NotFoundPage from './pages/NotFoundPage';
+import LegalPage from './legal/LegalPage';
+import { LEGAL_DOCUMENTS } from './legal/legalContent';
 import AdminShell from './admin/AdminShell';
 import RequireAdmin from './admin/RequireAdmin';
 import AdminHomePage from './pages/admin/AdminHomePage';
@@ -105,6 +107,26 @@ export default function App() {
         <Route path="users" element={<AdminUsersPage />} />
         <Route path="users/:userId" element={<AdminUserDetailPage />} />
       </Route>
+
+      {/*
+        LEGAL AND COMPLIANCE — OUTSIDE THE APP SHELL, DELIBERATELY.
+
+        The shell renders the age gate instead of its outlet until a visitor
+        confirms they are 18. That is right for every screen carrying adult
+        content and wrong for these: a privacy policy behind an adult warning
+        cannot be read by the person most likely to need it — somebody deciding
+        whether to enter, somebody under 18 looking for how to report, or a
+        regulator. These pages carry no adult content to withhold.
+
+        Declared here rather than as an exception inside the gate, so the gate
+        itself gains no branch and still guards every route it guarded before.
+        No authentication either: all five are public.
+      */}
+      {LEGAL_DOCUMENTS.map((doc) => (
+        <Route key={doc.slug} path={`/${doc.slug}`} element={<LegalPage document={doc} />} />
+      ))}
+      {/* The brief named /contact or /legal; both resolve to the same page. */}
+      <Route path="/contact" element={<Navigate to="/legal" replace />} />
 
       <Route element={<AppShell />}>
         {/* Discover is the primary entry point */}
