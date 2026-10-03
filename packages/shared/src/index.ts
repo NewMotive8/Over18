@@ -548,3 +548,14 @@ export function audienceMatches(audience: BannerAudience, viewer: BannerViewer):
   return audience === 'returning_users' ? viewer.isReturning : !viewer.isReturning;
 }
 export * from './profileDivergence.js';
+
+/**
+ * The live-call voice catalogue. Shared so the admin selector offers exactly
+ * the list the server validates against; `resolveVoice` stays on the API side.
+ */
+export {
+  VOICE_CATALOGUE,
+  DEFAULT_LIVE_CALL_VOICE,
+  isKnownVoice,
+  type LiveCallVoice,
+} from './voice.js';
