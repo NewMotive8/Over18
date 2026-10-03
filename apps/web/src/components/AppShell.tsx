@@ -189,11 +189,23 @@ export default function AppShell() {
    */
   const frame = isLobby ? 'max-w-lg lg:max-w-7xl lg:px-8' : isWide ? 'max-w-lg lg:max-w-6xl' : 'max-w-lg';
 
+  /**
+   * ONE CREDITS BALANCE ON A DESKTOP SCREEN, NEVER TWO.
+   *
+   * The desktop header shows the balance on every route -- but two screens
+   * already carry their own, in their own chrome: the character profile (in its
+   * hero) and the chat (in its chat header). On those the header leaves its
+   * pill out, so the balance appears once, where that screen has always put
+   * it. Decided here, in the shell, so neither page changes.
+   */
+  const pageShowsCredits = isProfile || pathname.startsWith('/chat/');
+
   return (
     <div className="flex min-h-dvh w-full flex-col bg-zinc-950 text-zinc-100">
       {/* Desktop only: the header with the primary navigation, which replaces
           the phone's bottom tab bar from `lg` up. Home adds its own actions. */}
       <DesktopHeader
+        showCredits={!pageShowsCredits}
         extras={isLobby ? <LobbyActions onSearch={focusLobbySearch} withAccount={false} /> : undefined}
       />
 

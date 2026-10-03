@@ -625,7 +625,7 @@ describe('Home fetches what Home needs, and nothing else', () => {
     // of `gridClips` (identical to it for Premium and unknown tiers).
     // The phone grid is still exactly two columns with the same gap; desktop
     // (lg+) adds columns and nothing else (desktop Pass 1).
-    expect(code).toContain("const FEED_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5 2xl:grid-cols-6';");
+    expect(code).toContain("const FEED_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5';");
     expect(code).toContain('<div className={FEED_GRID}>');
     expect(code).toContain('shownClips.slice(0, 2).map');
     expect(code).toContain('<CommunityPromoCard />');

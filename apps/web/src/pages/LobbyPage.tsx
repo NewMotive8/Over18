@@ -85,13 +85,20 @@ type Status = 'loading' | 'ready' | 'error';
 
 /**
  * THE RESULTS GRID. Two columns on a phone and tablet, exactly as before; on a
- * desktop it uses the width -- 4 columns at lg, 5 at xl, 6 at 2xl -- with the
- * cards keeping their 3:4 frame and growing to ~200-240px. The cards stay in
+ * desktop it uses the width -- 4 columns at lg, 5 from xl -- with the cards
+ * keeping their 3:4 frame at ~225-230px.
+ *
+ * FIVE IS THE MAXIMUM. The desktop container stops growing at 1280px, so a
+ * sixth column on a wider screen would not use more space -- it would only
+ * make every card smaller (189px at 1920 against 230px at 1440), which is the
+ * wrong direction. More columns are only right if the container itself grows.
+ *
+ * The cards stay in
  * data order, row by row: no masonry, no reordering, so the Premium feed gate
  * (which counts characters in that order) and the promo's position after the
  * second clip are exactly what they were.
  */
-const FEED_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5 2xl:grid-cols-6';
+const FEED_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5';
 
 export default function LobbyPage() {
   const [status, setStatus] = useState<Status>('loading');

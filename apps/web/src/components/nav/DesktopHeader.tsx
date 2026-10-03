@@ -25,7 +25,14 @@ const ICONS: Record<DestinationKey, (props: { className?: string }) => JSX.Eleme
   profile: ProfileIcon,
 };
 
-export default function DesktopHeader({ extras }: { extras?: ReactNode }) {
+export default function DesktopHeader({
+  extras,
+  showCredits = true,
+}: {
+  extras?: ReactNode;
+  /** False on a screen that already shows the balance itself, so it is never doubled. */
+  showCredits?: boolean;
+}) {
   const { pathname } = useLocation();
   const active = activeDestinationKey(pathname);
 
@@ -66,7 +73,7 @@ export default function DesktopHeader({ extras }: { extras?: ReactNode }) {
 
         <div className="ml-auto flex items-center gap-2">
           {/* The customer's Credits, as on every phone screen. Nothing until known. */}
-          <CreditsPill />
+          {showCredits && <CreditsPill />}
           {extras}
         </div>
       </div>

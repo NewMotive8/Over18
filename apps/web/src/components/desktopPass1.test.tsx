@@ -8,6 +8,7 @@ import { PRIMARY_DESTINATIONS } from './nav/destinations';
 import HeroCarousel from './lobby/HeroCarousel';
 import ClipRail from './lobby/ClipRail';
 import LobbyTopBar from './lobby/LobbyTopBar';
+import LobbyActions from './lobby/LobbyActions';
 import FeedGate from './premium/FeedGate';
 import CommunityPromoCard from './lobby/CommunityPromoCard';
 
@@ -136,9 +137,11 @@ describe('Home on a desktop', () => {
     expect(read('./lobby/RailArrows.tsx')).toMatch(/hidden h-11 w-11 [^']*lg:flex/);
   });
 
-  it('the results grid: 2 columns on a phone, 4 / 5 / 6 on a desktop, in data order', () => {
+  it('the results grid: 2 columns on a phone, 4 at lg and 5 from xl on a desktop, in data order', () => {
     const page = read('../pages/LobbyPage.tsx');
-    expect(page).toContain("const FEED_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5 2xl:grid-cols-6';");
+    expect(page).toContain("const FEED_GRID = 'grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4 xl:grid-cols-5';");
+    // Five is the maximum: the container is capped, so a sixth column would only shrink the cards.
+    expect(page).not.toMatch(/FEED_GRID = '[^']*grid-cols-6/);
     // Still the same order: two clips, the promo, the rest, then the gate.
     expect(page).toMatch(/shownClips\.slice\(0, 2\)[\s\S]*<CommunityPromoCard \/>[\s\S]*shownClips\.slice\(2\)[\s\S]*<FeedGate/);
     // No CSS that would reorder cards visually (CSS columns, dense packing).
@@ -148,5 +151,40 @@ describe('Home on a desktop', () => {
   it('the header search reaches the one search input on the page', () => {
     expect(read('../pages/LobbyPage.tsx')).toContain('id={LOBBY_SEARCH_ID}');
     expect(read('./AppShell.tsx')).toContain('<LobbyActions onSearch={focusLobbySearch} withAccount={false} />');
+  });
+});
+
+describe('one Credits balance on a desktop screen, never two', () => {
+  const shell = read('./AppShell.tsx');
+
+  it('the header leaves its pill out on the two screens that show the balance themselves', () => {
+    expect(shell).toContain("const pageShowsCredits = isProfile || pathname.startsWith('/chat/');");
+    expect(shell).toContain('showCredits={!pageShowsCredits}');
+    expect(read('./nav/DesktopHeader.tsx')).toContain('{showCredits && <CreditsPill />}');
+  });
+
+  it('those two screens are exactly the ones that render their own pill -- and they are untouched', () => {
+    expect(read('../pages/CharacterDetailPage.tsx')).toContain('topRight={<CreditsPill />}');
+    expect(read('../pages/ChatPage.tsx')).toContain('<CreditsPill />');
+  });
+});
+
+describe('notifications are not given any new scope by the desktop header', () => {
+  const bell = (html: string) => html.match(/<button[^>]*aria-label="Notifications[^"]*"[\s\S]*?<\/button>/)?.[0];
+
+  it('the bell is the phone top bar’s own, byte for byte: same count, same size, same badge', () => {
+    const phone = bell(at('/characters', <LobbyTopBar />));
+    const desktop = bell(at('/characters', <DesktopHeader extras={<LobbyActions withAccount={false} />} />));
+    expect(phone).toBeDefined();
+    expect(desktop).toBe(phone);
+  });
+
+  it('it appears only on Home, as on a phone -- no other desktop screen gains it', () => {
+    expect(read('./AppShell.tsx')).toContain('extras={isLobby ? <LobbyActions onSearch={focusLobbySearch} withAccount={false} /> : undefined}');
+    expect(at('/favourites', <DesktopHeader />)).not.toContain('Notifications');
+  });
+
+  it('the desktop header passes no count of its own', () => {
+    expect(read('./AppShell.tsx')).not.toMatch(/notificationCount/);
   });
 });
