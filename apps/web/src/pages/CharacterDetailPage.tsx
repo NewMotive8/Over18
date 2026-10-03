@@ -12,6 +12,7 @@ import {
 import { adultAgeFromBand } from '../lib/lobbyContent';
 import { mockRelationship } from '../lib/relationship';
 import ProfileHero from '../components/profile/ProfileHero';
+import ProfileIdentity from '../components/profile/ProfileIdentity';
 import ProfileActions from '../components/profile/ProfileActions';
 import RelationshipTracker from '../components/profile/RelationshipTracker';
 import ProfileTabs, { type ProfileTab } from '../components/profile/ProfileTabs';
@@ -183,7 +184,7 @@ export default function CharacterDetailPage() {
 
   if (state.status === 'loading') {
     return (
-      <section className="flex flex-col gap-4 px-4 pb-8 pt-6" aria-busy>
+      <section className="flex flex-col gap-4 px-4 pb-8 pt-6 lg:mx-auto lg:w-full lg:max-w-lg lg:px-0" aria-busy>
         {backLink}
         <div className="animate-pulse overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900">
           <div className="aspect-[4/5] w-full bg-zinc-800" />
@@ -196,7 +197,7 @@ export default function CharacterDetailPage() {
   if (state.status === 'not-found' || state.status === 'error') {
     const notFound = state.status === 'not-found';
     return (
-      <section className="flex flex-col gap-4 px-4 pb-8 pt-6">
+      <section className="flex flex-col gap-4 px-4 pb-8 pt-6 lg:mx-auto lg:w-full lg:max-w-lg lg:px-0">
         {backLink}
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/60 px-6 py-14 text-center">
           <span aria-hidden className="text-3xl">
@@ -276,19 +277,33 @@ export default function CharacterDetailPage() {
   });
 
   return (
-    <div className="flex flex-col pb-10">
-      <ProfileHero
-        items={heroItems}
-        name={character.displayName}
-        age={age}
-        avatarPoster={avatarPoster}
-        onBack={goBack}
-        onOpen={(index) => setViewer({ items: heroItems, index })}
-        // The customer's Credits, one tap from the Credits Store. Nothing while unknown.
-        topRight={<CreditsPill />}
-      />
+    /*
+      DESKTOP (lg+): TWO COLUMNS, ONE DOM. Her media on the left, staying in
+      view while the right column -- identity, actions, relationship, tabs --
+      scrolls; the same proportions as the Credits Store, so the two read as
+      one product. It is CSS only: nothing is rendered twice, so the Posts tab
+      still mounts exactly once (its unlock-resume and its analytics fire once)
+      and the phone layout below `lg` is untouched.
+    */
+    <div className="flex flex-col pb-10 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:items-start lg:gap-10 lg:pb-16 lg:pt-8">
+      <div className="lg:sticky lg:top-24">
+        <ProfileHero
+          items={heroItems}
+          name={character.displayName}
+          age={age}
+          avatarPoster={avatarPoster}
+          onBack={goBack}
+          onOpen={(index) => setViewer({ items: heroItems, index })}
+          // The customer's Credits, one tap from the Credits Store. Nothing while unknown.
+          // On a desktop the header carries the balance, and the hero hides this one.
+          topRight={<CreditsPill />}
+        />
+      </div>
 
-      <div className="flex flex-col gap-4 px-4 pt-4">
+      <div className="flex flex-col gap-4 px-4 pt-4 lg:gap-5 lg:px-0 lg:pt-0">
+        {/* Desktop only: her identity heads the right column (on a phone it overlays the media). */}
+        <ProfileIdentity name={character.displayName} age={age} avatarPoster={avatarPoster} />
+
         {startError && (
           <p role="alert" className="rounded-lg border border-red-900 bg-red-950/90 px-3 py-2 text-center text-sm text-red-300">
             {startError}

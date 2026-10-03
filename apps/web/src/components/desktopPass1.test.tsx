@@ -64,7 +64,17 @@ describe('the shell', () => {
   });
 
   it('keeps every screen the phone column below lg, and widens only screens with a desktop layout', () => {
-    expect(shell).toContain("const frame = isLobby ? 'max-w-lg lg:max-w-7xl lg:px-8' : isWide ? 'max-w-lg lg:max-w-6xl' : 'max-w-lg';");
+    // Every mode starts from the phone column; only the lg: part differs.
+    const frame = shell.slice(shell.indexOf('const frame = isLobby'), shell.indexOf('/**', shell.indexOf('const frame = isLobby')));
+    expect(frame).toContain("? 'max-w-lg lg:max-w-7xl lg:px-8'"); // Home (Pass 1)
+    expect(frame).toContain("? 'max-w-lg lg:max-w-6xl lg:overflow-visible lg:px-8'"); // Character profile (Pass 2)
+    expect(frame).toContain("? 'max-w-lg lg:max-w-6xl'"); // Credits Store
+    expect(frame).toMatch(/: 'max-w-lg';/); // everything else: the phone column, unchanged
+    // No mode may drop the phone column or change anything below lg.
+    for (const mode of frame.match(/'[^']*'/g) ?? []) {
+      expect(mode.startsWith("'max-w-lg")).toBe(true);
+      for (const cls of mode.slice(1, -1).split(' ').slice(1)) expect(cls.startsWith('lg:')).toBe(true);
+    }
     expect(shell).toContain('mx-auto flex w-full flex-1 flex-col overflow-y-auto ${frame}');
   });
 
@@ -157,15 +167,21 @@ describe('Home on a desktop', () => {
 describe('one Credits balance on a desktop screen, never two', () => {
   const shell = read('./AppShell.tsx');
 
-  it('the header leaves its pill out on the two screens that show the balance themselves', () => {
-    expect(shell).toContain("const pageShowsCredits = isProfile || pathname.startsWith('/chat/');");
+  it('the header leaves its pill out on the screen that still shows the balance itself on a desktop: chat', () => {
+    expect(shell).toContain("const pageShowsCredits = pathname.startsWith('/chat/');");
     expect(shell).toContain('showCredits={!pageShowsCredits}');
     expect(read('./nav/DesktopHeader.tsx')).toContain('{showCredits && <CreditsPill />}');
+    expect(read('../pages/ChatPage.tsx')).toContain('<CreditsPill />');
   });
 
-  it('those two screens are exactly the ones that render their own pill -- and they are untouched', () => {
+  it('the character profile: its hero pill on a phone, the header pill on a desktop -- never both', () => {
+    // The page still hands the hero its pill (the phone needs it)...
     expect(read('../pages/CharacterDetailPage.tsx')).toContain('topRight={<CreditsPill />}');
-    expect(read('../pages/ChatPage.tsx')).toContain('<CreditsPill />');
+    // ...and the hero hides it from lg, where the desktop header shows the balance.
+    expect(read('./profile/ProfileHero.tsx')).toContain(
+      '{topRight && <span className="rounded-xl bg-black/40 backdrop-blur lg:hidden">{topRight}</span>}',
+    );
+    expect(shell).not.toMatch(/pageShowsCredits = isProfile/);
   });
 });
 

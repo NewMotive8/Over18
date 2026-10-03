@@ -48,8 +48,17 @@ export default function ProfileHero({
     if (i !== active) setActive(i);
   };
 
+  /** Desktop paging: a mouse cannot swipe. One slide per view, so a page is the scroller's width. */
+  const goTo = (i: number) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
+  };
+  const arrow =
+    'absolute top-1/2 z-10 hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-zinc-950/70 text-2xl text-white shadow-lg shadow-black/40 backdrop-blur transition-opacity hover:bg-zinc-900 disabled:pointer-events-none disabled:opacity-0 lg:flex';
+
   return (
-    <div className="relative overflow-hidden rounded-b-3xl">
+    <div className="relative overflow-hidden rounded-b-3xl lg:rounded-3xl lg:border lg:border-white/10">
       <div
         ref={scrollerRef}
         onScroll={onScroll}
@@ -100,7 +109,7 @@ export default function ProfileHero({
 
       {/* Readability gradients top + bottom */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/60 to-transparent" />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent" />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent lg:hidden" />
 
       {/* Floating top controls */}
       <div className="absolute inset-x-0 top-0 flex items-center justify-between p-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
@@ -112,8 +121,34 @@ export default function ProfileHero({
         >
           <ChevronLeftIcon className="h-5 w-5" />
         </button>
-        {topRight && <span className="rounded-xl bg-black/40 backdrop-blur">{topRight}</span>}
+        {topRight && <span className="rounded-xl bg-black/40 backdrop-blur lg:hidden">{topRight}</span>}
       </div>
+
+      {/* Desktop arrows -- shown only when there is more than one item. */}
+      {items.length > 1 && (
+        <>
+          <button
+            type="button"
+            aria-label="Previous media"
+            data-testid="profile-hero-prev"
+            disabled={active <= 0}
+            onClick={() => goTo(Math.max(0, active - 1))}
+            className={`${arrow} left-3`}
+          >
+            <span aria-hidden>‹</span>
+          </button>
+          <button
+            type="button"
+            aria-label="Next media"
+            data-testid="profile-hero-next"
+            disabled={active >= items.length - 1}
+            onClick={() => goTo(Math.min(items.length - 1, active + 1))}
+            className={`${arrow} right-3`}
+          >
+            <span aria-hidden>›</span>
+          </button>
+        </>
+      )}
 
       {/* Pagination dots */}
       {items.length > 1 && (
@@ -128,8 +163,8 @@ export default function ProfileHero({
         </div>
       )}
 
-      {/* Identity block */}
-      <div className="absolute inset-x-0 bottom-0 flex items-end gap-3 p-4">
+      {/* Identity block -- phone and tablet. On a desktop it is beside the media: see ProfileIdentity. */}
+      <div className="absolute inset-x-0 bottom-0 flex items-end gap-3 p-4 lg:hidden">
         <span className="h-14 w-14 shrink-0 overflow-hidden rounded-full border-2 border-white/80 bg-zinc-800">
           {avatarPoster ? (
             <img src={avatarPoster} alt="" className="h-full w-full object-cover" />

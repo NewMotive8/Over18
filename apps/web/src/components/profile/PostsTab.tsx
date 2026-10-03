@@ -176,7 +176,7 @@ export default function PostsTab({
       <div className="flex justify-end empty:hidden">
         {economy.status === 'ready' && <CreditBalance overview={economy.overview} compact />}
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
         {clips.map((clip, index) => {
           const item = accessFor(state, clip.id);
           // This tab can carry an unlock through, so a Credit-priced tile
