@@ -20,7 +20,8 @@ import {
   sanitiseProviderFrame,
   RELAY_EVENTS,
   UPSTREAM_CONNECT_TIMEOUT_MS,
-  callOpeningFrames,
+  callOpeningItemFrame,
+  callOpeningResponseFrame,
   isOpeningError,
 } from '../voice/relay-protocol.js';
 import {
@@ -131,26 +132,46 @@ export default async function callSocketRoutes(
        *
        * Two conditions, which can arrive in either order: the row went active
        * (`connected`) and the provider said its session exists
-       * (`session.created`, documented as its first event). The opening is sent
-       * on whichever comes second, and `openingSent` makes it once per socket --
-       * a call is one socket, so no rerender or retry in the browser can
-       * trigger it again. `openingPending` is the window in which a provider
-       * error about it is held back; see `isOpeningError`.
+       * (`session.created`, documented as its first event). The CUE is sent on
+       * whichever comes second; the RESPONSE only once the provider confirms the
+       * cue joined the conversation (`conversation.item.created`) -- sent
+       * together, the response arrives first and is refused, which is why the
+       * first version stayed silent (see `callOpeningItemFrame`).
+       *
+       * `openingStage` makes it once per socket -- a call is one socket, so no
+       * rerender or retry in the browser can trigger it again. If he starts
+       * talking before the cue is confirmed, the opening is dropped: he spoke
+       * first, and her answer to him is the right first line.
+       * `openingPending` is the window in which a provider error about it is
+       * held back; see `isOpeningError`.
        */
       let sessionReady = false;
-      let openingSent = false;
+      let openingStage: 'none' | 'cue_sent' | 'done' = 'none';
       let openingPending = false;
-      const sendOpening = (): void => {
-        if (openingSent || closed || !connected || !sessionReady) return;
-        if (upstream?.readyState !== WebSocket.OPEN) return;
-        openingSent = true;
-        openingPending = true;
+      const sendUpstream = (frame: string): boolean => {
+        if (upstream?.readyState !== WebSocket.OPEN) return false;
         try {
-          for (const frame of callOpeningFrames()) upstream.send(frame);
+          upstream.send(frame);
+          return true;
         } catch {
-          // Not delivered: the call carries on and he simply speaks first.
+          return false;
+        }
+      };
+      const sendOpeningCue = (): void => {
+        if (openingStage !== 'none' || closed || !connected || !sessionReady) return;
+        if (upstream?.readyState !== WebSocket.OPEN) return;
+        openingStage = 'cue_sent';
+        openingPending = true;
+        // Not delivered: the call carries on and he simply speaks first.
+        if (!sendUpstream(callOpeningItemFrame())) {
+          openingStage = 'done';
           openingPending = false;
         }
+      };
+      const sendOpeningResponse = (): void => {
+        if (openingStage !== 'cue_sent' || closed) return;
+        openingStage = 'done';
+        if (!sendUpstream(callOpeningResponseFrame())) openingPending = false;
       };
       /**
        * True once THIS socket won `beginConnect`.
@@ -612,7 +633,7 @@ export default async function callSocketRoutes(
             } catch {
               /* already gone */
             }
-            sendOpening();
+            sendOpeningCue();
             // The provider's own ceiling, enforced locally too: a socket
             // that outlives it is closed rather than left running. Reaching
             // the ceiling is an expiry, not a failure: the call did everything
@@ -657,6 +678,8 @@ export default async function callSocketRoutes(
           return;
         }
         const decision = sanitiseProviderFrame(event.data);
+        // Read BEFORE the drop: the cue's confirmation is not a browser event.
+        if (decision.type === 'conversation.item.created') sendOpeningResponse();
         if (decision.action === 'drop') return;
         try {
           socket.send(JSON.stringify(decision.payload));
@@ -665,7 +688,11 @@ export default async function callSocketRoutes(
         }
         if (decision.type === 'session.created') {
           sessionReady = true;
-          sendOpening();
+          sendOpeningCue();
+        } else if (decision.type === 'input_audio_buffer.speech_started' && openingStage === 'cue_sent') {
+          // He spoke before the cue landed: no opening, his turn is first.
+          openingStage = 'done';
+          openingPending = false;
         } else if (decision.type === 'response.created') {
           openingPending = false;
         }
