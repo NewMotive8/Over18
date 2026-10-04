@@ -71,7 +71,7 @@ export const ECONOMY_SECTIONS: readonly EconomySection[] = [
   },
   {
     key: 'versions',
-    label: 'Versions & publishing',
+    label: 'Review & publish',
     path: '/admin/economy/versions',
     manages: 'Every version by state, the old -> new review of all open drafts, publishing them together, and cancelling a scheduled version.',
   },
