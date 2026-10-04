@@ -56,7 +56,7 @@ export default function LobbyActions({
         to="/subscription"
         className="ml-0.5 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-rose-500 to-fuchsia-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg shadow-rose-950/30 transition-transform active:scale-95"
       >
-        <span className="text-[10px]">🔥</span> -85%
+        <span className="text-[10px]">🔥</span> Upgrade
       </Link>
     </>
   );
