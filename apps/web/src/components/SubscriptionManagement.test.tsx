@@ -153,3 +153,36 @@ describe('facts the server does not have', () => {
     expect(html).toContain('No payment recorded');
   });
 });
+
+describe('where cancelling lives', () => {
+  const html = renderToStaticMarkup(
+    <SubscriptionDetailView detail={detail()}>
+      <div data-testid="benefits">What Premium includes</div>
+    </SubscriptionDetailView>,
+  );
+
+  it('is below what Premium includes, outside the subscription card', () => {
+    const card = html.slice(html.indexOf('data-testid="subscription-management"'), html.indexOf('</section>'));
+    expect(card).not.toContain('cancel-premium');
+    expect(html.indexOf('</section>')).toBeLessThan(html.indexOf('data-testid="benefits"'));
+    expect(html.indexOf('data-testid="benefits"')).toBeLessThan(html.indexOf('data-testid="cancel-premium"'));
+  });
+
+  it('is a line of red text, not a call-to-action button', () => {
+    const trigger = html.slice(html.lastIndexOf('<button', html.indexOf('data-testid="cancel-premium"')));
+    const tag = trigger.slice(0, trigger.indexOf('>'));
+    expect(tag).toContain('text-rose-500');
+    expect(tag).not.toMatch(/border|bg-|rounded/);
+    expect(trigger).toContain('Cancel Premium');
+  });
+
+  it('the confirmation opens in the same place, below the benefits', () => {
+    const confirming = renderToStaticMarkup(
+      <SubscriptionDetailView detail={detail()} cancelling={{ status: 'confirming' }}>
+        <div data-testid="benefits">What Premium includes</div>
+      </SubscriptionDetailView>,
+    );
+    expect(confirming.indexOf('data-testid="benefits"')).toBeLessThan(confirming.indexOf('data-testid="cancel-confirm"'));
+    expect(confirming).not.toContain('data-testid="cancel-premium"');
+  });
+});

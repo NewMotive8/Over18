@@ -107,8 +107,9 @@ export default function SubscriptionPage() {
               shop to people who had already paid.
             */
             <>
-              <SubscriptionManagement />
-              <PremiumBenefits overview={overview} />
+              <SubscriptionManagement>
+                <PremiumBenefits overview={overview} />
+              </SubscriptionManagement>
             </>
           ) : (
             <>
