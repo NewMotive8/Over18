@@ -4,7 +4,7 @@ import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/s
 import { API_URL, ApiRequestError, charactersApi, conversationsApi, type PublicClip } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
 import {
-  absoluteMediaUrl,
+  profileAvatarUrl,
   apparentAge,
   characterHeaderItems,
   type CharacterMediaItem,
@@ -276,13 +276,7 @@ export default function CharacterDetailPage() {
     premium: false,
   }));
   const age = adultAgeFromBand(apparentAge(visualData));
-  const first = heroItems[0]!.media;
-  const avatarPoster =
-    first.kind === 'video'
-      ? first.poster
-      : first.kind === 'image'
-        ? first.src
-        : absoluteMediaUrl(character.profileImage);
+  const avatarPoster = profileAvatarUrl(character.profileImage, heroItems[0]?.media);
   const relationship = mockRelationship(character);
   const upgrade = upgradeAction(economy, {
     openFunnel: () => setFunnelOpen(true),
