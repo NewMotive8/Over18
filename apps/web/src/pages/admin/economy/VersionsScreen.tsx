@@ -72,6 +72,14 @@ export function VersionsTable({ rows, onCancel }: { rows: readonly VersionRow[];
   );
 }
 
+/**
+ * The changes of a draft that an admin can act on. A plan's feature flags are
+ * left out: the editor offers no control for them (nothing reads them), so a
+ * row about one would describe a choice nobody made.
+ */
+const shownChanges = (diff: EconomyPublishReview['diff'][number]) =>
+  diff.kind === 'plan' ? diff.changes.filter((change) => !change.field.startsWith('features.')) : diff.changes;
+
 /** The review and the publish form. Pure: the parent fetches and publishes. */
 export function ReviewPanel({
   review,
@@ -95,7 +103,7 @@ export function ReviewPanel({
   return (
     <div className="flex flex-col gap-4">
       <p className="text-xs text-zinc-500">Reviewed at {review.asOf}. Publishing applies exactly these drafts, all together.</p>
-      {review.diff.map((diff) => (
+      {review.diff.map((diff) => ({ ...diff, changes: shownChanges(diff) })).map((diff) => (
         <div key={`${diff.kind}-${diff.code ?? ''}`} className="rounded-md border border-zinc-800 p-3">
           <p className="text-sm font-medium text-zinc-200">{diffTitle(diff, config ? nameByCode(config, diff.kind, diff.code) : null)}</p>
           {diff.changes.length === 0 ? (

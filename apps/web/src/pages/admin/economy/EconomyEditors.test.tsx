@@ -37,26 +37,30 @@ describe('Plans', () => {
     expect(html).toContain('Discard draft');
   });
 
-  it('renders one checkbox per catalogue feature flag, ticked as the draft states it', () => {
-    const html = render(<PlanDraftFields form={emptyPlanForm(testCatalogue)} catalogue={testCatalogue} onChange={() => {}} />);
+  it('offers no feature controls: nothing reads those flags, so the editor does not present them', () => {
+    const html = render(<PlanDraftFields form={emptyPlanForm(testCatalogue)} onChange={() => {}} />);
+    expect(html).not.toContain('type="checkbox"');
     for (const key of testCatalogue.planFeatures) {
-      expect(html).toContain(featureLabel(key));
-      expect(html).not.toContain(key); // the name, never the identifier
+      expect(html).not.toContain(featureLabel(key));
+      expect(html).not.toContain(key);
     }
-    expect(html.match(/type="checkbox"/g)).toHaveLength(testCatalogue.planFeatures.length);
+    expect(html).not.toMatch(/feature/i);
     expect(html).toContain('On sale');
     expect(html).toContain('Retired');
+    // Nor does the plan's version history, nor the publish review.
+    const screen = render(<PlansScreen config={configurationView()} reload={noop} />);
+    expect(screen).not.toMatch(/Included features|Voice access/);
   });
 
   it('asks for a plan in business words: money, a named billing period, Credits per billing cycle', () => {
-    const html = render(<PlanDraftFields form={emptyPlanForm(testCatalogue, 'USD')} catalogue={testCatalogue} onChange={() => {}} />);
+    const html = render(<PlanDraftFields form={emptyPlanForm(testCatalogue, 'USD')} onChange={() => {}} />);
     for (const option of ['<option value="1">Monthly', '<option value="3">Quarterly', '<option value="12">Annual']) expect(html).toContain(option);
     expect(html).toContain('Credits included per billing cycle');
     expect(html).toContain('inputMode="decimal"');
     expect(html).toContain('>$</span>');
     expect(html).not.toMatch(/minor|\(months\)|price_minor|billing_period/i);
     // A plan saved with another term keeps it, as its own option.
-    const other = render(<PlanDraftFields form={{ ...emptyPlanForm(testCatalogue, 'USD'), billingPeriodMonths: '6' }} catalogue={testCatalogue} onChange={() => {}} />);
+    const other = render(<PlanDraftFields form={{ ...emptyPlanForm(testCatalogue, 'USD'), billingPeriodMonths: '6' }} onChange={() => {}} />);
     expect(other).toContain('Every 6 months (current)');
   });
 
@@ -135,9 +139,9 @@ describe('Versions & publishing', () => {
   it("shows the server's old -> new review, and requires a reason before publishing", () => {
     const html = render(<ReviewPanel review={publishReview()} form={{ reason: '', when: 'now', scheduledAt: '' }} onForm={() => {}} onPublish={() => {}} busy={false} messages={[]} />);
     expect(html).toContain('Plan “test_monthly”: v1 → v2');
-    expect(html.match(/data-testid="diff-change"/g)).toHaveLength(2);
-    expect(html).toContain('Feature: Voice access');
-    expect(html).not.toContain('features.voice_access');
+    // The price change is shown; the feature-flag change is not (the editor has no control for it).
+    expect(html.match(/data-testid="diff-change"/g)).toHaveLength(1);
+    expect(html).not.toMatch(/Voice access|features.voice_access/);
     // With the configuration: the plan by name, the price as money.
     const named = render(<ReviewPanel review={publishReview()} config={configurationView()} form={{ reason: '', when: 'now', scheduledAt: '' }} onForm={() => {}} onPublish={() => {}} busy={false} messages={[]} />);
     expect(named).toContain('Plan “Test plan”: v1 → v2');

@@ -5,11 +5,9 @@ import {
   availabilityLabel,
   billingPeriodLabel,
   emptyPlanForm,
-  featureLabel,
   planDraftFromForm,
   planFormFrom,
   suggestedCurrency,
-  type Catalogue,
   type PlanForm,
 } from '../../../admin/economyConfig';
 import { adminEconomyApi } from '../../../lib/api';
@@ -19,12 +17,17 @@ import VersionedItemScreen from './VersionedItemScreen';
 /**
  * A plan draft, in the words of the person setting it up.
  *
- * A price is typed as money, a billing period is chosen by name, and the
- * included features are named -- one checkbox per feature in the server's
- * catalogue. What is sent is the same request as before: `planDraftFromForm`
- * turns the price into minor units and the chosen term into months.
+ * A price is typed as money and a billing period is chosen by name. What is
+ * sent is the same request as before: `planDraftFromForm` turns the price into
+ * minor units and the chosen term into months.
+ *
+ * NO FEATURE CONTROLS. The request still carries the plan's feature flags --
+ * the server requires each to be stated before a plan can be published -- but
+ * nothing in the product reads them, so the editor does not offer them as if
+ * they did something. The form keeps a version's flags as they are stored
+ * (`planFormFrom`) and sends them back unchanged.
  */
-export function PlanDraftFields({ form, catalogue, onChange }: { form: PlanForm; catalogue: Catalogue; onChange: (form: PlanForm) => void }) {
+export function PlanDraftFields({ form, onChange }: { form: PlanForm; onChange: (form: PlanForm) => void }) {
   const set = (patch: Partial<PlanForm>) => onChange({ ...form, ...patch });
   // A plan saved with any other term keeps it: it is offered as its own option rather than silently changed.
   const months = form.billingPeriodMonths.trim();
@@ -59,22 +62,6 @@ export function PlanDraftFields({ form, catalogue, onChange }: { form: PlanForm;
         <input inputMode="numeric" value={form.includedCredits} onChange={(e) => set({ includedCredits: e.target.value })} className={inputClass} />
       </Field>
       <fieldset className="text-sm text-zinc-300 sm:col-span-2">
-        <legend>Included features</legend>
-        <p className="mt-0.5 text-xs text-zinc-500">Tick what this plan includes.</p>
-        <div className="mt-2 flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:gap-x-6">
-          {catalogue.planFeatures.map((key) => (
-            <label key={key} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={form.features[key] === true}
-                onChange={(e) => set({ features: { ...form.features, [key]: e.target.checked } })}
-              />
-              <span>{featureLabel(key)}</span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
-      <fieldset className="text-sm text-zinc-300 sm:col-span-2">
         <legend>Availability</legend>
         <div className="mt-2 flex flex-col gap-1.5">
           <label className="flex items-center gap-2">
@@ -101,14 +88,6 @@ export const planColumns: Array<{ label: string; value: (v: AdminPlanVersion) =>
   { label: 'Price', value: (v) => formatMinor(v.priceMinor, v.currency) },
   { label: 'Billing period', value: (v) => billingPeriodLabel(v.billingPeriodMonths) },
   { label: 'Credits per billing cycle', value: (v) => String(v.monthlyIncludedCredits) },
-  {
-    label: 'Included features',
-    value: (v) =>
-      Object.entries(v.features)
-        .filter(([, on]) => on === true)
-        .map(([key]) => featureLabel(key))
-        .join(', ') || '—',
-  },
   { label: 'Availability', value: (v) => availabilityLabel(v.isPurchasable) },
 ];
 
@@ -125,7 +104,7 @@ export default function PlansScreen({ config, reload }: { config: EconomyConfigu
       discard={adminEconomyApi.discardPlanDraft}
       reload={reload}
       columns={planColumns}
-      renderForm={(form, onChange) => <PlanDraftFields form={form} catalogue={config.catalogue} onChange={onChange} />}
+      renderForm={(form, onChange) => <PlanDraftFields form={form} onChange={onChange} />}
     />
   );
 }
