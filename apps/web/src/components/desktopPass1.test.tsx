@@ -8,7 +8,8 @@ import { PRIMARY_DESTINATIONS } from './nav/destinations';
 import HeroCarousel from './lobby/HeroCarousel';
 import ClipRail from './lobby/ClipRail';
 import LobbyTopBar from './lobby/LobbyTopBar';
-import LobbyActions from './lobby/LobbyActions';
+import LobbyActions, { offerLabel } from './lobby/LobbyActions';
+import type { CustomerEconomyState } from '../lib/customerEconomy';
 import FeedGate from './premium/FeedGate';
 import CommunityPromoCard from './lobby/CommunityPromoCard';
 
@@ -198,6 +199,20 @@ describe('notifications are not given any new scope by the desktop header', () =
   it('it appears only on Home, as on a phone -- no other desktop screen gains it', () => {
     expect(read('./AppShell.tsx')).toContain('extras={isLobby ? <LobbyActions onSearch={focusLobbySearch} withAccount={false} /> : undefined}');
     expect(at('/favourites', <DesktopHeader />)).not.toContain('Notifications');
+  });
+
+  it('the offer capsule claims no discount: "Upgrade" until the server says Premium, on phone and desktop alike', () => {
+    for (const header of [at('/characters', <LobbyTopBar />), at('/characters', <DesktopHeader extras={<LobbyActions withAccount={false} />} />)]) {
+      expect(header).toMatch(/href="\/subscription"[^>]*from-rose-500 to-fuchsia-600[^>]*>.*Upgrade<\/a>/);
+      expect(header).not.toMatch(/\d+%/);
+    }
+    const tier = (value: string) => ({ status: 'ready', overview: { commercial: { tier: { available: true, value } } } }) as unknown as CustomerEconomyState;
+    expect(offerLabel(tier('premium'))).toBe('Premium');
+    expect(offerLabel(tier('free'))).toBe('Upgrade');
+    expect(offerLabel({ status: 'signed-out' } as CustomerEconomyState)).toBe('Upgrade');
+    expect(offerLabel({ status: 'loading' } as CustomerEconomyState)).toBe('Upgrade');
+    // The tier unavailable (economy off): no claim of membership.
+    expect(offerLabel({ status: 'ready', overview: { commercial: { tier: { available: false } } } } as unknown as CustomerEconomyState)).toBe('Upgrade');
   });
 
   it('the desktop header passes no count of its own', () => {
