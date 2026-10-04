@@ -36,6 +36,17 @@ export const ECONOMY_ACTION_CATALOGUE = {
   voice_message: { unit: 'per_action', durationTiers: 'forbidden' },
   voice_call: { unit: 'per_minute', durationTiers: 'forbidden' },
   video: { unit: 'per_action', durationTiers: 'required' },
+  /**
+   * One exchange in text chat: the visitor's message and the reply it produces,
+   * charged once. Premium does not make it free -- Premium is access, Credits
+   * are consumption -- and a conversation's automatic opening greeting is not an
+   * exchange the visitor asked for, so it is never charged.
+   *
+   * LAST ON PURPOSE: the admin's "add an action cost" row defaults to the first
+   * entry, so inserting this at the top would have quietly changed what an
+   * operator sees when they add a cost.
+   */
+  text_message: { unit: 'per_action', durationTiers: 'forbidden' },
 } as const satisfies Record<string, { unit: 'per_action' | 'per_minute'; durationTiers: 'required' | 'forbidden' }>;
 export type EconomyActionType = keyof typeof ECONOMY_ACTION_CATALOGUE;
 export const ECONOMY_ACTION_TYPES = Object.keys(ECONOMY_ACTION_CATALOGUE) as EconomyActionType[];
