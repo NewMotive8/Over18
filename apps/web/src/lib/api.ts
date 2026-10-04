@@ -34,6 +34,7 @@ import type {
   CustomerPaymentView,
   SimulatedPaymentResult,
   CustomerEconomyCatalog,
+  CustomerSubscriptionResponse,
   AdminPackVersion,
   AdminPlanVersion,
   AdminRulesetVersion,
@@ -1151,6 +1152,20 @@ export const CUSTOMER_ECONOMY_ENDPOINTS = {
 export const economyApi = {
   catalog: () => request<CustomerEconomyCatalog>(CUSTOMER_ECONOMY_ENDPOINTS.catalog),
   commercialState: () => request<CustomerCommercialState>(CUSTOMER_ECONOMY_ENDPOINTS.commercialState),
+};
+
+/**
+ * A subscriber's own subscription. `detail` carries what the commercial state
+ * cannot -- the exact plan version held (so a withdrawn plan still describes
+ * itself), when it started, and what was last paid.
+ *
+ * `cancel` ends Premium at the end of the period already paid for. There is no
+ * change-plan and no resume call because the backend has neither: see
+ * routes/customer-subscription.ts for why.
+ */
+export const subscriptionApi = {
+  detail: () => request<CustomerSubscriptionResponse>('/api/me/subscription'),
+  cancel: () => request<CustomerSubscriptionResponse>('/api/me/subscription/cancel', { method: 'POST' }),
 };
 
 export const discoveryApi = {

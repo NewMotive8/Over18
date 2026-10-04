@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, sql } from 'drizzle-orm';
 import {
   PURCHASE_ORIGIN_ACTIONS,
   PURCHASE_ORIGINS,
@@ -691,4 +691,36 @@ export async function readPaymentByCheckout(db: Db, userId: string, checkoutRef:
   if (typeof checkoutRef !== 'string' || checkoutRef.trim() === '') invalid('checkoutRef is required.');
   const [row] = await db.select().from(payments).where(and(eq(payments.checkoutRef, checkoutRef), eq(payments.userId, userId)));
   return row ? toView(row) : null;
+}
+
+/**
+ * WHAT A SUBSCRIBER ACTUALLY PAID, most recent first -- never the plan's current
+ * price. The two differ the moment a price changes, and "amount paid" is a fact
+ * about a transaction that already happened.
+ *
+ * Only a SETTLED, succeeded payment counts: a pending one has taken no money
+ * (the `payments_settled_by_status` check ties `settled_at` to a non-pending
+ * status) and a failed one took none either.
+ *
+ * It lives here because this module owns the payment record.
+ */
+export async function lastSettledSubscriptionPayment(
+  db: Pick<Db, 'select'>,
+  userId: string,
+): Promise<{ amountMinor: number; currency: string; paidAt: string } | null> {
+  const [row] = await db
+    .select({ amountMinor: payments.amountMinor, currency: payments.currency, settledAt: payments.settledAt })
+    .from(payments)
+    .where(
+      and(
+        eq(payments.userId, userId),
+        eq(payments.kind, 'subscription'),
+        eq(payments.status, 'succeeded'),
+        isNotNull(payments.settledAt),
+      ),
+    )
+    .orderBy(desc(payments.settledAt))
+    .limit(1);
+  if (!row?.settledAt) return null;
+  return { amountMinor: row.amountMinor, currency: row.currency, paidAt: row.settledAt.toISOString() };
 }
