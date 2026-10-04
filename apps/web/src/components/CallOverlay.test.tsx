@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import CallOverlay, { CallButton, formatRemaining, statusLine } from './CallOverlay';
 import { IDLE_CALL_STATE, type CallState } from '../lib/voiceCall';
 import type { HeroMedia } from '../lib/media';
@@ -243,5 +244,89 @@ describe('like a phone: "Calling…" until she picks up', () => {
     const html = render({ phase: 'active', answered: true, secondsRemaining: 780 });
     expect(html).toContain('Connected');
     expect(html).toContain('13:00 left');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Not enough Credits — a state of its own
+ * ------------------------------------------------------------------ */
+
+describe('being short of Credits is not a failed call', () => {
+  const credits = (over: Partial<CallState> = {}) =>
+    renderToStaticMarkup(
+      <MemoryRouter>
+        <CallOverlay
+          state={state({ phase: 'insufficient_credits', creditsRequired: 1, ...over })}
+          characterName="Luna"
+          onStart={() => {}}
+          onHangUp={() => {}}
+          onClose={() => {}}
+        />
+      </MemoryRouter>,
+    );
+
+  /**
+   * THE WHOLE POINT OF THE PHASE. "Call failed" and "try again in a moment"
+   * are both untrue here: nothing failed, and trying again changes nothing
+   * until they have Credits.
+   */
+  it('never says the call failed, and never says to try again', () => {
+    const html = credits();
+    expect(html).not.toContain('Call failed');
+    expect(html).not.toMatch(/try again/i);
+    expect(html).not.toContain('ended unexpectedly');
+  });
+
+  it('says what is needed, with the number the server gave', () => {
+    expect(credits()).toContain('You need 1 Credit to start a call.');
+  });
+
+  it('pluralises a price above one', () => {
+    expect(credits({ creditsRequired: 3 })).toContain('You need 3 Credits to start a call.');
+  });
+
+  /** A price the server did not state is not invented here. */
+  it('says Credits without a number when the price is unknown', () => {
+    const html = credits({ creditsRequired: null });
+    expect(html).toContain('You need Credits to start a call.');
+    expect(html).not.toMatch(/You need \d/);
+  });
+
+  it('offers Get Credits, pointing at the Credits Store', () => {
+    const html = credits();
+    expect(html).toContain('Get Credits');
+    expect(html).toContain('href="/credits"');
+  });
+
+  it('does not offer Call again, which would do nothing', () => {
+    expect(credits()).not.toContain('Call again');
+  });
+
+  it('shows the state rather than the live call screen', () => {
+    const html = credits();
+    expect(html).toContain('call-insufficient-credits');
+    expect(html).toContain('Not enough Credits');
+    // Never the live controls: there is no call to end.
+    expect(html).not.toContain('End call');
+  });
+
+  /** Nothing is in flight, so the button is pressable again straight away. */
+  it('leaves the call button available', () => {
+    const html = renderToStaticMarkup(
+      <CallButton
+        state={state({ phase: 'insufficient_credits' })}
+        characterName="Luna"
+        onStart={() => {}}
+      />,
+    );
+    // The ATTRIBUTE, not the substring: the class list carries Tailwind's
+    // `disabled:` variants whatever the state.
+    expect(html).not.toContain('disabled=""');
+    expect(html).toContain('>Call</button>');
+    expect(html).not.toContain('On a call');
+  });
+
+  it('is headed as a Credits problem, not a fault', () => {
+    expect(statusLine(state({ phase: 'insufficient_credits' }), 'Luna')).toBe('Not enough Credits');
   });
 });

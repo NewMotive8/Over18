@@ -1,12 +1,15 @@
 import type { Db } from '../db/client.js';
 import type { CommerceEnv } from '../env.js';
+import { economyNow, resolveRuleset } from './economy-resolver.js';
 import {
   beginPaidAction,
   capturePaidAction,
+  DEFAULT_QUALITY_TIER,
   PaidActionError,
+  priceOn,
   runPaidAction,
 } from './paid-action-service.js';
-import { WalletError } from './wallet-service.js';
+import { CREDITS_CURRENCY, readCommercialWallet, WalletError } from './wallet-service.js';
 
 /**
  * CHARGING FOR A LIVE VOICE CALL (`voice_call`), one started minute at a time.
@@ -157,4 +160,67 @@ function asCallCreditError(error: unknown): unknown {
     return new CallCreditError('not_priced', 'Calls are not available right now.', error.reason ?? error.code);
   }
   return error;
+}
+
+/* ------------------------------------------------------------------ *
+ * Telling someone BEFORE they press Call
+ * ------------------------------------------------------------------ */
+
+export type CallAffordability =
+  | { ok: true }
+  /** With the price, so the caller can say what it costs rather than guessing. */
+  | { ok: false; reason: CallCreditErrorCode; creditsRequired: number | null };
+
+/**
+ * CAN THIS PERSON AFFORD TO START A CALL? Read-only, and advisory.
+ *
+ * WHY THIS EXISTS AT ALL. Without it a caller with no Credits pressed Call, a
+ * `call_sessions` row was claimed, the socket opened, and only then did the
+ * first-minute reservation refuse them -- so they were shown "the call ended
+ * unexpectedly", which is true of a fault and wrong here. Nothing failed. They
+ * simply cannot pay, and that is answerable before anything is created.
+ *
+ * IT IS NOT THE GUARD. `withFirstCallMinute` still reserves the first minute
+ * inside the call socket and still fails closed, and it is the only thing that
+ * actually moves Credits. This narrows the window and improves the message; it
+ * does not replace the thing that makes the rule true. Between this read and
+ * that reservation a caller can spend their last Credit elsewhere, and when
+ * they do, the reservation refuses them exactly as it did before.
+ *
+ * SAME PRICE, SAME SOURCE. The amount comes from the published ruleset through
+ * `priceOn` -- the function `beginPaidAction` uses -- so the preflight and the
+ * charge can never disagree about what a minute costs.
+ *
+ * PREMIUM IS NOT CONSULTED, here as everywhere else in this module: Premium is
+ * access, Credits are consumption.
+ */
+export async function canStartCall(
+  db: Db,
+  commerce: Pick<CommerceEnv, 'enabled'>,
+  userId: string,
+): Promise<CallAffordability> {
+  // Calls are not a paid action while the economy is off: nothing to afford.
+  if (!commerce.enabled) return { ok: true };
+
+  const resolved = await resolveRuleset(db, await economyNow(db));
+  // Fail closed, and say why: an unpriced call does not happen, and telling
+  // somebody they are short of Credits when the configuration is missing would
+  // send them to buy Credits that would not help.
+  if (!resolved.ok) return { ok: false, reason: 'not_priced', creditsRequired: null };
+
+  const priced = priceOn(resolved.value, {
+    actionType: VOICE_CALL_ACTION,
+    qualityTier: DEFAULT_QUALITY_TIER,
+    durationSeconds: CALL_MINUTE_SECONDS,
+  });
+  if (!priced.ok) return { ok: false, reason: 'not_priced', creditsRequired: null };
+
+  // No wallet is the same as an empty one: somebody who has never held a Credit
+  // cannot pay for a minute.
+  const wallet = await readCommercialWallet(db, userId, CREDITS_CURRENCY);
+  const spendable = wallet?.spendable ?? 0;
+  if (spendable < priced.amount) {
+    return { ok: false, reason: 'insufficient_credits', creditsRequired: priced.amount };
+  }
+  return { ok: true };
 }

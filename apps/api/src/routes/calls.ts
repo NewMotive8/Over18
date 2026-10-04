@@ -4,6 +4,7 @@ import { getConversationForUser } from '../services/conversation-service.js';
 import { DEFAULT_MEMORY_MAX_STORED } from '../services/memory-service.js';
 import { noopMemoryExtractor, type MemoryExtractor } from '../services/memory-extractor.js';
 import type { Db } from '../db/client.js';
+import type { CommerceEnv } from '../env.js';
 import {
   endCall,
   getCallSessionForUser,
@@ -48,6 +49,11 @@ export default async function callRoutes(
     /** Same extractor as the relay and the text path. Defaults to extracting nothing. */
     memoryExtractor?: MemoryExtractor;
     memoryMaxStored?: number;
+    /**
+     * Whether a call costs Credits. Used only to answer affordability BEFORE a
+     * session is claimed; the authoritative reservation stays in the relay.
+     */
+    commerce: Pick<CommerceEnv, 'enabled'>;
   },
 ) {
   /** Start a call for a conversation the caller owns. */
@@ -64,6 +70,7 @@ export default async function callRoutes(
         provider: opts.provider,
         enabled: opts.enabled,
         maxSeconds: opts.maxSeconds,
+        commerce: opts.commerce,
       });
 
       if (result.ok) {
@@ -145,6 +152,29 @@ export default async function callRoutes(
             error: 'call_already_active',
             message: 'A call is already in progress for this conversation.',
             callSessionId: result.callSessionId,
+          });
+
+        case 'insufficient_credits':
+          /**
+           * NOT A FAILURE, AND IT MUST NOT READ AS ONE. Nothing broke and
+           * nothing was created: this person cannot pay for the first minute.
+           * 402 with a stable code so the browser can offer Credits instead of
+           * "try again in a moment", which would never work.
+           */
+          return reply.code(402).send({
+            error: 'insufficient_credits',
+            message: 'You need Credits to start a call.',
+            creditsRequired: result.creditsRequired,
+          });
+
+        case 'not_priced':
+          // The economy is on and nothing prices a call. Our configuration gap,
+          // so it is reported as unavailable rather than as the caller's fault
+          // -- and never as free.
+          request.log.warn('voice call is not priced by the economy configuration');
+          return reply.code(503).send({
+            error: 'voice_unavailable',
+            message: 'Calls are not available right now. Please try again later.',
           });
 
         case 'provider_error':

@@ -7,7 +7,12 @@ import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { users } from '../db/schema.js';
 import { LlmError } from '../llm/types.js';
 import type { ReplyProvider } from '../services/character-reply.js';
-import { CallCreditError, chargeCallMinute, withFirstCallMinute } from '../services/paid-call-service.js';
+import {
+  CallCreditError,
+  canStartCall,
+  chargeCallMinute,
+  withFirstCallMinute,
+} from '../services/paid-call-service.js';
 import { CREDITS_CURRENCY, grantCredits, readCommercialWallet } from '../services/wallet-service.js';
 import {
   TEST_DATABASE_URL,
@@ -54,9 +59,26 @@ beforeAll(async () => {
   const { db, pool } = createDb(TEST_DATABASE_URL);
   ctx = {
     app: await buildApp(
-      { ...testEnv, commerce: { ...testEnv.commerce, enabled: true } },
+      {
+        ...testEnv,
+        commerce: { ...testEnv.commerce, enabled: true },
+        // Voice on, so the call-start preflight is reachable: `startCall` gates
+        // on this BEFORE it asks whether anyone can pay.
+        voice: { provider: 'spicyapi', apiKey: 'test-not-a-real-key', timeoutMs: 1_000, maxSeconds: 780 },
+        voiceCalls: { enabled: true },
+      },
       db,
-      { replyProvider: (context) => replyImpl(context) },
+      {
+        replyProvider: (context) => replyImpl(context),
+        // Never reached by these tests: the preflight refuses before a session
+        // is claimed, and a passing preflight is asserted without connecting.
+        voiceProvider: {
+          name: 'fake',
+          createSession: async () => {
+            throw new Error('no test may reach the provider');
+          },
+        },
+      },
     ),
     db,
     pool,
@@ -510,5 +532,103 @@ describe('CallCreditError', () => {
     const error = new CallCreditError('insufficient_credits', 'Not enough Credits for this call.', 'wallet_not_found');
     expect(error.message).not.toMatch(/\d/);
     expect(error.reason).toBe('wallet_not_found');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Telling someone before they press Call
+ * ------------------------------------------------------------------ */
+
+describe('starting a call is refused up front when the Credits are not there', () => {
+  const START = (conversationId: string) => `/api/conversations/${conversationId}/call`;
+
+  const callSessionCount = async () =>
+    (await q<{ n: number }>('SELECT count(*)::int AS n FROM call_sessions')).rows[0]!.n;
+
+  const startCallFor = (who: Account) =>
+    ctx.app.inject({ method: 'POST', url: START(who.conversationId), cookies: who.cookies });
+
+  /**
+   * THE WHOLE POINT. Before this, a caller with nothing claimed a session, the
+   * socket opened, the first-minute reservation refused them, and they were
+   * shown "the call ended unexpectedly" -- which describes a fault, and nothing
+   * had faulted.
+   */
+  it('answers 402 and creates no call session', async () => {
+    await priceChatAndCalls();
+    const broke = await account(0);
+
+    const res = await startCallFor(broke);
+
+    expect(res.statusCode).toBe(402);
+    expect(res.json()).toMatchObject({ error: 'insufficient_credits', creditsRequired: 1 });
+    // Nothing was claimed, so there is nothing to resume and nothing to settle.
+    expect(await callSessionCount()).toBe(0);
+    expect(await spendable(broke.id)).toBe(0);
+  });
+
+  /** Premium is access, Credits are consumption — the same rule as everywhere. */
+  it('refuses a Premium caller with no Credits, and creates no call session', async () => {
+    await priceChatAndCalls();
+    const premium = await account(0, { premium: true });
+
+    const res = await startCallFor(premium);
+
+    expect(res.statusCode).toBe(402);
+    expect(res.json()).toMatchObject({ error: 'insufficient_credits' });
+    expect(await callSessionCount()).toBe(0);
+  });
+
+  /** Exactly the price of one minute is enough to begin. */
+  it('lets a caller with one Credit through the preflight', async () => {
+    await priceChatAndCalls();
+    const payer = await account(1);
+
+    const res = await startCallFor(payer);
+
+    expect(res.statusCode).not.toBe(402);
+    // The preflight reserves nothing: the first minute is still the relay's.
+    expect(await spendable(payer.id)).toBe(1);
+  });
+
+  /** Fail closed, and say the right thing: buying Credits would not help here. */
+  it('reports calls as unavailable, not unaffordable, when nothing prices one', async () => {
+    const payer = await account(5);
+
+    const res = await startCallFor(payer);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ error: 'voice_unavailable' });
+    expect(await callSessionCount()).toBe(0);
+  });
+
+  /**
+   * THE PREFLIGHT IS NOT THE GUARD. It narrows the window and improves the
+   * message; `withFirstCallMinute` is still the only thing that moves Credits,
+   * and it still refuses someone who spent their last Credit after the
+   * preflight said yes. Simulated here by draining the wallet between the two.
+   */
+  it('still refuses at the reservation when the Credits go after the preflight', async () => {
+    await priceChatAndCalls();
+    const caller = await account(1);
+    expect(await canStartCall(ctx.db, commerceOn, caller.id)).toEqual({ ok: true });
+
+    // Spent elsewhere in the meantime.
+    await chargeCallMinute(ctx.db, commerceOn, callInput(caller.id), 99);
+    expect(await spendable(caller.id)).toBe(0);
+
+    let providerCalls = 0;
+    await expect(
+      withFirstCallMinute(ctx.db, commerceOn, callInput(caller.id), async () => {
+        providerCalls += 1;
+        return { providerSessionId: 'never' };
+      }),
+    ).rejects.toMatchObject({ code: 'insufficient_credits' });
+    expect(providerCalls).toBe(0);
+  });
+
+  it('asks nothing of the wallet while the economy is off', async () => {
+    const broke = await account(0);
+    expect(await canStartCall(ctx.db, { enabled: false }, broke.id)).toEqual({ ok: true });
   });
 });
