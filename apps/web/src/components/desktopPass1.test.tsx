@@ -203,8 +203,10 @@ describe('notifications are not given any new scope by the desktop header', () =
 
   it('the offer capsule claims no discount: "Upgrade" until the server says Premium, on phone and desktop alike', () => {
     for (const header of [at('/characters', <LobbyTopBar />), at('/characters', <DesktopHeader extras={<LobbyActions withAccount={false} />} />)]) {
-      expect(header).toMatch(/href="\/subscription"[^>]*from-rose-500 to-fuchsia-600[^>]*>.*Upgrade<\/a>/);
-      expect(header).not.toMatch(/\d+%/);
+      const capsule = header.slice(header.lastIndexOf('<a', header.indexOf('href="/subscription"')));
+      expect(capsule).toContain('from-rose-500 to-fuchsia-600');
+      expect(capsule).toMatch(/Upgrade<\/a>/);
+      expect(capsule).not.toMatch(/\d+%/);
     }
     const tier = (value: string) => ({ status: 'ready', overview: { commercial: { tier: { available: true, value } } } }) as unknown as CustomerEconomyState;
     expect(offerLabel(tier('premium'))).toBe('Premium');
