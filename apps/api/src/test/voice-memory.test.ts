@@ -5,6 +5,7 @@ import {
   callTranscriptTurns,
   characterVisualIdentities,
   memories,
+  messages,
 } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters } from '../db/seed.js';
@@ -1212,5 +1213,103 @@ describe('the call prompt states her apparent age', () => {
       userMessage: 'hello',
     });
     expect(withoutField).not.toContain('Her apparent age');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * The call path hands the voice layer the right context
+ * ------------------------------------------------------------------ */
+
+describe('a live call is built as a call, not as a text thread', () => {
+  /** Messages in THIS user's conversation with THIS character. */
+  async function saySomething(user: { conversationId: string }, howMany: number) {
+    for (let i = 0; i < howMany; i += 1) {
+      await ctx.db
+        .insert(messages)
+        .values({ conversationId: user.conversationId, sender: i % 2 === 0 ? 'user' : 'character', content: `turn ${i}` });
+    }
+  }
+
+  const instructions = async (user: { userId: string; conversationId: string; characterId: string }) => {
+    const call = await finishedCall(user, 'active');
+    const request = await buildProviderSessionRequest(ctx.db, call);
+    expect(request).not.toBeNull();
+    return request!.instructions;
+  };
+
+  it('sends the phone layer, not the chat layer', async () => {
+    const user = await register('vm.voicelayer@example.com');
+    const prompt = await instructions(user);
+
+    expect(prompt).toContain('HOW SHE TALKS — ON THE PHONE');
+    expect(prompt).toContain('Carry the conversation');
+    // The rules that made her answer and stop.
+    expect(prompt).not.toContain('Answer the door he opened');
+    expect(prompt).not.toContain('leave it there');
+  });
+
+  /**
+   * THE BUG THIS FIXES. `priorMessageCount` was hardcoded to 0, so every call a
+   * customer ever made opened at the `new` stage -- "stay light and brief,
+   * answer what he actually said and leave it there" -- however long the two had
+   * been talking.
+   */
+  it('opens at the new stage for two people who have only just met', async () => {
+    const user = await register('vm.stagenew@example.com');
+    expect(await instructions(user)).toContain('You two are new to each other');
+  });
+
+  it('is past the new stage once they have exchanged a few messages', async () => {
+    const user = await register('vm.stageearly@example.com');
+    await saySomething(user, 10);
+
+    const prompt = await instructions(user);
+    expect(prompt).toContain('You know each other a little now');
+    expect(prompt).not.toContain('You two are new to each other');
+  });
+
+  it('is comfortable and direct with someone she has talked to for a long time', async () => {
+    const user = await register('vm.stageestablished@example.com');
+    await saySomething(user, 40);
+
+    const prompt = await instructions(user);
+    expect(prompt).toContain('You have known each other a while');
+    expect(prompt).toContain('Be direct about what you think and what you want');
+  });
+
+  /**
+   * The relationship is with the CHARACTER, not with one thread -- the same
+   * scope her memories already use. A second conversation with her counts.
+   */
+  it('counts every conversation they have had with her, not just one', async () => {
+    const user = await register('vm.stageacross@example.com');
+    await saySomething(user, 10);
+    const second = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      payload: { characterId: user.characterId },
+      cookies: user.cookies,
+    });
+    await saySomething({ conversationId: second.json().id as string }, 12);
+
+    expect(await instructions(user)).toContain('You have known each other a while');
+  });
+
+  /** Somebody else's history with her is not this caller's relationship. */
+  it('does not count another person’s messages with the same character', async () => {
+    const stranger = await register('vm.stranger@example.com');
+    await saySomething(stranger, 40);
+    const fresh = await register('vm.freshcaller@example.com');
+
+    expect(await instructions(fresh)).toContain('You two are new to each other');
+  });
+
+  it('still carries who she is and what she is for', async () => {
+    const user = await register('vm.voiceidentity@example.com');
+    const prompt = await instructions(user);
+
+    expect(prompt).toContain('WHO SHE IS');
+    expect(prompt).toContain('What you are here for:');
+    expect(prompt).toContain('never break character');
   });
 });

@@ -15,6 +15,21 @@ import type { CharacterPersona, ChatMessage, PublicCharacter } from '@over18/sha
  */
 export interface ReplyContext {
   character: PublicCharacter;
+  /**
+   * WHICH CHANNEL SHE IS SPEAKING ON, because the two want opposite behaviour.
+   *
+   * Text chat is deliberately reactive: its rules were tuned across 126 live
+   * calls to stop her hijacking topics and introducing things nobody mentioned.
+   * A phone call wants the reverse -- somebody who carries the conversation,
+   * volunteers things and leads. Applying the text rules to a call is what made
+   * her answer questions and then wait.
+   *
+   * Only the behaviour layer branches on this. Who she is, her voice, her
+   * memories and what she is for are the same person on both.
+   *
+   * Defaults to text, so every existing caller and fixture is unchanged.
+   */
+  channel?: 'text' | 'voice';
   /** Internal persona instructions from the DB. Never exposed on the wire. */
   systemPrompt: string;
   /** Prior messages in the conversation, oldest first (excludes the new user message). */
