@@ -2,6 +2,7 @@ import { useRef, useState, type ReactNode } from 'react';
 import type { CharacterMediaItem } from '../../lib/media';
 import HeroMedia from '../HeroMedia';
 import { ChevronLeftIcon, CrownIcon } from '../icons';
+import CharacterAvatar from '../CharacterAvatar';
 
 /**
  * Persona profile hero media player (US-29 / brief §2).
@@ -165,15 +166,7 @@ export default function ProfileHero({
 
       {/* Identity block -- phone and tablet. On a desktop it is beside the media: see ProfileIdentity. */}
       <div className="absolute inset-x-0 bottom-0 flex items-end gap-3 p-4 lg:hidden">
-        <span className="h-14 w-14 shrink-0 overflow-hidden rounded-full border-2 border-white/80 bg-zinc-800">
-          {avatarPoster ? (
-            <img src={avatarPoster} alt="" className="h-full w-full object-cover" />
-          ) : (
-            <span className="flex h-full w-full items-center justify-center text-xl font-bold text-rose-400">
-              {name.charAt(0)}
-            </span>
-          )}
-        </span>
+        <CharacterAvatar name={name} src={avatarPoster} size="md" />
         <div className="min-w-0 pb-1">
           <div className="flex items-center gap-2">
             <h1 className="truncate text-2xl font-black tracking-tight text-white drop-shadow">{name}</h1>
