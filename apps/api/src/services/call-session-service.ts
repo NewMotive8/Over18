@@ -14,6 +14,8 @@ import { toPublicCharacter } from './character-service.js';
 import { getActiveVisualIdentity, isAdultAgeBand } from './visual-identity-service.js';
 import { buildCharacterSystemPrompt, selectMemoriesForPrompt } from './prompt-builder.js';
 import { listMemories } from './memory-service.js';
+import type { CommerceEnv } from '../env.js';
+import { canStartCall } from './paid-call-service.js';
 import { resolveVoice } from '../voice/voice-catalogue.js';
 import { VoiceProviderError, type VoiceSessionProvider } from '../voice/types.js';
 
@@ -131,7 +133,14 @@ export type StartCallFailure =
   /** This person is already on a call, in some other conversation. */
   | { ok: false; reason: 'user_busy' }
   /** The provider refused or could not be reached. */
-  | { ok: false; reason: 'provider_error'; kind: string };
+  | { ok: false; reason: 'provider_error'; kind: string }
+  /**
+   * The caller cannot pay for the first minute, or nothing prices a call.
+   * Decided BEFORE a row is claimed, so a refused start leaves no trace and
+   * nothing for the caller to resume. `creditsRequired` is null when the
+   * refusal was a missing price rather than an empty wallet.
+   */
+  | { ok: false; reason: 'insufficient_credits' | 'not_priced'; creditsRequired: number | null };
 
 export type StartCallResult =
   | {
@@ -273,6 +282,8 @@ export interface StartCallDeps {
   provider: VoiceSessionProvider;
   enabled: boolean;
   maxSeconds: number;
+  /** Whether a call costs Credits. Off means calls are not a paid action. */
+  commerce: Pick<CommerceEnv, 'enabled'>;
 }
 
 /**
@@ -298,6 +309,24 @@ export async function startCall(
   // 3. An existing live session wins; a second is never started.
   const existing = await getLiveSessionForConversation(db, conversationId);
   if (existing) return { ok: false, reason: 'already_active', callSessionId: existing.id };
+
+  /**
+   * 3a. CAN THEY PAY FOR THE FIRST MINUTE? Asked here, before a row exists.
+   *
+   * The authoritative reservation still happens in the call socket and still
+   * fails closed; this only moves the ANSWER earlier, so somebody with no
+   * Credits is told so instead of watching a call claim a session, open a
+   * socket and die with "the call ended unexpectedly". Nothing failed in that
+   * story -- they just could not pay, and that was knowable up front.
+   *
+   * Placed after ownership so it cannot be used to probe another person's
+   * conversations, and before the character read and the claim so a refusal
+   * costs a wallet read and writes nothing at all.
+   */
+  const affordable = await canStartCall(db, deps.commerce, userId);
+  if (!affordable.ok) {
+    return { ok: false, reason: affordable.reason, creditsRequired: affordable.creditsRequired };
+  }
 
   // 4. Everything the provider is told is resolved here, from the server.
   const [characterRow] = await db

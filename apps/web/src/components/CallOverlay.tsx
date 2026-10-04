@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { IDLE_CALL_STATE, type CallState } from '../lib/voiceCall';
 import type { HeroMedia } from '../lib/media';
 import { PhoneIcon } from './icons';
@@ -57,6 +58,9 @@ export function statusLine(state: CallState, characterName: string): string {
       return 'Call ended';
     case 'error':
       return 'Call failed';
+    case 'insufficient_credits':
+      // Never "Call failed": nothing failed, and nothing was started.
+      return 'Not enough Credits';
     case 'idle':
       return `Call ${characterName}`;
   }
@@ -79,7 +83,14 @@ export function CallButton({
   characterName: string;
   onStart: () => void;
 }) {
-  const busy = state.phase !== 'idle' && state.phase !== 'ended' && state.phase !== 'error';
+  // Terminal phases leave the button pressable. Being short of Credits is one
+  // of them: nothing is in flight, and once they have Credits the same button
+  // is what starts the call.
+  const busy =
+    state.phase !== 'idle' &&
+    state.phase !== 'ended' &&
+    state.phase !== 'error' &&
+    state.phase !== 'insufficient_credits';
   return (
     <button
       type="button"
@@ -106,6 +117,12 @@ export default function CallOverlay({
 
   const live = state.phase === 'permission' || state.phase === 'connecting' || state.phase === 'active';
   const over = state.phase === 'ended' || state.phase === 'error';
+  /**
+   * NOT AN ERROR, AND NOT RETRYABLE. "Call again" is the wrong control here --
+   * pressing it changes nothing until they have Credits -- so this phase gets a
+   * footer of its own, with the action that does help.
+   */
+  const needsCredits = state.phase === 'insufficient_credits';
   const round = 'flex h-[4.5rem] w-[4.5rem] items-center justify-center rounded-full text-white shadow-lg transition';
 
   // A phone's call screen: her portrait fills it, her name and the status sit
@@ -186,6 +203,36 @@ export default function CallOverlay({
                   <PhoneIcon className="h-8 w-8 rotate-[135deg]" />
                 </button>
                 <span aria-hidden className="text-sm font-medium text-white drop-shadow">End call</span>
+              </div>
+            )}
+
+            {needsCredits && (
+              <div data-testid="call-insufficient-credits" className="flex flex-col items-center gap-4 px-6">
+                <p className="text-center text-sm text-zinc-200">
+                  {state.creditsRequired === null
+                    ? 'You need Credits to start a call.'
+                    : `You need ${state.creditsRequired} Credit${state.creditsRequired === 1 ? '' : 's'} to start a call.`}
+                </p>
+                <div className="flex items-start gap-16">
+                  <div className="flex flex-col items-center gap-2">
+                    <button type="button" onClick={onClose} aria-label="Close" className={`${round} bg-zinc-700/80 backdrop-blur hover:bg-zinc-600`}>
+                      <span aria-hidden className="text-3xl leading-none">&times;</span>
+                    </button>
+                    <span aria-hidden className="text-sm font-medium text-white drop-shadow">Close</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-2">
+                    <Link
+                      to="/credits"
+                      onClick={onClose}
+                      data-testid="call-get-credits"
+                      aria-label="Get Credits"
+                      className={`${round} bg-gradient-to-br from-rose-600 to-pink-600 hover:from-rose-500 hover:to-pink-500`}
+                    >
+                      <span aria-hidden className="text-2xl leading-none">+</span>
+                    </Link>
+                    <span aria-hidden className="text-sm font-medium text-white drop-shadow">Get Credits</span>
+                  </div>
+                </div>
               </div>
             )}
 
