@@ -105,6 +105,24 @@ export function absoluteMediaUrl(raw: string | null | undefined): string | undef
   return url.startsWith('/api/') ? `${API_URL}${url}` : url;
 }
 
+/**
+ * The round avatar beside a character's name on her profile.
+ *
+ * HER PRIMARY REFERENCE, FIRST. `profileImage` is the portrait the server
+ * resolves from her primary reference -- the same face the lobby card and the
+ * chat header show. The avatar used to be cut from whatever the header deck led
+ * with, so a character whose first clip had no poster frame showed a letter
+ * while her portrait was sitting in the payload. The header media is now only
+ * the fallback, for a character with no primary reference at all.
+ */
+export function profileAvatarUrl(profileImage: string | null | undefined, first: HeroMedia | undefined): string | undefined {
+  const portrait = absoluteMediaUrl(profileImage);
+  if (portrait) return portrait;
+  if (first?.kind === 'video') return first.poster;
+  if (first?.kind === 'image') return first.src;
+  return undefined;
+}
+
 /** First canonical reference image (by position) from a visual-identity response. */
 export function firstCanonicalImage(
   visual: CharacterVisualIdentityResponse | null | undefined,

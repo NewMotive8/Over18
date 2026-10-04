@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { CharacterVisualIdentityResponse, PublicCharacter } from '@over18/shared';
 import {
+  absoluteMediaUrl,
+  profileAvatarUrl,
   apparentAge,
   characterHeaderItems,
   firstCanonicalImage,
@@ -586,5 +588,22 @@ describe("the header cannot show her identity image as a 'video'", () => {
       null,
     );
     expect(items[0]!.media.kind).toBe('placeholder');
+  });
+});
+
+describe('the profile avatar', () => {
+  it('is her primary reference portrait, whatever the header deck leads with', () => {
+    const portrait = '/api/media/assets/abc/file';
+    const shown = absoluteMediaUrl(portrait);
+    expect(profileAvatarUrl(portrait, { kind: 'video', src: 'https://cdn/clip.mp4' })).toBe(shown);
+    expect(profileAvatarUrl(portrait, { kind: 'video', src: 'https://cdn/clip.mp4', poster: 'https://cdn/poster.jpg' })).toBe(shown);
+    expect(profileAvatarUrl(portrait, { kind: 'image', src: 'https://cdn/other.jpg' })).toBe(shown);
+  });
+
+  it('falls back to the header media only when she has no primary reference', () => {
+    expect(profileAvatarUrl(null, { kind: 'video', src: 'https://cdn/clip.mp4', poster: 'https://cdn/poster.jpg' })).toBe('https://cdn/poster.jpg');
+    expect(profileAvatarUrl('  ', { kind: 'image', src: 'https://cdn/still.jpg' })).toBe('https://cdn/still.jpg');
+    expect(profileAvatarUrl(null, { kind: 'video', src: 'https://cdn/clip.mp4' })).toBeUndefined();
+    expect(profileAvatarUrl(undefined, undefined)).toBeUndefined();
   });
 });
