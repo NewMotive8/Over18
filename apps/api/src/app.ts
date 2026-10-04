@@ -293,6 +293,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
     memoryMaxStored: env.memory.maxStored,
     mediaSelector,
+    commerce: env.commerce,
   });
 
   /**
@@ -361,6 +362,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
       // filled from both channels.
       memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
       memoryMaxStored: env.memory.maxStored,
+      commerce: env.commerce,
     });
   });
 

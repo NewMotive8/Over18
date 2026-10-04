@@ -14,6 +14,13 @@ import {
   type SettleStatus,
   type TranscriptSpeaker,
 } from '../services/call-session-service.js';
+import type { CommerceEnv } from '../env.js';
+import {
+  CALL_MINUTE_SECONDS,
+  CallCreditError,
+  chargeCallMinute,
+  withFirstCallMinute,
+} from '../services/paid-call-service.js';
 import {
   decideClientFrame,
   describeError,
@@ -89,6 +96,11 @@ export default async function callSocketRoutes(
     memoryExtractor?: MemoryExtractor;
     /** Per-(user, character) memory cap, as the message path configures it. */
     memoryMaxStored?: number;
+    /**
+     * Whether a call costs Credits. While the economy is off a call is not a
+     * paid action; while it is on, a call that cannot be priced never starts.
+     */
+    commerce: Pick<CommerceEnv, 'enabled'>;
   },
 ) {
   const allowedOrigins = new Set(
@@ -187,6 +199,10 @@ export default async function callSocketRoutes(
       let claimed = false;
       let durationTimer: ReturnType<typeof setTimeout> | null = null;
       let connectTimer: ReturnType<typeof setTimeout> | null = null;
+      /** Charges each started minute after the first; cleared with the call. */
+      let minuteTimer: ReturnType<typeof setInterval> | null = null;
+      /** Minutes charged so far. Minute 1 is paid before the session exists. */
+      let minutesCharged = 1;
 
       /**
        * The transcript writes, as a single chain rather than a scatter.
@@ -266,6 +282,7 @@ export default async function callSocketRoutes(
         closed = true;
         if (connectTimer) clearTimeout(connectTimer);
         if (durationTimer) clearTimeout(durationTimer);
+        if (minuteTimer) clearInterval(minuteTimer);
         try {
           upstream?.close();
         } catch {
@@ -555,8 +572,33 @@ export default async function callSocketRoutes(
        * ---------------------------------------------------------------- */
       let session;
       try {
-        session = await opts.provider.createSession(request_);
+        /**
+         * THE FIRST MINUTE IS RESERVED BEFORE THE SESSION EXISTS.
+         *
+         * A caller who cannot afford a minute is refused here, and
+         * `createSession` is never reached -- the provider bills a created
+         * session whether or not anyone speaks and gives us no way to cancel
+         * one, so an unaffordable call must not become one. If creation then
+         * fails, the reservation is released and the caller keeps the Credit.
+         */
+        session = await withFirstCallMinute(
+          opts.db,
+          opts.commerce,
+          { userId, callSessionId, requestId: request.id },
+          () => opts.provider.createSession(request_),
+        );
       } catch (error) {
+        if (error instanceof CallCreditError) {
+          // Nothing upstream was created and nothing was charged. Settled as a
+          // failure with a reason that names the cause, never the wallet's
+          // numbers.
+          request.log.info(
+            { callCreditRefusal: error.code, callCreditReason: error.reason },
+            'voice relay: call refused before any provider session was created',
+          );
+          await teardown(error.code, { status: 'failed', reason: `credits_${error.code}` });
+          return;
+        }
         const kind = error instanceof VoiceProviderError ? error.kind : 'unexpected';
         const ambiguous = !(error instanceof VoiceProviderError && error.definitelyCreatedNothing);
         /**
@@ -645,6 +687,51 @@ export default async function callSocketRoutes(
               () => closeQuietly('max_duration', { status: 'expired', reason: 'max_duration' }),
               session.maxSeconds * 1000,
             );
+
+            /**
+             * EVERY MINUTE AFTER THE FIRST, CHARGED AS IT STARTS.
+             *
+             * Minute 1 was paid for before the session was created, so the
+             * first tick is minute 2. When the Credits run out the call ENDS
+             * rather than continuing unpaid -- an expiry, like reaching the
+             * provider's ceiling: the call had everything it was paid for.
+             *
+             * A genuine fault (a database outage, say) is NOT treated as an
+             * empty wallet: `chargeCallMinute` throws for those, and the call is
+             * ended as a failure instead, so nobody is hung up on for being out
+             * of Credits when they are not.
+             */
+            minuteTimer = setInterval(() => {
+              void (async () => {
+                if (closed) return;
+                const next = minutesCharged + 1;
+                let outcome;
+                try {
+                  outcome = await chargeCallMinute(
+                    opts.db,
+                    opts.commerce,
+                    { userId, callSessionId, requestId: request.id },
+                    next,
+                  );
+                } catch {
+                  // Never the error itself: it can carry the failing statement.
+                  closeQuietly('billing_unavailable', { status: 'failed', reason: 'credits_charge_failed' });
+                  return;
+                }
+                if (!outcome.charged) {
+                  request.log.info(
+                    { callCreditRefusal: outcome.reason, minute: next },
+                    'voice relay: call ended because the Credits ran out',
+                  );
+                  closeQuietly('out_of_credits', { status: 'expired', reason: 'out_of_credits' });
+                  return;
+                }
+                minutesCharged = next;
+              })().catch(() => {
+                // This promise is deliberately not awaited: a rejection escaping
+                // it would have nowhere to go but the process.
+              });
+            }, CALL_MINUTE_SECONDS * 1000);
           } catch {
             /**
              * THE WRITE FAILED WITH A LIVE PROVIDER SESSION ON THE OTHER END.
