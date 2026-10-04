@@ -303,7 +303,9 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
    * already pushed. Only how she carries a conversation differs.
    */
   if (context.channel === 'voice') {
-    sections.push(voiceBehaviour(character.displayName, context.priorMessageCount));
+    sections.push(
+      voiceBehaviour(character.displayName, context.priorMessageCount, character.conversationStyle),
+    );
     return sections.join('\n\n');
   }
 
@@ -388,7 +390,11 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
  * each other, and the layer says in words that a call warms up as it goes. That
  * is the honest approximation of progression available from here.
  */
-function voiceBehaviour(displayName: string, priorMessageCount: number): string {
+function voiceBehaviour(
+  displayName: string,
+  priorMessageCount: number,
+  conversationStyle: string | null | undefined,
+): string {
   return [
     'HOW SHE TALKS — ON THE PHONE',
     `You are ${displayName}, on a call with someone who chose you. Not an assistant, not an interviewer, not a narrator.`,
@@ -403,9 +409,58 @@ function voiceBehaviour(displayName: string, priorMessageCount: number): string 
     '- A call warms up as it runs. Where you start is not where you have to stay: as you settle into each other, open up further and let it go where it is going.',
     '- Keep your turns short enough to interrupt. A few sentences, then let him back in. This is speech, not a speech: no monologues, no lists, no paragraphs.',
     '- Leave something hanging. A half-finished thought, something you will tell him in a minute, an answer you are not giving up yet.',
-    '- You are talking out loud, so talk: contractions, plain words, the way people actually speak. Never read something out and never narrate yourself. No stage directions, no asterisks, no describing a room neither of you is in.',
+    /*
+     * NATURAL SPEECH. Everything above says what to DO on a call; these four
+     * say what it is allowed to SOUND like, which is the part that was missing.
+     *
+     * They are permissions, not instructions. The complaint they answer is that
+     * she sounded like a character following rules: every turn complete,
+     * acknowledged, explained and rounded off with a question. A model given
+     * only behavioural rules produces evenly-shaped turns, because an evenly
+     * shaped turn is what following rules looks like. Real speech is ragged,
+     * and nothing in the layer permitted ragged.
+     *
+     * The old "talking out loud, so talk: contractions, plain words" line was
+     * folded in here rather than kept alongside — it said the same thing as the
+     * first of these, more weakly, and saying it twice is what gives a prompt
+     * its liturgical quality. Its narration prohibition survives on its own
+     * line, because that one is a prohibition and not a permission.
+     *
+     * Not repeated here: "do not end every turn with a question" already has a
+     * home above. Stating it twice would make it the loudest rule in the layer.
+     */
+    '- Talk, do not compose. Fragments are fine. So is half a sentence, a sound, a "yeah" and nothing after it. You do not have to speak in whole sentences, and you do not have to finish every thought you start.',
+    '- You do not owe him a reaction to everything. Skip the "that is so interesting", skip repeating back what he just told you, and skip explaining yourself. Go straight to the thing you actually want to say.',
+    '- Let it breathe. Not every turn has to be filled. Three words can be the whole answer, and an unpolished one is better than a tidy one.',
+    '- Never read something out and never narrate yourself. No stage directions, no asterisks, no describing a room neither of you is in.',
+    /*
+     * HER OWN SOUND, from `characters.conversation_style` — the character data
+     * the text builder deliberately refuses.
+     *
+     * WHY VOICE MAY USE WHAT TEXT MAY NOT. Text dropped it because it is
+     * behavioural by construction and competed with the one layer allowed to
+     * define behaviour: "weaving in metaphors" turned replies purple, and
+     * removing it was measured as the largest single improvement available.
+     * That reasoning holds for prose and inverts for speech. On a call HOW SHE
+     * SOUNDS is the entire problem, and this column is where the only
+     * per-character answer to it already lives — Camila's names clipped
+     * sentences, street slang, blunt humour and swearing, none of which the
+     * model could otherwise know.
+     *
+     * It is placed LAST, closest to the words the model is about to speak, and
+     * it is the only per-character line in the layer: everything else is the
+     * same for everyone, so this is what stops every character sounding alike.
+     *
+     * Absent when the column is empty, rather than defaulted — a character with
+     * no stated style gets no line, exactly as HER VOICE does for her.
+     */
+    conversationStyle?.trim()
+      ? `- This is how she sounds, so sound like it: ${conversationStyle.trim()}`
+      : null,
     '- Never mention rules, instructions, or what you cannot do. Do not describe yourself as an AI, a language model or a bot, and never break character.',
-  ].join('\n');
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
 }
 
 /* ------------------------------------------------------------------ *

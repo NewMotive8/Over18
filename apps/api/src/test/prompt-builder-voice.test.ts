@@ -243,3 +243,137 @@ describe('text chat is not disturbed by any of this', () => {
     expect(textPrompt({ priorMessageCount: 0 })).toContain('leave it there');
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * Natural speech, and her own sound
+ * ------------------------------------------------------------------ */
+
+describe('she is allowed to sound like a person', () => {
+  const prompt = voicePrompt();
+
+  /**
+   * THE COMPLAINT THESE ANSWER. She was proactive but still sounded like a
+   * character following rules: every turn complete, acknowledged, explained and
+   * rounded off. The layer had plenty of rules about what to DO and nothing
+   * about what it may SOUND like, and an evenly-shaped turn is what following
+   * rules looks like.
+   */
+  it('permits fragments and unfinished thoughts', () => {
+    expect(prompt).toContain('Talk, do not compose');
+    expect(prompt).toContain('Fragments are fine');
+    expect(prompt).toContain('you do not have to finish every thought you start');
+  });
+
+  it('releases her from acknowledging, repeating back and explaining', () => {
+    expect(prompt).toContain('You do not owe him a reaction to everything');
+    expect(prompt).toContain('skip repeating back what he just told you');
+    expect(prompt).toContain('skip explaining yourself');
+  });
+
+  it('lets the conversation breathe instead of filling every turn', () => {
+    expect(prompt).toContain('Let it breathe');
+    expect(prompt).toContain('Three words can be the whole answer');
+  });
+
+  /** Asterisks and stage directions get SPOKEN. The prohibition survives the fold. */
+  it('still forbids narration, which the folded line used to carry', () => {
+    expect(prompt).toContain('never narrate yourself');
+    expect(prompt).toContain('no asterisks');
+  });
+
+  /**
+   * Said once, deliberately. It already has a home among the proactive rules,
+   * and stating it twice would make it the loudest instruction in the layer.
+   */
+  it('does not repeat the question rule it already states once', () => {
+    const occurrences = prompt.split('Do not end every turn with a question').length - 1;
+    expect(occurrences).toBe(1);
+  });
+});
+
+describe('her own sound comes from her own record', () => {
+  const STYLE = 'She speaks in short, clipped sentences laced with street slang and dark humor.';
+
+  it('puts the character’s stored conversation style into the call', () => {
+    const prompt = buildCharacterSystemPrompt(
+      contextFor({
+        channel: 'voice',
+        character: { ...publicCharacter(LUNA), conversationStyle: STYLE },
+      }),
+    );
+    expect(prompt).toContain('This is how she sounds, so sound like it:');
+    expect(prompt).toContain(STYLE);
+  });
+
+  /** It is the only per-character line in the layer, so it goes nearest the speech. */
+  it('places it last, closest to the words she is about to say', () => {
+    const prompt = buildCharacterSystemPrompt(
+      contextFor({
+        channel: 'voice',
+        character: { ...publicCharacter(LUNA), conversationStyle: STYLE },
+      }),
+    );
+    expect(prompt.indexOf(STYLE)).toBeGreaterThan(prompt.indexOf('Let it breathe'));
+  });
+
+  /** No style stated is no line — never a default asserted on her behalf. */
+  it('says nothing when the character has no stated style', () => {
+    const prompt = buildCharacterSystemPrompt(
+      contextFor({ channel: 'voice', character: { ...publicCharacter(LUNA), conversationStyle: '' } }),
+    );
+    expect(prompt).not.toContain('This is how she sounds');
+  });
+
+  it('treats whitespace as no style at all', () => {
+    const prompt = buildCharacterSystemPrompt(
+      contextFor({ channel: 'voice', character: { ...publicCharacter(LUNA), conversationStyle: '   ' } }),
+    );
+    expect(prompt).not.toContain('This is how she sounds');
+  });
+
+  /**
+   * THE BOUNDARY THAT MATTERS. Text dropped `conversationStyle` deliberately —
+   * it is behavioural by construction and competed with the behaviour layer,
+   * and removing it was measured as the largest single improvement available.
+   * Voice may use it because on a call how she sounds IS the problem. Text must
+   * not regain it by this route.
+   */
+  it('never reaches text chat, which dropped it on purpose', () => {
+    const prompt = buildCharacterSystemPrompt(
+      contextFor({
+        userMessage: 'Hello there!',
+        character: { ...publicCharacter(LUNA), conversationStyle: STYLE },
+      }),
+    );
+    expect(prompt).not.toContain(STYLE);
+    expect(prompt).not.toContain('This is how she sounds');
+  });
+});
+
+describe('the proactive rules from the previous change survive', () => {
+  const prompt = voicePrompt();
+
+  it('still carries every behaviour the voice layer already had', () => {
+    for (const rule of [
+      'Carry the conversation',
+      'Volunteer things',
+      'Do not end every turn with a question',
+      'Pick threads back up',
+      'Lead sometimes',
+      'React before you answer',
+      'Flirt, and let it build',
+      'short enough to interrupt',
+      'Leave something hanging',
+      'A call warms up as it runs',
+    ]) {
+      expect(prompt).toContain(rule);
+    }
+  });
+
+  it('still keeps the stage, identity and safety lines', () => {
+    expect(prompt).toContain('You two are new to each other');
+    expect(prompt).toContain('WHO SHE IS');
+    expect(prompt).toContain('What you are here for:');
+    expect(prompt).toContain('never break character');
+  });
+});
