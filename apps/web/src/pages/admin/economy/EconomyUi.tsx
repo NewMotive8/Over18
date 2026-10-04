@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import type { EconomyVersionState } from '@over18/shared';
-import { STATE_LABEL } from '../../../admin/economyConfig';
+import { RETIRED_HELP, STATE_HELP, STATE_LABEL, currencySymbol } from '../../../admin/economyConfig';
 
 /**
  * Small presentational pieces shared by the economy editors. No fetching, no
@@ -36,7 +36,11 @@ export function StateBadge({ state }: { state: EconomyVersionState }) {
     superseded: 'border-zinc-700 text-zinc-500',
     cancelled: 'border-zinc-700 text-zinc-500 line-through',
   };
-  return <span className={`rounded border px-1.5 py-0.5 text-[11px] uppercase tracking-wide ${styles[state]}`}>{STATE_LABEL[state]}</span>;
+  return (
+    <span title={STATE_HELP[state]} className={`rounded border px-1.5 py-0.5 text-[11px] uppercase tracking-wide ${styles[state]}`}>
+      {STATE_LABEL[state]}
+    </span>
+  );
 }
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -46,6 +50,76 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
       {children}
       {hint && <span className="mt-1 block text-xs text-zinc-500">{hint}</span>}
     </label>
+  );
+}
+
+/**
+ * A price, typed as money.
+ *
+ * The currency's own symbol sits in front and the amount is typed the way it is
+ * written -- the conversion to the stored minor units is `economyConfig`'s, on
+ * save. The field never shows or asks for the minor-unit integer.
+ */
+export function MoneyField({
+  label,
+  hint,
+  value,
+  currency,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  currency: string;
+  onChange: (value: string) => void;
+}) {
+  const symbol = currencySymbol(currency);
+  return (
+    <Field label={label} hint={hint}>
+      <span className="mt-1 flex items-center rounded-md border border-zinc-800 bg-zinc-950 focus-within:border-zinc-600">
+        {symbol && (
+          <span aria-hidden className="pl-3 text-sm text-zinc-500">
+            {symbol}
+          </span>
+        )}
+        <input
+          inputMode="decimal"
+          autoComplete="off"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-transparent px-3 py-2 text-sm text-zinc-100 outline-none"
+        />
+      </span>
+    </Field>
+  );
+}
+
+/**
+ * What the states mean, in business words, beside every version history.
+ *
+ * "Retired" is listed with them because that is how an admin thinks of it,
+ * though it is a published version that is no longer offered, not a state.
+ */
+export function StateGuide() {
+  const states: EconomyVersionState[] = ['draft', 'scheduled', 'active', 'superseded', 'cancelled'];
+  return (
+    <details className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-4 py-3 text-sm text-zinc-300">
+      <summary className="cursor-pointer text-zinc-400">What do Draft, Published and Retired mean?</summary>
+      <dl className="mt-3 flex flex-col gap-2">
+        {states.map((state) => (
+          <div key={state} className="flex flex-wrap items-baseline gap-2">
+            <dt>
+              <StateBadge state={state} />
+            </dt>
+            <dd className="text-zinc-400">{STATE_HELP[state]}</dd>
+          </div>
+        ))}
+        <div className="flex flex-wrap items-baseline gap-2">
+          <dt className="rounded border border-zinc-700 px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-zinc-400">Retired</dt>
+          <dd className="text-zinc-400">{RETIRED_HELP.replace(/^Retired: /, '')}</dd>
+        </div>
+      </dl>
+    </details>
   );
 }
 
