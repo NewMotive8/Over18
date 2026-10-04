@@ -5,6 +5,8 @@ import {
   callTranscriptTurns,
   characterPersonas,
   characters,
+  conversations,
+  messages,
   type CallSessionRow,
 } from '../db/schema.js';
 import { getConversationForUser } from './conversation-service.js';
@@ -477,13 +479,41 @@ export async function buildProviderSessionRequest(
   const verifiedAdultAgeBand =
     typeof band === 'string' && isAdultAgeBand(band) ? band.trim() : null;
 
+  /**
+   * HOW WELL THESE TWO ALREADY KNOW EACH OTHER, which decides her stage.
+   *
+   * This was hardcoded to 0, so `conversationStage` returned `new` on every call
+   * a customer ever made. On the text layer that meant "stay light and brief,
+   * answer what he actually said and leave it there" — the most reactive rule in
+   * the prompt, permanently in force, no matter how long they had known each
+   * other. A caller who had exchanged three hundred messages with her was
+   * greeted by someone behaving as though they had just met.
+   *
+   * Counted across ALL their conversations, because the relationship is with the
+   * character and not with one thread — the same scope `memories` already uses.
+   *
+   * IT CANNOT ADVANCE MID-CALL, and nothing here pretends otherwise: the
+   * instructions are sent once at session creation and the provider accepts only
+   * `turn_detection` on a session update. The voice layer covers the rest in
+   * words ("a call warms up as it runs"). Turns taken during the call are
+   * recorded as transcript rows and will count towards the NEXT call.
+   */
+  const [priorMessages] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(messages)
+    .innerJoin(conversations, eq(conversations.id, messages.conversationId))
+    .where(and(eq(conversations.userId, row.userId), eq(conversations.characterId, row.characterId)));
+
   return {
     instructions: buildCharacterSystemPrompt({
       character: toPublicCharacter(characterRow, null),
       systemPrompt: characterRow.systemPrompt,
       persona: personaRow?.persona ?? null,
       history: [],
-      priorMessageCount: 0,
+      // A call is a conversation, not a message exchange: the behaviour layer
+      // branches on this and nothing else does.
+      channel: 'voice',
+      priorMessageCount: priorMessages?.count ?? 0,
       userMessage: '',
       memories: selectMemoriesForPrompt(rememberedFacts),
       verifiedAdultAgeBand,
