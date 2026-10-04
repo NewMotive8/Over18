@@ -327,6 +327,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     memoryExtractor: options.memoryExtractor ?? noopMemoryExtractor,
     memoryMaxStored: env.memory.maxStored,
     maxSeconds: env.voice?.maxSeconds ?? 780,
+    commerce: env.commerce,
   });
 
   /**

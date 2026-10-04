@@ -637,6 +637,8 @@ describe('what a person is told', () => {
       secondsRemaining: null,
       transcript: [],
       message: null,
+      // Only ever set when the server refuses a start for want of Credits.
+      creditsRequired: null,
       answered: false,
     });
   });

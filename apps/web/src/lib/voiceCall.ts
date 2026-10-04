@@ -242,6 +242,13 @@ export type CallPhase =
   | 'ending'
   /** Over, normally. */
   | 'ended'
+  /**
+   * The caller has not got the Credits to start. A PHASE OF ITS OWN, not an
+   * error: nothing failed and nothing was created, so "Call failed / try again
+   * in a moment" would be two lies in one sentence. Trying again changes
+   * nothing; buying Credits does, and this is the state that can say so.
+   */
+  | 'insufficient_credits'
   /** Over, not normally. `message` says what a person can do about it. */
   | 'error';
 
@@ -262,6 +269,13 @@ export interface CallState {
   transcript: CallTranscriptLine[];
   /** Set in `error`, and only ever one of our own sentences. */
   message: string | null;
+  /**
+   * What a minute costs, when the server refused the start for want of
+   * Credits. The SERVER's number, from the published ruleset -- never a
+   * constant here, because this screen must not state a price the economy
+   * does not. Null whenever that is not the situation, or it went unstated.
+   */
+  creditsRequired: number | null;
   /**
    * She has PICKED UP -- for the screen only. The call is `active` (socket
    * open, microphone streaming) a couple of seconds before she can speak,
@@ -284,6 +298,7 @@ export const IDLE_CALL_STATE: CallState = {
   secondsRemaining: null,
   transcript: [],
   message: null,
+  creditsRequired: null,
   answered: false,
 };
 
@@ -472,7 +487,11 @@ export function createCallController(deps: CallControllerDeps): CallController {
    * person pressing End can all arrive together, and the first reason is the one
    * the person is shown.
    */
-  const finish = async (phase: 'ended' | 'error', reason: string | null): Promise<void> => {
+  const finish = async (
+    phase: 'ended' | 'error' | 'insufficient_credits',
+    reason: string | null,
+    creditsRequired: number | null = null,
+  ): Promise<void> => {
     if (finished) return;
     finished = true;
     clearCountdown();
@@ -499,6 +518,7 @@ export function createCallController(deps: CallControllerDeps): CallController {
       userSpeaking: false,
       secondsRemaining: null,
       message: phase === 'error' ? messageForReason(reason ?? 'unknown') : null,
+      creditsRequired,
     });
 
     // Best effort, and deliberately last. The server settles the call from its
@@ -615,6 +635,46 @@ export function createCallController(deps: CallControllerDeps): CallController {
       return;
     }
 
+    /**
+     * THE CLAIM COMES BEFORE THE CALLING SCREEN.
+     *
+     * It used to be the other way round: "Calling her…" went up, the ringback
+     * started, and only then did the server get asked. A caller with no Credits
+     * therefore watched a call begin and then collapse, which is the experience
+     * this change exists to remove -- nothing was ever going to connect. The
+     * screen now waits the one round trip it takes to know, so a refusal never
+     * reaches the calling screen at all.
+     *
+     * The microphone is still taken first, for the reason above it: a refused
+     * microphone must cost no call session.
+     */
+    let session: VoiceCallSession;
+    try {
+      session = (await api.start(deps.conversationId)).callSession;
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code;
+      /**
+       * NOT ENOUGH CREDITS IS NOT A FAILED CALL. The server refused before it
+       * created anything, so there is nothing to retry and nothing to settle.
+       * It gets its own phase so the screen can offer Credits instead of
+       * "try again in a moment".
+       */
+      if (code === 'insufficient_credits') {
+        // The server states the price; a missing one stays null rather than
+        // being guessed at, and the screen then says "Credits" without a number.
+        const details = (error as { details?: unknown } | null)?.details;
+        const required =
+          details && typeof details === 'object' && typeof (details as { creditsRequired?: unknown }).creditsRequired === 'number'
+            ? (details as { creditsRequired: number }).creditsRequired
+            : null;
+        await finish('insufficient_credits', code, required);
+        return;
+      }
+      await finish('error', typeof code === 'string' ? code : 'server_error');
+      return;
+    }
+    sessionId = session.id;
+
     emit({ phase: 'connecting' });
     // Ringing from "Calling…" until she picks up (markAnswered stops it).
     try {
@@ -622,16 +682,6 @@ export function createCallController(deps: CallControllerDeps): CallController {
     } catch {
       /* no ring is never a reason to fail a call */
     }
-
-    let session: VoiceCallSession;
-    try {
-      session = (await api.start(deps.conversationId)).callSession;
-    } catch (error) {
-      const code = (error as { code?: string } | null)?.code;
-      await finish('error', typeof code === 'string' ? code : 'server_error');
-      return;
-    }
-    sessionId = session.id;
 
     deadline = now() + session.maxSeconds * 1000;
     emit({ secondsRemaining: session.maxSeconds });
