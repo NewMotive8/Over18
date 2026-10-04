@@ -101,6 +101,7 @@ export {
   type CommercialSubscription,
   type CommercialTier,
   type CommercialWallet,
+  type CustomerActionCost,
   type CustomerCommercialState,
   type CustomerEconomyCatalog,
   type CustomerPackOffer,

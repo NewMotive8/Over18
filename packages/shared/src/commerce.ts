@@ -129,11 +129,44 @@ export interface CustomerPackOffer {
 }
 
 /** GET /api/economy/catalog: the published, in-effect catalog. */
+/**
+ * WHAT ONE ACTION COSTS, from the published ruleset.
+ *
+ * SO A CUSTOMER CAN BE TOLD BEFORE THEY ACT. Chat and calls spend Credits, and
+ * until this existed the only way for the interface to say how many was to
+ * write a number into the web app -- which would then be a second, silent
+ * pricing configuration that nothing kept in step with the ruleset.
+ *
+ * Named `actionCosts` rather than `actions` deliberately: the overview already
+ * has an `actions` field for per-slot server quotes, and two different things
+ * called "actions" on the same object would be a trap.
+ *
+ * ONLY ENABLED COSTS APPEAR. A disabled cost, an action the ruleset does not
+ * price, and the case where no ruleset is published at all are the same answer
+ * here -- the entry is absent. There is no "unpriced" marker and no zero,
+ * because an interface given a price it cannot trust would show it.
+ */
+export interface CustomerActionCost {
+  /** A ruleset action type: `text_message`, `voice_call`, … */
+  actionType: string;
+  qualityTier: string;
+  /** Per action, or per started minute. How the number is read aloud. */
+  unit: 'per_action' | 'per_minute';
+  creditCost: number;
+  /** Set only where the cost is one duration tier of several. */
+  maxDurationSeconds: number | null;
+}
+
 export interface CustomerEconomyCatalog {
   /** The database instant the catalog was resolved at. */
   asOf: string;
   plans: CustomerPlanOffer[];
   packs: CustomerPackOffer[];
+  /**
+   * The enabled action costs in effect at `asOf`. Empty when nothing is
+   * published -- the same fail-closed answer the charging path gives.
+   */
+  actionCosts: CustomerActionCost[];
 }
 
 /**

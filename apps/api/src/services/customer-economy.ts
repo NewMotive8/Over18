@@ -1,4 +1,5 @@
 import type {
+  CustomerActionCost,
   CustomerCommercialState,
   CustomerEconomyCatalog,
   CustomerPackOffer,
@@ -11,6 +12,8 @@ import {
   economyNow,
   resolvePackCatalog,
   resolvePlanCatalog,
+  resolveRuleset,
+  type ActionCostView,
   type PackVersionView,
   type PlanVersionView,
 } from './economy-resolver.js';
@@ -100,10 +103,42 @@ function toPackOffer(pack: PackVersionView, asOfIso: string): CustomerPackOffer 
  * published. Retired versions are included with `isPurchasable: false` -- a
  * client must not offer them.
  */
+/**
+ * What each action costs, so the interface can say so before somebody acts.
+ *
+ * ENABLED ONLY, AND NOTHING SUBSTITUTED. A disabled cost is dropped, and no
+ * ruleset at all yields an empty list -- the same fail-closed answer the
+ * charging path gives, arriving as an absence rather than as a zero. An
+ * interface handed a price it cannot trust would display it.
+ *
+ * FIELD BY FIELD, like every other offer here: a column added to the resolver's
+ * view later is not published to customers by accident.
+ */
+function toActionCost(cost: ActionCostView): CustomerActionCost {
+  return {
+    actionType: cost.actionType,
+    qualityTier: cost.qualityTier,
+    unit: cost.unit,
+    creditCost: cost.creditCost,
+    maxDurationSeconds: cost.maxDurationSeconds,
+  };
+}
+
 export async function readCustomerCatalog(db: Db): Promise<CustomerEconomyCatalog> {
   const asOf = await economyNow(db);
-  const [{ plans }, { packs }] = await Promise.all([resolvePlanCatalog(db, asOf), resolvePackCatalog(db, asOf)]);
-  return { asOf: asOf.iso, plans: plans.map(toPlanOffer), packs: packs.map((pack) => toPackOffer(pack, asOf.iso)) };
+  // One instant for all three, so a plan, a pack and a price can never come
+  // from different moments.
+  const [{ plans }, { packs }, ruleset] = await Promise.all([
+    resolvePlanCatalog(db, asOf),
+    resolvePackCatalog(db, asOf),
+    resolveRuleset(db, asOf),
+  ]);
+  return {
+    asOf: asOf.iso,
+    plans: plans.map(toPlanOffer),
+    packs: packs.map((pack) => toPackOffer(pack, asOf.iso)),
+    actionCosts: ruleset.ok ? ruleset.value.actionCosts.filter((c) => c.enabled).map(toActionCost) : [],
+  };
 }
 
 /**

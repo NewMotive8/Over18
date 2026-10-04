@@ -40,6 +40,11 @@ export const customerEconomyFixture: CustomerEconomyOverview = {
       },
     ],
     packs: [],
+    // Mirrors the published staging ruleset: one Credit a message, one a minute.
+    actionCosts: [
+      { actionType: 'text_message', qualityTier: 'standard', unit: 'per_action', creditCost: 1, maxDurationSeconds: null },
+      { actionType: 'voice_call', qualityTier: 'standard', unit: 'per_minute', creditCost: 1, maxDurationSeconds: null },
+    ],
   },
   actions: [
     {

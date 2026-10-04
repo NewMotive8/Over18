@@ -62,7 +62,7 @@ function pack(over: Partial<CustomerPackOffer> & { code: string }): CustomerPack
     ...over,
   };
 }
-const catalogOf = (...packs: CustomerPackOffer[]): CustomerEconomyCatalog => ({ asOf: '2026-10-02T00:00:00.000000Z', plans: [], packs });
+const catalogOf = (...packs: CustomerPackOffer[]): CustomerEconomyCatalog => ({ asOf: '2026-10-02T00:00:00.000000Z', plans: [], packs, actionCosts: [] });
 
 describe('which packs the store offers', () => {
   it('only purchasable ones: a retired pack is never shown, though the catalog includes it', () => {

@@ -44,7 +44,7 @@ function ready(tier: 'free' | 'premium' | null, subscription: { status: Subscrip
     wallet: spendable === null ? { available: false, reason: 'wallet_not_supported' } : { available: true, value: { included: 0, earned: 0, purchased: spendable, bonus: 0, held: 0, spendable } },
     age: { available: false, reason: 'age_verification_not_supported' },
   } as unknown as CustomerCommercialState;
-  return { status: 'ready', overview: { commercial, catalog: { asOf: '', plans: PLANS, packs: [] }, actions: [] } };
+  return { status: 'ready', overview: { commercial, catalog: { asOf: '', plans: PLANS, packs: [], actionCosts: [] }, actions: [] } };
 }
 
 describe('membership, from the server facts', () => {

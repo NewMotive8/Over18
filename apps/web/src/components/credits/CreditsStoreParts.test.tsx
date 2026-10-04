@@ -47,7 +47,7 @@ const card = (p: CustomerPackOffer, extra: { recommended?: CustomerPackOffer | n
 
 describe('the packs', () => {
   it('render only purchasable packs: a retired one never reaches the page', () => {
-    const offered = purchasablePacks({ asOf: '', plans: [], packs: [pack({ code: 'starter' }), pack({ code: 'qa_plain', isPurchasable: false })] });
+    const offered = purchasablePacks({ asOf: '', plans: [], actionCosts: [], packs: [pack({ code: 'starter' }), pack({ code: 'qa_plain', isPurchasable: false })] });
     const html = render(<>{offered.map((p) => <PackCard key={p.code} view={packView(p, NOW)} selected={false} onSelect={() => undefined} />)}</>);
     expect(html).toContain('data-testid="pack-starter"');
     expect(html).not.toContain('qa_plain');

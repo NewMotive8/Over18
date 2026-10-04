@@ -58,7 +58,7 @@ const plan = (code: string, over: Partial<CustomerPlanOffer> = {}): CustomerPlan
   effectiveFrom: '2026-09-01T00:00:00.000000Z',
   ...over,
 });
-const catalogOf = (...plans: CustomerPlanOffer[]): CustomerEconomyCatalog => ({ asOf: '2026-09-19T00:00:00.000000Z', plans, packs: [] });
+const catalogOf = (...plans: CustomerPlanOffer[]): CustomerEconomyCatalog => ({ asOf: '2026-09-19T00:00:00.000000Z', plans, packs: [], actionCosts: [] });
 const overviewOf = (over: Partial<CustomerEconomyOverview> = {}): CustomerEconomyOverview => ({
   commercial: TODAY,
   catalog: catalogOf(),

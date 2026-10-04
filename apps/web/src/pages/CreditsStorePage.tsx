@@ -39,6 +39,7 @@ import {
   storeHeroCopy,
 } from '../lib/creditsStore';
 import { commercialTier, spendableCredits, useCustomerEconomy } from '../lib/customerEconomy';
+import HowCreditsWork from '../components/credits/HowCreditsWork';
 import { absoluteMediaUrl } from '../lib/media';
 import { useHeaderRotation } from '../lib/headerRotation';
 import { track, useTrackView } from '../lib/analytics';
@@ -171,6 +172,12 @@ export default function CreditsStorePage() {
       {overview && (
         <>
           <BalanceLine balance={balanceState(balanceNow)} premium={premium} />
+          {/*
+            Near the top, under the balance it explains. Renders nothing when the
+            economy has published no price, so an unconfigured environment shows
+            a store rather than an empty heading.
+          */}
+          <HowCreditsWork overview={overview} balance={balanceNow} />
           {!returningFromCheckout && (
             <section aria-labelledby="store-packs" className="flex flex-col gap-3">
               <div className="flex items-baseline justify-between">

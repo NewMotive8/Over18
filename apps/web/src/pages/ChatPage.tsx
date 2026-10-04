@@ -19,6 +19,7 @@ import MessageMedia from '../components/MessageMedia';
 import { PaidActionButton } from '../components/CustomerEconomy';
 import CreditsPill from '../components/CreditsPill';
 import { getAction, useCustomerEconomy } from '../lib/customerEconomy';
+import { perUnitLabel, TEXT_MESSAGE, VOICE_CALL } from '../lib/creditCosts';
 import { lastCharacter } from '../lib/creditsStore';
 import CallOverlay, { CallButton } from '../components/CallOverlay';
 import { useVoiceCall } from '../hooks/useVoiceCall';
@@ -88,6 +89,14 @@ export default function ChatPage() {
     call.start();
   }, [autoCall, conversationId, navigate, location.pathname, call]);
   const [economyState] = useCustomerEconomy();
+  /**
+   * WHAT THIS COSTS, FROM THE PUBLISHED RULESET. Null whenever the economy has
+   * not published a price, and then nothing is shown -- never a guess, and
+   * never a number written into this file.
+   */
+  const economyOverview = economyState.status === 'ready' ? economyState.overview : null;
+  const messageCost = perUnitLabel(economyOverview, TEXT_MESSAGE);
+  const callCost = perUnitLabel(economyOverview, VOICE_CALL);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // Latest history for the media-context read inside the memoised send
@@ -378,8 +387,15 @@ export default function ChatPage() {
             <p className="text-xs text-zinc-500">Tap to view profile</p>
           </div>
         </Link>
-        <div className="flex items-center gap-2">
-          <CallButton state={call.state} characterName={character.displayName} onStart={call.start} />
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="flex flex-col items-end">
+            <CallButton state={call.state} characterName={character.displayName} onStart={call.start} />
+            {callCost && (
+              <span data-testid="call-cost" className="mt-0.5 whitespace-nowrap text-[10px] leading-none text-zinc-500">
+                {callCost}
+              </span>
+            )}
+          </div>
           {/* Re-reads on navigation, on a purchase or spend, and on return to the tab. */}
           <CreditsPill />
         </div>
@@ -513,6 +529,16 @@ export default function ChatPage() {
           ➤
         </button>
       </form>
+      {/*
+        Said once, quietly, under the thing it prices. A person about to type
+        should be able to see what sending costs without going to look for it,
+        and on a phone that has to be a line rather than a panel.
+      */}
+      {messageCost && (
+        <p data-testid="message-cost" className="pt-1.5 text-right text-[10px] text-zinc-500">
+          {messageCost}
+        </p>
+      )}
     </section>
   );
 }

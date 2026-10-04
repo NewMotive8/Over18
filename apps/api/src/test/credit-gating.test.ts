@@ -632,3 +632,71 @@ describe('starting a call is refused up front when the Credits are not there', (
     expect(await canStartCall(ctx.db, { enabled: false }, broke.id)).toEqual({ ok: true });
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * The catalogue tells a customer what things cost
+ * ------------------------------------------------------------------ */
+
+describe('the customer catalogue publishes the action costs', () => {
+  const catalogFor = async (who: Account) => {
+    const res = await ctx.app.inject({ method: 'GET', url: '/api/economy/catalog', cookies: who.cookies });
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json() as { actionCosts: { actionType: string; unit: string; creditCost: number }[] };
+  };
+
+  /**
+   * SO THE INTERFACE NEED NOT GUESS. Before this, nothing customer-facing
+   * carried a price, so any "1 Credit per message" on screen would have been a
+   * second pricing configuration nothing kept in step with the ruleset.
+   */
+  it('serves the enabled costs from the published ruleset', async () => {
+    await priceChatAndCalls();
+    const customer = await account(5);
+
+    const { actionCosts } = await catalogFor(customer);
+
+    expect(actionCosts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ actionType: 'text_message', unit: 'per_action', creditCost: 1 }),
+        expect.objectContaining({ actionType: 'voice_call', unit: 'per_minute', creditCost: 1 }),
+      ]),
+    );
+  });
+
+  it('serves whatever the ruleset says, not a constant', async () => {
+    await publishRuleset([
+      { actionType: 'text_message', unit: 'per_action', creditCost: 2 },
+      { actionType: 'voice_call', unit: 'per_minute', creditCost: 3 },
+    ]);
+    const customer = await account(5);
+
+    const { actionCosts } = await catalogFor(customer);
+
+    expect(actionCosts.find((c) => c.actionType === 'text_message')?.creditCost).toBe(2);
+    expect(actionCosts.find((c) => c.actionType === 'voice_call')?.creditCost).toBe(3);
+  });
+
+  /** Fail closed: an absence, never a zero and never a default. */
+  it('is empty when no ruleset is published', async () => {
+    const customer = await account(5);
+    expect((await catalogFor(customer)).actionCosts).toEqual([]);
+  });
+
+  it('omits an action the ruleset does not price', async () => {
+    await publishRuleset([{ actionType: 'voice_call', unit: 'per_minute', creditCost: 1 }]);
+    const customer = await account(5);
+
+    const { actionCosts } = await catalogFor(customer);
+
+    expect(actionCosts.map((c) => c.actionType)).toEqual(['voice_call']);
+  });
+
+  /** Premium changes what you may do, never what an action costs. */
+  it('quotes a Premium customer exactly the same costs', async () => {
+    await priceChatAndCalls();
+    const free = await account(5);
+    const premium = await account(5, { premium: true });
+
+    expect((await catalogFor(premium)).actionCosts).toEqual((await catalogFor(free)).actionCosts);
+  });
+});

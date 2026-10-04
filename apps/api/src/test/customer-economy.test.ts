@@ -219,7 +219,7 @@ describe('GET /api/economy/catalog', () => {
   it('publishes an allow-list: no lifecycle, audit or ruleset field reaches a customer', async () => {
     await liveEconomy();
     const catalog = (await get(on, CATALOG, (await signIn()).cookies)).json() as CustomerEconomyCatalog;
-    expect(Object.keys(catalog).sort()).toEqual(['asOf', 'packs', 'plans']);
+    expect(Object.keys(catalog).sort()).toEqual(['actionCosts', 'asOf', 'packs', 'plans']);
     expect(Object.keys(catalog.plans[0]!).sort()).toEqual(
       ['billingPeriodMonths', 'code', 'currency', 'displayName', 'effectiveFrom', 'isPurchasable', 'monthlyIncludedCredits', 'priceMinor', 'version', 'versionId'],
     );
@@ -229,7 +229,22 @@ describe('GET /api/economy/catalog', () => {
         'priceMinor', 'promotionEndsAt', 'sortOrder', 'totalCredits', 'version', 'versionId', 'wasPriceMinor',
       ],
     );
-    expect(JSON.stringify(catalog)).not.toMatch(/publish_reason|publishedBy|published_by|status|draft|creditCost|features|unlimited_text/);
+    /**
+     * ACTION COSTS ARE NOW PUBLISHED, DELIBERATELY. A customer is told what a
+     * message and a minute cost, so the interface need not carry a second copy
+     * of the price -- which would be a pricing configuration nothing kept in
+     * step with the ruleset.
+     *
+     * The protection that `creditCost` used to get from the string ban below is
+     * replaced by something stricter: an exact field list. Only these five may
+     * leave, so the ruleset's lifecycle (`enabled`, status, publish reason,
+     * version ids) still cannot ride along -- and a column added to the
+     * resolver's view later fails here rather than reaching a customer.
+     */
+    expect(Object.keys(catalog.actionCosts[0]!).sort()).toEqual(
+      ['actionType', 'creditCost', 'maxDurationSeconds', 'qualityTier', 'unit'],
+    );
+    expect(JSON.stringify(catalog)).not.toMatch(/publish_reason|publishedBy|published_by|draft|features|unlimited_text|enabled/);
   });
 
   it('never exposes a draft or a future-scheduled version -- though the admin preview can see them', async () => {
