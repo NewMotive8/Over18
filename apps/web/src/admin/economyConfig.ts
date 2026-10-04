@@ -113,6 +113,40 @@ export function itemName(item: { code: string; versions: ReadonlyArray<Stateful 
   return named?.displayName.trim() || item.code;
 }
 
+/** Whether a plan or pack is on the site, in one label and one sentence. */
+export interface ItemStatus {
+  tone: 'live' | 'off' | 'scheduled' | 'new';
+  label: string;
+  explain: string;
+  /** A change that is saved or scheduled but not live yet; null when there is none. */
+  pending: string | null;
+}
+
+/**
+ * The one question an admin has about a plan or pack: can customers buy it?
+ *
+ * Read from the versions the server reports -- the live one decides; a draft or
+ * a scheduled version beside it is a change waiting, said separately.
+ */
+export function itemStatus(
+  versions: ReadonlyArray<Stateful & { isPurchasable: boolean }>,
+  noun: 'plan' | 'pack',
+  where: string,
+): ItemStatus {
+  const live = activeOf(versions);
+  const draft = draftOf(versions);
+  const scheduled = versions.find((v) => v.state === 'scheduled') ?? null;
+  const pending = draft ? 'Unpublished changes saved as a draft' : scheduled && live ? 'A published change is scheduled to start later' : null;
+  if (live) {
+    return live.isPurchasable
+      ? { tone: 'live', label: 'Live on the site', explain: `Customers can see and buy this ${noun} in ${where}.`, pending }
+      : { tone: 'off', label: 'Retired — not on sale', explain: `Customers cannot buy this ${noun}. Anyone who already bought it keeps what they bought.`, pending };
+  }
+  if (scheduled) return { tone: 'scheduled', label: 'Scheduled', explain: 'Published, waiting for its start time. It goes on the site by itself then.', pending };
+  if (draft) return { tone: 'new', label: 'Draft — not on the site yet', explain: `Customers cannot see this ${noun} until you publish it.`, pending: null };
+  return { tone: 'off', label: 'Not on the site', explain: `This ${noun} has no published version.`, pending: null };
+}
+
 /** What a plan, pack or the ruleset is called on screen: by its name, never by its code alone. */
 export function whatLabel(kind: VersionRow['kind'], name: string | null): string {
   if (kind === 'ruleset') return 'Ruleset';

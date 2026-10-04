@@ -97,11 +97,22 @@ export const packColumns: Array<{ label: string; value: (v: AdminPackVersion) =>
   { label: 'Availability', value: (v) => availabilityLabel(v.isPurchasable) },
 ];
 
+/** A pack the way a customer would describe it. */
+export const packSummary = (v: AdminPackVersion): string[] => [
+  `${v.credits} Credits${v.bonusCredits ? ` + ${v.bonusCredits} bonus` : ''}`,
+  `${formatMinor(v.priceMinor, v.currency)}${v.wasPriceMinor ? ` (regular price ${formatMinor(v.wasPriceMinor, v.currency)})` : ''}`,
+  ...(v.isBestValue ? ['Highlighted as best value'] : []),
+];
+
 export default function PacksScreen({ config, reload }: { config: EconomyConfigurationView; reload: () => Promise<void> }) {
   return (
     <VersionedItemScreen
       noun="pack"
+      where="the Credits Store"
+      about="Credit packs are one-off purchases: a customer pays once and gets Credits. They are listed in the Credits Store in the order you set."
       items={config.packs}
+      summary={packSummary}
+      order={(v) => v.sortOrder}
       emptyForm={() => emptyPackForm(suggestedCurrency(config))}
       formFrom={packFormFrom}
       nameOf={(form) => form.displayName}

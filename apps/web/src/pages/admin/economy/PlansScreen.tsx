@@ -91,11 +91,21 @@ export const planColumns: Array<{ label: string; value: (v: AdminPlanVersion) =>
   { label: 'Availability', value: (v) => availabilityLabel(v.isPurchasable) },
 ];
 
+/** A plan the way a customer would describe it. */
+export const planSummary = (v: AdminPlanVersion): string[] => [
+  `${formatMinor(v.priceMinor, v.currency)} · ${billingPeriodLabel(v.billingPeriodMonths)}`,
+  `${v.monthlyIncludedCredits} Credits included per billing cycle`,
+];
+
 export default function PlansScreen({ config, reload }: { config: EconomyConfigurationView; reload: () => Promise<void> }) {
   return (
     <VersionedItemScreen
       noun="plan"
+      where="the Premium page"
+      about="Plans are the Premium subscriptions customers pay for every month, quarter or year. Each plan has a price and the Credits it includes."
       items={config.plans}
+      summary={planSummary}
+      order={(v) => v.billingPeriodMonths}
       emptyForm={() => emptyPlanForm(config.catalogue, suggestedCurrency(config))}
       formFrom={(v: AdminPlanVersion) => planFormFrom(v, config.catalogue)}
       nameOf={(form) => form.displayName}

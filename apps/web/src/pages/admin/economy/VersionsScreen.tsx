@@ -100,9 +100,18 @@ export function ReviewPanel({
   messages: string[];
 }) {
   const blocked = review.errors.length > 0;
+  if (review.diff.length === 0 && !blocked) {
+    return (
+      <p className="text-sm text-zinc-400">
+        Nothing is waiting to be published. To change a plan or a Credit pack, open it, edit it and save a draft — it will then appear here.
+      </p>
+    );
+  }
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-xs text-zinc-500">Reviewed at {review.asOf}. Publishing applies exactly these drafts, all together.</p>
+      <p className="text-sm text-zinc-400">
+        These are your saved drafts and what each one changes. Check them, write a short reason, then publish: all of them go on the site together.
+      </p>
       {review.diff.map((diff) => ({ ...diff, changes: shownChanges(diff) })).map((diff) => (
         <div key={`${diff.kind}-${diff.code ?? ''}`} className="rounded-md border border-zinc-800 p-3">
           <p className="text-sm font-medium text-zinc-200">{diffTitle(diff, config ? nameByCode(config, diff.kind, diff.code) : null)}</p>
