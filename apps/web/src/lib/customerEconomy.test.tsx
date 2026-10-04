@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import type { CustomerCommercialState, CustomerEconomyCatalog, CustomerPlanOffer } from '@over18/shared';
+import type { CustomerCommercialState, CustomerEconomyCatalog, CustomerPlanOffer, SubscriptionStatus } from '@over18/shared';
 import * as components from '../components/CustomerEconomy';
 import { CreditBalance, LockedPremiumCard, PaidActionButton, PlanCatalog, PlanSummary } from '../components/CustomerEconomy';
 import { ApiRequestError, CUSTOMER_ECONOMY_ENDPOINTS } from './api';
@@ -23,6 +23,7 @@ import {
   getCurrentPlan,
   getPlan,
   initialEconomyState,
+  lapsedPlan,
   offeredPlans,
   pendingCustomerEconomyClient,
   spendableCredits,
@@ -65,11 +66,11 @@ const overviewOf = (over: Partial<CustomerEconomyOverview> = {}): CustomerEconom
   actions: [],
   ...over,
 });
-const subscribedTo = (planCode: string | null): CustomerCommercialState => ({
+const subscribedTo = (planCode: string | null, status: SubscriptionStatus = 'active'): CustomerCommercialState => ({
   ...TODAY,
   subscription: {
     available: true,
-    value: planCode === null ? null : { status: 'active', planCode, currentPeriodEnd: '2026-10-19T00:00:00.000Z', cancelAtPeriodEnd: false },
+    value: planCode === null ? null : { status, planCode, currentPeriodEnd: '2026-10-19T00:00:00.000Z', cancelAtPeriodEnd: status === 'cancelled' },
   },
 });
 const voiceQuote: CustomerAction = {
@@ -121,6 +122,39 @@ describe('plans are identified by code, not tier', () => {
     expect(getCurrentPlan(overviewOf({ catalog, commercial: subscribedTo('gone_plan') }))).toBeNull();
     expect(getCurrentPlan(overviewOf({ catalog, commercial: subscribedTo('legacy_monthly') }))).toBeNull();
     expect(getCurrentPlan(overviewOf({ catalog, commercial: subscribedTo('premium_monthly') }))?.code).toBe('premium_monthly');
+  });
+
+  /**
+   * AN EXPIRED SUBSCRIPTION IS NOT A CURRENT PLAN -- the whole boundary, in one
+   * test. `expired` is the only status the server reports a subscription for
+   * without granting Premium, so it is the only one whose named plan is no
+   * longer the customer's; past_due and grace still are, and a cancelled
+   * subscription still is until its period ends (after which the server itself
+   * reports it as expired).
+   */
+  it('an expired subscription is no longer a current plan, while every status that keeps Premium still is', () => {
+    const catalog = catalogOf(plan('premium_monthly'));
+    expect(getCurrentPlan(overviewOf({ catalog, commercial: subscribedTo('premium_monthly', 'expired') }))).toBeNull();
+    for (const status of ['active', 'past_due', 'grace', 'cancelled'] as const) {
+      expect(getCurrentPlan(overviewOf({ catalog, commercial: subscribedTo('premium_monthly', status) }))?.code, status).toBe('premium_monthly');
+    }
+  });
+
+  it('names the plan a lapsed customer used to hold, and never both at once', () => {
+    const catalog = catalogOf(plan('premium_monthly'), plan('legacy_monthly', { isPurchasable: false }));
+    const expired = overviewOf({ catalog, commercial: subscribedTo('premium_monthly', 'expired') });
+    expect(lapsedPlan(expired)?.code).toBe('premium_monthly');
+    expect(getCurrentPlan(expired)).toBeNull();
+    // Exact complements: a subscription is current or it has lapsed, not both.
+    for (const status of ['active', 'past_due', 'grace', 'cancelled', 'expired'] as const) {
+      const overview = overviewOf({ catalog, commercial: subscribedTo('premium_monthly', status) });
+      expect([getCurrentPlan(overview), lapsedPlan(overview)].filter(Boolean), status).toHaveLength(1);
+    }
+    // Nothing to come back to without a subscription, or on a plan no longer offered.
+    expect(lapsedPlan(overviewOf({ catalog, commercial: subscribedTo(null) }))).toBeNull();
+    expect(lapsedPlan(overviewOf({ catalog, commercial: subscribedTo('legacy_monthly', 'expired') }))).toBeNull();
+    expect(lapsedPlan(overviewOf({ catalog }))).toBeNull();
+    expect(lapsedPlan(null)).toBeNull();
   });
 });
 

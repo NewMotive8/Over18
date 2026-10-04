@@ -8,6 +8,7 @@ import {
   formatMonthlyEquivalent,
   formatPlanPrice,
   getCurrentPlan,
+  lapsedPlan,
   offeredPlans,
   savingsPercent,
   spendableCredits,
@@ -227,6 +228,12 @@ export function CurrentPlanCard({ overview }: { overview: CustomerEconomyOvervie
  * A PREMIUM CUSTOMER IS NOT SOLD PREMIUM. Their plan is marked and no purchase
  * CTA is drawn: the server refuses a second subscription, so an offer it would
  * refuse should never be on screen.
+ *
+ * A LAPSED CUSTOMER IS SOLD PREMIUM, starting from what they had. An expired
+ * subscription is not a current plan, so nothing of theirs is marked and the
+ * full CTA is drawn -- but the period they chose before opens selected, rather
+ * than re-pitching them from scratch. Marking and pre-selecting are therefore
+ * two different reads, and only one of them survives expiry.
  */
 export function PlanCatalog({ overview, onBuy }: { overview: CustomerEconomyOverview; onBuy?: (planCode: string) => void }) {
   // Shortest commitment first, so the ladder reads Monthly, Quarterly, Annual
@@ -234,6 +241,7 @@ export function PlanCatalog({ overview, onBuy }: { overview: CustomerEconomyOver
   // plans exist, and their prices, are still entirely the server's.
   const plans = [...offeredPlans(overview)].sort((a, b) => a.billingPeriodMonths - b.billingPeriodMonths);
   const current = getCurrentPlan(overview);
+  const lapsed = lapsedPlan(overview);
   const premium = commercialTier(overview) === 'premium';
   const featured = bestValuePlan(plans);
   const [picked, setPicked] = useState<string | null>(null);
@@ -242,7 +250,7 @@ export function PlanCatalog({ overview, onBuy }: { overview: CustomerEconomyOver
     return <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">No plans are offered right now.</div>;
   }
 
-  const selectedCode = picked ?? current?.code ?? featured?.code ?? plans[0]!.code;
+  const selectedCode = picked ?? current?.code ?? lapsed?.code ?? featured?.code ?? plans[0]!.code;
   const selected = plans.find((plan) => plan.code === selectedCode) ?? plans[0]!;
   const credits = plans[0]!.monthlyIncludedCredits;
   const sameCreditsEverywhere = plans.every((plan) => plan.monthlyIncludedCredits === credits);

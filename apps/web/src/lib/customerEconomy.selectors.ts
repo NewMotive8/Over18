@@ -1,4 +1,4 @@
-import type { CommercialTier, CustomerEconomyCatalog, CustomerPlanOffer } from '@over18/shared';
+import type { CommercialSubscription, CommercialTier, CustomerEconomyCatalog, CustomerPlanOffer } from '@over18/shared';
 import type { CustomerAction, CustomerActionSlot, CustomerEconomyOverview } from './customerEconomy.models';
 
 /**
@@ -15,18 +15,52 @@ export function getPlan(catalog: Maybe<CustomerEconomyCatalog>, code: Maybe<stri
   return catalog.plans.find((plan) => plan.code === code) ?? null;
 }
 
+/** The server's subscription, or `null` while it is not available or there is none. */
+function subscriptionOf(overview: Maybe<CustomerEconomyOverview>): CommercialSubscription | null {
+  const subscription = overview?.commercial?.subscription;
+  return subscription?.available ? subscription.value : null;
+}
+
 /**
- * The plan the customer is subscribed to. `null` when the subscription is
- * unknown, when there is none, or when its plan is not an offered plan in the
- * catalog (unknown or retired). There is no "Free" catalog plan: having no
- * subscription is not a plan.
+ * The offered plan a subscription names, whatever its status. `null` when its
+ * plan is not an offered plan in the catalog (unknown or retired). There is no
+ * "Free" catalog plan: having no subscription is not a plan.
+ */
+function subscribedPlan(overview: Maybe<CustomerEconomyOverview>): CustomerPlanOffer | null {
+  const subscription = subscriptionOf(overview);
+  const plan = subscription ? getPlan(overview?.catalog, subscription.planCode) : null;
+  return plan?.isPurchasable ? plan : null;
+}
+
+/**
+ * The plan the customer holds NOW -- what may be marked as theirs, and what the
+ * server would refuse to sell them again. `null` when the subscription is
+ * unknown, when there is none, when it has EXPIRED, or when its plan is not
+ * offered.
+ *
+ * AN EXPIRED SUBSCRIPTION IS NOT A CURRENT PLAN. The server reports a
+ * subscription object for a lapsed row too, naming the plan it held --
+ * `expired` is the one status it does that for without granting Premium -- so
+ * reading the plan code alone would credit a lapsed customer with a plan the
+ * server has already stopped honouring. Every other status still grants
+ * Premium, so every other status still has its plan.
  */
 export function getCurrentPlan(overview: Maybe<CustomerEconomyOverview>): CustomerPlanOffer | null {
-  if (!overview) return null;
-  const subscription = overview.commercial?.subscription;
-  if (!subscription || !subscription.available || !subscription.value) return null;
-  const plan = getPlan(overview.catalog, subscription.value.planCode);
-  return plan?.isPurchasable ? plan : null;
+  return subscriptionOf(overview)?.status === 'expired' ? null : subscribedPlan(overview);
+}
+
+/**
+ * The plan a lapsed customer USED TO hold: the exact complement of
+ * `getCurrentPlan`, and never both.
+ *
+ * It is not a current plan and must never be presented as one -- no badge, no
+ * claim of Premium, no suppressed purchase. It exists so a customer coming back
+ * is offered the billing period they chose before, rather than being re-pitched
+ * from scratch; which plan that is, and its price, remain entirely the
+ * server's.
+ */
+export function lapsedPlan(overview: Maybe<CustomerEconomyOverview>): CustomerPlanOffer | null {
+  return subscriptionOf(overview)?.status === 'expired' ? subscribedPlan(overview) : null;
 }
 
 /** Plans a customer may be offered: purchasable ones only, in server order. */

@@ -65,6 +65,23 @@ const premiumViewer = overviewOf({
   },
 } as unknown as Partial<CustomerEconomyOverview>);
 
+/**
+ * A CUSTOMER WHOSE SUBSCRIPTION HAS LAPSED. The server reports an expired
+ * subscription object -- still naming the plan the row held -- alongside tier
+ * `free`: the one combination that is neither a subscriber nor a newcomer.
+ */
+const lapsedViewer = overviewOf({
+  commercial: {
+    economyEnabled: true,
+    tier: { available: true, value: 'free' },
+    subscription: {
+      available: true,
+      value: { status: 'expired', planCode: 'premium_monthly', currentPeriodEnd: '2026-10-02T00:00:00.000Z' },
+    },
+    wallet: { available: true, value: { included: 0, earned: 0, purchased: 0, held: 0, spendable: 0 } },
+  },
+} as unknown as Partial<CustomerEconomyOverview>);
+
 const render = (node: React.ReactElement) => renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
 
 /* ------------------------------------------------------------------ *
@@ -166,6 +183,30 @@ describe('choosing a billing period', () => {
     expect(html).not.toContain('Subscribing isn’t available yet');
   });
 
+  /**
+   * A LAPSED CUSTOMER IS SOLD PREMIUM, and nothing is marked as theirs. Their
+   * expired subscription still names the plan they held, so marking it would
+   * put a green "Your plan" badge under a card that reads "Free" -- two
+   * contradictory claims about one person, on one screen.
+   */
+  it('marks nothing as a lapsed customer’s, and offers them Premium', () => {
+    const html = render(<PlanCatalog overview={lapsedViewer} onBuy={() => {}} />);
+    expect(html, 'an expired subscription is not a current plan').not.toContain('Your plan');
+    expect(html).not.toContain('data-testid="already-premium"');
+    expect(html.match(/Choose /g)).toHaveLength(1);
+  });
+
+  /** Won back on the terms they picked themselves, not re-pitched from scratch. */
+  it('opens on the billing period a lapsed customer chose before', () => {
+    const html = render(<PlanCatalog overview={lapsedViewer} onBuy={() => {}} />);
+    expect(html).toContain('data-testid="plan-premium_monthly" data-selected="true"');
+    expect(html).toContain('Choose Monthly');
+    expect(html).toContain('$12.99 / month');
+    // The saving is still stated where it is true: on the Annual row, unselected.
+    expect(html).toContain('Best value');
+    expect(html).toContain('data-testid="plan-premium_annual" data-selected="false"');
+  });
+
   it('still says plainly when nobody can buy, which is a different thing', () => {
     const html = render(<PlanCatalog overview={freeViewer} />);
     expect(html).toContain('Subscribing isn’t available yet');
@@ -211,6 +252,15 @@ describe('the current plan section', () => {
     const html = render(<CurrentPlanCard overview={cancelled} />);
     expect(html).toContain('Premium until');
     expect(html).not.toContain('Renews');
+  });
+
+  it('says Free for a lapsed customer, naming neither their old plan nor a renewal', () => {
+    const html = render(<CurrentPlanCard overview={lapsedViewer} />);
+    expect(html).toContain('data-tier="free"');
+    expect(html).toContain('Free');
+    expect(html, 'the plan they used to hold is not the plan they are on').not.toContain('Premium Monthly');
+    expect(html).not.toContain('Renews');
+    expect(html).not.toContain('Premium until');
   });
 
   it('claims neither tier nor balance when the server has not said', () => {
