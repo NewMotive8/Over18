@@ -2,9 +2,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { emptyPlanForm, emptyRulesetForm, versionRows, type ActionCostRow } from '../../../admin/economyConfig';
+import { emptyPackForm, emptyPlanForm, emptyRulesetForm, featureLabel, versionRows, type ActionCostRow } from '../../../admin/economyConfig';
 import { configurationView, publishReview, testCatalogue } from '../../../admin/economyTestData';
-import PacksScreen from './PacksScreen';
+import PacksScreen, { PackDraftFields } from './PacksScreen';
 import PlansScreen, { PlanDraftFields } from './PlansScreen';
 import RulesetScreen, { ActionCostsEditor, AllowancesEditor, RewardsEditor } from './RulesetScreen';
 import VersionsScreen, { ReviewPanel, VersionsTable } from './VersionsScreen';
@@ -21,21 +21,43 @@ const noop = async () => {};
 describe('Plans', () => {
   it("shows the plan's versions and opens its draft with the draft's values", () => {
     const html = render(<PlansScreen config={configurationView()} reload={noop} />);
-    expect(html).toContain('Plan test_monthly');
+    expect(html).toContain('Plan: Test plan');
     expect(html).toContain('Draft v2');
-    expect(html).toContain('value="222"'); // the draft's price, not the active one's
-    // The active version in the history, priced the way the pack table prices
-    // one: the amount as money, with the stored integer kept beside it.
-    expect(html).toContain('$1.11 (111)');
+    expect(html).toContain('value="2.22"'); // the draft's price as money -- not the active one's, not the stored integer
+    expect(html).not.toContain('value="222"');
+    // The active version in the history: the amount as money, the term by name.
+    expect(html).toContain('<td>$1.11</td>');
+    expect(html).toContain('<td>Monthly</td>');
+    // The internal ID is shown for reference and never asked for.
+    expect(html).toContain('Internal ID: <code>test_monthly</code>');
+    expect(html).toContain('Add plan');
+    expect(html).not.toMatch(/New plan code|minor units|\(months\)/);
+    expect(html).toContain('What do Draft, Published and Retired mean?');
     expect(html).toContain('Save draft');
     expect(html).toContain('Discard draft');
   });
 
   it('renders one checkbox per catalogue feature flag, ticked as the draft states it', () => {
     const html = render(<PlanDraftFields form={emptyPlanForm(testCatalogue)} catalogue={testCatalogue} onChange={() => {}} />);
-    for (const key of testCatalogue.planFeatures) expect(html).toContain(key);
-    expect(html.match(/type="checkbox"/g)).toHaveLength(testCatalogue.planFeatures.length + 1); // + offered for purchase
-    expect(html).toContain('Untick to retire');
+    for (const key of testCatalogue.planFeatures) {
+      expect(html).toContain(featureLabel(key));
+      expect(html).not.toContain(key); // the name, never the identifier
+    }
+    expect(html.match(/type="checkbox"/g)).toHaveLength(testCatalogue.planFeatures.length);
+    expect(html).toContain('On sale');
+    expect(html).toContain('Retired');
+  });
+
+  it('asks for a plan in business words: money, a named billing period, Credits per billing cycle', () => {
+    const html = render(<PlanDraftFields form={emptyPlanForm(testCatalogue, 'USD')} catalogue={testCatalogue} onChange={() => {}} />);
+    for (const option of ['<option value="1">Monthly', '<option value="3">Quarterly', '<option value="12">Annual']) expect(html).toContain(option);
+    expect(html).toContain('Credits included per billing cycle');
+    expect(html).toContain('inputMode="decimal"');
+    expect(html).toContain('>$</span>');
+    expect(html).not.toMatch(/minor|\(months\)|price_minor|billing_period/i);
+    // A plan saved with another term keeps it, as its own option.
+    const other = render(<PlanDraftFields form={{ ...emptyPlanForm(testCatalogue, 'USD'), billingPeriodMonths: '6' }} catalogue={testCatalogue} onChange={() => {}} />);
+    expect(other).toContain('Every 6 months (current)');
   });
 
   it('a plan without a draft offers to start one from its active version', () => {
@@ -51,9 +73,16 @@ describe('Plans', () => {
 describe('Credit packs', () => {
   it('shows every version with its state, and offers a draft from the active one', () => {
     const html = render(<PacksScreen config={configurationView()} reload={noop} />);
-    expect(html).toContain('Pack test_small');
-    for (const state of ['Scheduled', 'Active', 'Superseded']) expect(html).toContain(state);
+    expect(html).toContain('Pack: Test pack');
+    for (const state of ['Scheduled', 'Published', 'Replaced']) expect(html).toContain(state);
+    expect(html).toContain('<td>$0.33</td>');
     expect(html).toContain('Start a draft from v2');
+  });
+
+  it('asks for a pack in business words', () => {
+    const html = render(<PackDraftFields form={emptyPackForm('USD')} onChange={() => {}} />);
+    for (const label of ['Price', 'Regular price', 'Position in the store', 'Bonus Credits', 'On sale', 'Retired']) expect(html).toContain(label);
+    expect(html).not.toMatch(/minor|Ladder position|was price/i);
   });
 });
 
@@ -105,9 +134,15 @@ describe('Versions & publishing', () => {
 
   it("shows the server's old -> new review, and requires a reason before publishing", () => {
     const html = render(<ReviewPanel review={publishReview()} form={{ reason: '', when: 'now', scheduledAt: '' }} onForm={() => {}} onPublish={() => {}} busy={false} messages={[]} />);
-    expect(html).toContain('Plan test_monthly: v1 → v2');
+    expect(html).toContain('Plan “test_monthly”: v1 → v2');
     expect(html.match(/data-testid="diff-change"/g)).toHaveLength(2);
-    expect(html).toContain('features.voice_access');
+    expect(html).toContain('Feature: Voice access');
+    expect(html).not.toContain('features.voice_access');
+    // With the configuration: the plan by name, the price as money.
+    const named = render(<ReviewPanel review={publishReview()} config={configurationView()} form={{ reason: '', when: 'now', scheduledAt: '' }} onForm={() => {}} onPublish={() => {}} busy={false} messages={[]} />);
+    expect(named).toContain('Plan “Test plan”: v1 → v2');
+    expect(named).toContain('$1.11');
+    expect(named).toContain('$2.22');
     expect(html).toMatch(/<button type="submit" disabled=""[^>]*>Publish all drafts…/);
     const withReason = render(<ReviewPanel review={publishReview()} form={{ reason: 'Launch', when: 'now', scheduledAt: '' }} onForm={() => {}} onPublish={() => {}} busy={false} messages={[]} />);
     expect(withReason).not.toMatch(/<button type="submit" disabled=""/);
@@ -116,7 +151,7 @@ describe('Versions & publishing', () => {
   it("blocks publishing while the server reports errors, and shows its warnings", () => {
     const review = publishReview({ errors: ['Ruleset: allowances.grace_period_days must be set before publishing.'], warnings: ['Pack b is dearer per Credit than a (USD).'] });
     const html = render(<ReviewPanel review={review} form={{ reason: 'Launch', when: 'now', scheduledAt: '' }} onForm={() => {}} onPublish={() => {}} busy={false} messages={[]} />);
-    expect(html).toContain("Publishing is blocked until the server&#x27;s errors are resolved");
+    expect(html).toContain('These must be fixed before anything can be published');
     expect(html).toContain('allowances.grace_period_days must be set before publishing.');
     expect(html).toContain('Pack b is dearer per Credit than a (USD).');
     expect(html).toMatch(/<button type="submit" disabled=""/);

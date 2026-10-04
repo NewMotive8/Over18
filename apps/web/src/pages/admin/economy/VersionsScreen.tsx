@@ -3,18 +3,21 @@ import type { EconomyConfigurationView, EconomyPublishReview } from '@over18/sha
 import ConfirmDialog from '../../../admin/ConfirmDialog';
 import {
   EMPTY_PUBLISH_FORM,
-  changeValue,
+  describeChange,
+  diffCurrencies,
   diffTitle,
   draftsChanged,
   isCancellable,
+  nameByCode,
   publishRequest,
   serverMessages,
   versionRows,
+  whatLabel,
   type PublishForm,
   type VersionRow,
 } from '../../../admin/economyConfig';
 import { adminEconomyApi } from '../../../lib/api';
-import { Field, MessageList, Section, StateBadge, buttonClass, inputClass, secondaryButtonClass } from './EconomyUi';
+import { Field, MessageList, Section, StateBadge, StateGuide, buttonClass, inputClass, secondaryButtonClass } from './EconomyUi';
 
 /**
  * Versions & publishing. Every version by state; the server's old -> new
@@ -43,7 +46,9 @@ export function VersionsTable({ rows, onCancel }: { rows: readonly VersionRow[];
         <tbody className="align-top text-zinc-300">
           {rows.map((row) => (
             <tr key={row.id} data-testid="version-row">
-              <td className="py-1">{row.kind === 'ruleset' ? 'Ruleset' : `${row.kind === 'plan' ? 'Plan' : 'Pack'} ${row.code}`}</td>
+              <td className="py-1" title={row.code ? `Internal ID: ${row.code}` : undefined}>
+                {whatLabel(row.kind, row.name ?? row.code)}
+              </td>
               <td>v{row.version}</td>
               <td>
                 <StateBadge state={row.state} />
@@ -70,6 +75,7 @@ export function VersionsTable({ rows, onCancel }: { rows: readonly VersionRow[];
 /** The review and the publish form. Pure: the parent fetches and publishes. */
 export function ReviewPanel({
   review,
+  config,
   form,
   onForm,
   onPublish,
@@ -77,6 +83,8 @@ export function ReviewPanel({
   messages,
 }: {
   review: EconomyPublishReview;
+  /** The configuration the drafts belong to: names and currencies for the review. Without it, codes and plain numbers are shown. */
+  config?: Pick<EconomyConfigurationView, 'plans' | 'packs'>;
   form: PublishForm;
   onForm: (form: PublishForm) => void;
   onPublish: () => void;
@@ -89,32 +97,35 @@ export function ReviewPanel({
       <p className="text-xs text-zinc-500">Reviewed at {review.asOf}. Publishing applies exactly these drafts, all together.</p>
       {review.diff.map((diff) => (
         <div key={`${diff.kind}-${diff.code ?? ''}`} className="rounded-md border border-zinc-800 p-3">
-          <p className="text-sm font-medium text-zinc-200">{diffTitle(diff)}</p>
+          <p className="text-sm font-medium text-zinc-200">{diffTitle(diff, config ? nameByCode(config, diff.kind, diff.code) : null)}</p>
           {diff.changes.length === 0 ? (
             <p className="mt-1 text-xs text-zinc-500">No value changes.</p>
           ) : (
             <table className="mt-2 w-full text-left text-xs">
               <thead className="text-zinc-500">
                 <tr>
-                  <th className="py-1">Field</th>
+                  <th className="py-1">What changes</th>
                   <th>Live now</th>
                   <th>Draft</th>
                 </tr>
               </thead>
-              <tbody className="font-mono text-zinc-300">
-                {diff.changes.map((change) => (
-                  <tr key={change.field} data-testid="diff-change">
-                    <td className="py-0.5 pr-3">{change.field}</td>
-                    <td className="pr-3 text-zinc-500">{changeValue(change.before)}</td>
-                    <td className="text-zinc-100">{changeValue(change.after)}</td>
-                  </tr>
-                ))}
+              <tbody className="text-zinc-300">
+                {diff.changes.map((change) => {
+                  const said = describeChange(diff, change, config ? diffCurrencies(config, diff) : undefined);
+                  return (
+                    <tr key={change.field} data-testid="diff-change">
+                      <td className="py-0.5 pr-3">{said.label}</td>
+                      <td className="pr-3 text-zinc-500">{said.before}</td>
+                      <td className="text-zinc-100">{said.after}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
         </div>
       ))}
-      {blocked && <p className="text-sm font-medium text-red-200">Publishing is blocked until the server's errors are resolved:</p>}
+      {blocked && <p className="text-sm font-medium text-red-200">These must be fixed before anything can be published:</p>}
       <MessageList messages={review.errors} />
       <MessageList messages={review.warnings} tone="warning" />
       <form
@@ -161,7 +172,7 @@ function CancelForm({ row, onDone, onClose }: { row: VersionRow; onDone: (messag
     setBusy(true);
     try {
       await adminEconomyApi.cancelVersion(row.kind, row.id, reason.trim());
-      onDone([`${row.kind === 'ruleset' ? 'Ruleset' : `${row.kind} ${row.code}`} v${row.version} cancelled.`]);
+      onDone([`${whatLabel(row.kind, row.name ?? row.code)} v${row.version} cancelled. It will not go live.`]);
     } catch (error) {
       setMessages(serverMessages(error));
     } finally {
@@ -177,7 +188,7 @@ function CancelForm({ row, onDone, onClose }: { row: VersionRow; onDone: (messag
       }}
     >
       <p className="text-sm text-zinc-200">
-        Cancel {row.kind === 'ruleset' ? 'the ruleset' : `${row.kind} ${row.code}`} v{row.version}, scheduled for {row.effectiveFrom}? It will not take effect.
+        Cancel {whatLabel(row.kind, row.name ?? row.code)} v{row.version}, scheduled for {row.effectiveFrom}? It will not take effect.
       </p>
       <Field label="Reason (required)">
         <input value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} />
@@ -238,7 +249,7 @@ export default function VersionsScreen({ config, reload }: { config: EconomyConf
       setForm(EMPTY_PUBLISH_FORM);
       setNotice(
         result.published.map(
-          (p) => `${p.kind === 'ruleset' ? 'Ruleset' : `${p.kind === 'plan' ? 'Plan' : 'Pack'} ${p.code}`} v${p.version} published, taking effect ${p.effectiveFrom}.`,
+          (p) => `${whatLabel(p.kind, nameByCode(config, p.kind, p.code))} v${p.version} published, taking effect ${new Date(p.effectiveFrom).toLocaleString()}.`,
         ),
       );
       await reload();
@@ -266,7 +277,7 @@ export default function VersionsScreen({ config, reload }: { config: EconomyConf
       >
         <MessageList messages={reviewError} />
         {review ? (
-          <ReviewPanel review={review} form={form} onForm={setForm} onPublish={requestPublish} busy={busy} messages={messages} />
+          <ReviewPanel review={review} config={config} form={form} onForm={setForm} onPublish={requestPublish} busy={busy} messages={messages} />
         ) : (
           reviewError.length === 0 && <p className="text-sm text-zinc-500">Loading the review…</p>
         )}
@@ -288,13 +299,14 @@ export default function VersionsScreen({ config, reload }: { config: EconomyConf
         )}
         <VersionsTable rows={versionRows(config)} onCancel={setCancelling} />
       </Section>
+      <StateGuide />
 
       <ConfirmDialog
         open={confirming}
         title={form.when === 'now' ? `Publish all ${draftCount} drafts now?` : `Schedule all ${draftCount} drafts?`}
         body={
           form.when === 'now'
-            ? 'Every open draft goes live together, immediately. A published version cannot be edited -- only superseded by a newer one.'
+            ? 'Every open draft goes live together, immediately. A published version cannot be edited -- only replaced by publishing a newer one.'
             : `Every open draft takes effect together at ${form.scheduledAt}. Until then a scheduled version can be cancelled; the server says when it no longer can.`
         }
         confirmLabel={form.when === 'now' ? 'Publish' : 'Schedule'}

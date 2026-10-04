@@ -1,56 +1,79 @@
 import type { AdminPackVersion, EconomyConfigurationView } from '@over18/shared';
-import { EMPTY_PACK_FORM, packDraftFromForm, packFormFrom, type PackForm } from '../../../admin/economyConfig';
+import {
+  RETIRED_HELP,
+  availabilityLabel,
+  emptyPackForm,
+  packDraftFromForm,
+  packFormFrom,
+  suggestedCurrency,
+  type PackForm,
+} from '../../../admin/economyConfig';
 import { adminEconomyApi } from '../../../lib/api';
-import { Field, formatMinor, inputClass } from './EconomyUi';
+import { Field, MoneyField, formatMinor, inputClass } from './EconomyUi';
 import VersionedItemScreen from './VersionedItemScreen';
 
+/**
+ * A Credit pack draft, in the words of the person setting it up: prices are
+ * typed as money (`packDraftFromForm` stores them as minor units), and nothing
+ * asks for a database field by name. The request sent is unchanged.
+ */
 export function PackDraftFields({ form, onChange }: { form: PackForm; onChange: (form: PackForm) => void }) {
   const set = (patch: Partial<PackForm>) => onChange({ ...form, ...patch });
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      <Field label="Display name">
+      <Field label="Name" hint="What customers see in the Credits Store.">
         <input value={form.displayName} onChange={(e) => set({ displayName: e.target.value })} className={inputClass} />
       </Field>
-      <Field label="Credits">
+      <Field label="Credits" hint="How many Credits the customer buys.">
         <input inputMode="numeric" value={form.credits} onChange={(e) => set({ credits: e.target.value })} className={inputClass} />
       </Field>
-      <Field label="Price (minor units)" hint="In the currency's smallest unit, e.g. cents.">
-        <input inputMode="numeric" value={form.priceMinor} onChange={(e) => set({ priceMinor: e.target.value })} className={inputClass} />
+      <MoneyField label="Price" hint="What the customer pays for this pack." value={form.price} currency={form.currency} onChange={(price) => set({ price })} />
+      <Field label="Currency" hint="3-letter code. The prices here are in this currency.">
+        <input value={form.currency} maxLength={3} onChange={(e) => set({ currency: e.target.value.toUpperCase() })} className={inputClass} />
       </Field>
-      <Field label="Currency" hint="3-letter code.">
-        <input value={form.currency} onChange={(e) => set({ currency: e.target.value })} className={inputClass} />
-      </Field>
-      <Field label="Ladder position" hint="Packs are listed in this order, then by code.">
-        <input inputMode="numeric" value={form.sortOrder} onChange={(e) => set({ sortOrder: e.target.value })} className={inputClass} />
-      </Field>
-      <Field label="Bonus Credits" hint="Given on top, recorded as bonus Credits. Empty for none.">
+      <Field label="Bonus Credits" hint="Extra Credits given on top, free. Leave empty for none.">
         <input inputMode="numeric" value={form.bonusCredits} onChange={(e) => set({ bonusCredits: e.target.value })} className={inputClass} />
       </Field>
-      <Field label="Badge" hint={'Shown on the pack in the store, e.g. "Best value". Up to 40 characters; empty for none.'}>
+      <Field label="Position in the store" hint="Packs are listed lowest number first.">
+        <input inputMode="numeric" value={form.sortOrder} onChange={(e) => set({ sortOrder: e.target.value })} className={inputClass} />
+      </Field>
+      <Field label="Badge" hint={'A short label shown on the pack, such as "Best value". Up to 40 characters; leave empty for none.'}>
         <input maxLength={40} value={form.badge} onChange={(e) => set({ badge: e.target.value })} className={inputClass} />
       </Field>
-      <Field
-        label="Regular price (minor units)"
-        hint="Only for a promotion: the usual price, higher than the price above. The store strikes it through. Empty for no promotion."
-      >
-        <input inputMode="numeric" value={form.wasPriceMinor} onChange={(e) => set({ wasPriceMinor: e.target.value })} className={inputClass} />
-      </Field>
-      <Field
-        label="Promotion ends"
-        hint="Needs a regular price. The store counts down to it; from then on the regular price is charged. Empty for no end."
-      >
-        <input type="datetime-local" value={form.promotionEndsAt} onChange={(e) => set({ promotionEndsAt: e.target.value })} className={inputClass} />
-      </Field>
-      <div className="flex flex-col justify-end gap-2 text-sm text-zinc-300">
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={form.isBestValue} onChange={(e) => set({ isBestValue: e.target.checked })} />
-          Marked as best value
-        </label>
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={form.isPurchasable} onChange={(e) => set({ isPurchasable: e.target.checked })} />
-          Offered for purchase <span className="text-xs text-zinc-500">(untick to retire)</span>
-        </label>
-      </div>
+      <label className="flex items-center gap-2 self-end text-sm text-zinc-300">
+        <input type="checkbox" checked={form.isBestValue} onChange={(e) => set({ isBestValue: e.target.checked })} />
+        Highlight as the best-value pack
+      </label>
+      <fieldset className="grid gap-3 rounded-md border border-zinc-800 p-3 text-sm text-zinc-300 sm:col-span-2 sm:grid-cols-2">
+        <legend className="px-1 text-zinc-400">Promotion (optional)</legend>
+        <MoneyField
+          label="Regular price"
+          hint="The usual price, higher than the price above. The store shows it struck through. Leave empty for no promotion."
+          value={form.regularPrice}
+          currency={form.currency}
+          onChange={(regularPrice) => set({ regularPrice })}
+        />
+        <Field label="Promotion ends" hint="The store counts down to this; afterwards the regular price is charged. Needs a regular price. Leave empty for no end.">
+          <input type="datetime-local" value={form.promotionEndsAt} onChange={(e) => set({ promotionEndsAt: e.target.value })} className={inputClass} />
+        </Field>
+      </fieldset>
+      <fieldset className="text-sm text-zinc-300 sm:col-span-2">
+        <legend>Availability</legend>
+        <div className="mt-2 flex flex-col gap-1.5">
+          <label className="flex items-center gap-2">
+            <input type="radio" name="pack-availability" checked={form.isPurchasable} onChange={() => set({ isPurchasable: true })} />
+            <span>
+              On sale <span className="text-xs text-zinc-500">— customers can buy this pack once it is published.</span>
+            </span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="radio" name="pack-availability" checked={!form.isPurchasable} onChange={() => set({ isPurchasable: false })} />
+            <span>
+              Retired <span className="text-xs text-zinc-500">— {RETIRED_HELP.replace(/^Retired: /, '')}</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
     </div>
   );
 }
@@ -58,14 +81,8 @@ export function PackDraftFields({ form, onChange }: { form: PackForm; onChange: 
 export const packColumns: Array<{ label: string; value: (v: AdminPackVersion) => string }> = [
   { label: 'Name', value: (v) => v.displayName },
   { label: 'Credits', value: (v) => String(v.credits) },
-  /**
-   * MONEY AS MONEY. `200 (USD minor units)` asked the operator setting a price
-   * to divide by a hundred in their head, on the screen where a mistake is
-   * charged to a customer. The amount is shown the way the customer's store
-   * shows it, by the SAME function, with the stored integer kept alongside
-   * because that is what the form below takes and what support quotes.
-   */
-  { label: 'Price', value: (v) => `${formatMinor(v.priceMinor, v.currency)} (${v.priceMinor})` },
+  // Money as money, the way the customer's store shows it.
+  { label: 'Price', value: (v) => formatMinor(v.priceMinor, v.currency) },
   { label: 'Bonus', value: (v) => (v.bonusCredits ? `+${v.bonusCredits}` : '') },
   {
     label: 'Promotion',
@@ -76,8 +93,8 @@ export const packColumns: Array<{ label: string; value: (v: AdminPackVersion) =>
   },
   { label: 'Badge', value: (v) => v.badge ?? '' },
   { label: 'Position', value: (v) => String(v.sortOrder) },
-  { label: 'Best value', value: (v) => (v.isBestValue ? 'yes' : '') },
-  { label: 'Offered', value: (v) => (v.isPurchasable ? 'yes' : 'retired') },
+  { label: 'Best value', value: (v) => (v.isBestValue ? 'Yes' : '') },
+  { label: 'Availability', value: (v) => availabilityLabel(v.isPurchasable) },
 ];
 
 export default function PacksScreen({ config, reload }: { config: EconomyConfigurationView; reload: () => Promise<void> }) {
@@ -85,8 +102,9 @@ export default function PacksScreen({ config, reload }: { config: EconomyConfigu
     <VersionedItemScreen
       noun="pack"
       items={config.packs}
-      emptyForm={() => ({ ...EMPTY_PACK_FORM })}
+      emptyForm={() => emptyPackForm(suggestedCurrency(config))}
       formFrom={packFormFrom}
+      nameOf={(form) => form.displayName}
       toDraft={packDraftFromForm}
       save={adminEconomyApi.savePackDraft}
       discard={adminEconomyApi.discardPackDraft}
