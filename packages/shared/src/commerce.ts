@@ -168,6 +168,66 @@ export interface CustomerCommercialState {
 }
 
 /* ------------------------------------------------------------------ *
+ * Managing one's own subscription (GET/POST /api/me/subscription)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The plan a subscriber actually holds: the EXACT version their subscription
+ * names, not whatever the catalogue offers under that code today. A retired
+ * plan still describes itself here, which the catalogue cannot do -- it offers
+ * only purchasable plans, so a subscriber on a withdrawn plan would otherwise
+ * be shown nothing at all.
+ */
+export interface CustomerSubscriptionPlan {
+  code: string;
+  version: number;
+  displayName: string;
+  priceMinor: number;
+  currency: string;
+  billingPeriodMonths: number;
+  monthlyIncludedCredits: number;
+  /** False once this version is no longer the published one in effect. */
+  live: boolean;
+}
+
+/** What the subscriber last actually paid, from the payment record itself. */
+export interface CustomerSubscriptionPayment {
+  amountMinor: number;
+  currency: string;
+  /** When it settled. ISO 8601. */
+  paidAt: string;
+}
+
+/**
+ * A subscriber's own subscription, for managing it.
+ *
+ * THERE IS NO NEXT BILLING DATE, and this type deliberately offers no field for
+ * one. Nothing in the system renews a subscription (see the API's
+ * subscription-service and payment-service): `currentPeriodEnd` is when Premium
+ * lapses, not when it bills again. Inventing a renewal date here would be
+ * promising a charge that nothing makes.
+ */
+export interface CustomerSubscriptionDetail {
+  plan: CustomerSubscriptionPlan;
+  /** As the customer is told it: cancelled past its period end reads as expired. */
+  status: SubscriptionStatus;
+  /** ISO 8601 -- when the paid period ends. */
+  currentPeriodEnd: string;
+  cancelAtPeriodEnd: boolean;
+  /** When the current subscription began, from its own recorded history. Null when unrecorded. */
+  startedAt: string | null;
+  /** The most recent settled subscription payment, or null when none is recorded. */
+  lastPayment: CustomerSubscriptionPayment | null;
+  /** Whether cancelling is available now -- the server's answer, never the page's guess. */
+  canCancel: boolean;
+}
+
+/** GET /api/me/subscription -- `subscription` is null when there is none. */
+export interface CustomerSubscriptionResponse {
+  subscription: CustomerSubscriptionDetail | null;
+}
+
+/* ------------------------------------------------------------------ *
  * Analytics event catalogue (PRD §23)
  * ------------------------------------------------------------------ */
 
@@ -585,6 +645,20 @@ export interface AdminUserDetail {
 export const ADMIN_SUBSCRIPTION_ACTIONS = ['assign', 'change_plan', 'cancel', 'end'] as const;
 export type AdminSubscriptionAction = (typeof ADMIN_SUBSCRIPTION_ACTIONS)[number];
 
+/**
+ * WHO MADE A RECORDED CHANGE.
+ *
+ *   admin     an operator acted, and the history names them;
+ *   payment   a provider's confirmed payment did, and names the payment;
+ *   customer  the subscriber acted on their own subscription.
+ *
+ * `customer` exists so a self-service cancellation is recorded truthfully. The
+ * alternative -- writing it as `admin` with the subscriber as the operator --
+ * would put a false operator in the audit trail.
+ */
+export const SUBSCRIPTION_CHANGE_SOURCES = ['admin', 'payment', 'customer'] as const;
+export type SubscriptionChangeSource = (typeof SUBSCRIPTION_CHANGE_SOURCES)[number];
+
 /** A plan version, as the P1 catalogue defines it. */
 export interface AdminSubscriptionPlan {
   code: string;
@@ -622,7 +696,7 @@ export interface AdminSubscriptionSnapshot {
 export interface AdminSubscriptionHistoryEntry {
   sequence: number;
   change: AdminSubscriptionAction;
-  source: 'admin';
+  source: SubscriptionChangeSource;
   /** When it took effect. ISO 8601. */
   effectiveAt: string;
   /** Null when the user had no subscription before it. */

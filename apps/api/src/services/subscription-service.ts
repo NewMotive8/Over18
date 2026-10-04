@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import type {
   AdminSubscriptionAction,
   AdminSubscriptionHistoryEntry,
@@ -256,14 +256,22 @@ interface SubscriptionChangeBase {
 /**
  * WHO MADE THE CHANGE, and what that obliges them to supply.
  *
- * A discriminated union rather than two loose fields, because migration 0039
- * refuses an `admin` history row without an operator and a reason -- so the
- * type should refuse it too, rather than leaving the database to catch it.
- * A payment has no operator: the provider's confirmation is the authority, and
- * the payment itself is named in `reference`.
+ * A discriminated union rather than two loose fields, because the
+ * `subscription_history_actor_attributed` constraint refuses a row from a PERSON
+ * without an actor and a reason -- so the type should refuse it too, rather than
+ * leaving the database to catch it. A payment has no actor: the provider's
+ * confirmation is the authority, and the payment itself is named in `reference`.
+ *
+ * `customer` is the subscriber acting on their own subscription, and its
+ * `actorUserId` is that same subscriber -- never another account. The route is
+ * what guarantees that; the type only insists somebody is named.
  */
 export type SubscriptionChange = SubscriptionChangeBase &
-  ({ source: 'admin'; actorUserId: string } | { source: 'payment'; actorUserId: null });
+  (
+    | { source: 'admin'; actorUserId: string }
+    | { source: 'customer'; actorUserId: string }
+    | { source: 'payment'; actorUserId: null }
+  );
 
 /** One side of a change, for its audit record. */
 export interface SubscriptionSnapshot {
@@ -402,3 +410,71 @@ export async function changeSubscription(tx: Writer, change: SubscriptionChange)
   return { sequence: version + 1, effectiveAt: recorded!.effectiveAt.toISOString(), before, after };
 }
 
+
+/* ------------------------------------------------------------------ *
+ * A subscriber cancelling their own subscription
+ * ------------------------------------------------------------------ */
+
+/**
+ * CANCEL AT PERIOD END -- the only cancellation this system has, and the one
+ * the customer wants anyway: the status becomes `cancelled`, the paid period is
+ * left exactly as it was, and Premium therefore runs to `currentPeriodEnd`
+ * before reading as `expired`.
+ *
+ * NO PROVIDER IS CALLED, and none needs to be: nothing renews a subscription
+ * (see the note at the top of this module), so there is no future charge to
+ * stop. What cancelling does is stop Premium continuing past the period
+ * already paid for, and that is entirely our own state.
+ *
+ * THE SUBSCRIBER IS BOTH THE SUBJECT AND THE ACTOR. The caller passes one id
+ * and it is used for both, so this cannot be pointed at another account; the
+ * change is recorded with source `customer` rather than borrowing `admin`,
+ * which would invent an operator.
+ *
+ * The version is read inside the transaction and handed to `changeSubscription`
+ * as what we saw, so an operator changing the same subscription at the same
+ * moment loses the race cleanly with a `subscription_conflict` instead of one
+ * change silently overwriting the other.
+ */
+export async function cancelOwnSubscription(
+  db: Db,
+  userId: string,
+  requestId: string | null,
+): Promise<SubscriptionChangeResult> {
+  return db.transaction(async (tx) =>
+    changeSubscription(tx, {
+      userId,
+      action: 'cancel',
+      planCode: null,
+      expectedVersion: await historyVersion(tx, userId),
+      source: 'customer',
+      actorUserId: userId,
+      reason: 'Cancelled by the subscriber.',
+      reference: null,
+      requestId,
+    }),
+  );
+}
+
+/**
+ * When the CURRENT subscription began: the most recent `assign`, not the first
+ * one ever. A customer who subscribed, let it expire and subscribed again
+ * started the subscription they hold now on the later date, and telling them the
+ * older one would overstate how long they have been a subscriber.
+ *
+ * Null when no `assign` is recorded -- true of any subscription written before
+ * this history existed, or straight into the table. An absent fact is reported
+ * as absent rather than guessed from `created_at`.
+ *
+ * It lives here because this module owns the subscription's storage: nothing else
+ * reads `subscription_history` (a boundary the suite enforces).
+ */
+export async function subscriptionStartedAt(db: Pick<Db, 'select'>, userId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ effectiveAt: subscriptionHistory.effectiveAt })
+    .from(subscriptionHistory)
+    .where(and(eq(subscriptionHistory.userId, userId), eq(subscriptionHistory.change, 'assign')))
+    .orderBy(desc(subscriptionHistory.sequence))
+    .limit(1);
+  return row ? row.effectiveAt.toISOString() : null;
+}

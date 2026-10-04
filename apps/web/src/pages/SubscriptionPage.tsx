@@ -5,10 +5,12 @@ import PageContainer from '../components/PageContainer';
 import PageHeader from '../components/PageHeader';
 import PaymentMethodSheet from '../components/PaymentMethodSheet';
 import { CurrentPlanCard, EconomyStateNotice, PlanCatalog, PremiumBenefits } from '../components/CustomerEconomy';
+import SubscriptionManagement from '../components/SubscriptionManagement';
 import { formatPlanPrice, offeredPlans, useCustomerEconomy } from '../lib/customerEconomy';
 import { track, useTrackView } from '../lib/analytics';
 import { useCheckout } from '../lib/payments';
 import { PREMIUM_SUMMARY } from '../lib/membership';
+import { managesSubscription } from '../lib/subscriptionManagement';
 
 /**
  * Premium (US-18, P9.1) -- what Premium is, what the customer has now, and
@@ -41,9 +43,17 @@ export default function SubscriptionPage() {
   const overview = state.status === 'ready' ? state.overview : null;
   const plan = overview ? offeredPlans(overview).find((p) => p.code === chosen) ?? null : null;
   const premium = overview?.commercial?.tier?.available && overview.commercial.tier.value === 'premium';
+  /** Premium, or a subscription whose plan was withdrawn -- see the selector. */
+  const manage = managesSubscription(overview);
   /** Set when the customer has just come back from a checkout. */
   const returned = params.get('from') === 'checkout';
-  useTrackView('paywall_viewed', { surface: 'subscription_page' }, overview !== null);
+  /**
+   * A SUBSCRIBER IS NOT SHOWN A PAYWALL, so none is recorded. The event means
+   * "an offer was put in front of someone"; firing it for the management screen
+   * would count every subscriber checking their renewal date as a paywall view
+   * and quietly spoil the funnel's denominator.
+   */
+  useTrackView('paywall_viewed', { surface: 'subscription_page' }, overview !== null && !manage);
 
   const buy = async (method: PaymentMethod) => {
     if (!plan) return;
@@ -58,10 +68,14 @@ export default function SubscriptionPage() {
 
   return (
     <PageContainer>
+      {/*
+        The heading follows the screen. `PREMIUM_SUMMARY` sells Premium, which is
+        the wrong thing to say to somebody who has already bought it.
+      */}
       <PageHeader
-        eyebrow="Plans & Premium"
-        title="Premium"
-        subtitle={PREMIUM_SUMMARY}
+        eyebrow={manage ? 'Membership' : 'Plans & Premium'}
+        title={manage ? 'Your Premium' : 'Premium'}
+        subtitle={manage ? 'Your plan and billing details.' : PREMIUM_SUMMARY}
       />
       <EconomyStateNotice state={state} retry={retry} />
 
@@ -81,26 +95,45 @@ export default function SubscriptionPage() {
             </div>
           )}
 
-          <CurrentPlanCard overview={overview} />
-          <PremiumBenefits overview={overview} />
-          <PlanCatalog
-            overview={overview}
-            onBuy={(code) => {
-              track('subscription_cta_clicked', { surface: 'subscription_page', planCode: code });
-              setChosen(code);
-            }}
-          />
+          {manage ? (
+            /*
+              TWO DIFFERENT SCREENS AT ONE ROUTE. A subscriber gets their
+              subscription and the one action they can take; the benefits stay
+              because what Premium includes is still worth stating. The plan
+              selector, the buy CTA and the payment disclosure are all gone --
+              they belong to a purchase that cannot happen here (the server
+              refuses a second subscription with 409 `already_subscribed`), and
+              a selector nobody can act on is what made this page read as a
+              shop to people who had already paid.
+            */
+            <>
+              <SubscriptionManagement />
+              <PremiumBenefits overview={overview} />
+            </>
+          ) : (
+            <>
+              <CurrentPlanCard overview={overview} />
+              <PremiumBenefits overview={overview} />
+              <PlanCatalog
+                overview={overview}
+                onBuy={(code) => {
+                  track('subscription_cta_clicked', { surface: 'subscription_page', planCode: code });
+                  setChosen(code);
+                }}
+              />
 
-          {/*
-            The disclosure is part of the offer, not a footnote: someone about
-            to press a payment button should read it without hunting for it.
-          */}
-          <p
-            data-testid="payment-note"
-            className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-center text-xs text-amber-200/90"
-          >
-            Payments are simulated in Staging. No card is collected and no real money moves.
-          </p>
+              {/*
+                The disclosure is part of the offer, not a footnote: someone about
+                to press a payment button should read it without hunting for it.
+              */}
+              <p
+                data-testid="payment-note"
+                className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-center text-xs text-amber-200/90"
+              >
+                Payments are simulated in Staging. No card is collected and no real money moves.
+              </p>
+            </>
+          )}
         </>
       )}
 

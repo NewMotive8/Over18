@@ -389,10 +389,12 @@ describe('one place resolves a subscription', () => {
   });
 
   /**
-   * P9 added the third writer, deliberately. A subscription changes for exactly
-   * three reasons: an operator changes it (P3.5), or a confirmed payment
-   * activates or renews it (P9.2) -- and the customer commercial state only
-   * reads it. Nothing else may resolve or write a subscription for itself.
+   * A subscription changes for exactly three reasons, and each was added
+   * deliberately: an operator changes it (P3.5); a confirmed payment activates it
+   * (P9.2); or THE SUBSCRIBER CANCELS THEIR OWN -- the self-service route, which
+   * may only ever cancel, and only for `request.currentUser`. The customer
+   * commercial state merely reads. Nothing else may resolve or write a
+   * subscription for itself.
    */
   it('only the reviewed modules use the subscription service', () => {
     const importers = application().filter(
@@ -400,6 +402,7 @@ describe('one place resolves a subscription', () => {
     );
     expect(importers.sort()).toEqual([
       'routes/admin-users.ts',
+      'routes/customer-subscription.ts',
       'services/admin-subscription-service.ts',
       'services/customer-economy.ts',
       'services/payment-service.ts',

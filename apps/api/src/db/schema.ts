@@ -2675,7 +2675,7 @@ export const subscriptions = pgTable('subscriptions', {
 export const subscriptionChange = pgEnum('subscription_change', ['assign', 'change_plan', 'cancel', 'end']);
 
 /** P3.5: who made it -- an operator (P3.5), or a confirmed payment (P9.2). */
-export const subscriptionChangeSource = pgEnum('subscription_change_source', ['admin', 'payment']);
+export const subscriptionChangeSource = pgEnum('subscription_change_source', ['admin', 'payment', 'customer']);
 
 /**
  * subscription_history (P3.5) -- every change ever made to a user's
@@ -2723,10 +2723,19 @@ export const subscriptionHistory = pgTable(
       'subscription_history_previous_complete',
       sql`(${t.previousPlanVersionId} IS NULL) = (${t.previousStatus} IS NULL) AND (${t.previousStatus} IS NULL) = (${t.previousPeriodEnd} IS NULL)`,
     ),
-    // An operator's change always names the operator and says why.
+    /**
+     * A change a PERSON made always names that person and says why -- an
+     * operator acting on someone's subscription, or a subscriber acting on
+     * their own. Only a provider's payment is exempt: its authority is the
+     * confirmed payment, which `reference` names instead.
+     *
+     * Written as "anything but payment" rather than listing the human sources,
+     * so a source added later is attributed by default rather than by
+     * remembering to add it here.
+     */
     check(
-      'subscription_history_admin_attributed',
-      sql`${t.source} <> 'admin' OR (${t.actorUserId} IS NOT NULL AND length(btrim(coalesce(${t.reason}, ''))) > 0)`,
+      'subscription_history_actor_attributed',
+      sql`${t.source} = 'payment' OR (${t.actorUserId} IS NOT NULL AND length(btrim(coalesce(${t.reason}, ''))) > 0)`,
     ),
   ],
 );
