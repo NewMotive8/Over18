@@ -1,5 +1,16 @@
 import { Link } from 'react-router-dom';
+import { commercialTier, useCustomerEconomy, type CustomerEconomyState } from '../../lib/customerEconomy';
 import { BellIcon, ProfileIcon, SearchIcon } from '../icons';
+
+/**
+ * What the offer capsule says. It used to advertise a discount that does not
+ * exist. Now it states the customer's position: a Premium member sees
+ * "Premium"; everyone else -- Free, signed out, or while the server has not
+ * answered yet -- sees "Upgrade". The tier is the server's, never guessed.
+ */
+export function offerLabel(economy: CustomerEconomyState): 'Premium' | 'Upgrade' {
+  return economy.status === 'ready' && commercialTier(economy.overview) === 'premium' ? 'Premium' : 'Upgrade';
+}
 
 /**
  * Home's own header actions: search, notifications, account and the offer.
@@ -18,6 +29,7 @@ export default function LobbyActions({
   onSearch?: () => void;
   withAccount?: boolean;
 }) {
+  const [economy] = useCustomerEconomy();
   return (
     <>
       <button
@@ -56,7 +68,7 @@ export default function LobbyActions({
         to="/subscription"
         className="ml-0.5 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-rose-500 to-fuchsia-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg shadow-rose-950/30 transition-transform active:scale-95"
       >
-        <span className="text-[10px]">🔥</span> -85%
+        <span className="text-[10px]">🔥</span> {offerLabel(economy)}
       </Link>
     </>
   );

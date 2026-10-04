@@ -22,6 +22,7 @@ import { getAction, useCustomerEconomy } from '../lib/customerEconomy';
 import { lastCharacter } from '../lib/creditsStore';
 import CallOverlay, { CallButton } from '../components/CallOverlay';
 import { useVoiceCall } from '../hooks/useVoiceCall';
+import CharacterAvatar from '../components/CharacterAvatar';
 
 type ChatState =
   | { status: 'loading' }
@@ -38,7 +39,6 @@ export default function ChatPage() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const [state, setState] = useState<ChatState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
-  const [imageFailed, setImageFailed] = useState(false);
   /**
    * The voice call. Keyed on the route's conversation id, so navigating to a
    * different chat tears down any call in progress rather than carrying the
@@ -363,7 +363,6 @@ export default function ChatPage() {
   // legacy locator on the web origin. `absoluteMediaUrl` sends each to the
   // right server; used raw, a canonical route was requested from the web host.
   const avatar = absoluteMediaUrl(character.profileImage);
-  const showImage = avatar && !imageFailed;
 
   return (
     <section className="flex h-full min-h-[60vh] flex-col">
@@ -373,18 +372,7 @@ export default function ChatPage() {
           aria-label={`View ${character.displayName}'s profile`}
           className="flex items-center gap-3"
         >
-          {showImage ? (
-            <img
-              src={avatar}
-              alt=""
-              onError={() => setImageFailed(true)}
-              className="h-12 w-12 rounded-full border border-zinc-700 object-cover"
-            />
-          ) : (
-            <div className="flex h-12 w-12 items-center justify-center rounded-full border border-zinc-700 bg-gradient-to-br from-zinc-800 to-zinc-900 text-lg font-semibold text-rose-500/70">
-              {character.displayName.charAt(0)}
-            </div>
-          )}
+          <CharacterAvatar name={character.displayName} src={avatar} size="sm" />
           <div>
             <h2 className="font-semibold leading-tight">{character.displayName}</h2>
             <p className="text-xs text-zinc-500">Tap to view profile</p>

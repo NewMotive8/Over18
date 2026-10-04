@@ -105,6 +105,12 @@ export {
   type CustomerEconomyCatalog,
   type CustomerPackOffer,
   type CustomerPlanOffer,
+  type CustomerSubscriptionDetail,
+  type CustomerSubscriptionPayment,
+  type CustomerSubscriptionPlan,
+  type CustomerSubscriptionResponse,
+  type SubscriptionChangeSource,
+  SUBSCRIPTION_CHANGE_SOURCES,
   type EconomyUnavailableResponse,
   type SubscriptionStatus,
 } from './commerce.js';

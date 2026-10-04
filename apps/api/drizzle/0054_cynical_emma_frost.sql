@@ -1,0 +1,3 @@
+ALTER TYPE "public"."subscription_change_source" ADD VALUE 'customer';--> statement-breakpoint
+ALTER TABLE "subscription_history" DROP CONSTRAINT "subscription_history_admin_attributed";--> statement-breakpoint
+ALTER TABLE "subscription_history" ADD CONSTRAINT "subscription_history_actor_attributed" CHECK ("subscription_history"."source" = 'payment' OR ("subscription_history"."actor_user_id" IS NOT NULL AND length(btrim(coalesce("subscription_history"."reason", ''))) > 0));

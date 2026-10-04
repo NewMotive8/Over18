@@ -14,6 +14,7 @@ import conversationRoutes from './routes/conversations.js';
 import { randomBytes } from 'node:crypto';
 import customerEconomyRoutes from './routes/customer-economy.js';
 import customerPaymentRoutes from './routes/customer-payments.js';
+import customerSubscriptionRoutes from './routes/customer-subscription.js';
 import analyticsRoutes from './routes/analytics.js';
 import adminAnalyticsRoutes from './routes/admin-analytics.js';
 import { createAnalytics, createDbAnalyticsSink, type AnalyticsSink } from './services/analytics-service.js';
@@ -244,6 +245,10 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // Funnels (`analytics.read`) and a bounded export (`analytics.export`). Read-only.
   await app.register(adminAnalyticsRoutes, { db, analyticsEnabled: env.commerce.analyticsEnabled });
   await app.register(customerEconomyRoutes, { db, commerce: env.commerce, analytics });
+  // Customer subscription self-service: read your own subscription, and cancel
+  // it at the end of the period already paid for. No provider is involved --
+  // nothing renews, so cancelling is purely our own state.
+  await app.register(customerSubscriptionRoutes, { db, commerce: env.commerce });
   // P9.1 customer payments. The provider is whatever `PAYMENT_PROVIDER`
   // selects -- `none` (every route 503) or the fake one, which
   // commerce/fake-provider-policy.ts refuses to build in production or on

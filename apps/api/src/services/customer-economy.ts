@@ -3,6 +3,7 @@ import type {
   CustomerEconomyCatalog,
   CustomerPackOffer,
   CustomerPlanOffer,
+  CustomerSubscriptionDetail,
 } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import type { SafeUser } from './auth-service.js';
@@ -14,7 +15,13 @@ import {
   type PlanVersionView,
 } from './economy-resolver.js';
 import { effectivePackTerms } from './pack-terms.js';
-import { resolveSubscription } from './subscription-service.js';
+import { lastSettledSubscriptionPayment } from './payment-service.js';
+import {
+  readSubscriptionRecord,
+  resolveSubscription,
+  subscriptionActions,
+  subscriptionStartedAt,
+} from './subscription-service.js';
 import { CREDITS_CURRENCY, readCommercialWallet } from './wallet-service.js';
 
 /**
@@ -119,5 +126,57 @@ export async function readCustomerCommercialState(db: Db, user: SafeUser): Promi
     subscription: subscription.ok ? { available: true, value: subscription.subscription } : unresolvable,
     wallet: wallet ? { available: true, value: wallet } : { available: false, reason: 'wallet_unresolvable' },
     age: { available: false, reason: 'age_verification_not_supported' },
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * A subscriber's own subscription, for managing it
+ * ------------------------------------------------------------------ */
+
+/**
+ * The subscriber's own subscription as the management screen needs it: the exact
+ * plan version they hold, the status they are told, the period already paid for,
+ * when it began, what they last paid, and whether cancelling is available.
+ *
+ * THE PLAN COMES FROM THE SUBSCRIPTION, NOT THE CATALOGUE. `readSubscriptionRecord`
+ * loads the exact version the subscription names, so a subscriber on a withdrawn
+ * plan is still shown what they hold -- the catalogue offers only purchasable
+ * plans and would show them nothing. `live` says whether that version is still
+ * the published one, which is also the only way the status can be Premium.
+ *
+ * `canCancel` IS THE SERVER'S ANSWER. It comes from the same `subscriptionActions`
+ * the change path enforces, so the page can never offer a cancellation the
+ * server would refuse, nor hide one it would allow.
+ */
+export async function readCustomerSubscriptionDetail(
+  db: Db,
+  userId: string,
+): Promise<CustomerSubscriptionDetail | null> {
+  const { current } = await readSubscriptionRecord(db, userId);
+  if (!current) return null;
+
+  const [startedAt, lastPayment] = await Promise.all([
+    subscriptionStartedAt(db, userId),
+    lastSettledSubscriptionPayment(db, userId),
+  ]);
+
+  const plan = current.plan;
+  return {
+    plan: {
+      code: plan.ref.code,
+      version: plan.ref.version,
+      displayName: plan.displayName,
+      priceMinor: plan.priceMinor,
+      currency: plan.currency,
+      billingPeriodMonths: plan.billingPeriodMonths,
+      monthlyIncludedCredits: plan.monthlyIncludedCredits,
+      live: plan.status === 'published',
+    },
+    status: current.status,
+    currentPeriodEnd: current.currentPeriodEnd,
+    cancelAtPeriodEnd: current.status === 'cancelled',
+    startedAt,
+    lastPayment,
+    canCancel: subscriptionActions(current).includes('cancel'),
   };
 }
