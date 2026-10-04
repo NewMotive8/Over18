@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { MESSAGE_MAX_LENGTH } from '@over18/shared';
 import type { Db } from '../db/client.js';
+import type { CommerceEnv } from '../env.js';
 import { LlmError } from '../llm/types.js';
+import { ChatCreditError, sendChargedMessage } from '../services/paid-chat-service.js';
 import type { ReplyProvider } from '../services/character-reply.js';
 import type { MemoryExtractor } from '../services/memory-extractor.js';
 import type { MediaSelector } from '../services/message-media-service.js';
@@ -58,6 +60,12 @@ export default async function messageRoutes(
      * prompt it builds -- same client, same model, same limits.
      */
     openingProvider: ReplyProvider;
+    /**
+     * Whether Credits are charged for an exchange. While the economy is off chat
+     * is not a paid action at all; while it is on, an exchange that cannot be
+     * priced is refused rather than given away.
+     */
+    commerce: Pick<CommerceEnv, 'enabled'>;
   },
 ) {
   app.get<{ Params: { conversationId: string } }>(
@@ -163,7 +171,20 @@ export default async function messageRoutes(
       }
       let result;
       try {
-        result = await sendMessage(
+        /**
+         * CHARGED BEFORE THE MODEL IS CALLED, released if it fails. The
+         * exchange itself is unchanged and is handed to the charging service as
+         * the work it reserves Credits for.
+         */
+        result = await sendChargedMessage(
+          opts.db,
+          opts.commerce,
+          {
+            userId: request.currentUser!.id,
+            conversationId,
+            requestId: request.id,
+          },
+          () => sendMessage(
           opts.db,
           request.currentUser!.id,
           conversationId,
@@ -198,8 +219,29 @@ export default async function messageRoutes(
               );
             },
           },
+          ),
         );
       } catch (err) {
+        /**
+         * REFUSALS A CUSTOMER CAN ACT ON, told apart from faults. Nothing was
+         * charged in either case: the reservation is released before this runs.
+         */
+        if (err instanceof ChatCreditError) {
+          if (err.code === 'insufficient_credits') {
+            return reply.code(402).send({
+              error: 'insufficient_credits',
+              message: 'You need more Credits to send this message.',
+            });
+          }
+          // The economy is on but nothing prices a chat exchange. That is a
+          // configuration gap on our side, so it is reported as unavailable
+          // rather than as the customer's fault -- and never as free.
+          request.log.warn({ chatPricingReason: err.reason }, 'chat is not priced by the economy configuration');
+          return reply.code(503).send({
+            error: 'chat_unavailable',
+            message: 'Chat is not available right now. Please try again later.',
+          });
+        }
         if (err instanceof LlmError) {
           // The transaction already rolled back — nothing was persisted.
           // Log kind/status only; never prompts, keys, or provider bodies.

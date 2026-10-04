@@ -723,10 +723,19 @@ describe('the framework stays a framework', () => {
   });
 
   /**
-   * P8.2's content unlock is the first caller, and for now the only one. It
-   * reaches the framework the way any paid action must -- begin, then settle --
-   * and prices itself through the pricing resolver rather than by handing over
-   * a number.
+   * THE REVIEWED CALLERS. Each reaches the framework the way any paid action
+   * must -- begin, then settle -- and prices itself through the pricing
+   * resolver rather than by handing over a number.
+   *
+   *   content-unlock  P8.2: one asset, priced by its own content offer.
+   *   paid-chat       one text exchange, reserved before the model is called
+   *                   and released if it fails.
+   *   paid-call       one started minute of a live call; minute 1 is reserved
+   *                   around creating the provider session, so an unaffordable
+   *                   call never becomes a billable session upstream.
+   *
+   * Adding a caller here is a deliberate act: charging someone is not something
+   * a module should be able to start doing unnoticed.
    */
   it('its callers are the reviewed ones, and they only begin and settle', () => {
     // A module specifier, not a mention: a doc comment naming the framework
@@ -735,7 +744,11 @@ describe('the framework stays a framework', () => {
     const callers = application()
       .filter((rel) => rel !== SERVICE)
       .filter((rel) => IMPORTS_PAID_ACTION.test(read(rel)));
-    expect(callers).toEqual(['services/content-unlock-service.ts']);
+    expect(callers.sort()).toEqual([
+      'services/content-unlock-service.ts',
+      'services/paid-call-service.ts',
+      'services/paid-chat-service.ts',
+    ]);
     const used = new Set(read('services/content-unlock-service.ts').match(/\b(beginPaidAction|capturePaidAction|releasePaidAction|refundPaidAction|runPaidAction|quotePaidAction)\b/g));
     expect([...used].sort()).toEqual(['beginPaidAction', 'capturePaidAction', 'refundPaidAction']);
   });

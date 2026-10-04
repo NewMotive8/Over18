@@ -130,6 +130,7 @@ export const testCatalogue: EconomyConfigurationView['catalogue'] = {
     voice_message: { unit: 'per_action', durationTiers: 'forbidden' },
     voice_call: { unit: 'per_minute', durationTiers: 'forbidden' },
     video: { unit: 'per_action', durationTiers: 'required' },
+    text_message: { unit: 'per_action', durationTiers: 'forbidden' },
   },
   allowances: ['free_first_conversation_messages', 'free_daily_messages', 'signup_grant_credits', 'grace_period_days', 'reward_monthly_cap_credits'],
 };
