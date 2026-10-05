@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useInViewport } from '../hooks/useInViewport';
 import type { HeroMedia as HeroMediaModel } from '../lib/media';
+import { clampVolume, type VideoSound } from '../lib/videoSound';
 
 /**
  * The visual hero of a discovery card (US-19).
@@ -63,6 +64,16 @@ const FOCAL_CLASS = {
 
 export type HeroMediaFocal = keyof typeof FOCAL_CLASS;
 
+/**
+ * WHAT THE VIEWER DECIDES ABOUT SOUND, when anything decides at all.
+ *
+ * `undefined` — every pre-existing caller — keeps the hard `muted` this
+ * component has always rendered. A swipe card, a rail tile and a profile hero
+ * are ambient autoplay: a grid that unmuted itself would play a dozen clips at
+ * once, which is why only a deliberate, one-at-a-time surface opts in.
+ */
+export type HeroMediaSound = VideoSound;
+
 export default function HeroMedia({
   media,
   alt,
@@ -70,6 +81,7 @@ export default function HeroMedia({
   fit = 'cover',
   focal = 'center',
   lazy = false,
+  sound,
 }: {
   media: HeroMediaModel;
   alt: string;
@@ -102,6 +114,14 @@ export default function HeroMedia({
    * mounts a card per character, opts in.
    */
   lazy?: boolean;
+  /**
+   * OPT-IN sound. Omitted means muted, exactly as before.
+   *
+   * The state lives in the CALLER, not here: this component is keyed by
+   * `mediaKey` and remounts whenever the item changes, so a choice kept here
+   * would reset every time the viewer paged to the next clip.
+   */
+  sound?: HeroMediaSound;
 }) {
   const [videoFailed, setVideoFailed] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
@@ -149,6 +169,36 @@ export default function HeroMedia({
     }
   }, [lazy, visible, showVideo, shouldLoad]);
 
+  /**
+   * Apply sound to the ELEMENT, not just to the attribute.
+   *
+   * React writes `muted` as a DOM property on mount, but a later change to it
+   * is not reliably reflected on an element that is already playing — the
+   * classic symptom being an unmute button that visibly toggles and stays
+   * silent. Writing both here makes the element the source of truth, and
+   * `volume` has no attribute form at all, so it could only ever be set this
+   * way.
+   *
+   * No `play()` call: unmuting happens during a user gesture in the caller, and
+   * the clip is already playing. Nothing here tries to talk a browser out of
+   * its autoplay policy.
+   *
+   * `mediaKey` IS A DEPENDENCY, and that is not housekeeping. The `key` sits on
+   * the VIDEO ELEMENT, not on this component, so paging the viewer to the next
+   * clip swaps in a brand-new element while this component — and therefore this
+   * effect — carries straight on. `muted` survives that, because JSX writes it
+   * on the new element; `volume` has no attribute form, so it does not, and the
+   * replacement silently came up at 1. Someone who had set a third and paged
+   * forward got full volume on the next clip. Measured in a browser, because
+   * nothing in a node test environment can swap a DOM node.
+   */
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !sound) return;
+    el.muted = sound.muted;
+    el.volume = clampVolume(sound.volume);
+  }, [sound, showVideo, shouldLoad, mediaKey]);
+
   const initial =
     media.kind === 'placeholder' ? media.initial : (alt.charAt(0) || '?').toUpperCase();
 
@@ -161,7 +211,7 @@ export default function HeroMedia({
           {...(shouldLoad ? { src: media.src } : {})}
           poster={media.poster}
           autoPlay={!lazy || visible}
-          muted
+          muted={sound ? sound.muted : true}
           loop
           playsInline
           preload="metadata"
