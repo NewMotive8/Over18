@@ -34,6 +34,12 @@ const base: AdminCharacterListItem = {
   // No assigned voice, which is every character's state today and keeps these
   // cases about what they were already about.
   liveCallVoice: null,
+  // No stated location either: the common case, and it keeps every pre-existing
+  // assertion here about what it was already about.
+  countryCode: null,
+  region: null,
+  city: null,
+  timezone: null,
   id: 'c1',
   name: 'nova',
   displayName: 'Nova',

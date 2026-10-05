@@ -183,7 +183,14 @@ export async function sendMessage(
 
     // Internal persona instructions — read server-side only, never on the wire.
     const [personaRow] = await tx
-      .select({ systemPrompt: characters.systemPrompt })
+      .select({
+        systemPrompt: characters.systemPrompt,
+        // Where she lives, read with her prompt: server-side only, never on the wire.
+        countryCode: characters.countryCode,
+        region: characters.region,
+        city: characters.city,
+        timezone: characters.timezone,
+      })
       .from(characters)
       .where(eq(characters.id, conversation.character.id));
 
@@ -239,6 +246,12 @@ export async function sendMessage(
       character: conversation.character,
       systemPrompt: personaRow!.systemPrompt,
       persona: avatarPersonaRow?.persona ?? null,
+      location: {
+        countryCode: personaRow!.countryCode,
+        region: personaRow!.region,
+        city: personaRow!.city,
+        timezone: personaRow!.timezone,
+      },
       // Explicit arrow, NOT a point-free `.map(toChatMessage)`: map passes the
       // index as the second argument, which is the media-type parameter.
       //
