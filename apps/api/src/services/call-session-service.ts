@@ -538,6 +538,13 @@ export async function buildProviderSessionRequest(
       character: toPublicCharacter(characterRow, null),
       systemPrompt: characterRow.systemPrompt,
       persona: personaRow?.persona ?? null,
+      // The same location the text path reads: one character, one set of facts.
+      location: {
+        countryCode: characterRow.countryCode,
+        region: characterRow.region,
+        city: characterRow.city,
+        timezone: characterRow.timezone,
+      },
       history: [],
       // A call is a conversation, not a message exchange: the behaviour layer
       // branches on this and nothing else does.

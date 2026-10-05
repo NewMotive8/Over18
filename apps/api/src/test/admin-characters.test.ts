@@ -1088,3 +1088,109 @@ describe('authorization boundaries', () => {
     ).toBe(404);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * Where she lives
+ * ------------------------------------------------------------------ */
+
+describe('a character can be given a location', () => {
+  const patch = (cookies: Record<string, string>, id: string, body: Record<string, unknown>) =>
+    ctx.app.inject({ method: 'PATCH', url: `/admin/characters/${id}`, payload: body, cookies });
+
+  const WARSAW = { countryCode: 'PL', region: 'Masovian', city: 'Warsaw', timezone: 'Europe/Warsaw' };
+
+  it('is created with no location, and that is a valid character', async () => {
+    const cookies = await adminCookies();
+    const created = (await createCharacter(cookies)).json();
+
+    expect(created).toMatchObject({ countryCode: null, region: null, city: null, timezone: null });
+  });
+
+  it('stores and returns every part', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id as string;
+
+    const res = await patch(cookies, id, WARSAW);
+
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject(WARSAW);
+  });
+
+  /** "pl" and "PL" are the same country; the column holds one of them. */
+  it('normalises a country code to upper case', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id as string;
+
+    expect((await patch(cookies, id, { countryCode: 'pl' })).json()).toMatchObject({ countryCode: 'PL' });
+  });
+
+  /** A country NAME in a code column would be stored and never work. */
+  it('refuses a country name where a code belongs', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id as string;
+
+    const res = await patch(cookies, id, { countryCode: 'Poland' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'invalid_character', field: 'countryCode' });
+  });
+
+  /**
+   * A misspelt zone must be refused HERE. Accepted, it would silently produce
+   * no time at prompt-build and nobody would know why.
+   */
+  it('refuses a time zone the platform does not know', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id as string;
+
+    const res = await patch(cookies, id, { timezone: 'Mars/Olympus' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'invalid_character', field: 'timezone' });
+  });
+
+  it('accepts a real IANA zone', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id as string;
+
+    expect((await patch(cookies, id, { timezone: 'Asia/Tokyo' })).json()).toMatchObject({ timezone: 'Asia/Tokyo' });
+  });
+
+  /** Clearing a box means she has no stated city, not that it is "". */
+  it('turns a blank box back into no value', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id as string;
+    await patch(cookies, id, WARSAW);
+
+    const cleared = await patch(cookies, id, { city: '   ', timezone: '' });
+
+    expect(cleared.json()).toMatchObject({ city: null, timezone: null, countryCode: 'PL' });
+  });
+
+  /** Absent from a patch means "leave it alone" -- the liveCallVoice contract. */
+  it('leaves a part alone when the patch does not mention it', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id as string;
+    await patch(cookies, id, WARSAW);
+
+    expect((await patch(cookies, id, { city: 'Kraków' })).json()).toMatchObject({
+      city: 'Kraków',
+      region: 'Masovian',
+      countryCode: 'PL',
+      timezone: 'Europe/Warsaw',
+    });
+  });
+
+  /** Admin-facing only: a customer is told who she is, not her record. */
+  it('never reaches the public character payload', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id as string;
+    await patch(cookies, id, WARSAW);
+
+    const publicRes = await ctx.app.inject({ method: 'GET', url: `/api/characters/${id}` });
+    const body = publicRes.body;
+    expect(body).not.toContain('Masovian');
+    expect(body).not.toContain('Europe/Warsaw');
+    expect(body).not.toContain('countryCode');
+  });
+});
