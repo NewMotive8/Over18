@@ -1,4 +1,4 @@
-import type { CharacterPersona, ChatMessage, PublicCharacter } from '@over18/shared';
+import type { CharacterLocation, CharacterPersona, ChatMessage, PublicCharacter } from '@over18/shared';
 
 /**
  * Reply-provider seam (US-07, extended in US-08).
@@ -65,6 +65,15 @@ export interface ReplyContext {
    * callers and fixtures stay source-compatible.
    */
   persona?: CharacterPersona | null;
+  /**
+   * Where she lives, when an operator has said. Server-side only, like
+   * `systemPrompt` and the persona: it travels BESIDE `character` rather than
+   * on it, so an administrative record never reaches a customer by accident.
+   *
+   * Optional and nullable, so every existing caller and fixture is unchanged
+   * and a character with no location is exactly as she was.
+   */
+  location?: CharacterLocation | null;
   /**
    * Set when the server has ALREADY decided to attach media to this reply, and
    * to which kind. Null/absent on every ordinary turn.

@@ -1774,6 +1774,15 @@ export interface AdminCharacterView {
    * the selector shows "Default (Serena)" rather than an empty box.
    */
   liveCallVoice: string | null;
+  /**
+   * Where she lives. Every part is independently optional: an operator may know
+   * the country and not the city. `timezone` is an IANA zone, validated by the
+   * server; nothing is inferred from anything else.
+   */
+  countryCode: string | null;
+  region: string | null;
+  city: string | null;
+  timezone: string | null;
 }
 
 import type { ProfileDivergenceStatus } from '@over18/shared';

@@ -1,6 +1,7 @@
-import type { ChatMessage } from '@over18/shared';
+import type { CharacterLocation, ChatMessage } from '@over18/shared';
 import type { LlmMessage } from '../llm/types.js';
 import type { ReplyContext } from './character-reply.js';
+import { localTimeIn } from './timezone.js';
 import {
   compilePersonaVoiceClause,
   compilePersonaWhoSheIs,
@@ -179,6 +180,28 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
   // when no persona exists — today, for every character — so this line is a
   // no-op and the block above is unchanged from before this feature.
   facts.push(...compilePersonaWhoSheIs(context.persona));
+
+  /**
+   * WHAT HER WORK AND HER SCHOOLING ARE FOR.
+   *
+   * `compilePersonaWhoSheIs` already states them -- "She works as a sound
+   * archivist.", "Educationally, she's a conservatoire dropout." -- and that
+   * part was correct and is untouched. What was missing is what to DO with
+   * them: a fact stated and never used produces a character who announces her
+   * job and then knows nothing about it, or recites her credentials because
+   * they are the only thing the prompt told her about them.
+   *
+   * One line, and only when there is something for it to be about, so a
+   * character with no persona is exactly as she was.
+   */
+  const occupation = (context.persona?.occupation ?? '').trim();
+  const education = (context.persona?.education ?? '').trim();
+  if (occupation.length > 0 || education.length > 0) {
+    facts.push(
+      'What she knows from her work and her schooling shows in how she talks about things — the details she notices, the opinions she has — not in stating her job or her qualifications.',
+    );
+  }
+
   sections.push(['WHO SHE IS', facts.join(' ')].join('\n'));
 
   // 2. HER VOICE — the code-owned dial (if any) plus a persona-derived voice
@@ -205,6 +228,26 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
       ].join('\n'),
     );
   }
+
+  /**
+   * 3b. WHERE SHE IS, AND WHAT TIME IT IS THERE.
+   *
+   * She was previously placeless: asked where she lived she invented somewhere,
+   * and invented somewhere else on the next call. This states what an operator
+   * actually recorded and nothing more.
+   *
+   * THE CLOCK IS DERIVED, NEVER STORED. `localTimeIn` reads her IANA zone
+   * against the real present moment, so the date and time are right now and
+   * right again after the clocks change. A zone this runtime does not know
+   * yields nothing rather than the server's own time, which would place her in
+   * a time zone she is not in.
+   *
+   * PARTIAL IS NORMAL. Country without a city, a city with no zone: each part
+   * is rendered only if it is there, and a character with none of them gets no
+   * block at all -- exactly as she behaves today.
+   */
+  const place = locationSentences(context.location);
+  if (place.length > 0) sections.push(['WHERE SHE IS', ...place].join('\n'));
 
   // NOTE: the per-turn media instruction deliberately does NOT live here.
   // It is emitted by createPromptBuilder AFTER the conversation history, so it
@@ -354,6 +397,59 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
   sections.push(behaviour.join('\n'));
 
   return sections.join('\n\n');
+}
+
+/**
+ * Where she lives and what time it is there, as plain facts.
+ *
+ * STATED, NOT COMMANDED, like the rest of WHO SHE IS: these describe a person
+ * rather than ordering a performance. And the closing line is the whole point
+ * of recording a location at all -- she is somewhere, so she may say so,
+ * without turning every conversation into a travelogue.
+ *
+ * Exported for tests: each branch is a sentence somebody will read.
+ */
+export function locationSentences(
+  location: CharacterLocation | null | undefined,
+  now: Date = new Date(),
+): string[] {
+  if (!location) return [];
+  const city = (location.city ?? '').trim();
+  const region = (location.region ?? '').trim();
+  const country = (location.countryCode ?? '').trim().toUpperCase();
+  const zone = (location.timezone ?? '').trim();
+
+  const lines: string[] = [];
+  // Narrowest first, the way a person answers "where are you?".
+  const where = [city, region, countryName(country)].filter((part) => part.length > 0);
+  if (where.length > 0) lines.push(`She lives in ${where.join(', ')}.`);
+
+  if (zone.length > 0) {
+    const clock = localTimeIn(zone, now);
+    if (clock) {
+      lines.push(`Her local time zone is ${zone}, where it is currently ${clock}.`);
+      lines.push(
+        '- Where she is and what time it is there are hers to know. Let them show when they matter -- what she is doing at this hour, the season outside -- and leave them alone when they do not.',
+      );
+    }
+  }
+  return lines;
+}
+
+/**
+ * A country code as a person says it, via the platform's own data.
+ *
+ * `Intl.DisplayNames` carries the names, so there is no list here to fall out
+ * of date. An unrecognised code is returned as given rather than dropped: an
+ * operator who typed something unusual should see it, not silence.
+ */
+function countryName(code: string): string {
+  if (code.length === 0) return '';
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
 }
 
 /**

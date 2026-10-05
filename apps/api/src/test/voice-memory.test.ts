@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import {
   callSessions,
   callTranscriptTurns,
+  characters,
   characterVisualIdentities,
   memories,
   messages,
@@ -1311,5 +1312,41 @@ describe('a live call is built as a call, not as a text thread', () => {
     expect(prompt).toContain('WHO SHE IS');
     expect(prompt).toContain('What you are here for:');
     expect(prompt).toContain('never break character');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Where she is, on a call
+ * ------------------------------------------------------------------ */
+
+describe('a call knows where she lives', () => {
+  const instructions = async (user: { userId: string; conversationId: string; characterId: string }) => {
+    const call = await finishedCall(user, 'active');
+    const request = await buildProviderSessionRequest(ctx.db, call);
+    expect(request).not.toBeNull();
+    return request!.instructions;
+  };
+
+  /** The same block the text path renders: one character, one set of facts. */
+  it('carries her location and local time into the session instructions', async () => {
+    const user = await register('vm.located@example.com');
+    await ctx.db
+      .update(characters)
+      .set({ countryCode: 'PL', region: 'Masovian', city: 'Warsaw', timezone: 'Europe/Warsaw' })
+      .where(eq(characters.id, user.characterId));
+
+    const prompt = await instructions(user);
+
+    expect(prompt).toContain('WHERE SHE IS');
+    expect(prompt).toContain('She lives in Warsaw, Masovian, Poland.');
+    expect(prompt).toContain('Europe/Warsaw');
+    // Derived at build time, so it names the present moment rather than a stored one.
+    expect(prompt).toMatch(/currently .*\d{2}:\d{2}/);
+  });
+
+  /** Every character today has no location, and must be untouched by this. */
+  it('says nothing about place for a character with no location', async () => {
+    const user = await register('vm.placeless@example.com');
+    expect(await instructions(user)).not.toContain('WHERE SHE IS');
   });
 });

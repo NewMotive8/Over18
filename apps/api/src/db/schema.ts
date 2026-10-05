@@ -110,6 +110,20 @@ export const characters = pgTable(
      * default rather than failing a call.
      */
     liveCallVoice: text('live_call_voice'),
+    /**
+     * WHERE SHE LIVES. Four independent, nullable facts an operator sets; none
+     * is inferred from another. A city does not imply a zone -- large countries
+     * have several -- so `timezone` is chosen and validated separately against
+     * the platform's own IANA database.
+     *
+     * NO CURRENT TIME IS STORED. The zone is durable; the clock is derived from
+     * it each time a prompt is built, because a stored local time is wrong a
+     * second later and wrong again every spring.
+     */
+    countryCode: text('country_code'),
+    region: text('region'),
+    city: text('city'),
+    timezone: text('timezone'),
     status: characterStatus('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

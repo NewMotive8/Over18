@@ -359,6 +359,32 @@ export interface CharacterVisualIdentityResponse {
  * structure. Internal / admin-facing only, like AdminCharacter's systemPrompt
  * — there is no public wire mapper for this type.
  */
+/**
+ * WHERE SHE LIVES — operator-authored fact, not generated and not guessed.
+ *
+ * Every field is optional and independently so: an operator may know the
+ * country and not the city, or set a city with no region. Nothing is inferred
+ * from anything else -- a city does not imply a time zone (large countries have
+ * several), so the zone is chosen and validated on its own.
+ *
+ * NO CURRENT TIME LIVES HERE. A stored local time is wrong a second later. The
+ * zone is the durable fact; the clock is derived from it when a prompt is
+ * built.
+ *
+ * SERVER-SIDE ONLY. Like `systemPrompt` and the persona, this never joins
+ * `PublicCharacter` -- a customer is told who she is, not the administrative
+ * record behind her.
+ */
+export interface CharacterLocation {
+  /** ISO 3166-1 alpha-2, upper case. Null when unset. */
+  countryCode: string | null;
+  /** State, province or region, as an operator writes it. */
+  region: string | null;
+  city: string | null;
+  /** An IANA zone such as `Europe/Warsaw`, validated on write. */
+  timezone: string | null;
+}
+
 export interface CharacterPersona {
   age?: number;
   ageRange?: string;

@@ -120,6 +120,12 @@ export default function AdminCharacterDetailPage() {
 
   const [personaOpen, setPersonaOpen] = useState(false);
   const [personaDraft, setPersonaDraft] = useState({ displayName: '', shortBio: '', personality: '', conversationStyle: '', systemPrompt: '' });
+  /**
+   * WHERE SHE LIVES. Separate from the persona draft because these are short,
+   * structured values rather than prose, and because a blank box here means
+   * "unset" rather than "empty string" -- the server turns blank into null.
+   */
+  const [locationDraft, setLocationDraft] = useState({ countryCode: '', region: '', city: '', timezone: '' });
   /** The voice select's value: '' is "Default (Serena)", otherwise a catalogue name. */
   const [voiceDraft, setVoiceDraft] = useState('');
   const [interestsText, setInterestsText] = useState('');
@@ -267,6 +273,13 @@ export default function AdminCharacterDetailPage() {
         });
         setVoiceDraft(voiceSelectValue(next.character.liveCallVoice));
         setInterestsText(next.character.interests.join(', '));
+        // Null reads as an empty box; the server turns a blank box back to null.
+        setLocationDraft({
+          countryCode: next.character.countryCode ?? '',
+          region: next.character.region ?? '',
+          city: next.character.city ?? '',
+          timezone: next.character.timezone ?? '',
+        });
       })
       .then(() => adminCharactersApi.content(characterId))
       .then((res) => {
@@ -871,6 +884,36 @@ export default function AdminCharacterDetailPage() {
                 />
               </label>
             ))}
+            {/*
+              WHERE SHE LIVES. Four short boxes rather than prose: they are
+              structured facts the prompt reads, and the time zone is validated
+              by the server against the platform's own IANA database -- an
+              unknown zone is refused rather than quietly ignored.
+
+              Blank means unset. Nothing is inferred from anything else: a city
+              does not choose a time zone, because large countries have several.
+            */}
+            <div className="grid grid-cols-2 gap-3">
+              {(
+                [
+                  ['city', 'City / town', 'Warsaw'],
+                  ['region', 'State / province / region', 'Masovian'],
+                  ['countryCode', 'Country (ISO code)', 'PL'],
+                  ['timezone', 'Time zone (IANA)', 'Europe/Warsaw'],
+                ] as const
+              ).map(([key, label, placeholder]) => (
+                <label key={key} className="block">
+                  <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">{label}</span>
+                  <input
+                    type="text"
+                    value={locationDraft[key]}
+                    placeholder={placeholder}
+                    onChange={(e) => setLocationDraft({ ...locationDraft, [key]: e.target.value })}
+                    className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600"
+                  />
+                </label>
+              ))}
+            </div>
             <label className="block">
               <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
                 Interests
@@ -922,6 +965,9 @@ export default function AdminCharacterDetailPage() {
                       .map((i) => i.trim())
                       .filter(Boolean),
                     ...voicePatch(voiceDraft),
+                    // Sent as typed; the server trims, upper-cases a country
+                    // code, validates the zone, and stores blank as null.
+                    ...locationDraft,
                   });
                   setPersonaOpen(false);
                 }, "Couldn't save the character.")

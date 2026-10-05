@@ -1,6 +1,7 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { isKnownVoice, type PublicCharacter } from '@over18/shared';
 import type { Db } from '../db/client.js';
+import { isValidTimezone } from './timezone.js';
 import { characters, type CharacterRow } from '../db/schema.js';
 import { resolveCharacterPortrait, resolveCharacterPortraits } from './character-portrait.js';
 
@@ -85,6 +86,16 @@ export interface AdminCharacter extends PublicCharacter {
    * the default. Admin-facing only, like `systemPrompt`.
    */
   liveCallVoice: string | null;
+  /**
+   * Where she lives, each part independently optional. Admin-facing only: a
+   * customer is told who she is, not the administrative record behind her, so
+   * these deliberately do NOT join `PublicCharacter` above.
+   */
+  countryCode: string | null;
+  region: string | null;
+  city: string | null;
+  /** An IANA zone, validated on write. */
+  timezone: string | null;
 }
 
 /**
@@ -128,6 +139,10 @@ export function toAdminCharacter(row: CharacterRow, portrait: string | null): Ad
     // Null is a real answer here -- "no voice assigned, she uses the default" --
     // so it is reported rather than omitted, and the selector can show it.
     liveCallVoice: row.liveCallVoice,
+    countryCode: row.countryCode,
+    region: row.region,
+    city: row.city,
+    timezone: row.timezone,
   };
 }
 
@@ -168,6 +183,9 @@ const NAME_RE = /^[a-z0-9][a-z0-9-]{1,49}$/;
  * ignored rather than rejected, so an older admin client keeps working; it
  * simply no longer decides anything.
  */
+/** ISO 3166-1 alpha-2: exactly two letters, stored upper case. */
+const COUNTRY_CODE_RE = /^[A-Za-z]{2}$/;
+
 export interface CharacterInput {
   name: string;
   displayName: string;
@@ -177,6 +195,16 @@ export interface CharacterInput {
   systemPrompt: string;
   interests?: string[];
   status?: 'active' | 'inactive';
+  /**
+   * Where she lives. Each part is independently optional, and null is a real
+   * value meaning "unset" -- absent from a patch means "leave it alone", the
+   * same contract `liveCallVoice` uses.
+   */
+  countryCode?: string | null;
+  region?: string | null;
+  city?: string | null;
+  /** An IANA zone. Validated against the platform's own database on write. */
+  timezone?: string | null;
   /**
    * Her live-call voice, or null for none.
    *
@@ -241,6 +269,42 @@ function normalise(
     out.interests = input.interests.map((i) => i.trim()).filter((i) => i.length > 0);
   }
   if (input.status !== undefined) out.status = input.status;
+
+  /**
+   * WHERE SHE LIVES. Blank is the same as unset: an operator clearing a box
+   * means she has no stated city, not that her city is the empty string.
+   *
+   * A country code is normalised to upper case and must be two letters -- the
+   * ISO 3166-1 alpha-2 shape -- so "pl", "PL" and "Pl" all store as `PL` and a
+   * country NAME is refused rather than silently stored in a code column.
+   */
+  for (const key of ['countryCode', 'region', 'city'] as const) {
+    const given = input[key];
+    if (given === undefined) continue;
+    const value = typeof given === 'string' ? given.trim() : '';
+    if (key === 'countryCode' && value.length > 0) {
+      if (!COUNTRY_CODE_RE.test(value)) {
+        throw new CharacterValidationError('countryCode', 'Country must be a two-letter ISO code, such as PL.');
+      }
+      out.countryCode = value.toUpperCase();
+      continue;
+    }
+    out[key] = value.length > 0 ? value : null;
+  }
+
+  if (input.timezone !== undefined) {
+    const zone = typeof input.timezone === 'string' ? input.timezone.trim() : '';
+    if (zone.length === 0) {
+      out.timezone = null;
+    } else if (!isValidTimezone(zone)) {
+      // The platform's own tz database is the authority, so a zone that is
+      // merely misspelt is refused here rather than silently producing the
+      // server's clock at prompt-build time.
+      throw new CharacterValidationError('timezone', `Unknown time zone "${zone}". Use an IANA name such as Europe/Warsaw.`);
+    } else {
+      out.timezone = zone;
+    }
+  }
 
   /**
    * Her live-call voice.
