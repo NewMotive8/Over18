@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { CharacterMediaItem } from '../lib/media';
 import HeroMedia from './HeroMedia';
+import VideoSoundControl from './VideoSoundControl';
+import { INITIAL_SOUND, setVolume, toggleMute, type VideoSound } from '../lib/videoSound';
 
 /**
  * Full-screen media viewer (US-19).
@@ -49,6 +51,21 @@ export default function MediaViewer({
   const clamped = Math.max(0, Math.min(index, items.length - 1));
   const item = items[clamped];
 
+  /**
+   * SOUND LIVES HERE, FOR AS LONG AS THE VIEWER IS OPEN.
+   *
+   * Not in HeroMedia, which is keyed by the item and remounts on every page, so
+   * a choice kept there would silence itself each time she moved to the next
+   * clip. Held at this level, "unmute, set it to a third, keep going" survives
+   * paging and resets only when the viewer closes — which is the right scope: a
+   * volume is a decision about this sitting, not a preference to remember.
+   *
+   * Muted is the starting point and that is deliberate, not a limitation. See
+   * VideoSoundControl for why it is also the only starting point a browser
+   * would allow.
+   */
+  const [sound, setSound] = useState<VideoSound>(INITIAL_SOUND);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -71,6 +88,7 @@ export default function MediaViewer({
    * this in one place and not the other would look like the fix had not worked.
    */
   const effectiveFit = item.media.kind === 'video' ? (videoFit ?? fit) : fit;
+  const isVideo = item.media.kind === 'video';
 
   return (
     <div
@@ -103,8 +121,32 @@ export default function MediaViewer({
         }
         onClick={(e) => e.stopPropagation()}
       >
-        <HeroMedia media={item.media} alt={label} fit={effectiveFit} />
+        <HeroMedia
+          media={item.media}
+          alt={label}
+          fit={effectiveFit}
+          // Images never take a sound prop, so they stay exactly as they were.
+          sound={isVideo ? sound : undefined}
+        />
       </div>
+
+      {/*
+        Anchored to the dialog, not to the media box, so it sits clear of a
+        letterboxed clip instead of on top of it. Left-aligned because the close
+        button owns the top right and the paging arrows own the sides; the
+        bottom-left corner is the one place nothing else competes for, on a
+        phone as much as on a desktop. The safe-area inset keeps it above a
+        home indicator.
+      */}
+      {isVideo && (
+        <div className="pointer-events-none absolute bottom-[max(1rem,env(safe-area-inset-bottom))] left-3 z-10">
+          <VideoSoundControl
+            sound={sound}
+            onToggleMute={() => setSound(toggleMute)}
+            onVolumeChange={(next) => setSound(setVolume(next))}
+          />
+        </div>
+      )}
 
       {items.length > 1 && (
         <>
