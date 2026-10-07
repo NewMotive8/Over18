@@ -6,6 +6,19 @@ import ProfileDivergencePanel from '../../admin/ProfileDivergencePanel';
 import CharacterAccessSection from './CharacterAccessPanel';
 import { voiceOptions, voicePatch, voiceSelectValue } from '../../admin/characterVoice';
 import {
+  CONVERSATION_STYLES,
+  CUSTOM_STYLE,
+  canPublish,
+  missingInDraft,
+  missingToPublish,
+  publishNextStep,
+  publishPatch,
+  styleKeyOf,
+  styleLabelOf,
+  styleTextOf,
+  systemPromptToSave,
+} from '../../admin/personaPresets';
+import {
   addKeywords,
   keywordsDiffer,
   removeKeyword,
@@ -120,6 +133,8 @@ export default function AdminCharacterDetailPage() {
 
   const [personaOpen, setPersonaOpen] = useState(false);
   const [personaDraft, setPersonaDraft] = useState({ displayName: '', shortBio: '', personality: '', conversationStyle: '', systemPrompt: '' });
+  // True once "Write my own" is chosen, so the box stays open while it is still empty.
+  const [customStyle, setCustomStyle] = useState(false);
   /**
    * WHERE SHE LIVES. Separate from the persona draft because these are short,
    * structured values rather than prose, and because a blank box here means
@@ -685,13 +700,11 @@ export default function AdminCharacterDetailPage() {
           </span>
           <button
             type="button"
-            disabled={busy || (character.status !== 'active' && !character.profileComplete)}
+            disabled={busy || (character.status !== 'active' && !canPublish(character))}
             onClick={() =>
               run(
                 () =>
-                  adminCharactersApi.update(character.id, {
-                    status: character.status === 'active' ? 'inactive' : 'active',
-                  }),
+                  adminCharactersApi.update(character.id, character.status === 'active' ? { status: 'inactive' } : publishPatch(character)),
                 "Couldn't change whether she is live.",
               )
             }
@@ -699,8 +712,10 @@ export default function AdminCharacterDetailPage() {
           >
             {character.status === 'active' ? 'Take offline' : 'Publish'}
           </button>
-          {character.status !== 'active' && !character.profileComplete && (
-            <span className="text-[10px] text-zinc-500">Write her profile first</span>
+          {character.status !== 'active' && !canPublish(character) && (
+            <span data-testid="publish-missing" className="text-[10px] text-amber-300/90">
+              Missing: {missingToPublish(character.missingProfileFields).join(', ')}
+            </span>
           )}
         </div>
       </header>
@@ -711,7 +726,7 @@ export default function AdminCharacterDetailPage() {
             {characterReadiness(character).headline}
           </p>
           <p className="mt-1 text-xs text-amber-200/80">
-            {characterReadiness(character).nextStep}
+            {publishNextStep(character)}
           </p>
           <p className="mt-1.5 text-xs text-zinc-400">
             You can upload and manage her content now — publishing is only about who can see her.
@@ -851,15 +866,12 @@ export default function AdminCharacterDetailPage() {
           </div>
         </div>
 
-        {!character.profileComplete && !personaOpen && (
-          <p className="mb-3 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
-            Her profile is not written yet
-            {character.missingProfileFields.length > 0 &&
-              ` (${character.missingProfileFields.length} field${
-                character.missingProfileFields.length === 1 ? '' : 's'
-              } empty)`}
-            . Write it yourself, or add a reference photo above and let
-            &ldquo;Life details from her photo&rdquo; propose one.
+        {!canPublish(character) && !personaOpen && (
+          <p className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+            <span>{publishNextStep(character)}</span>
+            <button type="button" onClick={() => setPersonaOpen(true)} className="font-medium text-amber-200 underline-offset-2 hover:underline">
+              Fill it in
+            </button>
           </p>
         )}
 
@@ -870,8 +882,6 @@ export default function AdminCharacterDetailPage() {
                 ['displayName', 'Display name'],
                 ['shortBio', 'Short bio'],
                 ['personality', 'Personality'],
-                ['conversationStyle', 'Conversation style'],
-                ['systemPrompt', 'System prompt'],
               ] as const
             ).map(([key, label]) => (
               <label key={key} className="block">
@@ -884,6 +894,47 @@ export default function AdminCharacterDetailPage() {
                 />
               </label>
             ))}
+            {/*
+              HOW SHE TALKS -- A CHOICE, NOT A BLANK BOX. Each option stores one
+              plain sentence in the same column; "Write my own" keeps the free
+              text. See admin/personaPresets.ts.
+            */}
+            <div>
+              <label className="block">
+                <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">How she talks</span>
+                <select
+                  data-testid="conversation-style-select"
+                  value={customStyle ? CUSTOM_STYLE : styleKeyOf(personaDraft.conversationStyle)}
+                  onChange={(e) => {
+                    const text = styleTextOf(e.target.value);
+                    setCustomStyle(e.target.value === CUSTOM_STYLE);
+                    if (text !== null) setPersonaDraft({ ...personaDraft, conversationStyle: text });
+                    else if (e.target.value === '') setPersonaDraft({ ...personaDraft, conversationStyle: '' });
+                  }}
+                  className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                >
+                  <option value="">Choose…</option>
+                  {CONVERSATION_STYLES.map((preset) => (
+                    <option key={preset.key} value={preset.key}>
+                      {preset.label}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_STYLE}>Write my own…</option>
+                </select>
+              </label>
+              {customStyle || styleKeyOf(personaDraft.conversationStyle) === CUSTOM_STYLE ? (
+                <textarea
+                  rows={2}
+                  aria-label="How she talks, in your own words"
+                  placeholder="Describe how she sounds, in a sentence."
+                  value={personaDraft.conversationStyle}
+                  onChange={(e) => setPersonaDraft({ ...personaDraft, conversationStyle: e.target.value })}
+                  className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600"
+                />
+              ) : (
+                personaDraft.conversationStyle && <p className="mt-1 text-xs text-zinc-500">{personaDraft.conversationStyle}</p>
+              )}
+            </div>
             {/*
               WHERE SHE LIVES. Four short boxes rather than prose: they are
               structured facts the prompt reads, and the time zone is validated
@@ -953,13 +1004,30 @@ export default function AdminCharacterDetailPage() {
                 Used for live voice calls. Leave on the default if she has no assigned voice.
               </span>
             </label>
+            <details className="rounded-lg border border-zinc-800 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-zinc-500">Advanced</summary>
+              <label className="mt-3 block">
+                <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">System prompt</span>
+                <textarea
+                  rows={3}
+                  value={personaDraft.systemPrompt}
+                  placeholder="Filled in automatically if left empty."
+                  onChange={(e) => setPersonaDraft({ ...personaDraft, systemPrompt: e.target.value })}
+                  className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600"
+                />
+              </label>
+            </details>
+            {missingInDraft(personaDraft).length > 0 && (
+              <p data-testid="persona-missing" className="text-xs text-amber-300">Still needed: {missingInDraft(personaDraft).join(', ')}.</p>
+            )}
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || missingInDraft(personaDraft).length > 0}
               onClick={() =>
                 run(async () => {
                   await adminCharactersApi.update(character.id, {
                     ...personaDraft,
+                    systemPrompt: systemPromptToSave(personaDraft.systemPrompt, personaDraft.displayName),
                     interests: interestsText
                       .split(',')
                       .map((i) => i.trim())
@@ -970,6 +1038,7 @@ export default function AdminCharacterDetailPage() {
                     ...locationDraft,
                   });
                   setPersonaOpen(false);
+                  setCustomStyle(false);
                 }, "Couldn't save the character.")
               }
               className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-500 disabled:opacity-50"
@@ -988,8 +1057,8 @@ export default function AdminCharacterDetailPage() {
               <dd className="text-zinc-300">{character.personality || '—'}</dd>
             </div>
             <div>
-              <dt className="text-xs uppercase tracking-wide text-zinc-500">Conversation style</dt>
-              <dd className="text-zinc-300">{character.conversationStyle || '—'}</dd>
+              <dt className="text-xs uppercase tracking-wide text-zinc-500">How she talks</dt>
+              <dd className="text-zinc-300">{styleLabelOf(character.conversationStyle) || '—'}</dd>
             </div>
             <div>
               <dt className="text-xs uppercase tracking-wide text-zinc-500">Interests</dt>
