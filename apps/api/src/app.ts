@@ -210,6 +210,17 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // PRD §31 / P1.3: the read-only economy preview and margin guard. Admin-only
   // (`economy.manage`), writes nothing, activates nothing.
   await app.register(adminEconomyRoutes, { db });
+  // PR 3 funnel analytics. OFF unless ANALYTICS_ENABLED; fail-open always -- a
+  // failing write is logged and the purchase, unlock or page carries on.
+  //
+  // Created HERE, above the first route that reports an event, rather than
+  // beside the analytics routes below: `publicHomeRoutes` serves her media and
+  // reports `content_viewed`, so the instance has to exist before it registers.
+  const analytics = createAnalytics({
+    enabled: env.commerce.analyticsEnabled,
+    sink: options.analyticsSink ?? createDbAnalyticsSink(db),
+    onError: (error, name) => app.log.warn({ err: error, event: name }, 'analytics event not recorded'),
+  });
   // US-102.4 the PUBLIC app surface: Home, Discovery and public media. No auth
   // by design, which is why every projection it serves is narrow and every read
   // is approval-gated.
@@ -218,6 +229,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     db,
     mediaStorageDir: env.media.storageDir,
     cookie: { secure: env.cookieSecure, sameSite: env.cookieSameSite },
+    analytics,
   });
   await app.register(authRoutes, { db, env });
   await app.register(characterRoutes, { db });
@@ -234,13 +246,6 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
   // The customer economy READ API: session-only, GET-only, and 503
   // `economy_unavailable` while ECONOMY_ENABLED is off. Serves only what the
   // P1.2 resolver says is published and in effect; writes nothing.
-  // PR 3 funnel analytics. OFF unless ANALYTICS_ENABLED; fail-open always -- a
-  // failing write is logged and the purchase, unlock or page carries on.
-  const analytics = createAnalytics({
-    enabled: env.commerce.analyticsEnabled,
-    sink: options.analyticsSink ?? createDbAnalyticsSink(db),
-    onError: (error, name) => app.log.warn({ err: error, event: name }, 'analytics event not recorded'),
-  });
   await app.register(analyticsRoutes, { db, analytics });
   // Funnels (`analytics.read`) and a bounded export (`analytics.export`). Read-only.
   await app.register(adminAnalyticsRoutes, { db, analyticsEnabled: env.commerce.analyticsEnabled });
@@ -375,6 +380,7 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     optimisedMedia: env.media.optimisedEnabled,
     db,
     storageDir: env.media.storageDir,
+    analytics,
   });
 
   // US-36 internal media endpoints — registered only when providers are

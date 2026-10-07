@@ -174,3 +174,42 @@ export function isNotModified(
  */
 export const MEDIA_MAX_AGE_SECONDS = 300;
 export const MEDIA_CACHE_CONTROL = `public, max-age=${MEDIA_MAX_AGE_SECONDS}, must-revalidate`;
+
+/**
+ * WHETHER THIS REQUEST IS SOMEONE STARTING TO WATCH — the rule behind the
+ * `content_viewed` event, kept here with the other pure media decisions rather
+ * than inside the route, so it can be tested exhaustively without a server.
+ *
+ * ONE VIEW, NOT ONE REQUEST. A video is fetched many times over: the element
+ * asks for the opening bytes, then for more as it plays, then for a fresh slice
+ * every time someone scrubs. The comment at the top of this file measured it —
+ * 14 requests for 4 files in one Home load. Counting requests would make a
+ * single watch look like twenty, and would rank a long clip above a popular
+ * one purely because it takes more fetches to finish.
+ *
+ * So a view is a request that STARTS one:
+ *
+ *   full           the whole file — how an image, a short clip, and any video
+ *                  requested without a Range header all arrive.
+ *   partial        ONLY when it begins at byte 0. That is the opening request
+ *                  of a watch. A slice from the middle is the same watch
+ *                  continuing, or a scrub inside it, and is not a new view.
+ *   not-modified   a re-watch of something already cached. It is a real view
+ *                  and the strongest taste signal there is: ignoring it would
+ *                  make every repeat viewing invisible, and repeat viewing is
+ *                  precisely what distinguishes a favourite from a glance.
+ *   unsatisfiable  nothing was served, so nothing was watched.
+ *
+ * UNDER-COUNTING IS THE DELIBERATE DIRECTION. A watch resumed from the middle
+ * after a tab was closed is missed, and a suffix range (seeking near the end)
+ * is missed too. That is the right way to be wrong: an inflated count would
+ * quietly distort every ranking and every personalisation built on top of it,
+ * and nothing downstream would reveal the inflation.
+ */
+export function startsAView(notModified: boolean, outcome: RangeOutcome | null): boolean {
+  if (notModified) return true;
+  if (outcome === null) return false;
+  if (outcome.kind === 'full') return true;
+  if (outcome.kind === 'partial') return outcome.range.start === 0;
+  return false;
+}

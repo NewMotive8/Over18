@@ -253,6 +253,20 @@ export const ANALYTICS_EVENT_NAMES = [
   'credit_spend',
   'locked_content_viewed',
   'locked_content_unlocked',
+  /**
+   * A piece of her content actually watched or looked at, reported by the
+   * server that served the bytes.
+   *
+   * `locked_content_viewed` is NOT this and cannot replace it: that one is a
+   * browser reporting a LOCKED tile appearing on one tab, which says what was
+   * advertised to someone, never what they watched. This is the engagement
+   * signal -- the only record that a given person saw a given clip.
+   *
+   * SERVER-ONLY, deliberately. A browser claiming a view could inflate any
+   * character's popularity at will, so this is absent from
+   * `ANALYTICS_CLIENT_EVENTS` exactly as purchases and spends are.
+   */
+  'content_viewed',
   'reward_earned',
   'paywall_dismissed',
   'grant_exhausted',
@@ -905,6 +919,23 @@ export const ANALYTICS_EVENT_PROPERTIES: Readonly<Partial<Record<AnalyticsEventN
   credit_purchase_failed: { ...PACK_TERMS, ...PURCHASE_CONTEXT, status: ['failed', 'cancelled'] },
   credit_spend: { paidActionId: 'id', actionType: 'code', amount: 'int' },
   locked_content_unlocked: { assetId: 'id', offerId: 'id', entitlementId: 'id', creditPrice: 'int' },
+  /**
+   * WHAT WAS WATCHED, WHOSE IT IS, AND WHERE IT WAS SERVED FROM.
+   *
+   * `context` is the one thing about placement the server can state as fact:
+   * her gallery and a conversation are different ROUTES, so the distinction is
+   * read from which handler ran, never from anything a client said. Which rail
+   * or tab a gallery view came from is NOT here, because the server genuinely
+   * cannot know it -- every surface fetches the same URL -- and a property that
+   * could only be taken on trust does not belong in a funnel.
+   */
+  content_viewed: {
+    assetId: 'id',
+    characterId: 'id',
+    contentRating: ['sfw', 'explicit'],
+    mediaType: ['image', 'video'],
+    channel: ['gallery', 'chat'],
+  },
   spend_refunded: { paidActionId: 'id', actionType: 'code', amount: 'int' },
 };
 

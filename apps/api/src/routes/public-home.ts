@@ -14,6 +14,7 @@ import {
   DISCOVERY_CLIPS_MAX_LIMIT,
 } from '../services/discovery-service.js';
 import { getPublicAsset, resolvePublicMedia } from '../services/public-media-service.js';
+import { track, type Analytics } from '../services/analytics-service.js';
 import {
   contentRangeHeader,
   etagFor,
@@ -21,6 +22,7 @@ import {
   MEDIA_CACHE_CONTROL,
   parseRange,
   rangeLength,
+  startsAView,
 } from '../services/media-range.js';
 import {
   getPubliclyVisibleBannerCreative,
@@ -53,6 +55,8 @@ export default async function publicHomeRoutes(
     /** MEDIA_OPTIMISED_ENABLED. Default false — originals. */
     optimisedMedia?: boolean;
     cookie?: { secure: boolean; sameSite: 'lax' | 'strict' | 'none' };
+    /** Absent, or switched off, means no view is recorded and nothing else changes. */
+    analytics?: Analytics;
   },
 ) {
   const storageDir = opts.mediaStorageDir ?? null;
@@ -301,20 +305,41 @@ export default async function publicHomeRoutes(
       reply.header('etag', etag);
       reply.header('last-modified', lastModified);
 
-      // A still-fresh copy: answer with no body at all.
-      if (
-        isNotModified(
-          {
-            ifNoneMatch: request.headers['if-none-match'],
-            ifModifiedSince: request.headers['if-modified-since'],
+      const notModified = isNotModified(
+        {
+          ifNoneMatch: request.headers['if-none-match'],
+          ifModifiedSince: request.headers['if-modified-since'],
+        },
+        { etag, mtimeMs: stat.mtimeMs },
+      );
+
+      // Pure, and needed by the view rule below before the 304 answer is sent.
+      // Reading it earlier cannot change any response: it only inspects the
+      // Range header and the file size.
+      const outcome = notModified ? null : parseRange(request.headers.range, stat.size);
+
+      // One view, not one request -- `startsAView` holds the rule and says why.
+      if (startsAView(notModified, outcome)) {
+        // Fire-and-forget, as every other server-side event is: `track` never
+        // rejects and never delays the bytes. An anonymous viewer is recorded
+        // with no user -- the clip was still watched.
+        void track(opts.analytics, 'content_viewed', () => ({
+          userId: request.currentUser?.id ?? null,
+          requestId: request.id,
+          properties: {
+            assetId: asset.id,
+            characterId: asset.characterId,
+            contentRating: asset.contentRating,
+            mediaType: resolved.contentType.startsWith('video/') ? 'video' : 'image',
+            channel: 'gallery',
           },
-          { etag, mtimeMs: stat.mtimeMs },
-        )
-      ) {
-        return reply.code(304).send();
+        }));
       }
 
-      const outcome = parseRange(request.headers.range, stat.size);
+      // A still-fresh copy: answer with no body at all.
+      if (notModified || outcome === null) {
+        return reply.code(304).send();
+      }
 
       if (outcome.kind === 'unsatisfiable') {
         reply.header('content-range', contentRangeHeader(null, stat.size));
