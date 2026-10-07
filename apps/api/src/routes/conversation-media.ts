@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/client.js';
+import { track, type Analytics } from '../services/analytics-service.js';
 import {
   getAuthorisedMessageMedia,
   resolveMediaFile,
@@ -47,6 +48,8 @@ export default async function conversationMediaRoutes(
     storageDir: string;
     /** MEDIA_OPTIMISED_ENABLED. Default false — originals. */
     optimisedMedia?: boolean;
+    /** Absent, or switched off, means no view is recorded and nothing else changes. */
+    analytics?: Analytics;
   },
 ) {
   app.get<{ Params: { conversationId: string; messageId: string } }>(
@@ -97,6 +100,32 @@ export default async function conversationMediaRoutes(
       reply.header('content-type', resolved.contentType);
       // Private: this is one user's chat content, never shared or CDN-cached.
       reply.header('cache-control', 'private, max-age=60');
+
+      /**
+       * A view, with no Range rule to apply: this route has never advertised
+       * `accept-ranges` and always answers with the whole file, so one serve is
+       * one view. The gallery's partial-request arithmetic has nothing to
+       * decide here.
+       *
+       * `channel: 'chat'` is read from WHICH HANDLER RAN, not from anything the
+       * client said -- which is the only reason placement can be stated as fact
+       * at all. Media she sent in conversation is a different act from content
+       * browsed in her gallery, and keeping them apart is what lets either be
+       * counted alone. The viewer is always known here: the route requires
+       * authentication.
+       */
+      void track(opts.analytics, 'content_viewed', () => ({
+        userId: request.currentUser!.id,
+        requestId: request.id,
+        properties: {
+          assetId: asset.id,
+          characterId: asset.characterId,
+          contentRating: asset.contentRating,
+          mediaType: resolved.contentType.startsWith('video/') ? 'video' : 'image',
+          channel: 'chat',
+        },
+      }));
+
       return reply.send(createReadStream(resolved.path));
     },
   );
