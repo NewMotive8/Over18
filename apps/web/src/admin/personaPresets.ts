@@ -90,15 +90,31 @@ export function missingToPublish(missingProfileFields: readonly string[]): strin
  * server refuses an empty value for any of these, so the form says which one
  * before sending anything.
  */
-export function missingInDraft(draft: { displayName: string; shortBio: string; personality: string; conversationStyle: string }): string[] {
-  const fields: Array<[keyof typeof draft, string]> = [
-    ['displayName', 'Display name'],
-    ['shortBio', 'Short bio'],
-    ['personality', 'Personality'],
-    ['conversationStyle', 'How she talks'],
-  ];
-  return fields.filter(([key]) => draft[key].trim() === '').map(([, label]) => label);
+export function missingInDraft(draft: RequiredDraft): string[] {
+  return missingDraftKeys(draft).map((key) => REQUIRED_IN_EDITOR.find(([k]) => k === key)![1]);
 }
+
+type RequiredDraft = { displayName: string; shortBio: string; personality: string; conversationStyle: string };
+const REQUIRED_IN_EDITOR: Array<[keyof RequiredDraft, string]> = [
+  ['displayName', 'Display name'],
+  ['shortBio', 'Short bio'],
+  ['personality', 'Personality'],
+  ['conversationStyle', 'How she talks'],
+];
+
+/** The required editor fields that are still empty, in the order they appear -- the first is where to start. */
+export function missingDraftKeys(draft: RequiredDraft): Array<keyof RequiredDraft> {
+  return REQUIRED_IN_EDITOR.filter(([key]) => draft[key].trim() === '').map(([key]) => key);
+}
+
+/**
+ * A MISSING FIELD IS RED, SO IT CAN BE FOUND. Naming it beside Publish was not
+ * enough: the operator still had to hunt down the page for the box. The label
+ * and the box's outline turn red while it is empty and go back to normal the
+ * moment it is filled.
+ */
+export const MISSING_LABEL_CLASS = 'text-rose-400';
+export const MISSING_BOX_CLASS = 'border-rose-500 ring-1 ring-rose-500/40';
 
 /** Publishing is possible once nothing the operator must provide is missing. */
 export function canPublish(character: { missingProfileFields: readonly string[] }): boolean {

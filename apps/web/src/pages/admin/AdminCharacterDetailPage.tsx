@@ -8,7 +8,10 @@ import { voiceOptions, voicePatch, voiceSelectValue } from '../../admin/characte
 import {
   CONVERSATION_STYLES,
   CUSTOM_STYLE,
+  MISSING_BOX_CLASS,
+  MISSING_LABEL_CLASS,
   canPublish,
+  missingDraftKeys,
   missingInDraft,
   missingToPublish,
   publishNextStep,
@@ -673,6 +676,10 @@ export default function AdminCharacterDetailPage() {
     setIdentityOpen(true);
   };
 
+  // The required persona fields still empty in the editor: outlined in red, the first one focused.
+  const draftMissing = missingDraftKeys(personaDraft);
+  const styleMissing = draftMissing.includes('conversationStyle');
+
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
       <nav className="mb-4 text-xs text-zinc-500">
@@ -713,7 +720,7 @@ export default function AdminCharacterDetailPage() {
             {character.status === 'active' ? 'Take offline' : 'Publish'}
           </button>
           {character.status !== 'active' && !canPublish(character) && (
-            <span data-testid="publish-missing" className="text-[10px] text-amber-300/90">
+            <span data-testid="publish-missing" className={`text-[10px] font-medium ${MISSING_LABEL_CLASS}`}>
               Missing: {missingToPublish(character.missingProfileFields).join(', ')}
             </span>
           )}
@@ -885,12 +892,16 @@ export default function AdminCharacterDetailPage() {
               ] as const
             ).map(([key, label]) => (
               <label key={key} className="block">
-                <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">{label}</span>
+                <span className={`text-xs font-medium uppercase tracking-wide ${draftMissing.includes(key) ? MISSING_LABEL_CLASS : 'text-zinc-400'}`}>
+                  {label}
+                  {draftMissing.includes(key) && <span className="ml-2 normal-case tracking-normal">Required</span>}
+                </span>
                 <textarea
                   rows={key === 'displayName' ? 1 : 3}
+                  autoFocus={draftMissing[0] === key}
                   value={personaDraft[key]}
                   onChange={(e) => setPersonaDraft({ ...personaDraft, [key]: e.target.value })}
-                  className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                  className={`mt-1 w-full rounded-lg border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ${draftMissing.includes(key) ? MISSING_BOX_CLASS : 'border-zinc-700'}`}
                 />
               </label>
             ))}
@@ -901,9 +912,13 @@ export default function AdminCharacterDetailPage() {
             */}
             <div>
               <label className="block">
-                <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">How she talks</span>
+                <span className={`text-xs font-medium uppercase tracking-wide ${styleMissing ? MISSING_LABEL_CLASS : 'text-zinc-400'}`}>
+                  How she talks
+                  {styleMissing && <span className="ml-2 normal-case tracking-normal">Required — choose one</span>}
+                </span>
                 <select
                   data-testid="conversation-style-select"
+                  autoFocus={draftMissing[0] === 'conversationStyle'}
                   value={customStyle ? CUSTOM_STYLE : styleKeyOf(personaDraft.conversationStyle)}
                   onChange={(e) => {
                     const text = styleTextOf(e.target.value);
@@ -911,7 +926,7 @@ export default function AdminCharacterDetailPage() {
                     if (text !== null) setPersonaDraft({ ...personaDraft, conversationStyle: text });
                     else if (e.target.value === '') setPersonaDraft({ ...personaDraft, conversationStyle: '' });
                   }}
-                  className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                  className={`mt-1 w-full rounded-lg border bg-zinc-900 px-3 py-2 text-sm text-zinc-100 ${styleMissing ? MISSING_BOX_CLASS : 'border-zinc-700'}`}
                 >
                   <option value="">Choose…</option>
                   {CONVERSATION_STYLES.map((preset) => (
@@ -1018,7 +1033,7 @@ export default function AdminCharacterDetailPage() {
               </label>
             </details>
             {missingInDraft(personaDraft).length > 0 && (
-              <p data-testid="persona-missing" className="text-xs text-amber-300">Still needed: {missingInDraft(personaDraft).join(', ')}.</p>
+              <p data-testid="persona-missing" className={`text-xs ${MISSING_LABEL_CLASS}`}>Still needed: {missingInDraft(personaDraft).join(', ')}.</p>
             )}
             <button
               type="button"
@@ -1049,16 +1064,16 @@ export default function AdminCharacterDetailPage() {
         ) : (
           <dl className="grid gap-3 rounded-lg border border-zinc-800 p-4 text-sm sm:grid-cols-2">
             <div>
-              <dt className="text-xs uppercase tracking-wide text-zinc-500">Short bio</dt>
-              <dd className="text-zinc-300">{character.shortBio || '—'}</dd>
+              <dt className={`text-xs uppercase tracking-wide ${character.shortBio ? 'text-zinc-500' : MISSING_LABEL_CLASS}`}>Short bio</dt>
+              <dd className={character.shortBio ? 'text-zinc-300' : MISSING_LABEL_CLASS}>{character.shortBio || 'Missing'}</dd>
             </div>
             <div>
-              <dt className="text-xs uppercase tracking-wide text-zinc-500">Personality</dt>
-              <dd className="text-zinc-300">{character.personality || '—'}</dd>
+              <dt className={`text-xs uppercase tracking-wide ${character.personality ? 'text-zinc-500' : MISSING_LABEL_CLASS}`}>Personality</dt>
+              <dd className={character.personality ? 'text-zinc-300' : MISSING_LABEL_CLASS}>{character.personality || 'Missing'}</dd>
             </div>
             <div>
-              <dt className="text-xs uppercase tracking-wide text-zinc-500">How she talks</dt>
-              <dd className="text-zinc-300">{styleLabelOf(character.conversationStyle) || '—'}</dd>
+              <dt className={`text-xs uppercase tracking-wide ${character.conversationStyle ? 'text-zinc-500' : MISSING_LABEL_CLASS}`}>How she talks</dt>
+              <dd className={character.conversationStyle ? 'text-zinc-300' : MISSING_LABEL_CLASS}>{styleLabelOf(character.conversationStyle) || 'Missing'}</dd>
             </div>
             <div>
               <dt className="text-xs uppercase tracking-wide text-zinc-500">Interests</dt>

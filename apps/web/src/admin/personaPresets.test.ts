@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CONVERSATION_STYLES,
   CUSTOM_STYLE,
+  MISSING_BOX_CLASS,
+  MISSING_LABEL_CLASS,
+  missingDraftKeys,
   canPublish,
   defaultSystemPrompt,
   missingInDraft,
@@ -98,5 +101,30 @@ describe('the character page uses them', () => {
     expect(page).not.toContain('Her profile is not written yet');
     expect(page).toContain("disabled={busy || (character.status !== 'active' && !canPublish(character))}");
     expect(page).toContain('publishPatch(character)');
+  });
+});
+
+describe('a missing field is red, so it can be found', () => {
+  it('lists the empty required fields in page order -- the first is where the cursor goes', () => {
+    const draft = { displayName: 'Rosie', shortBio: '', personality: 'Composed.', conversationStyle: ' ' };
+    expect(missingDraftKeys(draft)).toEqual(['shortBio', 'conversationStyle']);
+    expect(missingInDraft(draft)).toEqual(['Short bio', 'How she talks']);
+    expect(missingDraftKeys({ ...draft, shortBio: 'x', conversationStyle: 'y' })).toEqual([]);
+  });
+
+  it('the editor outlines each one in red, labels it Required and focuses the first', () => {
+    expect(MISSING_LABEL_CLASS).toContain('rose');
+    expect(MISSING_BOX_CLASS).toContain('border-rose-500');
+    expect(page).toContain("draftMissing.includes(key) ? MISSING_BOX_CLASS : 'border-zinc-700'");
+    expect(page).toContain("styleMissing ? MISSING_BOX_CLASS : 'border-zinc-700'");
+    expect(page).toContain('Required — choose one');
+    expect(page).toContain("autoFocus={draftMissing[0] === 'conversationStyle'}");
+    expect(page).toContain('autoFocus={draftMissing[0] === key}');
+  });
+
+  it('the read view says Missing in red instead of a dash, and the hints beside Publish are red too', () => {
+    expect(page).toContain("{styleLabelOf(character.conversationStyle) || 'Missing'}");
+    expect(page).toContain("character.conversationStyle ? 'text-zinc-300' : MISSING_LABEL_CLASS");
+    expect(page).toMatch(/data-testid="publish-missing" className=\{`[^`]*\$\{MISSING_LABEL_CLASS\}`\}/);
   });
 });
