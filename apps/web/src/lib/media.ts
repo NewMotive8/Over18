@@ -258,6 +258,18 @@ export interface CharacterMediaItem {
   media: HeroMedia;
   /** Premium-gated: viewing requires the Premium tier (US-19 gate). */
   premium: boolean;
+  /**
+   * Her rating for this item, when the surface that built it knows one.
+   *
+   * SOUND IS THE ONLY THING THAT READS IT. `explicit` is the one value that
+   * opens that door; every other value, and no value at all, leaves the item
+   * silent and without a control.
+   *
+   * ABSENT IS NOT 'sfw', exactly as on `CharacterClipRef`: a builder that
+   * cannot say — the header deck, chat — gets the behaviour it had before this
+   * field existed, rather than a guess that could make a clip audible.
+   */
+  contentRating?: 'sfw' | 'explicit';
 }
 
 /**

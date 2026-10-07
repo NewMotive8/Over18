@@ -426,6 +426,25 @@ describe('the Character header skips her explicit clips', () => {
     expect(JSON.stringify(items)).not.toContain('x1');
   });
 
+  /**
+   * THE HEADER CAN NEVER BE OFFERED SOUND, and this is what guarantees it.
+   *
+   * The viewer turns sound on for `contentRating: 'explicit'` and nothing else.
+   * The deck is already explicit-free, so the only way a header clip could grow
+   * an unmute button is if this builder started claiming a rating it has no
+   * business claiming. It reports none, which is not 'sfw' and not explicit --
+   * the quiet case, by construction rather than by the filter alone.
+   */
+  it('claims no content rating, so the header is never offered sound', () => {
+    const items = characterHeaderItems(
+      cms(),
+      [headerClip('v1', 'video', 'sfw'), headerClip('v2', 'video', 'sfw')],
+      null,
+    );
+    expect(items).toHaveLength(2);
+    for (const item of items) expect(item.contentRating).toBeUndefined();
+  });
+
   it('keeps the deck order of the remaining clips', () => {
     const items = characterHeaderItems(
       cms(),
