@@ -18,7 +18,21 @@ import type { CharacterMediaItem } from '../lib/media';
 
 const render = (el: React.ReactElement) => renderToStaticMarkup(el);
 
-const video = (id = 'v'): CharacterMediaItem => ({
+/**
+ * A clip, EXPLICIT BY DEFAULT, because that is the only kind sound is offered
+ * on and these cases are about the control. The rating is a parameter rather
+ * than a fixture so the SFW half can use the same builder and differ in exactly
+ * the one field under test.
+ */
+const video = (id = 'v', contentRating: 'sfw' | 'explicit' = 'explicit'): CharacterMediaItem => ({
+  id,
+  media: { kind: 'video', src: `https://vid/${id}.mp4` },
+  premium: false,
+  contentRating,
+});
+
+/** A clip whose builder reported no rating at all -- the header deck, chat. */
+const unratedVideo = (id = 'u'): CharacterMediaItem => ({
   id,
   media: { kind: 'video', src: `https://vid/${id}.mp4` },
   premium: false,
@@ -63,6 +77,53 @@ describe('the control in the full-screen viewer', () => {
   it('appears on the clip and not on the photo beside it', () => {
     const mixed = [image('i1'), video('v1')];
     expect(viewer(mixed, 0)).not.toContain(`aria-label="${UNMUTE_LABEL}"`);
+    expect(viewer(mixed, 1)).toContain(`aria-label="${UNMUTE_LABEL}"`);
+  });
+});
+
+/**
+ * ───────────────────────────────────────────────────────────────────────────
+ * THE RATING DECIDES WHETHER SOUND IS OFFERED AT ALL.
+ *
+ * The control was once reachable from any video in the viewer, which made it
+ * rating-blind: an ordinary clip that happened to carry a track could be
+ * unmuted exactly like an explicit one. Only what she published as explicit
+ * gets a way to be heard; everything else stays the silent element it was.
+ * ───────────────────────────────────────────────────────────────────────────
+ */
+describe('only an explicit clip is offered sound', () => {
+  const silent = (html: string) => {
+    expect(html).not.toContain(`aria-label="${UNMUTE_LABEL}"`);
+    expect(html).not.toContain(`aria-label="${MUTE_LABEL}"`);
+    expect(html).not.toContain('aria-label="Volume"');
+  };
+
+  it('offers the control on an explicit clip', () => {
+    expect(viewer([video('v1', 'explicit')])).toContain(`aria-label="${UNMUTE_LABEL}"`);
+  });
+
+  it('offers NOTHING on an sfw clip', () => {
+    silent(viewer([video('v1', 'sfw')]));
+  });
+
+  /** Absent is not 'sfw' and is not explicit -- it is the old, quiet behaviour. */
+  it('offers nothing when no rating was reported', () => {
+    silent(viewer([unratedVideo()]));
+  });
+
+  /** The element itself must stay muted, not merely lose its button. */
+  it('leaves an sfw clip hard-muted, exactly as every ambient surface renders it', () => {
+    expect(viewer([video('v1', 'sfw')])).toMatch(/<video[^>]*muted=""/);
+    expect(viewer([unratedVideo()])).toMatch(/<video[^>]*muted=""/);
+  });
+
+  /**
+   * Her Posts gallery mixes both and pages between them in here, so the
+   * decision has to follow the item rather than the viewer.
+   */
+  it('follows the item when a gallery mixes the two', () => {
+    const mixed = [video('sfw1', 'sfw'), video('x1', 'explicit')];
+    silent(viewer(mixed, 0));
     expect(viewer(mixed, 1)).toContain(`aria-label="${UNMUTE_LABEL}"`);
   });
 });
