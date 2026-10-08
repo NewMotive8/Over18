@@ -1227,6 +1227,62 @@ export const homeRecentCharacters = pgTable(
   (table) => [index('home_recent_characters_position_idx').on(table.position)],
 );
 
+/** Stable, human-typable identifiers: `premium_monthly`, `starter`. */
+const CODE_PATTERN = sql.raw(`'^[a-z][a-z0-9_]{1,63}$'`);
+
+/**
+ * keyword_facets — the DIMENSIONS a keyword can belong to.
+ *
+ * WHY A FACET IS NOT JUST ANOTHER KEYWORD. A flat vocabulary cannot express a
+ * filter panel. "Blonde" and "Petite" are not two values of one question, they
+ * are answers to two different ones — hair colour and body type — and a visitor
+ * choosing both means blonde AND petite. Without somewhere to record which
+ * question a keyword answers, adding a second filter can only ever widen the
+ * result, which is the opposite of what picking a filter means.
+ *
+ * SELECTION IS PART OF THE DIMENSION, not of the UI. Hair colour takes several
+ * values at once ("blonde or brown"); ethnicity takes one. Storing that here
+ * keeps the rule in one place instead of in every screen that draws a chip.
+ *
+ * A TABLE RATHER THAN AN ENUM, for the reason the economy tables already give
+ * for action types: adding "Ethnicity" or a new value is CONFIGURATION, and an
+ * enum would turn every such decision into a migration.
+ *
+ * FACETS DO NOT TOUCH DISCOVERY CATEGORIES. A category stays what it has always
+ * been — a set of keywords matched with OR, where one hit is enough. Faceted
+ * filtering is a second, separate question asked of the same vocabulary, so
+ * nothing here can change what an existing category means.
+ */
+export const keywordFacets = pgTable(
+  'keyword_facets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Stable normalised identity, e.g. `hair_color`. Immutable, like a keyword's. */
+    key: text('key').notNull(),
+    /** What an operator renames, e.g. "Hair colour". */
+    label: text('label').notNull(),
+    /**
+     * Whether a visitor may choose several values at once.
+     *
+     * `multi` — blonde OR brown, both inside this one facet.
+     * `single` — one value only. Ethnicity is single because the alternative
+     *            invites a combination nobody meant to offer.
+     */
+    selection: text('selection').notNull().default('multi'),
+    position: integer('position').notNull().default(0),
+    /** Off hides the facet from the filter panel; its keywords keep working everywhere else. */
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('keyword_facets_key_uq').on(table.key),
+    index('keyword_facets_position_idx').on(table.position),
+    check('keyword_facets_key_format', sql`${table.key} ~ ${CODE_PATTERN}`),
+    check('keyword_facets_selection', sql`${table.selection} in ('single', 'multi')`),
+  ],
+);
+
 /**
  * content_keywords — the vocabulary behind the lower-page Discovery strip
  * (US-102.4).
@@ -1239,6 +1295,12 @@ export const homeRecentCharacters = pgTable(
  * `key` is the stable normalised identity and is immutable; `label` is what an
  * operator renames — the same slug/name split App Categories use, for the same
  * reason: renaming must never orphan the things pointing at it.
+ *
+ * `facet_id` IS NULLABLE, AND THAT IS THE POINT. A keyword that answers no
+ * particular question — `beach`, `lingerie`, `party` — belongs to no facet and
+ * keeps behaving exactly as every keyword did before facets existed. Only a
+ * keyword an operator deliberately files under a dimension becomes a filter
+ * value, so introducing facets changes nothing until someone files something.
  */
 export const contentKeywords = pgTable(
   'content_keywords',
@@ -1246,9 +1308,56 @@ export const contentKeywords = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     key: text('key').notNull(),
     label: text('label').notNull(),
+    /**
+     * The dimension this keyword answers, or null for an ungrouped keyword.
+     *
+     * ON DELETE SET NULL, never cascade: retiring a facet must demote its
+     * keywords to ungrouped, not delete vocabulary that assets and categories
+     * still point at.
+     */
+    facetId: uuid('facet_id').references(() => keywordFacets.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex('content_keywords_key_uq').on(table.key)],
+  (table) => [
+    uniqueIndex('content_keywords_key_uq').on(table.key),
+    index('content_keywords_facet_idx').on(table.facetId),
+  ],
+);
+
+/**
+ * character_keywords — a keyword that describes HER, not one clip.
+ *
+ * WHY THIS IS NOT `asset_keywords`. Hair colour, body type, breast size and
+ * ethnicity are properties of the character. Recorded per clip they would drift
+ * — the same woman could read "Large" from one clip and "Medium" from another
+ * depending on the angle, and nothing could say which was right. Recorded here
+ * there is exactly one answer per character, and every clip of hers inherits it
+ * by belonging to her.
+ *
+ * SCENE KEYWORDS STAY ON THE ASSET. `beach`, `lingerie` and `party` describe
+ * what is in a particular clip and genuinely differ between them, so they
+ * remain in `asset_keywords`. The two tables are the same vocabulary asked at
+ * two levels, which is why a filter can mix them in one query.
+ *
+ * NOTHING ENFORCES WHICH KEYWORDS APPEAR HERE. A facet is a convention an
+ * operator applies, not a constraint, so an early mistake stays correctable
+ * without a migration.
+ */
+export const characterKeywords = pgTable(
+  'character_keywords',
+  {
+    characterId: uuid('character_id')
+      .notNull()
+      .references(() => characters.id, { onDelete: 'cascade' }),
+    keywordId: uuid('keyword_id')
+      .notNull()
+      .references(() => contentKeywords.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.characterId, table.keywordId] }),
+    index('character_keywords_keyword_idx').on(table.keywordId),
+  ],
 );
 
 /**
@@ -1903,8 +2012,6 @@ function lifecycleChecks(
   ];
 }
 
-/** Stable, human-typable identifiers: `premium_monthly`, `starter`. */
-const CODE_PATTERN = sql.raw(`'^[a-z][a-z0-9_]{1,63}$'`);
 const CURRENCY_PATTERN = sql.raw(`'^[A-Z]{3}$'`);
 
 /**

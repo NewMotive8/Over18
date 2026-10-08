@@ -16,6 +16,7 @@ import {
   homePlayWithMeCharacters,
   type CharacterVisualAssetRow,
 } from '../db/schema.js';
+import { facetConditions, type ResolvedFacet } from './facet-filter.js';
 import { homeRenderableConditions } from './app-merchandising-service.js';
 import { distributableWorkflowCondition } from './asset-distribution.js';
 import { freeFirstJoin, freeFirstOrder } from './commercial-boundary.js';
@@ -1398,7 +1399,23 @@ export async function browsePublicCharacters(
  */
 export async function browsePublicClips(
   db: Db,
-  options: { categorySlug?: string | null; query?: string | null; limit?: number } = {},
+  options: {
+    categorySlug?: string | null;
+    query?: string | null;
+    limit?: number;
+    /**
+     * Facets already resolved to keyword ids (see services/facet-filter.ts).
+     *
+     * RESOLVED BY THE CALLER, not here, because resolution needs the names the
+     * REQUEST used and this function only ever deals in ids. It also keeps the
+     * refusal for a single-choice facet at the edge, where a 400 belongs.
+     *
+     * Absent or empty adds no condition at all, so every existing caller --
+     * `composeHome`, the category pills, a plain search -- renders exactly what
+     * it rendered before.
+     */
+    facets?: readonly ResolvedFacet[];
+  } = {},
 ): Promise<PublicClipView[]> {
   const conditions = [
     eq(characters.status, 'active'),
@@ -1409,9 +1426,19 @@ export async function browsePublicClips(
     // grid, it is what the category pills filter, and `composeHome` embeds its
     // first page -- so an explicit clip excluded from the rails must not be
     // reachable by picking a pill or by searching instead.
+    //
+    // ITS OWN PREDICATE, AND IT STAYS THAT WAY. Showing explicit clips to
+    // Premium is a decision about this one line; no filter, facet or search
+    // path consults the rating, so that change stays confined here instead of
+    // being spread through every condition that narrows the grid.
     notExplicitVideoCondition(),
     sql`${characterVisualAssets.storageKey} is not null and ${characterVisualAssets.storageKey} <> ''`,
   ];
+
+  // One predicate per facet, ANDed by the same `and(...)` as everything else --
+  // which is the entirety of "AND across facets". OR within a facet lives
+  // inside each predicate.
+  conditions.push(...facetConditions(options.facets ?? []));
 
   const slug = options.categorySlug?.trim();
   if (slug) {

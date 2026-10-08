@@ -16,6 +16,13 @@ import {
 import { getPublicAsset, resolvePublicMedia } from '../services/public-media-service.js';
 import { track, type Analytics } from '../services/analytics-service.js';
 import {
+  enforceSelectionLimits,
+  parseFacetParams,
+  readFacetModes,
+  resolveFacetSelections,
+  type ResolvedFacet,
+} from '../services/facet-filter.js';
+import {
   contentRangeHeader,
   etagFor,
   isNotModified,
@@ -184,14 +191,41 @@ export default async function publicHomeRoutes(
    * `category` and `q` are INDEPENDENT filters, exactly as the character grid
    * treats them — selecting a pill never clears the search box.
    */
-  app.get<{ Querystring: { category?: string; q?: string } }>(
+  app.get<{ Querystring: Record<string, unknown> }>(
     '/api/browse/clips',
-    async (request) => ({
-      clips: await browsePublicClips(opts.db, {
-        categorySlug: request.query.category ?? null,
-        query: request.query.q ?? null,
-      }),
-    }),
+    async (request, reply) => {
+      /**
+       * FACETS NARROW; THE PILL AND THE SEARCH BOX STILL DO WHAT THEY DID.
+       *
+       * `facet.<key>=<v1>,<v2>` is read alongside `category` and `q`, never
+       * instead of them: all three are independent filters that compose, which
+       * is the rule this grid already follows for the first two.
+       *
+       * Resolution happens HERE rather than in the query, so a single-choice
+       * facet sent with two values is refused with a 400 at the edge. The
+       * alternative -- quietly keeping the first -- returns a result the
+       * visitor cannot explain from what they selected.
+       */
+      const selections = parseFacetParams(request.query ?? {});
+      let facets: ResolvedFacet[] = [];
+      if (selections.length > 0) {
+        const limits = enforceSelectionLimits(selections, await readFacetModes(opts.db));
+        if (!limits.ok) {
+          return reply.code(400).send({
+            error: 'invalid_query',
+            message: `The "${limits.facetKey}" filter takes one value; ${limits.chosen} were given.`,
+          });
+        }
+        facets = await resolveFacetSelections(opts.db, selections);
+      }
+      return {
+        clips: await browsePublicClips(opts.db, {
+          facets,
+          categorySlug: typeof request.query.category === 'string' ? request.query.category : null,
+          query: typeof request.query.q === 'string' ? request.query.q : null,
+        }),
+      };
+    },
   );
 
   /**
