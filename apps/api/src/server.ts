@@ -21,9 +21,19 @@ const app = await buildApp(env, db, {
   personaGenerator: selectPersonaGenerator(env),
 });
 
+/**
+ * Names the chat provider and its MODEL, never its key or URL.
+ *
+ * An operator switching `CHAT_LLM_PROVIDER` needs one line in the log that
+ * settles which model she is actually speaking through — the whole failure this
+ * split exists to prevent is a swap nobody can see. The model id is not a
+ * secret; the base URL and key are, and neither is printed.
+ */
 app.log.info(
-  env.llm
-    ? 'AI replies: LLM inference endpoint configured (openai-compatible)'
+  env.chatLlm
+    ? `AI replies: LLM inference endpoint configured (openai-compatible) — chat provider "${
+        process.env.CHAT_LLM_PROVIDER?.trim() || 'default (LLM_*)'
+      }", model "${env.chatLlm.model}"`
     : env.isProduction
       ? 'AI replies: NOT CONFIGURED — production sends will fail with ai_not_configured until LLM_* variables are set'
       : 'AI replies: no LLM configured — using deterministic fallback provider (development only)',

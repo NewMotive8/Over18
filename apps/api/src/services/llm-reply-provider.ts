@@ -52,21 +52,38 @@ export const unconfiguredReplyProvider: ReplyProvider = () => {
 
 /**
  * Environment-based provider selection (used by server.ts, unit-testable):
- * - LLM configured        → real inference provider
+ * - chat LLM configured   → real inference provider
  * - unset, development    → deterministic fallback (demoable without a model)
  * - unset, production     → unconfiguredReplyProvider (fail clearly, never fake)
+ *
+ * PREFERS `chatLlm`, FALLS BACK TO `llm`. That is the whole point of the split:
+ * which model SHE speaks through is a product decision, while memory extraction
+ * and Admin Autofill stay on `llm` whatever she is speaking through.
+ *
+ * The fallback is not belt-and-braces, it is the compatibility contract.
+ * `loadEnv` already sets `chatLlm = llm` when `CHAT_LLM_PROVIDER` is unset, but
+ * Env is also BUILT BY HAND in dozens of tests and callers that know only about
+ * `llm`. Without `?? env.llm` every one of those silently lost its provider and
+ * fell through to the deterministic fallback -- which is precisely the invisible
+ * downgrade this whole feature exists to make impossible. Adding a field must
+ * never be able to switch a model off.
  */
+export function chatInferenceConfig(env: Env) {
+  return env.chatLlm ?? env.llm;
+}
+
 export function selectReplyProvider(env: Env): ReplyProvider {
-  if (env.llm) {
+  const chat = chatInferenceConfig(env);
+  if (chat) {
     return createLlmReplyProvider(
-      createOpenAiCompatibleClient(env.llm),
-      { maxTokens: env.llm.maxTokens, temperature: env.llm.temperature },
+      createOpenAiCompatibleClient(chat),
+      { maxTokens: chat.maxTokens, temperature: chat.temperature },
       // US-10: bound the history sent to the model via env-configured window.
       // US-12: bound injected memories the same way.
       createPromptBuilder(
         {
-          maxHistoryMessages: env.llm.contextMaxMessages,
-          maxHistoryChars: env.llm.contextMaxChars,
+          maxHistoryMessages: chat.contextMaxMessages,
+          maxHistoryChars: chat.contextMaxChars,
         },
         {
           maxMemories: env.memory.maxInjected,
@@ -87,6 +104,10 @@ export function selectReplyProvider(env: Env): ReplyProvider {
  * limit) would make her first sentence sound unlike every sentence after it,
  * and the first sentence is the one that decides whether he keeps talking.
  *
+ * So this reads `chatLlm` too. Her greeting IS character chat; leaving it on
+ * `llm` while her replies moved would reintroduce exactly the mismatch this
+ * comment was written to prevent.
+ *
  * The fallbacks are deliberately the same too:
  * - unset, development → the deterministic provider, whose first template is
  *   already a greeting, so an unconfigured dev environment still demonstrates
@@ -96,10 +117,11 @@ export function selectReplyProvider(env: Env): ReplyProvider {
  *   impersonate AI applies to her first words most of all.
  */
 export function selectOpeningProvider(env: Env): ReplyProvider {
-  if (env.llm) {
+  const chat = chatInferenceConfig(env);
+  if (chat) {
     return createLlmReplyProvider(
-      createOpenAiCompatibleClient(env.llm),
-      { maxTokens: env.llm.maxTokens, temperature: env.llm.temperature },
+      createOpenAiCompatibleClient(chat),
+      { maxTokens: chat.maxTokens, temperature: chat.temperature },
       buildOpeningMessages,
     );
   }

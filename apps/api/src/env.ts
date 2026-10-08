@@ -197,6 +197,22 @@ export interface AdminEnv {
   permissionsEnforced: boolean;
 }
 
+/**
+ * The chat providers that are permanently configured side by side.
+ *
+ * Each one keeps its OWN base URL, model and key, always set, so switching her
+ * voice is one variable and never a credential edit. Adding a third means a
+ * name here and a block in `resolveChatLlm` — nothing else.
+ */
+export const CHAT_LLM_PROVIDERS = ['grok', 'spicyapi'] as const;
+export type ChatLlmProviderName = (typeof CHAT_LLM_PROVIDERS)[number];
+
+/** Per-provider variable prefix. `CHAT_GROK_MODEL`, `CHAT_SPICYAPI_MODEL`, … */
+const CHAT_PROVIDER_PREFIX: Record<ChatLlmProviderName, string> = {
+  grok: 'CHAT_GROK',
+  spicyapi: 'CHAT_SPICYAPI',
+};
+
 /** The only providers that exist before a vendor is chosen (D-4, D-8). */
 export type CommerceProviderName = 'none' | 'fake';
 
@@ -238,6 +254,21 @@ export interface Env {
   sessionTtlDays: number;
   isProduction: boolean;
   llm: LlmEnv | null;
+  /**
+   * The endpoint CHARACTER CHAT talks to — her replies and her opening line.
+   *
+   * Separate from `llm` because the chat model is a PRODUCT choice that gets
+   * changed and compared, while memory extraction and Admin Autofill are
+   * plumbing that must keep working the same way whichever model she speaks
+   * through. Before this existed, trying a different chat model meant
+   * repointing `LLM_*`, which silently dragged those two along with it — and
+   * both parse structured output, so a model that could chat but not follow a
+   * format degraded them invisibly rather than loudly.
+   *
+   * Equal to `llm` when `CHAT_LLM_PROVIDER` is unset, so an environment that
+   * never heard of this behaves exactly as it did.
+   */
+  chatLlm: LlmEnv | null;
   personaVision: VisionEnv | null;
   memory: MemoryEnv;
   media: MediaEnv;
@@ -252,6 +283,66 @@ export interface Env {
 /** True for "true" / "TRUE" / " true " — ignores accidental whitespace. */
 function envFlagTrue(name: string): boolean {
   return (process.env[name] ?? '').trim().toLowerCase() === 'true';
+}
+
+/**
+ * Which endpoint character chat talks to.
+ *
+ * THE RULE IS: SAY NOTHING AND NOTHING CHANGES; NAME A PROVIDER AND IT MUST BE
+ * COMPLETE. With `CHAT_LLM_PROVIDER` unset chat keeps using `LLM_*`, exactly as
+ * every environment does today. Name one and its three variables must all be
+ * there — a half-configured provider is FATAL at boot, never a quiet fall back
+ * to the other one. Falling back would be the worst possible failure here:
+ * chat would keep working, so nobody would look, while every reply came from a
+ * model nobody chose. A process that refuses to start is noticed in a minute.
+ *
+ * Timeout, token and context limits stay SHARED (`LLM_*`). They are tuning, not
+ * identity, and giving each provider its own set would mean a model swap
+ * quietly changed the history window too.
+ */
+function resolveChatLlm(fallback: LlmEnv | null): LlmEnv | null {
+  const raw = (process.env.CHAT_LLM_PROVIDER ?? '').trim();
+  if (raw.length === 0) return fallback;
+
+  const name = raw.toLowerCase() as ChatLlmProviderName;
+  if (!CHAT_LLM_PROVIDERS.includes(name)) {
+    console.error(
+      `FATAL: unsupported CHAT_LLM_PROVIDER "${raw}" (supported: ${CHAT_LLM_PROVIDERS.join('|')}).`,
+    );
+    process.exit(1);
+  }
+
+  const prefix = CHAT_PROVIDER_PREFIX[name];
+  const baseUrl = (process.env[`${prefix}_BASE_URL`] ?? '').trim();
+  const model = (process.env[`${prefix}_MODEL`] ?? '').trim();
+  const apiKey = (process.env[`${prefix}_API_KEY`] ?? '').trim();
+
+  const missing = [
+    baseUrl ? null : `${prefix}_BASE_URL`,
+    model ? null : `${prefix}_MODEL`,
+  ].filter((v): v is string => v !== null);
+  if (missing.length > 0) {
+    console.error(
+      `FATAL: CHAT_LLM_PROVIDER is "${name}" but ${missing.join(' and ')} ${
+        missing.length > 1 ? 'are' : 'is'
+      } missing. Chat will not silently use another provider.`,
+    );
+    process.exit(1);
+  }
+
+  return {
+    provider: 'openai-compatible',
+    baseUrl,
+    model,
+    // Absent is legitimate: a self-hosted endpoint may be keyless, exactly as
+    // LLM_API_KEY is optional above.
+    apiKey: apiKey || undefined,
+    timeoutMs: Number(process.env.LLM_TIMEOUT_MS ?? 30_000),
+    maxTokens: Number(process.env.LLM_MAX_TOKENS ?? 512),
+    temperature: Number(process.env.LLM_TEMPERATURE ?? 0.8),
+    contextMaxMessages: Number(process.env.LLM_CONTEXT_MAX_MESSAGES ?? 40),
+    contextMaxChars: Number(process.env.LLM_CONTEXT_MAX_CHARS ?? 16_000),
+  };
 }
 
 /**
@@ -309,6 +400,8 @@ export function loadEnv(): Env {
     };
   }
 
+  const chatLlm = resolveChatLlm(llm);
+
   // Defaults entirely to the LLM_* config resolved above: PERSONA_VISION_*
   // overrides individual fields only when set. No baseUrl (from either
   // source) means no vision config at all — selectPersonaGenerator reports
@@ -356,6 +449,7 @@ export function loadEnv(): Env {
     sessionTtlDays: Number(process.env.SESSION_TTL_DAYS ?? 30),
     isProduction: process.env.NODE_ENV === 'production',
     llm,
+    chatLlm,
     personaVision,
     memory: {
       maxInjected: Number(process.env.MEMORY_MAX_INJECTED ?? 10),
