@@ -116,10 +116,23 @@ export default function ChatPage() {
    * can only ever grow, because `scrollHeight` of an already-tall box includes
    * the height it was given -- so deleting a line would leave the gap behind.
    *
-   * The cap stays in CSS where it was: this sets a height, `max-h-32` limits
-   * it, and `overflow-y-auto` scrolls whatever is beyond four lines. Keyed on
-   * `draft`, so clearing it after a send collapses the box back to one row
-   * without anything having to remember to.
+   * IT GROWS BY THE ROW, AND THE CONVERSATION YIELDS. The section is a flex
+   * column whose message list is `flex-1 overflow-y-auto`, so every row the
+   * composer gains is a row the list gives up -- the list keeps its own
+   * scroll, and the send button never moves out of reach. That is what makes
+   * growing safe here, and it is why the cap can be generous.
+   *
+   * THE CAP IS HALF THE VIEWPORT, NOT FOUR LINES. `max-h-32` was 128px: it
+   * showed four rows and hid the rest, which is the same complaint as the
+   * original bug wearing a larger box. Half the screen holds twenty-odd rows
+   * -- more than any realistic message -- while still leaving the other half
+   * for what she said. Uncapped is the one thing it must not be: a 2000
+   * character message on a narrow phone is taller than the screen, and the
+   * composer is not the flexible item, so it would push its own send button
+   * out of view.
+   *
+   * Keyed on `draft`, so clearing it after a send collapses the box back to
+   * one row without anything having to remember to.
    */
   useEffect(() => {
     const el = composerRef.current;
@@ -529,7 +542,7 @@ export default function ChatPage() {
           maxLength={MESSAGE_MAX_LENGTH}
           placeholder={`Message ${character.displayName}…`}
           disabled={sending}
-          className="max-h-32 min-h-11 flex-1 resize-none overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-rose-500 disabled:opacity-60"
+          className="max-h-[50vh] min-h-11 flex-1 resize-none overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-rose-500 disabled:opacity-60"
         />
         <button
           type="submit"
