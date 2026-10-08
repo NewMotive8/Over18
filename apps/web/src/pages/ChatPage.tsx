@@ -96,11 +96,37 @@ export default function ChatPage() {
   const messagesRef = useRef<ChatMessage[]>(messages);
   messagesRef.current = messages;
   const [draft, setDraft] = useState('');
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   // Follow-the-bottom policy (lib/chatScroll.ts). A ref, not state: scrolling
   // must never trigger a re-render of the conversation.
   const follower = useRef(createScrollFollower()).current;
+
+  /**
+   * THE COMPOSER GROWS WITH WHAT IS BEING WRITTEN.
+   *
+   * It is a one-row textarea with `max-h-32` -- a cap that had nothing to cap,
+   * because nothing ever changed its height. Past the first line the text
+   * scrolled inside 44 pixels: the writer could see the line they were on and
+   * a sliver of the one above it, with everything earlier out of sight. At a
+   * 2000-character limit that is most of a message they cannot read back.
+   *
+   * `height = auto` FIRST, then `scrollHeight`. Without the reset the element
+   * can only ever grow, because `scrollHeight` of an already-tall box includes
+   * the height it was given -- so deleting a line would leave the gap behind.
+   *
+   * The cap stays in CSS where it was: this sets a height, `max-h-32` limits
+   * it, and `overflow-y-auto` scrolls whatever is beyond four lines. Keyed on
+   * `draft`, so clearing it after a send collapses the box back to one row
+   * without anything having to remember to.
+   */
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
 
   // Optimistic send + delayed typing indicator. `pending` is held OUTSIDE
   // `messages` on purpose: `messages` only ever contains server-persisted
@@ -490,6 +516,7 @@ export default function ChatPage() {
 
       <form onSubmit={handleSend} className="flex items-end gap-2 border-t border-zinc-800 pt-3">
         <textarea
+          ref={composerRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -502,7 +529,7 @@ export default function ChatPage() {
           maxLength={MESSAGE_MAX_LENGTH}
           placeholder={`Message ${character.displayName}…`}
           disabled={sending}
-          className="max-h-32 min-h-11 flex-1 resize-none rounded-xl border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-rose-500 disabled:opacity-60"
+          className="max-h-32 min-h-11 flex-1 resize-none overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-rose-500 disabled:opacity-60"
         />
         <button
           type="submit"
