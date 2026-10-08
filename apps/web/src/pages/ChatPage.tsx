@@ -122,6 +122,17 @@ export default function ChatPage() {
    * scroll, and the send button never moves out of reach. That is what makes
    * growing safe here, and it is why the cap can be generous.
    *
+   * HALF THE *DYNAMIC* VIEWPORT. `dvh` tracks the viewport the keyboard leaves
+   * behind; `vh` is a percentage of the large viewport and ignores it. A `vh`
+   * cap therefore lets the box grow to half the WHOLE screen while only part of
+   * it is visible -- the composer eating the room it is supposed to be typing
+   * in. On a 390x844 phone the cap is 422px with the keyboard closed and 212px
+   * with the dynamic viewport down to 424px.
+   *
+   * NOT REPRODUCIBLE ON A DESKTOP. Resizing a window shrinks the large viewport
+   * too, so `vh` and `dvh` measure the same there and the bug disappears in
+   * emulation. The difference only exists where a soft keyboard does.
+   *
    * THE CAP IS HALF THE VIEWPORT, NOT FOUR LINES. `max-h-32` was 128px: it
    * showed four rows and hid the rest, which is the same complaint as the
    * original bug wearing a larger box. Half the screen holds twenty-odd rows
@@ -403,8 +414,18 @@ export default function ChatPage() {
   // right server; used raw, a canonical route was requested from the web host.
   const avatar = absoluteMediaUrl(character.profileImage);
 
+  /*
+   * `dvh`, NOT `vh`, ON THE SECTION BELOW — AND THAT IS THE KEYBOARD.
+   *
+   * `vh` is a percentage of the LARGE viewport: it does not change when the
+   * on-screen keyboard opens. `index.html` sets
+   * `interactive-widget=resizes-content` precisely so the keyboard resizes the
+   * layout viewport, and `AppShell` is already `min-h-dvh` — so with `vh` here
+   * this section alone insisted on 60% of the UNSHRUNK screen while everything
+   * around it had shrunk, pushing its own composer down behind the keyboard.
+   */
   return (
-    <section className="flex h-full min-h-[60vh] flex-col">
+    <section className="flex h-full min-h-[60dvh] flex-col">
       <header className="flex items-center justify-between gap-3 border-b border-zinc-800 pb-3">
         <Link
           to={`/characters/${character.id}`}
@@ -542,7 +563,7 @@ export default function ChatPage() {
           maxLength={MESSAGE_MAX_LENGTH}
           placeholder={`Message ${character.displayName}…`}
           disabled={sending}
-          className="max-h-[50vh] min-h-11 flex-1 resize-none overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-rose-500 disabled:opacity-60"
+          className="max-h-[50dvh] min-h-11 flex-1 resize-none overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-rose-500 disabled:opacity-60"
         />
         <button
           type="submit"
