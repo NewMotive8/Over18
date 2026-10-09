@@ -274,6 +274,11 @@ export default function CharacterDetailPage() {
         ? { kind: 'video', src: `${API_URL}${clip.url}` }
         : { kind: 'image', src: `${API_URL}${clip.url}` },
     premium: false,
+    // Carried so the viewer can tell an explicit clip from an ordinary one.
+    // Posts is the only surface that knows her rating, and the only one whose
+    // items a visitor opens deliberately -- which is why sound belongs here
+    // and nowhere else.
+    contentRating: clip.contentRating,
   }));
   const age = adultAgeFromBand(apparentAge(visualData));
   const avatarPoster = profileAvatarUrl(character.profileImage, heroItems[0]?.media);

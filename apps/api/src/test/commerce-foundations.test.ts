@@ -200,6 +200,7 @@ describe('the analytics pipeline', () => {
       'credit_spend',
       'locked_content_viewed',
       'locked_content_unlocked',
+      'content_viewed',
       'reward_earned',
       'paywall_dismissed',
       'grant_exhausted',
@@ -239,6 +240,61 @@ describe('the analytics pipeline', () => {
     ).toEqual({ paymentId: id.toLowerCase(), packCode: 'starter', credits: 100, status: 'cancelled' });
     expect(allowedAnalyticsProperties('credit_balance_viewed', { anything: 1 })).toEqual({});
     expect(allowedAnalyticsProperties('credit_spend', null)).toEqual({});
+  });
+
+  /**
+   * A CONTENT VIEW'S PROPERTIES, PINNED FIELD BY FIELD.
+   *
+   * A key dropped here fails nothing and raises nothing: the event still
+   * stores, just without the character it belonged to, or without the
+   * distinction between something browsed in her gallery and something she
+   * sent in a conversation. The view would survive and the meaning would not,
+   * so each field the two media routes send is asserted by name.
+   */
+  it('keeps every property a content view carries, and stays server-only', () => {
+    const assetId = '11111111-1111-4111-8111-111111111111';
+    const characterId = '22222222-2222-4222-8222-222222222222';
+
+    // Exactly what the chat route sends.
+    expect(
+      allowedAnalyticsProperties('content_viewed', {
+        assetId,
+        characterId,
+        contentRating: 'explicit',
+        mediaType: 'video',
+        channel: 'chat',
+      }),
+    ).toEqual({ assetId, characterId, contentRating: 'explicit', mediaType: 'video', channel: 'chat' });
+
+    // Exactly what the gallery route sends.
+    expect(
+      allowedAnalyticsProperties('content_viewed', {
+        assetId,
+        characterId,
+        contentRating: 'sfw',
+        mediaType: 'image',
+        channel: 'gallery',
+      }),
+    ).toEqual({ assetId, characterId, contentRating: 'sfw', mediaType: 'image', channel: 'gallery' });
+
+    /**
+     * `surface` is the one worth refusing explicitly. Every gallery surface
+     * fetches the same URL, so a rail or tab could only ever be taken on
+     * trust -- and a funnel built on a trusted-but-unverifiable property is
+     * worse than one that admits it does not know.
+     */
+    expect(
+      allowedAnalyticsProperties('content_viewed', {
+        assetId,
+        contentRating: 'nsfw', // not a rating this product publishes
+        mediaType: 'audio', // not a media type these routes serve
+        channel: 'home_feed', // the server cannot know a rail
+        surface: 'posts', // not on the list at all
+      }),
+    ).toEqual({ assetId });
+
+    // A browser claiming a view could inflate any character's popularity.
+    expect(ANALYTICS_CLIENT_EVENTS).not.toContain('content_viewed');
   });
 
   it('sends nothing while switched off', async () => {

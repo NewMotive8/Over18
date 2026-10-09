@@ -90,6 +90,24 @@ export default function MediaViewer({
   const effectiveFit = item.media.kind === 'video' ? (videoFit ?? fit) : fit;
   const isVideo = item.media.kind === 'video';
 
+  /**
+   * SOUND IS FOR HER EXPLICIT CLIPS, AND ONLY THOSE.
+   *
+   * The control used to appear on ANY video in here, which made it rating-
+   * blind: an ordinary clip that happened to carry a track could be unmuted
+   * like an explicit one. Her SFW videos are ambient -- the header deck opens
+   * one the moment her page loads -- so offering to unmute them is offering
+   * sound nobody asked to hear. An explicit clip is the opposite: it is opened
+   * deliberately, from Posts, by someone who chose it.
+   *
+   * ABSENT IS NOT EXPLICIT. An item whose builder reports no rating (the header
+   * deck, chat) stays muted with no control -- the behaviour it had before the
+   * field existed. Only the one value that means "she published this as
+   * explicit" turns sound on, so the quiet case is the default and a missing
+   * rating can never become audible by accident.
+   */
+  const soundAllowed = isVideo && item.contentRating === 'explicit';
+
   return (
     <div
       role="dialog"
@@ -126,7 +144,9 @@ export default function MediaViewer({
           alt={label}
           fit={effectiveFit}
           // Images never take a sound prop, so they stay exactly as they were.
-          sound={isVideo ? sound : undefined}
+          // Nor does a non-explicit video: `undefined` is the hard `muted` this
+          // component has always rendered.
+          sound={soundAllowed ? sound : undefined}
         />
       </div>
 
@@ -138,7 +158,7 @@ export default function MediaViewer({
         phone as much as on a desktop. The safe-area inset keeps it above a
         home indicator.
       */}
-      {isVideo && (
+      {soundAllowed && (
         <div className="pointer-events-none absolute bottom-[max(1rem,env(safe-area-inset-bottom))] left-3 z-10">
           <VideoSoundControl
             sound={sound}

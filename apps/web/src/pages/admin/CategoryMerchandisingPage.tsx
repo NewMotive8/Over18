@@ -20,7 +20,8 @@ import {
   type CandidateAssetView,
   type CategoryAssetView,
 } from '../../lib/api';
-import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
+import { TILE_MEDIA_CLASS, tileFrameClass } from '../../lib/mediaTile';
+import LazyPreviewVideo from '../../admin/LazyPreviewVideo';
 import { canMove, interceptedPath, moveBy, moveItem, sameOrder } from '../../admin/categoryBoard';
 import {
   blockedItems,
@@ -1009,12 +1010,8 @@ function Thumb({
   return (
     <div className={tileFrameClass(true)}>
       {previewUrl && mediaType === 'video' ? (
-        <video
-          src={`${API_URL}${previewUrl}`}
-          {...TILE_VIDEO_PLAYBACK}
-          preload="metadata"
-          className={TILE_MEDIA_CLASS}
-        />
+        // Not autoplaying: this page lists the whole approved library. See LazyPreviewVideo.
+        <LazyPreviewVideo src={`${API_URL}${previewUrl}`} className={TILE_MEDIA_CLASS} />
       ) : previewUrl ? (
         <img src={`${API_URL}${previewUrl}`} alt="" loading="lazy" className={TILE_MEDIA_CLASS} />
       ) : (

@@ -96,11 +96,61 @@ export default function ChatPage() {
   const messagesRef = useRef<ChatMessage[]>(messages);
   messagesRef.current = messages;
   const [draft, setDraft] = useState('');
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   // Follow-the-bottom policy (lib/chatScroll.ts). A ref, not state: scrolling
   // must never trigger a re-render of the conversation.
   const follower = useRef(createScrollFollower()).current;
+
+  /**
+   * THE COMPOSER GROWS WITH WHAT IS BEING WRITTEN.
+   *
+   * It is a one-row textarea with `max-h-32` -- a cap that had nothing to cap,
+   * because nothing ever changed its height. Past the first line the text
+   * scrolled inside 44 pixels: the writer could see the line they were on and
+   * a sliver of the one above it, with everything earlier out of sight. At a
+   * 2000-character limit that is most of a message they cannot read back.
+   *
+   * `height = auto` FIRST, then `scrollHeight`. Without the reset the element
+   * can only ever grow, because `scrollHeight` of an already-tall box includes
+   * the height it was given -- so deleting a line would leave the gap behind.
+   *
+   * IT GROWS BY THE ROW, AND THE CONVERSATION YIELDS. The section is a flex
+   * column whose message list is `flex-1 overflow-y-auto`, so every row the
+   * composer gains is a row the list gives up -- the list keeps its own
+   * scroll, and the send button never moves out of reach. That is what makes
+   * growing safe here, and it is why the cap can be generous.
+   *
+   * HALF THE *DYNAMIC* VIEWPORT. `dvh` tracks the viewport the keyboard leaves
+   * behind; `vh` is a percentage of the large viewport and ignores it. A `vh`
+   * cap therefore lets the box grow to half the WHOLE screen while only part of
+   * it is visible -- the composer eating the room it is supposed to be typing
+   * in. On a 390x844 phone the cap is 422px with the keyboard closed and 212px
+   * with the dynamic viewport down to 424px.
+   *
+   * NOT REPRODUCIBLE ON A DESKTOP. Resizing a window shrinks the large viewport
+   * too, so `vh` and `dvh` measure the same there and the bug disappears in
+   * emulation. The difference only exists where a soft keyboard does.
+   *
+   * THE CAP IS HALF THE VIEWPORT, NOT FOUR LINES. `max-h-32` was 128px: it
+   * showed four rows and hid the rest, which is the same complaint as the
+   * original bug wearing a larger box. Half the screen holds twenty-odd rows
+   * -- more than any realistic message -- while still leaving the other half
+   * for what she said. Uncapped is the one thing it must not be: a 2000
+   * character message on a narrow phone is taller than the screen, and the
+   * composer is not the flexible item, so it would push its own send button
+   * out of view.
+   *
+   * Keyed on `draft`, so clearing it after a send collapses the box back to
+   * one row without anything having to remember to.
+   */
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
 
   // Optimistic send + delayed typing indicator. `pending` is held OUTSIDE
   // `messages` on purpose: `messages` only ever contains server-persisted
@@ -364,8 +414,18 @@ export default function ChatPage() {
   // right server; used raw, a canonical route was requested from the web host.
   const avatar = absoluteMediaUrl(character.profileImage);
 
+  /*
+   * `dvh`, NOT `vh`, ON THE SECTION BELOW — AND THAT IS THE KEYBOARD.
+   *
+   * `vh` is a percentage of the LARGE viewport: it does not change when the
+   * on-screen keyboard opens. `index.html` sets
+   * `interactive-widget=resizes-content` precisely so the keyboard resizes the
+   * layout viewport, and `AppShell` is already `min-h-dvh` — so with `vh` here
+   * this section alone insisted on 60% of the UNSHRUNK screen while everything
+   * around it had shrunk, pushing its own composer down behind the keyboard.
+   */
   return (
-    <section className="flex h-full min-h-[60vh] flex-col">
+    <section className="flex h-full min-h-[60dvh] flex-col">
       <header className="flex items-center justify-between gap-3 border-b border-zinc-800 pb-3">
         <Link
           to={`/characters/${character.id}`}
@@ -490,6 +550,7 @@ export default function ChatPage() {
 
       <form onSubmit={handleSend} className="flex items-end gap-2 border-t border-zinc-800 pt-3">
         <textarea
+          ref={composerRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -502,7 +563,7 @@ export default function ChatPage() {
           maxLength={MESSAGE_MAX_LENGTH}
           placeholder={`Message ${character.displayName}…`}
           disabled={sending}
-          className="max-h-32 min-h-11 flex-1 resize-none rounded-xl border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-rose-500 disabled:opacity-60"
+          className="max-h-[50dvh] min-h-11 flex-1 resize-none overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 px-3.5 py-2.5 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-rose-500 disabled:opacity-60"
         />
         <button
           type="submit"

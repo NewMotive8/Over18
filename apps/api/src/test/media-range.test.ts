@@ -7,6 +7,7 @@ import {
   MEDIA_MAX_AGE_SECONDS,
   parseRange,
   rangeLength,
+  startsAView,
 } from '../services/media-range.js';
 
 /**
@@ -218,5 +219,68 @@ describe('the caching policy does not widen what is visible', () => {
 
   it('is NOT immutable — visibility is revocable even though bytes are not', () => {
     expect(MEDIA_CACHE_CONTROL).not.toContain('immutable');
+  });
+});
+
+
+/**
+ * WHAT COUNTS AS SOMEONE WATCHING — the rule behind `content_viewed`.
+ *
+ * This is the arithmetic that decides whether an engagement number is worth
+ * anything. The file above measured a single Home load issuing 14 requests for
+ * 4 files; if each of those were a "view", the most-watched clip would simply
+ * be the one that takes the most fetches to finish. These cases pin the
+ * opposite: a view is a request that STARTS a watch, and everything that merely
+ * continues one is silent.
+ */
+describe('startsAView counts watches, not requests', () => {
+  it('counts a whole-file request — an image, or a video with no Range', () => {
+    expect(startsAView(false, { kind: 'full' })).toBe(true);
+  });
+
+  it('counts the opening slice of a video, which begins at byte 0', () => {
+    expect(startsAView(false, { kind: 'partial', range: { start: 0, end: 99 } })).toBe(true);
+  });
+
+  /** The same watch continuing. Counting it is how 1 view becomes 20. */
+  it('does NOT count a slice from the middle', () => {
+    expect(startsAView(false, { kind: 'partial', range: { start: 100, end: 199 } })).toBe(false);
+  });
+
+  it('does NOT count a one-byte probe taken from anywhere but the start', () => {
+    expect(startsAView(false, { kind: 'partial', range: { start: 1, end: 1 } })).toBe(false);
+  });
+
+  /**
+   * A re-watch of a cached clip. The bytes never move, so this is the ONLY
+   * trace a second viewing leaves — and a second viewing is the strongest
+   * signal of taste there is.
+   */
+  it('counts a not-modified response as a genuine re-watch', () => {
+    expect(startsAView(true, null)).toBe(true);
+  });
+
+  /** Still a re-watch: the conditional answer is decided before any range is. */
+  it('counts not-modified even when a Range header came with it', () => {
+    expect(startsAView(true, { kind: 'partial', range: { start: 500, end: 600 } })).toBe(true);
+  });
+
+  it('does NOT count a range outside the file — nothing was served', () => {
+    expect(startsAView(false, { kind: 'unsatisfiable' })).toBe(false);
+  });
+
+  it('does NOT count a request with no outcome at all', () => {
+    expect(startsAView(false, null)).toBe(false);
+  });
+
+  /**
+   * The documented bias, stated as a test so nobody "fixes" it later: a watch
+   * resumed from the middle is missed on purpose. Over-counting would distort
+   * every ranking built on this and leave no evidence that it had.
+   */
+  it('under-counts rather than over-counts, by design', () => {
+    const resumedMidFile = startsAView(false, { kind: 'partial', range: { start: 2048, end: 4095 } });
+    const suffixSeek = startsAView(false, { kind: 'partial', range: { start: 900, end: 999 } });
+    expect([resumedMidFile, suffixSeek]).toEqual([false, false]);
   });
 });
