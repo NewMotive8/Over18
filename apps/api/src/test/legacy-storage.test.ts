@@ -48,6 +48,8 @@ describe('the bundled demo media tree holds only what is still consumed', () => 
     'luna/profile-04.mp4': 'mock provider video fixture default (services/media-providers.ts)',
     'ember/hero.jpg': 'media-pipeline QA fixture: a real first-frame poster',
     'ember/hero.mp4': 'media-pipeline QA fixture: a real portrait H.264 clip',
+    'store/default-hero.mp4': 'web StoreHero default clip (components/credits/CreditsStoreParts.tsx)',
+    'store/default-hero-poster.jpg': 'poster for that clip, and the PremiumFunnel hero fallback image',
   };
 
   it('contains exactly the retained set', () => {
