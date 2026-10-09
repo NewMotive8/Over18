@@ -34,7 +34,9 @@ describe('characters schema / migration', () => {
     );
     const columns = Object.fromEntries(res.rows.map((r) => [r.column_name, r]));
     expect(Object.keys(columns).sort()).toEqual([
+      'city',
       'conversation_style',
+      'country_code',
       'created_at',
       'display_name',
       'id',
@@ -43,9 +45,11 @@ describe('characters schema / migration', () => {
       'name',
       'personality',
       'profile_image',
+      'region',
       'short_bio',
       'status',
       'system_prompt',
+      'timezone',
       'updated_at',
     ]);
     expect(columns.id.data_type).toBe('uuid');

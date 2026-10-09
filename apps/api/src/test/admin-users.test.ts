@@ -299,7 +299,7 @@ describe('the user detail', () => {
       age: { available: false, reason: 'age_verification_not_supported' },
     });
     expect(view.wallets).toEqual([
-      { currency: 'credits', exists: true, included: 0, earned: 40, purchased: 0, held: 0, spendable: 40, transactions: 1 },
+      { currency: 'credits', exists: true, included: 0, earned: 40, purchased: 0, bonus: 0, held: 0, spendable: 40, transactions: 1 },
     ]);
     expect(view.audit.available && view.audit.entries.map((e) => e.action)).toEqual(['wallet.adjust.credit']);
   });
@@ -323,12 +323,13 @@ describe('the user detail', () => {
       included: summary!.classes.included.spendable,
       earned: summary!.classes.earned.spendable,
       purchased: summary!.classes.purchased.spendable,
+      bonus: summary!.classes.bonus.spendable,
       held: summary!.held,
       spendable: summary!.balance,
       transactions: summary!.version,
     });
     // And the customer is told the same wallet.
-    expect(commercial.wallet).toEqual({ available: true, value: { included: 0, earned: 25, purchased: 0, held: 0, spendable: 25 } });
+    expect(commercial.wallet).toEqual({ available: true, value: { included: 0, earned: 25, purchased: 0, bonus: 0, held: 0, spendable: 25 } });
   });
 
   it("shows a staff member's grants and the audit entries about and by them", async () => {

@@ -73,6 +73,7 @@ Evidence they were unused:
 | `maria/portrait.png` | `SEED_CHARACTERS` (Maria's `profile_image`) and `SEED_VISUAL_ASSETS` (her canonical reference `storage_key`) | Migrate Maria's portrait into `MEDIA_STORAGE_DIR` as an ordinary reference asset, then re-seed. See §3. |
 | `luna/profile-04.jpg`, `luna/profile-04.mp4` | Mock provider fixture defaults in `services/media-providers.ts` and `media-pipeline/cli.ts` | Point `MEDIA_MOCK_IMAGE_FIXTURE` / `MEDIA_MOCK_VIDEO_FIXTURE` at a fixture inside the test tree and drop the defaults. |
 | `ember/hero.jpg`, `ember/hero.mp4` | `media-pipeline.test.ts` — the QA suite needs a genuine portrait H.264 clip and a real first-frame poster | Generate an equivalent fixture at test time (needs ffmpeg in CI) or vendor a smaller real clip. |
+| `store/default-hero.mp4`, `store/default-hero-poster.jpg` | The Credits Store hero: `DEFAULT_HERO` in `apps/web/src/components/credits/CreditsStoreParts.tsx` (`StoreHero`), and the poster again as the `PremiumFunnel` fallback image | Serve both from the media host with the rest of the store artwork and point `DEFAULT_HERO` at those URLs. |
 
 Note: the defaults in `media-providers.ts` are **relative to the process
 working directory** (`apps/web/public/media/...`), so they only resolve when the
