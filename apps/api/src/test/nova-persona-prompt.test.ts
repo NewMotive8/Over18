@@ -101,13 +101,20 @@ describe("Nova's real generated persona reaches the prompt", () => {
     expect(section(withPersona, 'HOW SHE TALKS')).toBe(section(withoutPersona, 'HOW SHE TALKS'));
   });
 
-  it('keeps the relationship-stage rule working alongside a real persona', () => {
+  /**
+   * `conversationStage` is still correct and still used — by the VOICE layer.
+   * Text no longer reads it, so Nova's real persona gets the same conversation
+   * rules on message one as on message forty, and the anti-autobiography guard
+   * that the old stage rule carried is what remains.
+   */
+  it('no longer varies text behaviour by stage, but keeps the recital guard', () => {
     expect(conversationStage(0)).toBe('new');
     expect(conversationStage(10)).toBe('early');
     expect(conversationStage(40)).toBe('established');
     const newTalk = section(buildCharacterSystemPrompt(context({ persona, priorMessageCount: 0 })), 'HOW SHE TALKS');
     const oldTalk = section(buildCharacterSystemPrompt(context({ persona, priorMessageCount: 40 })), 'HOW SHE TALKS');
-    expect(newTalk).not.toBe(oldTalk);
-    expect(newTalk).toContain('only just started talking');
+    expect(newTalk).toBe(oldTalk);
+    expect(newTalk).not.toContain('only just started talking');
+    expect(newTalk).toContain('a detail at a time');
   });
 });

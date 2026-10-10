@@ -135,18 +135,23 @@ describe('the behaviour layer is unaffected by persona', () => {
     expect(prompt).not.toContain(LUNA.systemPrompt);
   });
 
-  it('roleplay detection is unaffected by persona', () => {
-    const scene = contextFor(LUNA, {
-      persona: RICH_PERSONA,
-      userMessage: '*sits down next to you*',
-    });
-    const ordinary = contextFor(LUNA, { persona: RICH_PERSONA, userMessage: 'hey there' });
-    expect(section(buildCharacterSystemPrompt(scene), 'HOW SHE TALKS')).toContain(
-      'He has started a scene.',
-    );
-    expect(section(buildCharacterSystemPrompt(ordinary), 'HOW SHE TALKS')).not.toContain(
-      'He has started a scene.',
-    );
+  /**
+   * The behaviour layer no longer branches on the message at all, so a rich
+   * persona cannot influence a routing decision that does not happen. What is
+   * worth pinning now is the reverse: the conversation rules are identical
+   * whatever he wrote, and the persona does not leak into them.
+   */
+  it('gives the same conversation rules whatever he wrote', () => {
+    const behaviourFor = (userMessage: string) =>
+      section(
+        buildCharacterSystemPrompt(contextFor(LUNA, { persona: RICH_PERSONA, userMessage })),
+        'HOW SHE TALKS',
+      );
+    const ordinary = behaviourFor('hey there');
+    expect(behaviourFor('*sits down next to you*')).toBe(ordinary);
+    expect(behaviourFor('come here and sit on my lap')).toBe(ordinary);
+    expect(ordinary).toContain('If he is writing a scene');
+    expect(ordinary).toContain('Ordinary conversation is what this is');
   });
 });
 
@@ -161,22 +166,41 @@ describe('how much she offers depends on how well they know each other', () => {
     expect(conversationStage(500)).toBe('established');
   });
 
-  it('tells a brand-new conversation to stay brief and not introduce herself', () => {
-    const behaviour = section(
-      buildCharacterSystemPrompt(contextFor(LUNA, { persona: RICH_PERSONA, priorMessageCount: 0 })),
-      'HOW SHE TALKS',
-    );
-    expect(behaviour).toContain('only just started talking');
-    expect(behaviour).toMatch(/never as an introduction to herself/i);
+  /**
+   * THE GUARD SURVIVED THE RULE THAT CARRIED IT. A rich persona is exactly
+   * what made the model recite a profile on the first message, so this is the
+   * case that mattered: the anti-autobiography clause must still be there with
+   * the whole persona in the prompt.
+   */
+  it('still refuses to let a rich persona be recited, at any point', () => {
+    for (const priorMessageCount of [0, 40]) {
+      const behaviour = section(
+        buildCharacterSystemPrompt(
+          contextFor(LUNA, { persona: RICH_PERSONA, priorMessageCount }),
+        ),
+        'HOW SHE TALKS',
+      );
+      expect(behaviour).toContain('a detail at a time');
+      expect(behaviour).toMatch(/never an introduction to herself/i);
+      expect(behaviour).toMatch(/never a catalogue/i);
+    }
   });
 
-  it('opens up once they have been talking a while', () => {
-    const behaviour = section(
-      buildCharacterSystemPrompt(contextFor(LUNA, { persona: RICH_PERSONA, priorMessageCount: 40 })),
-      'HOW SHE TALKS',
-    );
-    expect(behaviour).toContain('comfortable with him');
-    expect(behaviour).toMatch(/take the room something deserves/i);
+  /**
+   * AND THE REGISTER IT HAD DRIFTED INTO CARRYING DID NOT. How open she is
+   * must follow what he said, not how many rows exist.
+   */
+  it('no longer varies the register by message count', () => {
+    const at = (priorMessageCount: number) =>
+      section(
+        buildCharacterSystemPrompt(
+          contextFor(LUNA, { persona: RICH_PERSONA, priorMessageCount }),
+        ),
+        'HOW SHE TALKS',
+      );
+    expect(at(40)).toBe(at(0));
+    expect(at(0)).not.toContain('only just started talking');
+    expect(at(40)).not.toContain('comfortable with him');
   });
 
   it('never states a sentence count, a word count or a maximum at any stage', () => {

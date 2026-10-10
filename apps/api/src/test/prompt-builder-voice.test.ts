@@ -239,8 +239,17 @@ describe('text chat is not disturbed by any of this', () => {
     expect(defaulted).toBe(explicit);
   });
 
-  it('still keeps its own stage wording, which the voice layer does not borrow', () => {
-    expect(textPrompt({ priorMessageCount: 0 })).toContain('leave it there');
+  /**
+   * The text channel's self-disclosure rule, which the voice layer does not
+   * borrow. It used to be a message-count stage rule ending "leave it there";
+   * Phase 1 replaced that with one always-on rule, keeping the guard it was
+   * built for and dropping the register it had drifted into carrying.
+   */
+  it('still keeps its own disclosure wording, which the voice layer does not borrow', () => {
+    const text = textPrompt({ priorMessageCount: 0 });
+    expect(text).toContain('Let her life come out a detail at a time');
+    expect(text).not.toContain('leave it there');
+    expect(voicePrompt()).not.toContain('Let her life come out a detail at a time');
   });
 });
 
@@ -375,5 +384,58 @@ describe('the proactive rules from the previous change survive', () => {
     expect(prompt).toContain('WHO SHE IS');
     expect(prompt).toContain('What you are here for:');
     expect(prompt).toContain('never break character');
+  });
+});
+
+/**
+ * PHASE 1 TOUCHED TEXT ONLY, AND THIS IS WHAT PROVES IT.
+ *
+ * Text chat lost its message-count register rule, lost the regex that routed
+ * scenes, and gained an adult-fiction line. None of those were meant to reach
+ * a call: `buildCharacterSystemPrompt` returns for voice before any of them is
+ * assembled. These cases pin that boundary, because the three changes all live
+ * in a function the voice path also calls.
+ */
+describe('the voice prompt is untouched by the Phase 1 text changes', () => {
+  const voice = (priorMessageCount = 0) =>
+    buildCharacterSystemPrompt(contextFor({ channel: 'voice', priorMessageCount }));
+
+  it('carries none of the new text-only conversation rules', () => {
+    for (const textOnly of [
+      'Ordinary conversation is what this is',
+      'Nothing is happening except the two of you talking',
+      'If he is writing a scene',
+      'step out with him',
+      'When he reaches for you physically',
+    ]) {
+      expect(voice()).not.toContain(textOnly);
+    }
+  });
+
+  /** Text-only in this phase, by decision. Adding it to a call is its own change. */
+  it('does not carry the adult-fiction line', () => {
+    expect(voice()).not.toContain('She is an adult and so is he');
+  });
+
+  /** The text self-disclosure rule replaced STAGE_RULE; voice keeps its own. */
+  it('does not carry the text self-disclosure rule', () => {
+    expect(voice()).not.toContain('Let her life come out a detail at a time');
+  });
+
+  /**
+   * A CALL STILL VARIES BY STAGE, which is the positive half of the proof:
+   * `conversationStage` was kept precisely because the voice layer reads it,
+   * and removing the text rule must not have flattened this one.
+   */
+  it('still varies its stage rule by message count', () => {
+    expect(voice(0)).toContain('You two are new to each other');
+    expect(voice(30)).toContain('You have known each other a while');
+    expect(voice(0)).not.toBe(voice(30));
+  });
+
+  it('still keeps identity, memories framing and the capability boundary', () => {
+    expect(voice()).toContain('WHO SHE IS');
+    expect(voice()).toContain('What you are here for:');
+    expect(voice()).toContain('never break character');
   });
 });
