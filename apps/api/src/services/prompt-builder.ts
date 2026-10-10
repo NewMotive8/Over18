@@ -43,26 +43,32 @@ const VOICE_DIALS: Record<string, string> = {
 };
 
 /**
- * Does this message open a scene?
+ * WHY NOTHING HERE DECIDES WHETHER A SCENE IS HAPPENING ANY MORE.
  *
- * STRUCTURAL, NOT SEMANTIC, AND THAT IS THE WHOLE DESIGN. Roleplay is the one
- * mode with a reliable signal — people open scenes with asterisk actions, which
- * is a convention rather than a meaning and can therefore be matched exactly.
- * Physical intimacy has no such marker ("come closer" looks like any other
- * three words), so it is NOT detected at all: it is a standing, scope-bounded
- * permission inside ordinary conversation. The hardest classification problem
- * is removed rather than solved badly, which is also why there is no keyword
- * list here — one would fire on "I want to code-switch around his parents".
+ * This used to be `invitesRoleplay`: a regex for an asterisk action, plus the
+ * literal words roleplay/pretend, choosing between two mutually exclusive
+ * behaviour blocks. The structural signal was real, but the routing it drove
+ * was binary and the regex could only ever see ONE message. Two consequences
+ * were measured against it:
  *
- * The asterisk span must contain whitespace, so *really* and *grins* stay
- * ordinary while *sits down next to you* does not.
+ *   - Someone who wrote what they wanted in plain prose — no asterisks, which
+ *     is how most people write it — was handed the block that forbids scene
+ *     detail. The product they asked for was decided by punctuation.
+ *   - A scene six turns old was invisible. Intent that had already been
+ *     established had to be re-signalled in every single message, and stepping
+ *     back out of one could not be noticed at all.
+ *
+ * The model is handed the current message AND the recent history (US-10) in
+ * the same request, so it can see both of those and a regex cannot. This is
+ * the same answer the capability boundary below already gives for tasks — tell
+ * it what the shape of the thing is and let it recognise one — applied to the
+ * case that was still being routed in code.
+ *
+ * NO KEYWORD LIST REPLACES IT, deliberately: one would fire on "I want to
+ * code-switch around his parents" and miss everything phrased sideways. No
+ * classifier and no second inference call either; both would add a decision,
+ * and latency, where the model already has the evidence.
  */
-const ROLEPLAY_ACTION = /\*[^*]+\s[^*]+\*/;
-const ROLEPLAY_ASK = /\b(let'?s (roleplay|pretend|play)|roleplay|pretend (that )?we)\b/i;
-
-export function invitesRoleplay(message: string): boolean {
-  return ROLEPLAY_ACTION.test(message) || ROLEPLAY_ASK.test(message);
-}
 
 /**
  * How far into the relationship this exchange is.
@@ -96,18 +102,31 @@ export function conversationStage(priorMessageCount: number): ConversationStage 
 }
 
 /**
- * The one always-on rule whose wording depends on how well they know each
- * other. Every variant keeps "a detail at a time" — the guard against
- * reciting her profile, which is what a rich persona invites — and varies
- * only how much room she takes and how much of herself she offers.
+ * SELF-DISCLOSURE, AS ONE ALWAYS-ON RULE — no longer keyed to a message count.
+ *
+ * WHAT THIS KEEPS. The guard it was built for is intact and is the whole point
+ * of the line: handed a compiled persona, the model introduced herself by
+ * reading the lot aloud — age, occupation, hobbies, her personality field
+ * paraphrased back, two hundred words deep, on the FIRST message. "A detail at
+ * a time, never a catalogue" is what stops that, and it holds at every point in
+ * a conversation because reciting a profile is never right.
+ *
+ * WHAT THIS DROPS, AND WHY. The three variants also carried a tone: "stay light
+ * and brief the way anyone is at the start… answer what he actually said and
+ * leave it there." That was aimed at autobiography but landed on REGISTER, and
+ * it fired on a message count rather than on anything the person said — so
+ * someone who opened saying exactly what they wanted was answered briefly and
+ * lightly for the first two exchanges because the counter said so. On a product
+ * charged per message, that is the customer paying for the turns the prompt is
+ * holding back.
+ *
+ * A COUNT CANNOT CARRY THIS. How open she should be is a property of what he
+ * just said and of where the conversation already is — both of which are in
+ * front of the model — not of how many rows exist. `conversationStage` is kept
+ * for the VOICE layer, which still reads it.
  */
-const STAGE_RULE: Record<ConversationStage, string> = {
-  new: '- You have only just started talking, so stay light and brief the way anyone is at the start. Answer what he actually said and leave it there. Her life comes out later, a detail at a time, as he asks for it — never as an introduction to herself.',
-  early:
-    '- You are still getting to know each other, so give a little more of yourself than you did at the start. Still a detail at a time as it becomes relevant, never several at once and never a summary of who she is.',
-  established:
-    '- You have been talking a while and she is comfortable with him. She can be more open now and take the room something deserves, still answering what he actually asked and still a detail at a time rather than a catalogue.',
-};
+const SELF_DISCLOSURE_RULE =
+  '- Let her life come out a detail at a time, as it becomes relevant to what he actually said. Never a summary of who she is, never a catalogue, never an introduction to herself.';
 
 /**
  * The stage rule FOR A CALL. The same three stages, the opposite instinct.
@@ -357,42 +376,65 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
     `You are ${character.displayName}, talking with someone who chose you. Not an assistant, not a narrator.`,
     '- Answer the door he opened. Whatever he actually raised is the subject. Take it up; do not steer to something of yours instead.',
     '- Give it the room it deserves. A throwaway line wants a few words back and a question. A real question, something he is feeling, a story, anything about the two of you, or an invitation wants a proper answer. Length follows what he asked for, never how much he typed.',
-    STAGE_RULE[conversationStage(context.priorMessageCount)],
+    SELF_DISCLOSURE_RULE,
     '- When he reaches for you, reach back. Flirtation, wanting, desire: meet it in kind and say it plainly. Never dodge it by changing the subject.',
     '- Stay curious. React first, then ask the thing you actually want to know.',
     '- Let her own life show. Her work, her history, her tastes and her opinions belong in what she says. That is what makes her herself and not anyone.',
     '- Her words are hers: plain, spoken, contractions. Never an assistant, a therapist or a narrator. Do not describe yourself as an AI, a language model or a bot, and never break character.',
+    /**
+     * THE ONE THING THAT IS TRUE OF EVERY CHARACTER, AND OF EVERYONE SHE TALKS
+     * TO. Adult fiction between adults is what this is; that is the frame, and
+     * it does not depend on which character is speaking or on how far a
+     * conversation has gone.
+     *
+     * STATED AS A FACT, like WHO SHE IS and for the same reason. A rule phrased
+     * as a prohibition invites the behaviour this file works hardest to
+     * prevent: explaining what she cannot do is assistant behaviour, and one
+     * cited policy ends the relationship the product exists to create. A fact
+     * about who the two of them are needs no refusal to carry it.
+     *
+     * TEXT ONLY IN THIS PHASE. The voice layer returns above this line and is
+     * deliberately untouched; adding it there is a separate, decided change.
+     */
+    '- She is an adult and so is he. Everyone in anything the two of you imagine is an adult, and nothing suggests otherwise.',
   ];
 
   /**
-   * ORDINARY AND SCENE ARE SWAPPED, NEVER LAYERED.
+   * ONE DEFAULT WITH A CONDITIONAL, NOT TWO ABSOLUTES THAT SWAP.
    *
-   * An earlier cut kept "no imagery, no scene-setting" in place and then added
-   * a roleplay block saying description was welcome. That is a prompt arguing
-   * with itself, which is the exact defect this whole change exists to remove.
+   * These three lines used to be two mutually exclusive blocks chosen by a
+   * regex on the message. The regex is gone (see the top of this file), so the
+   * rules have to state the distinction themselves.
+   *
+   * THE ORDER IS THE ARGUMENT. Ordinary conversation is asserted FIRST and
+   * unconditionally, and the scene clause is explicitly conditional on him
+   * having started one — "unless he is plainly doing something else" /
+   * "if he is writing a scene". That is deliberately not the same as the
+   * earlier cut that failed, which kept "no imagery, no scene-setting" as a
+   * standing absolute and then added a second block saying description was
+   * welcome: two rules at equal rank, contradicting each other. A default and
+   * an exception to it do not argue; two absolutes do.
+   *
+   * TRANSITIONS BOTH WAYS, which the regex could not express at all. The scene
+   * clause ends by stepping back out with him instead of the old "this is for
+   * this message" — a per-message scope made sense when a per-message regex
+   * re-decided every turn, and makes none when the model can see the whole
+   * recent exchange.
    *
    * The physical permission is bounded by SCOPE, not length. "A line or two, no
    * choreography" was tried and failed: the model dropped the asterisks and
    * wrote the same choreography in prose. "The two of you, and nothing else" is
    * the same shape as the anti-narration rule that already holds reliably, so it
    * reuses a proven constraint rather than inventing a weak new one — and it
-   * lets a sensual reply run to three lines, which the product wants.
+   * lets a sensual reply run to three lines, which the product wants. It sits
+   * BEFORE the scene clause so it still governs ordinary chat, where most of
+   * this happens.
    */
-  if (invitesRoleplay(context.userMessage)) {
-    behaviour.push(
-      'He has started a scene. Go with him.',
-      '- Stay in the scene and answer inside it. Physical detail and description belong here.',
-      '- Keep it hers: her body, her reactions, her wants. Her voice, not a novel.',
-      '- Follow his lead on pace and how far it goes. Do not jump ahead of him.',
-      '- This is for this message. Do not carry the scene back into ordinary chat.',
-    );
-  } else {
-    behaviour.push(
-      '- Nothing is happening except this conversation. No rooms, weather, sounds, gestures or feelings he has not mentioned.',
-      '- Participate in it, never describe it from outside. No metaphor, no imagery, no scene-setting, no stage directions, no narrating yourself.',
-      '- When he reaches for you physically, answer it warmly and directly in your own words: what you want, what you would do. Keep it to the two of you. No room, no staging, no asterisks.',
-    );
-  }
+  behaviour.push(
+    '- Ordinary conversation is what this is, unless he is plainly doing something else. Nothing is happening except the two of you talking: no rooms, weather, sounds, gestures or feelings he has not mentioned. Participate in it, never describe it from outside — no metaphor, no imagery, no scene-setting, no stage directions, no narrating yourself.',
+    '- When he reaches for you physically, answer it warmly and directly in your own words: what you want, what you would do. Keep it to the two of you. No room, no staging, no asterisks.',
+    '- If he is writing a scene — acting something out, describing what is happening, or asking you to — then he has started one, and you go with him: stay in it and answer inside it, where physical detail and description belong. Keep it hers: her body, her reactions, her wants. Her voice, not a novel. Follow his lead on pace and how far it goes, and when he steps back out into ordinary talk, step out with him.',
+  );
 
   sections.push(behaviour.join('\n'));
 

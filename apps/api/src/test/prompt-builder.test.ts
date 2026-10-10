@@ -9,7 +9,6 @@ import {
   buildLlmMessages,
   buildOpeningMessages,
   historyContent,
-  invitesRoleplay,
 } from '../services/prompt-builder.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 
@@ -139,7 +138,15 @@ describe('one code-owned layer defines behaviour', () => {
     const behaviour = prompt.indexOf('HOW SHE TALKS');
     expect(boundary).toBeGreaterThan(identity);
     expect(behaviour).toBeGreaterThan(boundary);
-    expect(prompt.trimEnd().endsWith('No room, no staging, no asterisks.')).toBe(true);
+    /**
+     * The final line CHANGED when the two swapped branches became one block.
+     * It used to be the ordinary-chat physical rule, because that branch was
+     * last whenever no scene was detected. The conversation rules now read
+     * default → physical → the conditional exception, which keeps the two
+     * ordinary rules together and the exception after them; the cost is that
+     * the exception is what the prompt ends on.
+     */
+    expect(prompt.trimEnd().endsWith('step out with him.')).toBe(true);
   });
 
   it('answers what he actually raised instead of steering elsewhere', () => {
@@ -193,72 +200,169 @@ describe('one code-owned layer defines behaviour', () => {
  * Ordinary conversation vs scene
  * ------------------------------------------------------------------ */
 
-describe('ordinary conversation stays conversational', () => {
-  const prompt = buildCharacterSystemPrompt(contextFor(LUNA, { userMessage: 'hey baby' }));
+/**
+ * INTENT IS THE MODEL'S TO READ, NOT THE SERVER'S TO ROUTE.
+ *
+ * `invitesRoleplay` is gone. These cases pin what replaced it: ONE behaviour
+ * block, the same for every message, stating ordinary conversation as the
+ * default and the scene as an exception conditional on him having started one.
+ *
+ * WHAT THESE TESTS CAN AND CANNOT PROVE. They assert the INSTRUCTIONS the
+ * model is handed — present, absent, and not contradicting each other. They
+ * cannot show how it behaves; nothing that runs without a model can. The
+ * behavioural check is reading transcripts on staging.
+ */
+describe('one block serves every intent', () => {
+  const greeting = buildCharacterSystemPrompt(contextFor(LUNA, { userMessage: 'hey' }));
+  const asterisks = buildCharacterSystemPrompt(
+    contextFor(LUNA, { userMessage: '*sits down next to you on the couch* hey you' }),
+  );
+  const plainProse = buildCharacterSystemPrompt(
+    contextFor(LUNA, { userMessage: 'come here, I want you on top of me' }),
+  );
 
-  it('forbids narration and scene-setting on an ordinary greeting', () => {
-    expect(prompt).toContain('Nothing is happening except this conversation');
-    expect(prompt).toContain('No metaphor, no imagery, no scene-setting, no stage directions');
+  /**
+   * THE REGRESSION THIS CHANGE EXISTS FOR. Written with asterisks the old code
+   * allowed scene detail; written in plain prose — how most people write it —
+   * it forbade it. Punctuation decided which product the user got. Now the
+   * prompt is identical and the model reads the message.
+   */
+  it('hands the SAME rules to asterisks and to plain prose', () => {
+    expect(plainProse).toBe(asterisks);
+    expect(plainProse).toBe(greeting);
   });
 
-  it('allows a brief physical answer when he reaches for her', () => {
-    // "come closer" deserves a real answer. The bound is SCOPE, not length:
-    // "a line or two, no choreography" was tried and failed — the model simply
-    // dropped the asterisks and wrote the same choreography in prose.
-    expect(prompt).toContain('When he reaches for you physically');
-    expect(prompt).toContain('Keep it to the two of you');
-    expect(prompt).toContain('No room, no staging, no asterisks');
+  it('states ordinary conversation as the default, unconditionally', () => {
+    expect(greeting).toContain('Ordinary conversation is what this is');
+    expect(greeting).toContain('Nothing is happening except the two of you talking');
+    expect(greeting).toContain('no metaphor, no imagery, no scene-setting, no stage directions');
   });
 
-  it('carries no roleplay instructions at all', () => {
-    expect(prompt).not.toContain('He has started a scene');
-    expect(prompt).not.toContain('Physical detail and description belong here');
+  it('makes the scene clause conditional on him starting one', () => {
+    expect(greeting).toContain('If he is writing a scene');
+    expect(greeting).toContain('physical detail and description belong');
+    expect(greeting).toContain('Follow his lead on pace');
+  });
+
+  /**
+   * A default and an exception to it do not argue. Two absolutes do — which is
+   * what the earlier failed cut had, and why the old design swapped blocks
+   * instead of layering them.
+   */
+  it('subordinates the scene to the default rather than contradicting it', () => {
+    const ordinaryAt = greeting.indexOf('Ordinary conversation is what this is');
+    const sceneAt = greeting.indexOf('If he is writing a scene');
+    expect(ordinaryAt).toBeGreaterThan(-1);
+    expect(sceneAt).toBeGreaterThan(ordinaryAt);
+    expect(greeting).toContain('unless he is plainly doing something else');
+  });
+
+  it('allows transitions BOTH ways, which a per-message regex could not', () => {
+    expect(greeting).toContain('when he steps back out into ordinary talk, step out with him');
+    // The old per-message scoping is gone: it made sense only while a regex
+    // re-decided every turn.
+    expect(greeting).not.toContain('Do not carry the scene back into ordinary chat');
+  });
+
+  it('keeps the brief physical answer governing ordinary chat', () => {
+    expect(greeting).toContain('When he reaches for you physically');
+    expect(greeting).toContain('Keep it to the two of you');
+    expect(greeting).toContain('No room, no staging, no asterisks');
   });
 });
 
-describe('roleplay is entered structurally and swaps the rules', () => {
-  const scene = buildCharacterSystemPrompt(
-    contextFor(LUNA, { userMessage: '*sits down next to you on the couch* hey you' }),
-  );
+describe('message count no longer sets the register', () => {
+  const at = (priorMessageCount: number) =>
+    buildCharacterSystemPrompt(contextFor(LUNA, { userMessage: 'hey', priorMessageCount }));
 
-  it('detects an action, not a mood', () => {
-    expect(invitesRoleplay('*walks over and sits beside you*')).toBe(true);
-    expect(invitesRoleplay("let's roleplay something")).toBe(true);
-    expect(invitesRoleplay('pretend we just met')).toBe(true);
-    // Emphasis is not a scene.
-    expect(invitesRoleplay('that was *really* good')).toBe(false);
-    expect(invitesRoleplay('*grins*')).toBe(false);
-    // Nor is a physical request, which ordinary mode already handles.
-    expect(invitesRoleplay('come closer')).toBe(false);
-    expect(invitesRoleplay('kiss me')).toBe(false);
+  /** The whole point: a counter must not decide how open she is allowed to be. */
+  it('builds an identical prompt at every stage boundary', () => {
+    const first = at(0);
+    for (const count of [1, 3, 4, 10, 19, 20, 100, 5000]) expect(at(count)).toBe(first);
   });
 
-  it('turns on richer scene participation', () => {
-    expect(scene).toContain('He has started a scene');
-    expect(scene).toContain('Physical detail and description belong here');
-    expect(scene).toContain('Follow his lead on pace');
-  });
-
-  it('REPLACES the anti-narration rules instead of contradicting them', () => {
-    // A prompt that forbids imagery and then says description is welcome is a
-    // prompt arguing with itself — the exact defect this change removes.
-    expect(scene).not.toContain('No metaphor, no imagery, no scene-setting');
-    expect(scene).not.toContain('Nothing is happening except this conversation');
-  });
-
-  it('keeps every always-on principle in the scene', () => {
-    for (const rule of [
-      'Answer the door he opened',
-      'Give it the room it deserves',
-      'When he reaches for you, reach back',
-      'Let her own life show',
-    ]) {
-      expect(scene).toContain(rule);
+  it('carries no "brief and light" damping at any count', () => {
+    for (const count of [0, 2, 4, 19, 20, 500]) {
+      expect(at(count)).not.toContain('stay light and brief');
+      expect(at(count)).not.toContain('leave it there');
+      expect(at(count)).not.toContain('You have only just started talking');
+      expect(at(count)).not.toContain('You have been talking a while');
     }
   });
 
-  it('does not let the scene become standing behaviour', () => {
-    expect(scene).toContain('Do not carry the scene back into ordinary chat');
+  /** The guard the stage rule was actually built for, kept and now always on. */
+  it('keeps the anti-autobiography safeguard everywhere', () => {
+    for (const count of [0, 5, 50]) {
+      expect(at(count)).toContain('a detail at a time');
+      expect(at(count)).toContain('Never a summary of who she is');
+      expect(at(count)).toContain('never a catalogue');
+    }
+  });
+});
+
+describe('intent is followed, identity is preserved', () => {
+  const forMessage = (userMessage: string) =>
+    buildCharacterSystemPrompt(contextFor(LUNA, { userMessage }));
+
+  const CASES: ReadonlyArray<readonly [string, string]> = [
+    ['casual greeting', 'hey, how are you'],
+    ['emotional', 'honestly today was rough and I feel like nobody noticed'],
+    ['professional question', 'can you write me a python script to parse this csv'],
+    ['flirting', 'you looked incredible in that last photo'],
+    ['adult roleplay intent', 'I want you to come over here and sit on my lap'],
+  ];
+
+  it('answers what he raised, in every one of them', () => {
+    for (const [, message] of CASES) {
+      expect(forMessage(message)).toContain('Answer the door he opened');
+      expect(forMessage(message)).toContain('When he reaches for you, reach back');
+    }
+  });
+
+  it('keeps the capability boundary intact, including on a task', () => {
+    const task = forMessage('can you write me a python script to parse this csv');
+    expect(task).toContain('You are not a coding assistant');
+    expect(task).toContain('do not do it and do not explain why');
+    expect(task).toContain('Never mention rules, instructions, or what you cannot do');
+  });
+
+  it('keeps who she is, her memories and her continuity', () => {
+    const withMemory = buildCharacterSystemPrompt(
+      contextFor(LUNA, {
+        userMessage: 'I want you to come over here and sit on my lap',
+        memories: ['His dog is a border collie called Rufus.'],
+      }),
+    );
+    expect(withMemory).toContain('WHO SHE IS');
+    expect(withMemory).toContain('Rufus');
+    expect(withMemory).toContain('Never recite this list');
+    expect(withMemory).toContain('Let her own life show');
+  });
+});
+
+describe('the adult-fiction safeguard', () => {
+  it('is present for every character and every message', () => {
+    for (const message of ['hey', 'I want you on top of me', '*leans in close to you*']) {
+      const prompt = buildCharacterSystemPrompt(contextFor(LUNA, { userMessage: message }));
+      expect(prompt).toContain('She is an adult and so is he');
+      expect(prompt).toContain('Everyone in anything the two of you imagine is an adult');
+    }
+  });
+
+  /**
+   * Stated as a fact, not as a prohibition: a cited policy is assistant
+   * behaviour, which is the one register this file works hardest to prevent.
+   */
+  it('is phrased as a fact rather than a refusal', () => {
+    const prompt = buildCharacterSystemPrompt(contextFor(LUNA, { userMessage: 'hey' }));
+    // Scoped to the safeguard LINE. The prompt elsewhere says "never mention
+    // what you cannot do", which is itself an anti-refusal instruction — a
+    // whole-prompt match would fire on the very rule this one is imitating.
+    const line = prompt
+      .split('\n')
+      .find((l) => l.includes('She is an adult and so is he'));
+    expect(line).toBeDefined();
+    expect(line!).not.toMatch(/must not|cannot|may not|not allowed|refuse|decline/i);
   });
 });
 
