@@ -82,26 +82,22 @@ describe('a character WITH an eligible header video', () => {
   });
 
   /**
-   * HER HEAD WAS BEING CUT OFF.
+   * HER CLIP FILLS THE FRAME, AND KEEPS HER HEAD.
    *
-   * Every production clip is portrait -- 9:16, 640x1152, 544x960, 768x1168 --
-   * and this frame is 4/5 = 0.8, wider than all of them. `object-cover` filled
-   * the width and discarded about 30% of a 9:16 clip's height, and the default
-   * `center` anchor split that evenly, so roughly 15% came off the top.
-   *
-   * `contain` fits the whole clip instead. The frame does NOT change, so the
-   * cost is a dark bar down each side -- which is why the slide needs a
-   * background of its own, and why that is asserted here rather than left to
-   * whatever sits behind the carousel.
+   * Every production clip is portrait (9:16 and near it) and this frame is
+   * 4/5, so filling it crops the clip's height. `contain` avoided the crop but
+   * left a dark bar down each side, which read as a clip that did not fit.
+   * The clip now covers the frame -- as Home's hero does -- and the crop is
+   * anchored near the TOP, so it comes off the bottom rather than her head.
    */
-  it('shows a VIDEO whole instead of cropping it', () => {
+  it('fills the frame with a VIDEO, anchored near the top so her head is kept', () => {
     const html = markup();
     expect(html).toContain('<video');
-    expect(html).toContain('object-contain');
-    expect(html, 'the cropping fit must be gone for video').not.toContain('object-cover');
+    expect(html).toContain('object-cover object-[center_12%]');
+    expect(html, 'no letterboxing bars').not.toContain('object-contain');
   });
 
-  it('gives the slide its own dark background for the letterboxing', () => {
+  it('keeps the same 4/5 frame', () => {
     const html = markup();
     expect(html).toContain('aspect-[4/5] w-full shrink-0 snap-center bg-zinc-900');
   });
@@ -129,9 +125,8 @@ describe('a character with NO eligible header video', () => {
   });
 
   /**
-   * THE FRAMING CHANGE IS VIDEO-ONLY. An image still fills the 4/5 frame, so
-   * the header is unchanged for a character who has no video -- and the dark
-   * background is simply never seen behind a covered image.
+   * An image fills the 4/5 frame too, centred as it always was: the top anchor
+   * is for video only.
    */
   it('keeps her still IMAGE covering the frame, exactly as before', () => {
     const items = characterHeaderItems(character({ profileImage: 'https://img/aria.png' }), [], null);
@@ -139,6 +134,7 @@ describe('a character with NO eligible header video', () => {
     expect(html).toContain('<img');
     expect(html).toContain('object-cover');
     expect(html, 'an image must not be letterboxed').not.toContain('object-contain');
+    expect(html, 'an image keeps its centre anchor').not.toContain('object-[center_12%]');
     // The frame itself is the same one a video gets.
     expect(html).toContain('aspect-[4/5]');
   });
