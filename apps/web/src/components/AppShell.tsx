@@ -217,8 +217,27 @@ export default function AppShell() {
    */
   const pageShowsCredits = pathname.startsWith('/chat/');
 
+  /**
+   * THE CHAT IS A FIXED SCREEN; EVERY OTHER ROUTE IS A PAGE.
+   *
+   * Elsewhere the shell is `min-h-dvh` and the DOCUMENT scrolls. For a
+   * conversation that was wrong twice over: keeping the newest message in view
+   * meant scrolling the whole document to its end -- past the chat, to the site
+   * footer -- so the chat opened with her header scrolled off the top and the
+   * visitor part-way down a page.
+   *
+   * On the chat route the shell is exactly the viewport (`h-dvh`, which is the
+   * viewport the on-screen keyboard leaves) and does not scroll. `<main>` gives
+   * the chat all the room between the header and the navigation, and the
+   * message list inside it is the only thing that scrolls: her header stays at
+   * the top, the composer at the bottom. The footer is left out there -- a
+   * screen that does not scroll has no end to put it at; it is one tap away on
+   * every other screen.
+   */
+  const isChat = pathname.startsWith('/chat/');
+
   return (
-    <div className="flex min-h-dvh w-full flex-col bg-zinc-950 text-zinc-100">
+    <div className={`flex w-full flex-col bg-zinc-950 text-zinc-100 ${isChat ? 'h-dvh overflow-hidden' : 'min-h-dvh'}`}>
       {/* Desktop only: the header with the primary navigation, which replaces
           the phone's bottom tab bar from `lg` up. Home adds its own actions. */}
       <DesktopHeader
@@ -248,12 +267,18 @@ export default function AppShell() {
         <StagingBanner />
       </div>
 
-      <main className={`mx-auto flex w-full flex-1 flex-col overflow-y-auto ${frame} ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`}>
+      <main
+        className={
+          isChat
+            ? `mx-auto flex min-h-0 w-full flex-1 flex-col overflow-hidden ${frame} px-4 pb-3 pt-4`
+            : `mx-auto flex w-full flex-1 flex-col overflow-y-auto ${frame} ${isImmersive ? '' : 'px-4 pb-8 pt-6'}`
+        }
+      >
         <Outlet />
         {/* Inside the scroll region and after the outlet, so it sits at the end
             of the content rather than competing with the sticky primary nav
             below it. */}
-        <SiteFooter />
+        {!isChat && <SiteFooter />}
       </main>
 
       {/* The phone's primary navigation. The Credits Store is a checkout: on a

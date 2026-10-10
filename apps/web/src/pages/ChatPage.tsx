@@ -415,17 +415,21 @@ export default function ChatPage() {
   const avatar = absoluteMediaUrl(character.profileImage);
 
   /*
-   * `dvh`, NOT `vh`, ON THE SECTION BELOW — AND THAT IS THE KEYBOARD.
+   * THE SECTION FILLS THE ROOM THE SHELL GIVES IT, AND NO MORE.
    *
-   * `vh` is a percentage of the LARGE viewport: it does not change when the
-   * on-screen keyboard opens. `index.html` sets
-   * `interactive-widget=resizes-content` precisely so the keyboard resizes the
-   * layout viewport, and `AppShell` is already `min-h-dvh` — so with `vh` here
-   * this section alone insisted on 60% of the UNSHRUNK screen while everything
-   * around it had shrunk, pushing its own composer down behind the keyboard.
+   * On the chat route `AppShell` is exactly the dynamic viewport (`h-dvh`) --
+   * the viewport the on-screen keyboard leaves, because `index.html` sets
+   * `interactive-widget=resizes-content`. This section is `flex-1 min-h-0`
+   * inside it, so it is as tall as the space between the app header and the
+   * navigation and shrinks with the keyboard: her header stays at the top, the
+   * composer stays above the keyboard, and only the message list scrolls.
+   *
+   * It used to carry a minimum height of its own while the DOCUMENT scrolled,
+   * and keeping the newest message in view meant scrolling the whole page to
+   * its end -- so the chat opened part-way down, with her header off the top.
    */
   return (
-    <section className="flex h-full min-h-[60dvh] flex-col">
+    <section className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center justify-between gap-3 border-b border-zinc-800 pb-3">
         <Link
           to={`/characters/${character.id}`}
@@ -457,12 +461,13 @@ export default function ChatPage() {
         onClose={call.close}
       />
 
-      {/* No onScroll here on purpose. This element does not scroll (measured:
-          scrollHeight === clientHeight), so its scroll handler never fired and
-          the metrics it would report always read as "at the bottom". The
-          listener now lives on the element that really scrolls — see
-          chatViewport.createViewportAnchor. */}
-      <div ref={listRef} className="flex-1 overflow-y-auto py-4">
+      {/* THE ONLY THING ON THIS SCREEN THAT SCROLLS. The shell is exactly the
+          viewport on the chat route (see AppShell), so this list is bounded:
+          `min-h-0` lets it shrink inside the flex column and `overflow-y-auto`
+          then scrolls it, with her header above and the composer below staying
+          put. The scroll listener is attached by chatViewport, which resolves
+          whichever element really scrolls -- this one, once it overflows. */}
+      <div ref={listRef} data-testid="chat-messages" className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-4">
         {messages.length === 0 && pending === null && greeting === 'idle' ? (
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <p className="text-sm text-zinc-400">
