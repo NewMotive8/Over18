@@ -259,7 +259,13 @@ export default function CharacterDetailPage() {
    * while her videos sat two tabs away. One function decides the whole deck;
    * see `characterHeaderItems` for the precedence and the fallback.
    */
-  const heroItems: CharacterMediaItem[] = characterHeaderItems(character, clips, visualData);
+  /**
+   * ONE CLIP IN THE HERO. The deck is still built the same way; the header
+   * shows the clip it leads with and no more -- no dots, no arrows, nothing to
+   * page through. The rest of her clips are in the Posts tab, where they are
+   * laid out to be browsed.
+   */
+  const heroItems: CharacterMediaItem[] = characterHeaderItems(character, clips, visualData).slice(0, 1);
   /**
    * The viewer items for the Posts tab — her posts, in the order shown.
    *

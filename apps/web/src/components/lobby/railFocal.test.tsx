@@ -111,15 +111,13 @@ describe('the focal option is opt-in and changes nothing by default', () => {
    * proves the `focal` default is genuinely inert for them rather than assuming
    * it -- neither emits an `object-position` class.
    *
-   * THE PROFILE HERO'S *FIT* HAS SINCE MOVED, AND THAT IS NOT THIS. A later
-   * change made the header show a VIDEO whole (`object-contain`) because the 4/5
-   * frame was cropping about 15% off the top of every portrait clip and cutting
-   * heads off. That is a fit decision; `focal` only chooses where a CROP is
-   * anchored, and a contained video has no crop to anchor. So the hero still
-   * passes no `focal`, which is what this test is about, and its fit is asserted
-   * in ProfileHero.test.tsx where it belongs.
+   * THE PROFILE HERO NOW OPTS IN. It used to show a video whole
+   * (`object-contain`), which needs no anchor because nothing is cropped. It
+   * now fills its 4/5 frame the way Home's hero does, which crops a portrait
+   * clip's height -- so it takes the same top anchor Home uses, to keep the crop
+   * off her head. The swipe card is unchanged and still passes none.
    */
-  it('the swipe card and the profile hero opt into no focal anchor', () => {
+  it('the swipe card opts into no focal anchor; the profile hero takes the top one', () => {
     const swipe = router(<SwipeCard character={card('s')} />);
     const item: CharacterMediaItem = {
       id: 'h1',
@@ -129,9 +127,8 @@ describe('the focal option is opt-in and changes nothing by default', () => {
     const hero = router(
       <ProfileHero items={[item]} name="Amber" age={28} onBack={() => {}} onOpen={() => {}} />,
     );
-    for (const html of [swipe, hero]) {
-      expect(html).not.toContain('object-[');
-    }
+    expect(swipe).not.toContain('object-[');
+    expect(hero).toContain('object-cover object-[center_12%]');
     // The swipe card's fit is unchanged by any of this.
     expect(swipe).toContain('object-cover');
   });
