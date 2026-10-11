@@ -416,7 +416,12 @@ export function loadEnv(): Env {
       model: visionModel,
       apiKey: process.env.PERSONA_VISION_API_KEY || llm?.apiKey,
       timeoutMs: Number(process.env.PERSONA_VISION_TIMEOUT_MS ?? llm?.timeoutMs ?? 45_000),
-      maxTokens: Number(process.env.PERSONA_VISION_MAX_TOKENS ?? 700),
+      // 2000, not the 700 this shipped with: a complete persona measured 627
+      // completion tokens against the real endpoint, and three more output
+      // fields were added to the request after that ceiling was chosen. See
+      // DEFAULT_PERSONA_MAX_TOKENS in character-persona-generator.ts, which
+      // states the same number for callers that build the generator directly.
+      maxTokens: Number(process.env.PERSONA_VISION_MAX_TOKENS ?? 2_000),
       temperature: Number(process.env.PERSONA_VISION_TEMPERATURE ?? 0.4),
     };
   }

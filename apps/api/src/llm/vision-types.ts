@@ -38,10 +38,30 @@ export interface LlmVisionRequest {
   temperature: number;
 }
 
+/**
+ * One reply, plus WHY the model stopped producing it.
+ *
+ * `finishReason` is carried because a reply that ran out of room is not the
+ * same failure as a reply that said something unusable, and only the adapter
+ * can tell them apart -- the distinction exists on the wire and nowhere else.
+ * It stays a raw protocol value rather than an interpreted one: deciding
+ * whether a truncated reply is still usable needs to know what the reply was
+ * FOR, which this layer deliberately does not.
+ */
+export interface LlmVisionReply {
+  /** The assistant's reply text, already trimmed and known non-empty. */
+  text: string;
+  /**
+   * The provider's own stop reason -- 'stop', 'length', and whatever else a
+   * given endpoint reports. Null when it reported none; never inferred.
+   */
+  finishReason: string | null;
+}
+
 /** The single contract a vision-capable inference adapter implements. */
 export interface LlmVisionClient {
-  /** Returns the assistant's reply text, or throws LlmError. */
-  generate(request: LlmVisionRequest): Promise<string>;
+  /** Returns the assistant's reply, or throws LlmError. */
+  generate(request: LlmVisionRequest): Promise<LlmVisionReply>;
 }
 
 // Failures reuse LlmError/LlmErrorKind from llm/types.js directly — import
