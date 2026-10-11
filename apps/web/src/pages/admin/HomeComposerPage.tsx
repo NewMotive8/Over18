@@ -23,6 +23,7 @@ import {
 import { canMove, interceptedPath, moveBy, sameOrder } from '../../admin/categoryBoard';
 import ConfirmDialog from '../../admin/ConfirmDialog';
 import PublishingTabs from '../../admin/PublishingTabs';
+import LazyPreviewVideo from '../../admin/LazyPreviewVideo';
 import { TILE_MEDIA_CLASS, TILE_VIDEO_PLAYBACK, tileFrameClass } from '../../lib/mediaTile';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -60,6 +61,8 @@ export default function HomeComposerPage() {
   const [notice, setNotice] = useState<Notice>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [pendingNav, setPendingNav] = useState<string | null>(null);
+  /** The one candidate currently being added or removed, so only it shows progress. */
+  const [pendingAsset, setPendingAsset] = useState<string | null>(null);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -200,6 +203,27 @@ export default function HomeComposerPage() {
     setHeroBorrowed(overview.heroFallback);
   }
 
+  /**
+   * Re-flags the picker from the Hero the server just returned.
+   *
+   * WHY NOT REFETCH. Adding or removing a Hero clip changes nothing about
+   * which clips are APPROVED, so the candidate list is the same list it was a
+   * moment ago -- only the `inHero` flags move, and the response already says
+   * exactly which ones. Asking the server again meant re-sending all 230 rows
+   * to learn one boolean, on every single click.
+   *
+   * Rows whose flag did not change keep their identity, so React re-renders
+   * only the tiles that actually differ.
+   */
+  function markInHero(clips: HeroClipAdminView[]) {
+    const ids = new Set(clips.map((c) => c.assetId));
+    setCandidates((current) =>
+      current
+        ? current.map((c) => (c.inHero === ids.has(c.assetId) ? c : { ...c, inHero: ids.has(c.assetId) }))
+        : current,
+    );
+  }
+
   async function loadCandidates() {
     await run(async () => {
       const res = await adminHomeApi.heroCandidates();
@@ -208,31 +232,37 @@ export default function HomeComposerPage() {
   }
 
   async function addHero(assetId: string) {
-    await run(
-      async () => {
-        const res = await adminHomeApi.addHero([assetId]);
-        await syncHero(res.clips);
-        const refreshed = await adminHomeApi.heroCandidates();
-        setCandidates(refreshed.candidates);
-      },
-      "Couldn't add that clip.",
-      'Added to the Hero.',
-    );
+    setPendingAsset(assetId);
+    try {
+      await run(
+        async () => {
+          const res = await adminHomeApi.addHero([assetId]);
+          await syncHero(res.clips);
+          markInHero(res.clips);
+        },
+        "Couldn't add that clip.",
+        'Added to the Hero.',
+      );
+    } finally {
+      setPendingAsset(null);
+    }
   }
 
   async function removeHero(clip: HeroClipAdminView) {
-    await run(
-      async () => {
-        const res = await adminHomeApi.removeHero(clip.assetId);
-        await syncHero(res.clips);
-        if (candidates) {
-          const refreshed = await adminHomeApi.heroCandidates();
-          setCandidates(refreshed.candidates);
-        }
-      },
-      "Couldn't remove that clip.",
-      'Removed from the Hero. The content itself is untouched.',
-    );
+    setPendingAsset(clip.assetId);
+    try {
+      await run(
+        async () => {
+          const res = await adminHomeApi.removeHero(clip.assetId);
+          await syncHero(res.clips);
+          markInHero(res.clips);
+        },
+        "Couldn't remove that clip.",
+        'Removed from the Hero. The content itself is untouched.',
+      );
+    } finally {
+      setPendingAsset(null);
+    }
   }
 
   async function moveHero(assetId: string, delta: number) {
@@ -457,15 +487,30 @@ export default function HomeComposerPage() {
                       type="button"
                       onClick={() => void addHero(candidate.assetId)}
                       disabled={busy || candidate.inHero}
-                      className="group text-left disabled:opacity-40"
+                      /* THE DIMMING FOLLOWS THE CLIP, NOT THE REQUEST. This
+                         was `disabled:opacity-40`, and `disabled` is also true
+                         for every tile while ANY action is in flight -- so one
+                         click dimmed all 230 tiles to 40% and undimmed them a
+                         moment later. That full-grid flash is what read as the
+                         page flickering. Only "already in the Hero" is a state
+                         of the clip, so only that dims; the one being added
+                         shows its own progress. */
+                      className={`group text-left ${
+                        candidate.inHero
+                          ? 'opacity-40'
+                          : pendingAsset === candidate.assetId
+                            ? 'animate-pulse'
+                            : ''
+                      }`}
                     >
                       <div className={tileFrameClass(true)}>
                         {candidate.previewUrl ? (
                           candidate.mediaType === 'video' ? (
-                            <video
+                            /* Not autoplaying: this grid is the WHOLE approved
+                               library -- 230 clips on Staging, every one a
+                               video. See LazyPreviewVideo. */
+                            <LazyPreviewVideo
                               src={`${API_URL}${candidate.previewUrl}`}
-                              {...TILE_VIDEO_PLAYBACK}
-                              preload="metadata"
                               className={TILE_MEDIA_CLASS}
                             />
                           ) : (
