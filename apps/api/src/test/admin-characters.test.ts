@@ -548,6 +548,137 @@ describe('primary references', () => {
     return { characterId, identityId: identity.id as string };
   }
 
+  /**
+   * THE DEAD END. A character saved WITHOUT a photo gets no identity version
+   * on purpose, and the only reference route was scoped to an identity id --
+   * so there was nothing to post to, and her main image could never be
+   * supplied at all. The admin page could only tell the operator to activate
+   * a version that did not exist.
+   *
+   * These pin the way out: the upload is addressed to the CHARACTER, and the
+   * version she lacks is provisioned by the upload itself.
+   */
+  describe('a character who has no visual identity version yet', () => {
+    it('accepts her main image and provisions her first version with it', async () => {
+      const cookies = await adminCookies();
+      const characterId = (await createCharacter(cookies)).json().id;
+
+      // She genuinely has none -- that is the whole premise.
+      const before = (
+        await ctx.app.inject({ method: 'GET', url: `/admin/characters/${characterId}`, cookies })
+      ).json();
+      expect(before.identities).toHaveLength(0);
+      expect(before.activeIdentity).toBeNull();
+
+      const { payload, headers } = multipart(PNG);
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/admin/characters/${characterId}/references`,
+        headers,
+        payload,
+        cookies,
+      });
+
+      expect(res.statusCode).toBe(201);
+      const ref = res.json();
+      expect(ref.kind).toBe('reference');
+      expect(ref.isPrimary).toBe(true);
+      expect(ref.status).toBe('approved');
+      expect(ref.characterId).toBe(characterId);
+      expect(ref.visualIdentityId).toBeTruthy();
+
+      // v1 now exists, is ACTIVE, and owns the image.
+      const after = (
+        await ctx.app.inject({ method: 'GET', url: `/admin/characters/${characterId}`, cookies })
+      ).json();
+      expect(after.identities).toHaveLength(1);
+      expect(after.activeIdentity).not.toBeNull();
+      expect(after.activeIdentity.version).toBe(1);
+      expect(after.activeIdentity.id).toBe(ref.visualIdentityId);
+      expect(after.primaryReferences).toHaveLength(1);
+      expect(after.primaryReferences[0].assetId).toBe(ref.assetId);
+
+      // Still no storage internals on the way out.
+      expect(res.payload).not.toContain('storagePath');
+      expect(res.payload).not.toContain('provenance');
+    });
+
+    /**
+     * ONE version, not one per upload: the second image must join the version
+     * the first one created rather than quietly starting a v2 and orphaning
+     * the portrait that was already there.
+     */
+    it('puts a second image on the same version rather than making another', async () => {
+      const cookies = await adminCookies();
+      const characterId = (await createCharacter(cookies)).json().id;
+
+      const upload = async () => {
+        const { payload, headers } = multipart(PNG);
+        return ctx.app.inject({
+          method: 'POST',
+          url: `/admin/characters/${characterId}/references`,
+          headers,
+          payload,
+          cookies,
+        });
+      };
+      const first = (await upload()).json();
+      const second = (await upload()).json();
+
+      expect(second.visualIdentityId).toBe(first.visualIdentityId);
+      const detail = (
+        await ctx.app.inject({ method: 'GET', url: `/admin/characters/${characterId}`, cookies })
+      ).json();
+      expect(detail.identities).toHaveLength(1);
+      expect(detail.primaryReferences).toHaveLength(2);
+    });
+
+    /** With a version already active, it is used -- never a fresh one. */
+    it('uses her ACTIVE version when she already has one', async () => {
+      const cookies = await adminCookies();
+      const { characterId, identityId } = await characterWithActiveIdentity(cookies);
+      const { payload, headers } = multipart(PNG);
+
+      const ref = (
+        await ctx.app.inject({
+          method: 'POST',
+          url: `/admin/characters/${characterId}/references`,
+          headers,
+          payload,
+          cookies,
+        })
+      ).json();
+
+      expect(ref.visualIdentityId).toBe(identityId);
+      const detail = (
+        await ctx.app.inject({ method: 'GET', url: `/admin/characters/${characterId}`, cookies })
+      ).json();
+      expect(detail.identities).toHaveLength(1);
+    });
+
+    it('404s for a character that does not exist, and rejects a non-multipart body', async () => {
+      const cookies = await adminCookies();
+      const missing = await ctx.app.inject({
+        method: 'POST',
+        url: '/admin/characters/00000000-0000-4000-8000-000000000001/references',
+        headers: (() => multipart(PNG).headers)(),
+        payload: multipart(PNG).payload,
+        cookies,
+      });
+      expect(missing.statusCode).toBe(404);
+
+      const characterId = (await createCharacter(cookies)).json().id;
+      const notMultipart = await ctx.app.inject({
+        method: 'POST',
+        url: `/admin/characters/${characterId}/references`,
+        headers: { 'content-type': 'application/json' },
+        payload: JSON.stringify({ file: 'nope' }),
+        cookies,
+      });
+      expect(notMultipart.statusCode).toBe(400);
+    });
+  });
+
   it('uploads a reference and links it to the identity version as primary', async () => {
     const cookies = await adminCookies();
     const { characterId, identityId } = await characterWithActiveIdentity(cookies);
@@ -1016,6 +1147,7 @@ describe('authorization boundaries', () => {
       ['GET', '/admin/characters/00000000-0000-4000-8000-000000000001/identities'],
       ['POST', '/admin/characters/00000000-0000-4000-8000-000000000001/identities'],
       ['POST', '/admin/identities/00000000-0000-4000-8000-000000000001/activate'],
+      ['POST', '/admin/characters/00000000-0000-4000-8000-000000000001/references'],
       ['GET', '/admin/identities/00000000-0000-4000-8000-000000000001/references'],
       ['POST', '/admin/references/00000000-0000-4000-8000-000000000001/primary'],
       ['DELETE', '/admin/references/00000000-0000-4000-8000-000000000001/primary'],

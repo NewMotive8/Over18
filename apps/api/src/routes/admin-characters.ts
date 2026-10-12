@@ -918,6 +918,76 @@ export default async function adminCharacterRoutes(
     },
   );
 
+  /**
+   * Uploads a primary reference for a CHARACTER, whether or not she already
+   * has a visual identity version.
+   *
+   * THE DEAD END THIS REMOVES. A character created without a photo gets no
+   * identity version on purpose -- quick-create says so, and leaves it to her
+   * first upload to provision one. But the sibling route above is scoped to an
+   * identity id, so there was no id to post to and no way to supply her main
+   * image at all: the page could only tell the operator to "activate a visual
+   * identity version first", with none to activate. Creating one by hand was
+   * three steps in a different section, and a draft version is not active, so
+   * even that did not restore the button until it was activated too.
+   *
+   * NOTHING NEW DECIDES ANYTHING HERE. Omitting `visualIdentityId` is already
+   * defined behaviour: uploadLibraryAsset resolves her ACTIVE version, or
+   * provisions v1 and activates it, which is exactly why the content shelves
+   * never had this problem. This route is the reference-shaped door to the
+   * same hallway -- it is `kind: 'reference'` + `approve: true`, the two
+   * fields that make an upload her portrait, and nothing else.
+   */
+  app.post<{ Params: { characterId: string } }>(
+    '/admin/characters/:characterId/references',
+    adminOnly,
+    async (request, reply) => {
+      const { characterId } = request.params;
+      if (!UUID_RE.test(characterId)) return notFound(reply);
+      if (!(await getCharacterForAdmin(opts.db, characterId))) return notFound(reply);
+
+      if (typeof request.isMultipart !== 'function' || !request.isMultipart()) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_request', message: 'Expected a multipart upload.' });
+      }
+      const file = await request.file({ limits: { fileSize: MAX_UPLOAD_BYTES } });
+      if (!file) {
+        return reply.code(400).send({ error: 'invalid_request', message: 'No file was provided.' });
+      }
+      const bytes = await file.toBuffer();
+
+      try {
+        const asset = await uploadLibraryAsset(opts.db, opts.uploadStorage, {
+          characterId,
+          /**
+           * DELIBERATELY ABSENT. Naming a version here would reintroduce the
+           * very requirement this route exists to remove; leaving it out is
+           * what lets a character with no version yet receive her first image.
+           */
+          kind: 'reference',
+          // Identity, not content (see quick-create above): explicit.
+          approve: true,
+          mimeType: file.mimetype,
+          bytes,
+          originalName: file.filename,
+          uploadedBy: request.currentUser!.id,
+        });
+        // approveVisualAsset promotes ONLY references to canonical -- so this
+        // is already a primary reference, on whichever version it landed.
+        return reply.code(201).send(referenceView(asset));
+      } catch (error) {
+        if (error instanceof LibraryUploadError) {
+          return reply.code(400).send({ error: error.kind, message: error.message });
+        }
+        if (error instanceof VisualAssetScopeError) {
+          return reply.code(400).send({ error: 'scope_error', message: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
   /** Promotes an EXISTING asset to primary for its own identity version. */
   app.post<{ Params: { assetId: string } }>(
     '/admin/references/:assetId/primary',
