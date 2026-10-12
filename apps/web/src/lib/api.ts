@@ -2139,6 +2139,23 @@ export const adminCharactersApi = {
     request<PrimaryReferenceView[]>(
       `/admin/identities/${encodeURIComponent(identityId)}/references`,
     ),
+  /**
+   * Uploads her main image, whichever state her visual identity is in.
+   *
+   * Character-scoped on purpose: a character saved without a photo has NO
+   * identity version, so there was no id to post to and her portrait could
+   * not be supplied at all. The server resolves her active version or
+   * provisions her first one, the same way a content upload always has.
+   */
+  uploadCharacterReference: (characterId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return postMultipart<PrimaryReferenceView>(
+      `/admin/characters/${encodeURIComponent(characterId)}/references`,
+      form,
+      'Upload failed',
+    );
+  },
   /** Multipart, so the browser must set the boundary — see postMultipart. */
   uploadReference: (identityId: string, file: File) => {
     const form = new FormData();

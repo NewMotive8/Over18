@@ -749,33 +749,37 @@ export default function AdminCharacterDetailPage() {
           <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
             Primary references
           </h2>
-          {activeIdentity && (
-            <>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (!file) return;
-                  void run(
-                    () => adminCharactersApi.uploadReference(activeIdentity.id, file),
-                    "Couldn't upload that reference.",
-                  );
-                }}
-              />
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => fileInput.current?.click()}
-                className="text-sm text-rose-400 hover:text-rose-300 disabled:opacity-50"
-              >
-                Add reference
-              </button>
-            </>
-          )}
+          {/* NOT GATED ON AN IDENTITY ANY MORE. This used to render only when
+              one was active, so a character saved without a photo -- who has
+              no version by design -- had no control here at all, and the
+              empty state below told her operator to activate something that
+              did not exist. The upload is character-scoped now and the server
+              provisions her first version, so there is nothing to do first. */}
+          <>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file || !characterId) return;
+                void run(
+                  () => adminCharactersApi.uploadCharacterReference(characterId, file),
+                  "Couldn't upload that reference.",
+                );
+              }}
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => fileInput.current?.click()}
+              className="text-sm text-rose-400 hover:text-rose-300 disabled:opacity-50"
+            >
+              Add reference
+            </button>
+          </>
         </div>
 
         {/* WHY THIS IS AT THE TOP NOW. A reference photo is what the
@@ -792,7 +796,8 @@ export default function AdminCharacterDetailPage() {
 
         {!activeIdentity ? (
           <div className="rounded-lg border border-dashed border-zinc-800 px-6 py-10 text-center text-sm text-zinc-500">
-            Activate a visual identity version first — references belong to a version.
+            No image yet. Add one above and she gets her first visual identity version
+            with it — there is nothing to set up first.
           </div>
         ) : (
           <>
