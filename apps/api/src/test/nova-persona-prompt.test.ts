@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import type { CharacterPersona, PublicCharacter } from '@over18/shared';
-import { buildCharacterSystemPrompt, conversationStage } from '../services/prompt-builder.js';
+import { buildCharacterSystemPrompt } from '../services/prompt-builder.js';
 import type { ReplyContext } from '../services/character-reply.js';
 
 /**
@@ -102,15 +102,11 @@ describe("Nova's real generated persona reaches the prompt", () => {
   });
 
   /**
-   * `conversationStage` is still correct and still used — by the VOICE layer.
-   * Text no longer reads it, so Nova's real persona gets the same conversation
-   * rules on message one as on message forty, and the anti-autobiography guard
-   * that the old stage rule carried is what remains.
+   * Message-count staging is gone from BOTH channels now. Nova's real persona
+   * gets the same conversation rules on message one as on message forty, and
+   * the anti-autobiography guard the old stage rule carried is what remains.
    */
   it('no longer varies text behaviour by stage, but keeps the recital guard', () => {
-    expect(conversationStage(0)).toBe('new');
-    expect(conversationStage(10)).toBe('early');
-    expect(conversationStage(40)).toBe('established');
     const newTalk = section(buildCharacterSystemPrompt(context({ persona, priorMessageCount: 0 })), 'HOW SHE TALKS');
     const oldTalk = section(buildCharacterSystemPrompt(context({ persona, priorMessageCount: 40 })), 'HOW SHE TALKS');
     expect(newTalk).toBe(oldTalk);

@@ -543,7 +543,38 @@ export default async function callSocketRoutes(
 
       claimed = true;
 
-      const request_ = await buildProviderSessionRequest(opts.db, claim.row);
+      /**
+       * A PERSONA THAT CANNOT FIT THE PROVIDER'S INSTRUCTION LIMIT.
+       *
+       * `buildProviderSessionRequest` refuses rather than handing the provider
+       * a prompt it will cut the rules off the end of. That refusal has to be
+       * caught HERE for two reasons.
+       *
+       * The row is already CLAIMED at this point, so an uncaught throw would
+       * reach `voiceSocketErrorHandler`, which closes the socket but settles
+       * nothing -- leaving the call `connecting` until the pending deadline
+       * swept it, and telling the browser only `server_error`. Neither names
+       * the cause, and the cause is a content problem an operator can actually
+       * fix.
+       *
+       * ORDER IS WHAT MAKES THIS SAFE, and it is not an accident: this runs
+       * BEFORE `withFirstCallMinute` reserves the first minute and before
+       * `createSession` is reached, so a persona that will not fit costs the
+       * caller nothing and creates nothing upstream. The provider bills a
+       * created session whether or not anyone speaks and gives us no way to
+       * cancel one, so "fails before either" is the only acceptable shape.
+       */
+      let request_;
+      try {
+        request_ = await buildProviderSessionRequest(opts.db, claim.row);
+      } catch (error) {
+        request.log.error(
+          { voiceRelay: describeError(error) },
+          'voice relay: compiled instructions exceed the provider limit',
+        );
+        await failConnect(opts.db, callSessionId, 'provider_instructions_too_long');
+        return refuse('character_unavailable');
+      }
       if (!request_) {
         await failConnect(opts.db, callSessionId, 'provider_character_missing');
         return refuse('not_found');
