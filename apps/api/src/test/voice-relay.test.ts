@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { asc, eq } from 'drizzle-orm';
 import { WebSocket as WsClient } from 'ws';
-import { callSessions, callTranscriptTurns } from '../db/schema.js';
+import { callSessions, callTranscriptTurns, characters } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters } from '../db/seed.js';
 import { VoiceProviderError, type VoiceSession, type VoiceSessionRequest } from '../voice/types.js';
@@ -539,6 +539,74 @@ describe('the handshake is refused before anything upstream happens', () => {
 
     // ...and the owner's session is untouched.
     expect((await rowFor(owner.callSessionId)).status).toBe('pending');
+  });
+
+  /**
+   * A PERSONA THAT CANNOT FIT THE PROVIDER'S 8,000-CHARACTER INSTRUCTION LIMIT.
+   *
+   * `buildProviderSessionRequest` refuses rather than handing over a prompt the
+   * provider would cut the rules off the end of. The refusal has to land here,
+   * where the row is already claimed -- otherwise it reaches the generic socket
+   * error handler, which closes the socket but settles nothing and says only
+   * `server_error`.
+   *
+   * THE ORDERING IS THE SAFETY PROPERTY. This happens before the first minute
+   * is reserved and before `createSession` is reached, so an unusable persona
+   * costs the caller nothing and creates nothing upstream. The provider bills a
+   * created session whether or not anyone speaks, and gives us no way to cancel
+   * one.
+   */
+  describe('a persona too long for the provider', () => {
+    beforeEach(async () => {
+      await ctx.db
+        .update(characters)
+        .set({ personality: 'A'.repeat(9_000) })
+        .where(eq(characters.id, LUNA_ID));
+    });
+
+    it('refuses with a reason that names the cause', async () => {
+      const user = await setup(ctx, 'relay.toolong@example.com');
+      const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+
+      await client.waitClosed();
+      expect(client.frames.find((f) => f.type === 'relay.error')?.reason).toBe(
+        'character_unavailable',
+      );
+    });
+
+    it('creates no provider session and opens no upstream socket', async () => {
+      const user = await setup(ctx, 'relay.toolong.nosession@example.com');
+      const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+
+      await client.waitClosed();
+      expect(providerCalls).toHaveLength(0);
+      expect(upstreams).toHaveLength(0);
+    });
+
+    /**
+     * The row must not be left `connecting` for the pending deadline to sweep:
+     * the cause is known now, so it is recorded now.
+     */
+    it('settles the claimed row with a nameable reason instead of stranding it', async () => {
+      const user = await setup(ctx, 'relay.toolong.settled@example.com');
+      const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+
+      await client.waitClosed();
+      const row = await rowFor(user.callSessionId);
+      expect(row.status).toBe('failed');
+      expect(row.terminationReason).toBe('provider_instructions_too_long');
+    });
+
+    /** Nothing is reserved, so nothing has to be given back. */
+    it('charges nothing, because it fails before the first minute is reserved', async () => {
+      const user = await setup(ctx, 'relay.toolong.free@example.com');
+      const client = connect(baseUrl, user.callSessionId, { cookie: user.cookie });
+
+      await client.waitClosed();
+      const row = await rowFor(user.callSessionId);
+      expect(row.durationSeconds ?? 0).toBe(0);
+      expect(row.startedAt).toBeNull();
+    });
   });
 
   it('refuses when the feature gate is off', async () => {
