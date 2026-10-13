@@ -869,6 +869,52 @@ async function settleFailed(db: Db, callSessionId: string, reason: string): Prom
   }
 }
 
+/**
+ * What the BROWSER is allowed to say about why a call stopped, and what that
+ * becomes in the row.
+ *
+ * WHY THIS EXISTS. `endCall` stamped every client-initiated end `user_ended`,
+ * and the browser calls it from every termination path it has -- the person
+ * pressing End, the countdown reaching zero, and the socket dying. Three
+ * different events, one indistinguishable code. Asked how often calls were
+ * dropping, the table could only answer "at least once", because a real drop
+ * and a deliberate hang-up looked identical.
+ *
+ * WHY IT IS AN ALLOW-LIST AND NOT THE STRING. The reason column is documented
+ * as a short code and never a message body, and this is the one path into it
+ * that an untrusted client can reach. A free-text reason would let a browser
+ * write anything into operational data that people read and count. Only these
+ * fixed codes get through; anything else is simply the default.
+ *
+ * WHY THE STORED CODE SAYS `reported_`. The server did not observe these. It
+ * observes a socket closing (`client_disconnected`) and its own deadline
+ * (`max_duration`); these are the browser's account of events the server
+ * missed, and an operator counting drops must be able to tell the two apart.
+ * The prefix is the provenance, carried in the value rather than in a second
+ * column nothing else needs.
+ */
+export const CLIENT_END_REASONS: Readonly<Record<string, string>> = Object.freeze({
+  /** The countdown reached zero before the server's own deadline fired. */
+  max_duration: 'reported_max_duration',
+  /** The socket died under the browser -- what a tester calls a disconnection. */
+  connection_lost: 'reported_connection_lost',
+});
+
+/** The code recorded when the browser says nothing, or says something unknown. */
+export const DEFAULT_END_REASON = 'user_ended';
+
+/**
+ * The reason to store for a client-initiated end.
+ *
+ * Deliberately total: every input yields a valid short code, so a malformed or
+ * hostile body cannot fail the request. Ending the call is the important part
+ * and must not depend on the browser describing it correctly.
+ */
+export function storedEndReason(reported: unknown): string {
+  if (typeof reported !== 'string') return DEFAULT_END_REASON;
+  return CLIENT_END_REASONS[reported] ?? DEFAULT_END_REASON;
+}
+
 export type EndCallOutcome =
   | { status: 'ended'; session: PublicCallSession }
   /** Already finished. Idempotent: the same answer however often it is asked. */
