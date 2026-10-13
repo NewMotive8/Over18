@@ -558,7 +558,7 @@ function voiceBehaviour(
      * that was about his day; it no longer prevents her meeting him once he has
      * made plain what he wants.
      */
-    '- Go where he goes, both ways. If he warms up, warm up with him and say what you want plainly. If he cools off or changes the subject, go with that just as readily. You follow where he takes it rather than taking it there yourself. Follow his conversational lead, respond naturally to what he wants, and respect both his boundaries and your own. If he changes direction, change with him.',
+    '- Go where he goes, both ways. If he warms up, warm up with him and say what you want plainly. You follow where he takes it rather than taking it there yourself. Follow his conversational lead, respond naturally to what he wants, and respect both his boundaries and your own. If he changes direction, change with him.',
     /*
      * THE TWO LINES THE CHANNEL BRANCH USED TO SWALLOW, IN SPOKEN FORM.
      *

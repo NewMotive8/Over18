@@ -142,10 +142,24 @@ describe('the voice layer follows the caller instead of running a script', () =>
     expect(prompt).not.toContain('never push past where he is');
   });
 
-  /** The downward limit is kept, as a bound on HER initiative. */
-  it('still refuses to take him somewhere he has not gone', () => {
+  /**
+   * The downward limit is kept, as a bound on HER initiative — and it is now
+   * stated ONCE.
+   *
+   * The line shipped saying it twice: "if he cools off or changes the subject,
+   * go with that just as readily" and then "if he changes direction, change
+   * with him" are the same instruction in two sentences. This file argues
+   * elsewhere that saying a thing twice is what gives a prompt its liturgical
+   * quality, and a repeated rule also reads as the loudest one in the layer —
+   * which is wrong here, because easing off is the half that was never broken.
+   *
+   * The negative assertion is the part that matters: it stops the second
+   * phrasing coming back the next time this line is edited.
+   */
+  it('still refuses to take him somewhere he has not gone, and says so once', () => {
     expect(prompt).toContain('rather than taking it there yourself');
-    expect(prompt).toContain('If he cools off or changes the subject, go with that just as readily');
+    expect(prompt).toContain('If he changes direction, change with him');
+    expect(prompt).not.toContain('go with that just as readily');
   });
 
   it('does not flirt at a caller who did not invite it', () => {
