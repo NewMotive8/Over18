@@ -493,7 +493,8 @@ describe('ending a call', () => {
     expect(h.controller.state.message).toBeNull();
     expect(h.audio.calls.dispose).toBe(1);
     expect(h.socket.closes.count).toBe(1);
-    expect(h.api.end).toHaveBeenCalledWith('call-1');
+    // A deliberate hang-up reports no reason, so the server records it as one.
+    expect(h.api.end).toHaveBeenCalledWith('call-1', undefined);
   });
 
   it('is safe to hang up twice', async () => {
@@ -569,6 +570,60 @@ describe('ending a call', () => {
     expect(h.audio.calls.dispose).toBe(1);
   });
 
+  /**
+   * WHICH ENDING IT WAS, NOT JUST THAT IT ENDED.
+   *
+   * This controller calls `api.end` from all three of its termination paths,
+   * and the server used to stamp every one of them `user_ended`. A tester
+   * reporting "the call keeps dropping" could not be checked against the data,
+   * because a drop and a goodbye were written down identically. The reason has
+   * to leave the browser for the question to be answerable at all.
+   */
+  describe('the reason that travels with the hang-up', () => {
+    it('reports a dead socket as a lost connection, not as a hang-up', async () => {
+      const h = await connected();
+      h.socket.hangUp();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(h.api.end).toHaveBeenCalledWith('call-1', 'connection_lost');
+    });
+
+    it('reports a socket error the same way', async () => {
+      const h = await connected();
+      h.socket.fail();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(h.api.end).toHaveBeenCalledWith('call-1', 'connection_lost');
+    });
+
+    /**
+     * The countdown reaching zero is the cap, not the person. These were the
+     * calls that ran to 115 and 118 seconds against a 120-second ceiling and
+     * were recorded as though somebody had pressed End.
+     */
+    it('reports the countdown running out as the cap', async () => {
+      vi.useFakeTimers();
+      try {
+        // Driven the way the sibling countdown test drives it: the harness
+        // clock and the timer queue move together, or the interval reads a
+        // deadline that never arrives.
+        const h = harness({ maxSeconds: 2 });
+        await h.controller.start();
+        h.socket.deliver({ type: 'relay.connected' });
+
+        h.advance(2_000);
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        expect(h.controller.state.phase).toBe('ended');
+        expect(h.api.end).toHaveBeenCalledWith('call-1', 'max_duration');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   /** The first reason wins: a stampede of endings is still one ending. */
   it('settles once when several endings arrive together', async () => {
     const h = await connected();
@@ -598,6 +653,8 @@ describe('ending a call', () => {
 
     expect(h.audio.calls.dispose).toBe(1);
     expect(h.socket.closes.count).toBe(1);
+    // dispose() is navigation, not a termination path: it reports no reason,
+    // and the server reads that as the deliberate ending it is.
     expect(h.api.end).toHaveBeenCalledWith('call-1');
     // Nothing emitted: the component is going away.
     expect(h.states.length).toBe(before);

@@ -7,6 +7,7 @@ import type { Db } from '../db/client.js';
 import type { CommerceEnv } from '../env.js';
 import {
   endCall,
+  storedEndReason,
   getCallSessionForUser,
   startCall,
   toPublicCallSession,
@@ -212,7 +213,7 @@ export default async function callRoutes(
    * Idempotent: an already-ended session answers 200 with the settled record,
    * because a retry after a lost response must not look like a failure.
    */
-  app.post<{ Params: { callSessionId: string } }>(
+  app.post<{ Params: { callSessionId: string }; Body?: { reason?: unknown } }>(
     '/api/calls/:callSessionId/end',
     { preHandler: app.requireAuth },
     async (request, reply) => {
@@ -220,7 +221,23 @@ export default async function callRoutes(
       if (!UUID_RE.test(callSessionId)) {
         return reply.code(404).send({ error: 'not_found', message: 'Call session not found.' });
       }
-      const outcome = await endCall(opts.db, request.currentUser!.id, callSessionId);
+      /**
+       * The browser's account of WHY, run through the allow-list before it can
+       * reach the row -- see CLIENT_END_REASONS. Read defensively and never
+       * validated with a schema, because the body is optional in both
+       * directions: a browser running older JavaScript sends none at all, and
+       * a request that ends the call must not be refused over how it described
+       * the ending.
+       */
+      const body: unknown = request.body;
+      const reported =
+        typeof body === 'object' && body !== null ? (body as { reason?: unknown }).reason : undefined;
+      const outcome = await endCall(
+        opts.db,
+        request.currentUser!.id,
+        callSessionId,
+        storedEndReason(reported),
+      );
       if (outcome.status === 'not_found') {
         return reply.code(404).send({ error: 'not_found', message: 'Call session not found.' });
       }

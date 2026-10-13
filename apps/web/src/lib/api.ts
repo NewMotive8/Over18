@@ -200,11 +200,21 @@ export const callsApi = {
       `/api/calls/${encodeURIComponent(callSessionId)}`,
     );
   },
-  /** Hang up. Idempotent: ending an ended call is not an error. */
-  end(callSessionId: string): Promise<{ callSession: VoiceCallSession; alreadyEnded?: boolean }> {
+  /**
+   * Hang up. Idempotent: ending an ended call is not an error.
+   *
+   * `reason` says WHICH ending this was -- the person pressing End, the
+   * countdown running out, or the socket dying under us. The server keeps an
+   * allow-list and ignores anything it does not know, so this is a hint and
+   * never a value the browser gets to write.
+   */
+  end(
+    callSessionId: string,
+    reason?: string,
+  ): Promise<{ callSession: VoiceCallSession; alreadyEnded?: boolean }> {
     return request<{ callSession: VoiceCallSession; alreadyEnded?: boolean }>(
       `/api/calls/${encodeURIComponent(callSessionId)}/end`,
-      { method: 'POST' },
+      { method: 'POST', body: JSON.stringify({ reason: reason ?? null }) },
     );
   },
 };

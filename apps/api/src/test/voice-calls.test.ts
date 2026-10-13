@@ -107,6 +107,16 @@ const start = (app: TestContext, cookies: Record<string, string>, conversationId
 const end = (cookies: Record<string, string>, id: string) =>
   ctx.app.inject({ method: 'POST', url: `/api/calls/${id}/end`, cookies });
 
+/** The same hang-up, with the browser saying which ending this was. */
+const endWithReason = (cookies: Record<string, string>, id: string, body: unknown) =>
+  ctx.app.inject({
+    method: 'POST',
+    url: `/api/calls/${id}/end`,
+    cookies,
+    headers: { 'content-type': 'application/json' },
+    payload: JSON.stringify(body),
+  });
+
 const status = (cookies: Record<string, string>, id: string) =>
   ctx.app.inject({ method: 'GET', url: `/api/calls/${id}`, cookies });
 
@@ -485,6 +495,97 @@ describe('one live call per conversation', () => {
  * ------------------------------------------------------------------ */
 
 describe('ending a call', () => {
+  /**
+   * WHY THE REASON HAD TO TRAVEL. The browser calls this endpoint from every
+   * way a call can stop -- End pressed, countdown expired, socket died -- and
+   * all three were stamped `user_ended`. Asked how often calls dropped, the
+   * table could only say "at least once".
+   */
+  describe('the reason the browser reports', () => {
+    const endedWith = async (email: string, body: unknown) => {
+      const user = await setup(ctx, email);
+      const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
+      const res = await endWithReason(user.cookies, id, body);
+      expect(res.statusCode).toBe(200);
+      return res.json().callSession;
+    };
+
+    it('records a countdown expiry and a lost socket as themselves', async () => {
+      expect((await endedWith('voice.end.cap@example.com', { reason: 'max_duration' })).terminationReason)
+        .toBe('reported_max_duration');
+      expect((await endedWith('voice.end.lost@example.com', { reason: 'connection_lost' })).terminationReason)
+        .toBe('reported_connection_lost');
+    });
+
+    /**
+     * The three are now distinguishable, which is the entire point: a count of
+     * drops cannot be derived from a code that also means "goodbye".
+     */
+    it('keeps a deliberate hang-up distinct from both', async () => {
+      const hangUp = await endedWith('voice.end.bye@example.com', { reason: null });
+      expect(hangUp.terminationReason).toBe('user_ended');
+      expect(hangUp.terminationReason).not.toBe('reported_connection_lost');
+      expect(hangUp.terminationReason).not.toBe('reported_max_duration');
+    });
+
+    /**
+     * THE COLUMN IS NOT WRITABLE BY THE BROWSER. It is documented as a short
+     * code and never a message body, and this is the only path into it an
+     * untrusted client can reach, so anything off the allow-list is simply the
+     * default -- never stored, never echoed.
+     */
+    it('refuses to store anything that is not an allowed code', async () => {
+      const hostile = [
+        { reason: 'provider_closed' }, // server-observed: not the browser's to claim
+        { reason: 'out_of_credits' },
+        { reason: 'DROP TABLE call_sessions' },
+        { reason: 'x'.repeat(500) },
+        { reason: 42 },
+        { reason: { nested: 'object' } },
+        { reason: ['connection_lost'] },
+        { notTheField: 'connection_lost' },
+        {},
+      ];
+      for (const [i, body] of hostile.entries()) {
+        const session = await endedWith(`voice.end.bad${i}@example.com`, body);
+        expect(session.terminationReason, JSON.stringify(body)).toBe('user_ended');
+      }
+    });
+
+    /**
+     * A browser running older JavaScript sends no body at all, and a request
+     * that ends the call must never be refused over how it described the
+     * ending. Both still settle.
+     */
+    it('still ends the call with no body, and with a body that is not an object', async () => {
+      const user = await setup(ctx, 'voice.end.nobody@example.com');
+      const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
+      const res = await end(user.cookies, id);
+      expect(res.statusCode).toBe(200);
+      expect(res.json().callSession.terminationReason).toBe('user_ended');
+
+      const other = await setup(ctx, 'voice.end.scalar@example.com');
+      const otherId = (await start(ctx, other.cookies, other.conversationId)).json().callSession.id;
+      const scalar = await endWithReason(other.cookies, otherId, 'connection_lost');
+      expect(scalar.statusCode).toBe(200);
+      expect(scalar.json().callSession.terminationReason).toBe('user_ended');
+    });
+
+    /** Idempotency is unchanged: the first reason stands, a retry cannot move it. */
+    it('does not let a second end rewrite the reason of the first', async () => {
+      const user = await setup(ctx, 'voice.end.twice@example.com');
+      const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
+
+      const first = await endWithReason(user.cookies, id, { reason: 'connection_lost' });
+      expect(first.json().callSession.terminationReason).toBe('reported_connection_lost');
+
+      const second = await endWithReason(user.cookies, id, { reason: 'max_duration' });
+      expect(second.statusCode).toBe(200);
+      expect(second.json().alreadyEnded).toBe(true);
+      expect(second.json().callSession.terminationReason).toBe('reported_connection_lost');
+    });
+  });
+
   it('settles the session and records a duration', async () => {
     const user = await setup(ctx, 'voice.end@example.com');
     const id = (await start(ctx, user.cookies, user.conversationId)).json().callSession.id;
