@@ -5,19 +5,38 @@ import {
   callTranscriptTurns,
   characterPersonas,
   characters,
-  conversations,
-  messages,
   type CallSessionRow,
 } from '../db/schema.js';
 import { getConversationForUser } from './conversation-service.js';
 import { toPublicCharacter } from './character-service.js';
 import { getActiveVisualIdentity, isAdultAgeBand } from './visual-identity-service.js';
-import { buildCharacterSystemPrompt, selectMemoriesForPrompt } from './prompt-builder.js';
+import {
+  buildCharacterSystemPrompt,
+  DEFAULT_MEMORY_INJECTION,
+  selectMemoriesForPrompt,
+} from './prompt-builder.js';
 import { listMemories } from './memory-service.js';
 import type { CommerceEnv } from '../env.js';
 import { canStartCall } from './paid-call-service.js';
 import { resolveVoice } from '../voice/voice-catalogue.js';
 import { VoiceProviderError, type VoiceSessionProvider } from '../voice/types.js';
+import { INSTRUCTIONS_MAX_CHARS } from '../voice/spicyapi.js';
+
+/**
+ * Head-room held back from the provider's 8,000-character instruction limit.
+ *
+ * NOT SUPERSTITION, AND NOT A ROUND NUMBER FOR ITS OWN SAKE. The budget is
+ * computed from a prompt built with NO memories, and the real prompt then has
+ * the rendered memory block added to it -- a heading and one bullet prefix per
+ * fact that the measured base does not contain. The margin covers that
+ * difference and leaves room for a persona edited slightly longer between the
+ * measurement and the call.
+ *
+ * It is deliberately generous relative to what it protects: 200 characters is
+ * about one and a half remembered facts, against the never-break-character and
+ * adult-framing lines it keeps inside the limit.
+ */
+export const INSTRUCTION_SAFETY_MARGIN = 200;
 
 /**
  * Live voice-call sessions -- Phase 1: lifecycle only.
@@ -508,30 +527,74 @@ export async function buildProviderSessionRequest(
   const verifiedAdultAgeBand =
     typeof band === 'string' && isAdultAgeBand(band) ? band.trim() : null;
 
+
   /**
-   * HOW WELL THESE TWO ALREADY KNOW EACH OTHER, which decides her stage.
+   * HOW MANY REMEMBERED FACTS ACTUALLY FIT, computed rather than assumed.
    *
-   * This was hardcoded to 0, so `conversationStage` returned `new` on every call
-   * a customer ever made. On the text layer that meant "stay light and brief,
-   * answer what he actually said and leave it there" — the most reactive rule in
-   * the prompt, permanently in force, no matter how long they had known each
-   * other. A caller who had exchanged three hundred messages with her was
-   * greeted by someone behaving as though they had just met.
+   * The provider truncates `instructions` at 8,000 characters, keeping the
+   * FIRST 8,000 and discarding the tail -- and the behaviour layer is pushed
+   * last, so a prompt that overflows loses its rules and keeps its persona.
+   * Measured before this change: one character (Karen) compiled to 8,042
+   * characters with a full memory load and was silently dropping the
+   * never-break-character line on every single call.
    *
-   * Counted across ALL their conversations, because the relationship is with the
-   * character and not with one thread — the same scope `memories` already uses.
+   * A FIXED 2,000-CHARACTER MEMORY BUDGET CANNOT BE RIGHT FOR EVERY CHARACTER,
+   * because what is left over depends on how long her persona is. Personas and
+   * the behaviour layer are both fixed-size; the remembered facts are the only
+   * elastic input, so they are the only honest thing to trim. Compiling twice
+   * is free: `buildCharacterSystemPrompt` is pure, does no I/O, and the first
+   * pass costs microseconds against a call that takes seconds to place.
    *
-   * IT CANNOT ADVANCE MID-CALL, and nothing here pretends otherwise: the
-   * instructions are sent once at session creation and the provider accepts only
-   * `turn_detection` on a session update. The voice layer covers the rest in
-   * words ("a call warms up as it runs"). Turns taken during the call are
-   * recorded as transcript rows and will count towards the NEXT call.
+   * SELECTION PRIORITY IS UNTOUCHED. `selectMemoriesForPrompt` still walks
+   * newest-to-oldest keeping whole facts and returns them oldest-first; only
+   * the character budget it is handed changes.
    */
-  const [priorMessages] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(messages)
-    .innerJoin(conversations, eq(conversations.id, messages.conversationId))
-    .where(and(eq(conversations.userId, row.userId), eq(conversations.characterId, row.characterId)));
+  const promptWithout = (memories: string[]) =>
+    buildCharacterSystemPrompt({
+      character: toPublicCharacter(characterRow, null),
+      systemPrompt: characterRow.systemPrompt,
+      persona: personaRow?.persona ?? null,
+      location: {
+        countryCode: characterRow.countryCode,
+        region: characterRow.region,
+        city: characterRow.city,
+        timezone: characterRow.timezone,
+      },
+      history: [],
+      channel: 'voice',
+      priorMessageCount: 0,
+      userMessage: '',
+      memories,
+      verifiedAdultAgeBand,
+    });
+
+  const baseLength = promptWithout([]).length;
+  const memoryBudget = INSTRUCTIONS_MAX_CHARS - INSTRUCTION_SAFETY_MARGIN - baseLength;
+
+  /**
+   * A PERSONA THAT DOES NOT FIT ON ITS OWN IS A CONTENT PROBLEM, AND IT SAYS SO.
+   *
+   * Trimming memories cannot help here -- there is nothing left to trim -- so
+   * the alternative to failing is letting the provider cut the frame off the
+   * end, which is what this whole change exists to stop. A call that refuses
+   * with a nameable reason is recoverable by editing the persona; a call that
+   * quietly drops the adult framing is not recoverable at all, because nobody
+   * finds out.
+   */
+  if (memoryBudget < 0) {
+    throw new VoiceProviderError(
+      'rejected',
+      `Compiled voice instructions for this character are ${baseLength} characters before any ` +
+        `remembered facts, which exceeds the ${INSTRUCTIONS_MAX_CHARS}-character limit less a ` +
+        `${INSTRUCTION_SAFETY_MARGIN}-character margin. Shorten her persona or system prompt.`,
+    );
+  }
+
+  const memoriesForPrompt = selectMemoriesForPrompt(rememberedFacts, {
+    maxMemories: DEFAULT_MEMORY_INJECTION.maxMemories,
+    // The smaller of the standing policy and what this character has room for.
+    maxMemoryChars: Math.min(DEFAULT_MEMORY_INJECTION.maxMemoryChars, memoryBudget),
+  });
 
   return {
     instructions: buildCharacterSystemPrompt({
@@ -549,9 +612,11 @@ export async function buildProviderSessionRequest(
       // A call is a conversation, not a message exchange: the behaviour layer
       // branches on this and nothing else does.
       channel: 'voice',
-      priorMessageCount: priorMessages?.count ?? 0,
+      // Nothing reads this on a call any more: the voice layer dropped
+      // message-count staging, and `ReplyContext` still requires the field.
+      priorMessageCount: 0,
       userMessage: '',
-      memories: selectMemoriesForPrompt(rememberedFacts),
+      memories: memoriesForPrompt,
       verifiedAdultAgeBand,
     }),
     // The voice resolved when the call was claimed, so a change to the

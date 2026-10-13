@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CharacterPersona, PublicCharacter } from '@over18/shared';
 import type { ReplyContext } from '../services/character-reply.js';
-import { buildCharacterSystemPrompt, conversationStage } from '../services/prompt-builder.js';
+import { buildCharacterSystemPrompt } from '../services/prompt-builder.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 
 /**
@@ -156,14 +156,14 @@ describe('the behaviour layer is unaffected by persona', () => {
 });
 
 describe('how much she offers depends on how well they know each other', () => {
-  it('classifies the stage from the conversation length alone', () => {
-    // priorMessageCount counts both sides, so one exchange is 2.
-    expect(conversationStage(0)).toBe('new');
-    expect(conversationStage(2)).toBe('new');
-    expect(conversationStage(4)).toBe('early');
-    expect(conversationStage(18)).toBe('early');
-    expect(conversationStage(20)).toBe('established');
-    expect(conversationStage(500)).toBe('established');
+  /**
+   * `conversationStage` is gone entirely -- text stopped reading it first, and
+   * the voice layer has now followed. Neither channel varies by a row count.
+   */
+  it('does not vary by conversation length on either channel', () => {
+    const short = buildCharacterSystemPrompt(contextFor(LUNA, { priorMessageCount: 0 }));
+    const long = buildCharacterSystemPrompt(contextFor(LUNA, { priorMessageCount: 500 }));
+    expect(short).toBe(long);
   });
 
   /**
