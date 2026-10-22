@@ -19,7 +19,7 @@ import type { PublicPlayWithMeCard } from './api';
  */
 
 function card(id: string, clip: PublicPlayWithMeCard['clip']): PublicPlayWithMeCard {
-  return { id, displayName: `Name ${id}`, apparentAgeBand: null, categories: [], clip };
+  return { id, displayName: `Name ${id}`, age: null, apparentAgeBand: null, categories: [], clip };
 }
 
 const video = (id: string) => ({

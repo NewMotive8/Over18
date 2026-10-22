@@ -11,6 +11,7 @@ import {
   appCategoryAssets,
   characters,
   characterVisualAssets,
+  characterPersonas,
   characterVisualIdentities,
   homeHeroClips,
   homePlayWithMeCharacters,
@@ -197,10 +198,46 @@ export interface PublicCharacterCardView {
  * `/api/characters/:id/visual-identity` already serves properly to the surface
  * that genuinely needs it.
  */
+/**
+ * Her stated age as a number, or null when there is not a usable one.
+ *
+ * THE ONLY AGE THAT LEAVES THIS SERVICE IS AN ADULT ONE. The persona validator
+ * already refuses an age below 18 where personas are written, but this is a
+ * public projection on an adult product and it does not get to assume the row
+ * it read was written through that path. A value that is not a plain integer,
+ * or is below the floor, is reported as ABSENT rather than clamped upward --
+ * clamping would invent an age for a row that is wrong, and the band fallback
+ * is a better answer than a number nobody chose.
+ */
+export function statedAge(raw: string | number | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null;
+  const value = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isInteger(value) || value < 18 || value > 120) return null;
+  return value;
+}
+
 export interface PublicPlayWithMeCardView {
   id: string;
   displayName: string;
-  /** Raw apparent-age band, or null. The card derives its age label from it. */
+  /**
+   * Her AGE, as her profile states it, or null when she has no persona age.
+   *
+   * WHY THIS IS NOT THE BAND. The band describes how old she LOOKS in her
+   * reference image; this is how old she IS. Every card used to derive its
+   * number from the band alone, and the band is created as the bare string
+   * `'adult'` by quick-create and by the first upload that provisions her
+   * identity -- a string with no digits in it, which fell to one hard-coded
+   * default. The roster therefore showed the SAME age for every character who
+   * had never had a band written by hand, which is how six cards on one rail
+   * came to read 26.
+   *
+   * The persona age is the number an operator actually edits, validated as an
+   * adult integer where it is written. The band stays as the fallback for a
+   * character who has no persona yet, so nothing that reads correctly today
+   * starts reading differently.
+   */
+  age: number | null;
+  /** Raw apparent-age band, or null. Used only when there is no stated age. */
   apparentAgeBand: string | null;
   /**
    * The App Categories this character's publicly reachable clips belong to.
@@ -865,6 +902,16 @@ async function playWithMeCards(
        * 'active', so this cannot multiply the roster.
        */
       apparentAgeBand: sql<unknown>`${characterVisualIdentities.visualDna} -> 'apparentAgeBand'`,
+      /**
+       * `->>`, not `->`: this one IS wanted as text and parsed to a number
+       * below. The band above uses `->` because `renderValue` must see the
+       * stored JSON type; an age is a scalar and has no such requirement.
+       *
+       * A LEFT JOIN again, so a character with no persona keeps her card and
+       * falls back to the band. `character_personas` is keyed by character, so
+       * this cannot multiply the roster either.
+       */
+      age: sql<string | null>`${characterPersonas.persona} ->> 'age'`,
     })
     .from(characters)
     .leftJoin(
@@ -874,6 +921,7 @@ async function playWithMeCards(
         eq(characterVisualIdentities.status, 'active'),
       ),
     )
+    .leftJoin(characterPersonas, eq(characterPersonas.characterId, characters.id))
     .where(
       restrictTo
         ? and(eq(characters.status, 'active'), inArray(characters.id, restrictTo))
@@ -915,6 +963,7 @@ async function playWithMeCards(
   return rows.map((row) => ({
     id: row.id,
     displayName: row.displayName,
+    age: statedAge(row.age),
     // The SAME renderer the Character page's About tab uses — see renderValue.
     apparentAgeBand: renderValue(row.apparentAgeBand),
     categories: categories.get(row.id) ?? [],

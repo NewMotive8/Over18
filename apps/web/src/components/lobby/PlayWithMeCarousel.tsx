@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import type { PublicPlayWithMeCard } from '../../lib/api';
 import RailArrows from './RailArrows';
 import { resolveRailMedia } from '../../lib/media';
-import { adultAgeFromBand } from '../../lib/lobbyContent';
+import { displayAge } from '../../lib/lobbyContent';
 import HeroMedia from '../HeroMedia';
 
 /**
@@ -25,7 +25,8 @@ function PlayWithMeCard({ character }: { character: PublicPlayWithMeCard }) {
   // else — never her canonical/profile image, never the local manifest, never a
   // placeholder.
   const media = resolveRailMedia(character);
-  const age = adultAgeFromBand(character.apparentAgeBand);
+  // Her profile's age, falling back to the band -- see displayAge.
+  const age = displayAge(character.age, character.apparentAgeBand);
   // Real App Category membership, where the old version invented tags from the
   // card's index. Same chips, same place — sourced from the CMS instead.
   const tags = character.categories.slice(0, 2);

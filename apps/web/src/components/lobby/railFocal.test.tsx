@@ -27,6 +27,7 @@ import type { CharacterMediaItem } from '../../lib/media';
 const card = (id = 'c1'): PublicPlayWithMeCard => ({
   id,
   displayName: `Name ${id}`,
+  age: null,
   apparentAgeBand: 'late 20s',
   categories: [{ slug: 'sexy', name: 'Sexy' }],
   clip: {

@@ -1,6 +1,6 @@
 import type { PublicPlayWithMeCard } from '../lib/api';
 import { resolveRailMedia } from '../lib/media';
-import { adultAgeFromBand } from '../lib/lobbyContent';
+import { displayAge } from '../lib/lobbyContent';
 import HeroMedia from './HeroMedia';
 
 /**
@@ -46,7 +46,8 @@ export default function SwipeCard({
   onOpen?: () => void;
 }) {
   const media = resolveRailMedia(character);
-  const age = adultAgeFromBand(character.apparentAgeBand);
+  // Her profile's age, falling back to the band -- see displayAge.
+  const age = displayAge(character.age, character.apparentAgeBand);
   // Real App Category membership, exactly as the rail chips it.
   const tags = character.categories.slice(0, 2);
 

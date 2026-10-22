@@ -38,6 +38,7 @@ function card(over: Partial<PublicPlayWithMeCard> = {}): PublicPlayWithMeCard {
   return {
     id: 'char-1',
     displayName: 'Nova',
+    age: null,
     apparentAgeBand: 'late 20s',
     categories: [{ slug: 'sexy', name: 'Sexy' }],
     clip: {
@@ -191,6 +192,25 @@ describe('FavouritesPage', () => {
 });
 
 describe('no surface in this feature uses localStorage', () => {
+  /**
+   * ONE AGE RULE, ON EVERY SURFACE THAT SHOWS AN AGE. These three render the
+   * same card payload, so a fix applied to one of them and not the others is
+   * how the rail and the swipe deck would start disagreeing about how old she
+   * is. `displayAge` is that rule; deriving from the band directly is the bug
+   * it replaces.
+   */
+  it('derives every card age from her profile first, never from the band alone', () => {
+    for (const file of [
+      './lobby/PlayWithMeCarousel.tsx',
+      './SwipeCard.tsx',
+      '../pages/FavouritesPage.tsx',
+    ]) {
+      const source = codeOf(file);
+      expect(source, file).toContain('displayAge(character.age, character.apparentAgeBand)');
+      expect(source, file).not.toContain('adultAgeFromBand(');
+    }
+  });
+
   it('holds favourites on the server only', () => {
     for (const file of [
       '../hooks/useFavourites.ts',
