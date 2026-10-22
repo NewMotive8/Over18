@@ -32,7 +32,8 @@ export default function ProfileHero({
 }: {
   items: CharacterMediaItem[];
   name: string;
-  age: number;
+  /** Her confirmed age, or null when nobody has set one -- then none is shown. */
+  age: number | null;
   avatarPoster?: string;
   onBack: () => void;
   onOpen: (index: number) => void;
@@ -156,7 +157,7 @@ export default function ProfileHero({
         <div className="min-w-0 pb-1">
           <div className="flex items-center gap-2">
             <h1 className="truncate text-2xl font-black tracking-tight text-white drop-shadow">{name}</h1>
-            <span className="text-lg font-semibold text-zinc-200">{age}</span>
+            {age !== null && <span className="text-lg font-semibold text-zinc-200">{age}</span>}
             <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/90 px-2 py-0.5 text-[10px] font-bold text-amber-950">
               <CrownIcon className="h-3 w-3" /> VIP
             </span>

@@ -206,9 +206,24 @@ describe('no surface in this feature uses localStorage', () => {
       '../pages/FavouritesPage.tsx',
     ]) {
       const source = codeOf(file);
-      expect(source, file).toContain('displayAge(character.age, character.apparentAgeBand)');
+      expect(source, file).toContain('displayAge(character.age)');
+      // An age is rendered only when there is a confirmed one.
+      expect(source, file).toMatch(/age !== null &&/);
       expect(source, file).not.toContain('adultAgeFromBand(');
     }
+  });
+
+  /**
+   * THE PROFILE PAGE TOO. It takes its band from a different payload, so it
+   * was the one surface a card-only fix left behind -- and a profile reading
+   * 26 beside a card reading 32 is worse than both reading 26.
+   */
+  it('the character profile derives its age the same way', () => {
+    const source = codeOf('../pages/CharacterDetailPage.tsx');
+    expect(source).toContain('displayAge(character.age)');
+    // The band no longer reaches this page at all.
+    expect(source).not.toContain('apparentAge(');
+    expect(source).not.toContain('adultAgeFromBand(');
   });
 
   it('holds favourites on the server only', () => {

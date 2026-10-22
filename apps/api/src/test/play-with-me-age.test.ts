@@ -62,6 +62,8 @@ describe('the projection that feeds the rail', () => {
    */
   it('reads the age as text and the band as JSON', () => {
     expect(source).toContain("${characterPersonas.persona} ->> 'age'");
+    // And her CONFIRMED age comes straight off the character row.
+    expect(source).toContain('confirmedAge: characters.age');
     expect(source).toContain("${characterVisualIdentities.visualDna} -> 'apparentAgeBand'");
   });
 
@@ -77,7 +79,21 @@ describe('the projection that feeds the rail', () => {
     expect(source).not.toMatch(/innerJoin\(\s*characterPersonas/);
   });
 
-  it('puts the age on the card through the coercion, never raw', () => {
-    expect(source).toContain('age: statedAge(row.age)');
+  /**
+   * The card no longer reads the persona age directly. It asks the resolver,
+   * which prefers an operator's confirmed age -- so the number on a card and
+   * the number she states in chat come from one rule and cannot diverge.
+   */
+  /**
+   * The card sends her CONFIRMED age or nothing. It used to derive one from
+   * the band -- which is how a whole rail read 26 -- and then briefly from the
+   * persona, which is a vision model's guess. Neither is a fact, and a number
+   * beside her name is read as one.
+   */
+  it('puts only the confirmed age on the card, never a derived one', () => {
+    expect(source).toContain('age: confirmedPublicAge(row.confirmedAge)');
+    // Neither older shape may come back.
+    expect(source).not.toContain('age: statedAge(row.age)');
+    expect(source).not.toContain('resolveCharacterAge(row.confirmedAge');
   });
 });

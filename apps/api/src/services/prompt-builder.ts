@@ -160,7 +160,7 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
   // the character's own shortBio/personality/interests above. Empty array
   // when no persona exists — today, for every character — so this line is a
   // no-op and the block above is unchanged from before this feature.
-  facts.push(...compilePersonaWhoSheIs(context.persona));
+  facts.push(...compilePersonaWhoSheIs(context.persona, context.character.age));
 
   /**
    * WHAT HER WORK AND HER SCHOOLING ARE FOR.

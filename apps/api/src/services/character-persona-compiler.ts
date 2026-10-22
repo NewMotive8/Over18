@@ -1,4 +1,5 @@
 import type { CharacterPersona } from '@over18/shared';
+import { resolveCharacterAge } from './character-age.js';
 
 /**
  * Deterministic persona compiler (Phase 2 avatar-derived persona).
@@ -63,12 +64,22 @@ function sentence(value: string): string {
  * character's existing shortBio/personality/interests facts — never
  * replacing them. Empty array when persona is null/undefined/empty.
  */
-export function compilePersonaWhoSheIs(persona?: CharacterPersona | null): string[] {
-  if (!persona) return [];
+export function compilePersonaWhoSheIs(
+  persona?: CharacterPersona | null,
+  /**
+   * Her CONFIRMED age, when an operator has set one. It outranks the persona's
+   * because what she says about herself must match what her card says, and the
+   * card is driven by the same resolver -- see character-age.ts.
+   */
+  confirmedAge?: number | null,
+): string[] {
+  const resolved = resolveCharacterAge(confirmedAge, persona);
+  // A confirmed age is worth stating even when she has no persona at all.
+  if (!persona) return resolved.age === null ? [] : [`She's ${resolved.age}.`];
   const facts: string[] = [];
 
-  if (typeof persona.age === 'number' && Number.isInteger(persona.age)) {
-    facts.push(`She's ${persona.age}.`);
+  if (resolved.age !== null) {
+    facts.push(`She's ${resolved.age}.`);
   } else {
     const ageRange = clean(persona.ageRange ?? '');
     if (ageRange.length > 0) facts.push(`She's ${ageRange}.`);

@@ -2,6 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { isKnownVoice, type PublicCharacter } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { isValidTimezone } from './timezone.js';
+import { MAXIMUM_PLAUSIBLE_AGE, MINIMUM_ADULT_AGE, usableAge } from './character-age.js';
 import { characters, type CharacterRow } from '../db/schema.js';
 import { resolveCharacterPortrait, resolveCharacterPortraits } from './character-portrait.js';
 
@@ -34,6 +35,8 @@ export function toPublicCharacter(row: CharacterRow, portrait: string | null): P
     name: row.name,
     displayName: row.displayName,
     profileImage: portrait,
+    // On the row already -- no join, so every caller gets it for free.
+    age: row.age ?? null,
     shortBio: row.shortBio,
     personality: row.personality,
     interests: row.interests,
@@ -87,6 +90,15 @@ export interface AdminCharacter extends PublicCharacter {
    */
   liveCallVoice: string | null;
   /**
+   * Her CONFIRMED age, or null when nobody has set one.
+   *
+   * NULL IS SHOWN AS UNSET, never as a number. Admin must not present the
+   * persona's guess or the apparent-age band as though an operator had
+   * confirmed it -- those are display fallbacks for customer-facing surfaces,
+   * and a value in this field is a claim about a real decision.
+   */
+  age: number | null;
+  /**
    * Where she lives, each part independently optional. Admin-facing only: a
    * customer is told who she is, not the administrative record behind her, so
    * these deliberately do NOT join `PublicCharacter` above.
@@ -105,12 +117,25 @@ export interface AdminCharacter extends PublicCharacter {
  * character model, and nothing invented. `name` and `displayName` are excluded
  * because they are set at creation time and are never empty.
  */
-export const PROFILE_FIELDS = [
+export const PROFILE_TEXT_FIELDS = [
   'shortBio',
   'personality',
   'conversationStyle',
   'systemPrompt',
 ] as const;
+
+/**
+ * `age` is a profile field too, and the only one that is not text.
+ *
+ * It is listed here so "her profile is incomplete" counts it and the publish
+ * gate refuses her without one -- a live character states an age on her card,
+ * on her profile and in what she says about herself, and that number must be
+ * one a person decided rather than one derived from a photograph.
+ *
+ * It is NOT in PROFILE_TEXT_FIELDS because the emptiness test differs: a blank
+ * string versus an absent or non-adult integer.
+ */
+export const PROFILE_FIELDS = [...PROFILE_TEXT_FIELDS, 'age'] as const;
 export type ProfileField = (typeof PROFILE_FIELDS)[number];
 
 /**
@@ -123,7 +148,13 @@ export type ProfileField = (typeof PROFILE_FIELDS)[number];
  * learn about nulls, and there is no nullability migration to undo later.
  */
 export function missingProfileFields(row: CharacterRow): ProfileField[] {
-  return PROFILE_FIELDS.filter((field) => row[field].trim().length === 0);
+  const missing: ProfileField[] = PROFILE_TEXT_FIELDS.filter(
+    (field) => row[field].trim().length === 0,
+  );
+  // Absent, or present but not a plain adult integer -- both mean "nobody has
+  // confirmed how old she is", which is what the publish gate cares about.
+  if (usableAge(row.age) === null) missing.push('age');
+  return missing;
 }
 
 export function toAdminCharacter(row: CharacterRow, portrait: string | null): AdminCharacter {
@@ -139,6 +170,7 @@ export function toAdminCharacter(row: CharacterRow, portrait: string | null): Ad
     // Null is a real answer here -- "no voice assigned, she uses the default" --
     // so it is reported rather than omitted, and the selector can show it.
     liveCallVoice: row.liveCallVoice,
+    age: row.age ?? null,
     countryCode: row.countryCode,
     region: row.region,
     city: row.city,
@@ -213,6 +245,15 @@ export interface CharacterInput {
    * missing one, because `resolveVoice` turns it into the default.
    */
   liveCallVoice?: string | null;
+  /**
+   * Her age, 18 or over, or null to clear it.
+   *
+   * Absent means "leave it alone"; null means "no confirmed age", which is a
+   * real state and not a validation failure. Anything else must be a plain
+   * adult integer -- the database carries the same rule as a CHECK, so this is
+   * the friendly half of a guarantee rather than the only thing holding it.
+   */
+  age?: number | null;
 }
 
 const REQUIRED_TEXT: ReadonlyArray<[keyof CharacterInput, string]> = [
@@ -253,7 +294,7 @@ function normalise(
   for (const [field, label] of REQUIRED_TEXT) {
     const value = input[field];
     const optionalHere =
-      allowEmptyProfile && (PROFILE_FIELDS as readonly string[]).includes(field as string);
+      allowEmptyProfile && (PROFILE_TEXT_FIELDS as readonly string[]).includes(field as string);
     if (value !== undefined) {
       const trimmed = String(value).trim();
       if (trimmed.length === 0 && !optionalHere) {
@@ -269,6 +310,27 @@ function normalise(
     out.interests = input.interests.map((i) => i.trim()).filter((i) => i.length > 0);
   }
   if (input.status !== undefined) out.status = input.status;
+
+  /**
+   * AGE: adult, or explicitly nothing.
+   *
+   * Rejected rather than coerced. Rounding 17.5, or reading "twenty" as 20,
+   * would put a number nobody typed on a public card -- and on an adult
+   * product the one number that must never be wrong is this one.
+   */
+  if (input.age !== undefined) {
+    if (input.age === null) {
+      out.age = null;
+    } else if (typeof input.age !== 'number' || !Number.isInteger(input.age)) {
+      throw new CharacterValidationError('age', 'Age must be a whole number.');
+    } else if (input.age < MINIMUM_ADULT_AGE) {
+      throw new CharacterValidationError('age', 'Age must be 18 or over.');
+    } else if (input.age > MAXIMUM_PLAUSIBLE_AGE) {
+      throw new CharacterValidationError('age', `Age must be ${MAXIMUM_PLAUSIBLE_AGE} or under.`);
+    } else {
+      out.age = input.age;
+    }
+  }
 
   /**
    * WHERE SHE LIVES. Blank is the same as unset: an operator clearing a box
@@ -419,6 +481,19 @@ export async function createCharacter(
   options: { allowEmptyProfile?: boolean } = {},
 ): Promise<AdminCharacter> {
   const values = normalise(input, true, options.allowEmptyProfile);
+  /**
+   * A character created ALREADY LIVE needs the same confirmed age an existing
+   * one needs to go live. `characters.status` defaults to 'active', so without
+   * this the full-create path would be a way around the gate in
+   * `updateCharacter`. Drafts are unaffected: createCharacterDraft sets
+   * 'inactive' explicitly.
+   */
+  if ((values.status ?? 'active') === 'active' && usableAge(values.age) === null) {
+    throw new CharacterValidationError(
+      'age',
+      'She needs a confirmed age of 18 or over before she can go live.',
+    );
+  }
   try {
     const [row] = await db
       .insert(characters)
@@ -445,6 +520,32 @@ export async function updateCharacter(
 ): Promise<AdminCharacter | null> {
   const values = normalise(input, false);
   if (Object.keys(values).length === 0) return getCharacterForAdmin(db, id);
+
+  /**
+   * GOING LIVE REQUIRES A CONFIRMED AGE, ENFORCED HERE RATHER THAN IN THE UI.
+   *
+   * Drafting is deliberately unrestricted -- a character exists from a name
+   * alone and is filled in over days -- so this refuses only what would leave
+   * a LIVE character without a confirmed age. Both directions are covered:
+   * going live without one, and clearing the age of someone already live.
+   *
+   * Judged on the state AFTER this patch, so setting the age and going live in
+   * a single request works, which is what the Publish button does.
+   *
+   * The browser also hides the Publish button, but a hidden button is not a
+   * rule. This is.
+   */
+  if (values.status === 'active' || 'age' in values) {
+    const current = await getCharacterForAdmin(db, id);
+    const resultingStatus = (values.status as string | undefined) ?? current?.status;
+    const resultingAge = 'age' in values ? (values.age as number | null) : (current?.age ?? null);
+    if (resultingStatus === 'active' && usableAge(resultingAge) === null) {
+      throw new CharacterValidationError(
+        'age',
+        'She needs a confirmed age of 18 or over before she can go live.',
+      );
+    }
+  }
 
   try {
     const [row] = await db

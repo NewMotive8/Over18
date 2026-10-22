@@ -16,7 +16,7 @@ import ProfileIdentity from './ProfileIdentity';
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const character = (): PublicCharacter => ({
-  id: 'c1', name: 'aria', displayName: 'Aria', profileImage: null, shortBio: '', personality: '', interests: [], conversationStyle: '',
+  id: 'c1', name: 'aria', displayName: 'Aria', profileImage: null, age: null, shortBio: '', personality: '', interests: [], conversationStyle: '',
 });
 const clip = (id: string): CharacterClipRef => ({ id, mediaType: 'video', url: `/api/media/assets/${id}/file` });
 const hero = (clips: CharacterClipRef[], topRight?: JSX.Element) =>

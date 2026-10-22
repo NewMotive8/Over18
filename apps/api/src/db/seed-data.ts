@@ -23,6 +23,7 @@ export const SEED_CHARACTERS: CharacterSeed[] = [
   {
     id: '5f0c6b10-0000-4000-8000-000000000001',
     name: 'luna',
+    age: 24,
     displayName: 'Luna',
     profileImage: 'https://placehold.co/512x512/1c1917/f43f5e?text=Luna',
     shortBio:
@@ -39,6 +40,7 @@ export const SEED_CHARACTERS: CharacterSeed[] = [
   {
     id: '5f0c6b10-0000-4000-8000-000000000002',
     name: 'ember',
+    age: 27,
     displayName: 'Ember',
     profileImage: 'https://placehold.co/512x512/1c1917/f97316?text=Ember',
     shortBio:
@@ -55,6 +57,7 @@ export const SEED_CHARACTERS: CharacterSeed[] = [
   {
     id: '5f0c6b10-0000-4000-8000-000000000003',
     name: 'sage',
+    age: 35,
     displayName: 'Sage',
     profileImage: 'https://placehold.co/512x512/1c1917/10b981?text=Sage',
     shortBio:
@@ -79,6 +82,7 @@ export const SEED_CHARACTERS: CharacterSeed[] = [
     // (Content/Site). New stable UUID — Sage's is never reused.
     id: '5f0c6b10-0000-4000-8000-000000000004',
     name: 'maria',
+    age: 29,
     displayName: 'Maria',
     profileImage: '/media/maria/portrait.png',
     // The PO explicitly approved NEUTRAL PLACEHOLDERS for the character text:

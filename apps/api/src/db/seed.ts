@@ -19,6 +19,9 @@ export async function seedCharacters(db: ReturnType<typeof createDb>['db']): Pro
         set: {
           name: seed.name,
           displayName: seed.displayName,
+          // Enumerated like the rest: without it, re-seeding an existing row
+          // would leave her age behind and she would read as incomplete.
+          age: seed.age,
           profileImage: seed.profileImage,
           shortBio: seed.shortBio,
           personality: seed.personality,

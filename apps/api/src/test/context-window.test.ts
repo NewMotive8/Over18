@@ -81,6 +81,7 @@ describe('createPromptBuilder with context window (US-10)', () => {
       name: LUNA.name,
       displayName: LUNA.displayName,
       profileImage: LUNA.profileImage ?? null,
+      age: null,
       shortBio: LUNA.shortBio,
       personality: LUNA.personality,
       interests: LUNA.interests as string[],

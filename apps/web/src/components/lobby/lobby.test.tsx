@@ -540,29 +540,31 @@ describe('the Play with me rail issues no request of its own', () => {
     expect(code).not.toMatch(/fetch\(/);
   });
 
-  it('renders the age from the band the Home payload sent', () => {
+  it('shows the confirmed age, and only that', () => {
     const markup = router(
-      <PlayWithMeCarousel
-        characters={[
-          {
-            ...videoCard('a'),
-            age: null,
-            apparentAgeBand: 'adult (late-20s)',
-          },
-        ]}
-      />,
+      <PlayWithMeCarousel characters={[{ ...videoCard('a'), age: 34 }]} />,
     );
-    // adultAgeFromBand('adult (late-20s)') — the same function, the same input,
-    // and therefore the same label the per-card fetch used to produce.
-    expect(markup).toContain('28');
+    expect(markup).toContain('34');
   });
 
-  it('falls back to the safe default age when no band was sent', () => {
-    // Exactly the state a failed or empty visual-identity fetch produced.
-    const markup = router(
-      <PlayWithMeCarousel characters={[{ ...videoCard('a'), apparentAgeBand: null }]} />,
+  /**
+   * THE BAND NO LONGER PRODUCES A LABEL. It used to: a card derived 28 from
+   * "late-20s" and 26 from nothing at all, which is how a whole rail came to
+   * read 26. A number beside her name is read as a fact, and the band only
+   * says how old she LOOKS -- so an unconfirmed age now shows as no age.
+   */
+  it('shows NO age when none is confirmed, whatever the band says', () => {
+    const withBand = router(
+      <PlayWithMeCarousel
+        characters={[{ ...videoCard('a'), age: null, apparentAgeBand: 'adult (late-20s)' }]}
+      />,
     );
-    expect(markup).toContain('26');
+    expect(withBand).not.toContain('>28<');
+
+    const withoutBand = router(
+      <PlayWithMeCarousel characters={[{ ...videoCard('a'), age: null, apparentAgeBand: null }]} />,
+    );
+    expect(withoutBand).not.toContain('>26<');
   });
 
   it('still shows no minor-coded term for any band', () => {

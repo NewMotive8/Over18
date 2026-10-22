@@ -24,6 +24,7 @@ function character(overrides: Partial<PublicCharacter> = {}): PublicCharacter {
     name: 'not-in-manifest',
     displayName: 'Aria',
     profileImage: null,
+    age: null,
     shortBio: '',
     personality: '',
     interests: [],
