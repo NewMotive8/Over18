@@ -20,6 +20,7 @@ function publicCharacter(seed: (typeof SEED_CHARACTERS)[number]): PublicCharacte
     name: seed.name,
     displayName: seed.displayName,
     profileImage: seed.profileImage ?? null,
+    age: null,
     shortBio: seed.shortBio,
     personality: seed.personality,
     interests: seed.interests as string[],

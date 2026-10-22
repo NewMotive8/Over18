@@ -43,7 +43,8 @@ import { LikeIcon, SparkleIcon } from '../components/icons';
 function FavouriteTile({ character }: { character: PublicPlayWithMeCard }) {
   const media = resolveRailMedia(character);
   // Her profile's age, falling back to the band -- see displayAge.
-  const age = displayAge(character.age, character.apparentAgeBand);
+  // Confirmed only. Null renders no age at all -- see displayAge.
+  const age = displayAge(character.age);
   const tags = character.categories.slice(0, 2);
 
   // NO REAL CLIP ⇒ NO TILE. The second lock; `galleryCards` has already
@@ -79,7 +80,7 @@ function FavouriteTile({ character }: { character: PublicPlayWithMeCard }) {
       <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1 p-2.5">
         <div className="flex items-baseline gap-1.5">
           <span className="truncate text-sm font-bold text-white">{character.displayName}</span>
-          <span className="text-xs text-zinc-300">{age}</span>
+          {age !== null && <span className="text-xs text-zinc-300">{age}</span>}
         </div>
         <div className="flex flex-wrap gap-1">
           {tags.map((tag) => (

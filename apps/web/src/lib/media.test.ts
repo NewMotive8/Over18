@@ -17,6 +17,7 @@ function character(overrides: Partial<PublicCharacter> = {}): PublicCharacter {
     name: 'nova',
     displayName: 'Nova',
     profileImage: 'https://img.example/nova.png',
+    age: null,
     shortBio: 'bio',
     personality: 'p',
     interests: [],

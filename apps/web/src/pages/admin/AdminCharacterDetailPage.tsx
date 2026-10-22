@@ -136,6 +136,12 @@ export default function AdminCharacterDetailPage() {
 
   const [personaOpen, setPersonaOpen] = useState(false);
   const [personaDraft, setPersonaDraft] = useState({ displayName: '', shortBio: '', personality: '', conversationStyle: '', systemPrompt: '' });
+  /**
+   * Her confirmed age, as typed. Held as a STRING so an empty box is a real
+   * state -- "no confirmed age" -- rather than being coerced to 0 or NaN on
+   * the way through a number input.
+   */
+  const [ageDraft, setAgeDraft] = useState('');
   // True once "Write my own" is chosen, so the box stays open while it is still empty.
   const [customStyle, setCustomStyle] = useState(false);
   /**
@@ -289,6 +295,8 @@ export default function AdminCharacterDetailPage() {
           conversationStyle: next.character.conversationStyle,
           systemPrompt: next.character.systemPrompt,
         });
+        // Null reads as an empty box; a blank box saves back as null.
+        setAgeDraft(next.character.age === null ? '' : String(next.character.age));
         setVoiceDraft(voiceSelectValue(next.character.liveCallVoice));
         setInterestsText(next.character.interests.join(', '));
         // Null reads as an empty box; the server turns a blank box back to null.
@@ -677,6 +685,18 @@ export default function AdminCharacterDetailPage() {
   };
 
   // The required persona fields still empty in the editor: outlined in red, the first one focused.
+  /**
+   * The persona's age, offered as a SUGGESTION only.
+   *
+   * It is a vision model's reading of one photograph, which is useful to see
+   * and must never be mistaken for a confirmed fact -- so it is never written
+   * into the field without a click.
+   */
+  const suggestedAge = (() => {
+    const raw = avatarPersona?.persona?.age;
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= 18 ? raw : null;
+  })();
+
   const draftMissing = missingDraftKeys(personaDraft);
   const styleMissing = draftMissing.includes('conversationStyle');
 
@@ -911,6 +931,60 @@ export default function AdminCharacterDetailPage() {
               </label>
             ))}
             {/*
+              HER AGE -- CONFIRMED, OR HONESTLY BLANK.
+              The box shows ONLY `characters.age`. When nobody has set one it
+              stays empty and the hint names what the customer surfaces fall
+              back to, labelled as a guess. Pre-filling it with the persona's
+              number would turn a model's answer into an operator's with one
+              unread Save.
+            */}
+            <label className="block">
+              <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Age
+              </span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={18}
+                max={120}
+                step={1}
+                data-testid="character-age-input"
+                placeholder="Not set"
+                value={ageDraft}
+                onChange={(e) => setAgeDraft(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+              />
+              {/*
+                THE SUGGESTION SITS BESIDE THE FIELD, NEVER INSIDE IT.
+                Pre-filling the box with the model's number would make a guess
+                indistinguishable from a decision after one unread Save. Shown
+                as a suggestion with an explicit action, the operator's click
+                is what turns it into confirmed data.
+              */}
+              {suggestedAge !== null && String(suggestedAge) !== ageDraft.trim() && (
+                <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                  <span>
+                    Suggested <strong className="text-zinc-300">{suggestedAge}</strong>, read from
+                    her photo — a guess, not a confirmed age.
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="use-suggested-age"
+                    onClick={() => setAgeDraft(String(suggestedAge))}
+                    className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600"
+                  >
+                    Use suggested age
+                  </button>
+                </p>
+              )}
+              <p className="mt-1 text-xs text-zinc-500">
+                {ageDraft.trim() === ''
+                  ? 'Not set. She cannot go live without one, and her cards show no age until it is set.'
+                  : 'Shown on her cards, her profile, and in what she says about herself. 18 or over.'}
+              </p>
+            </label>
+
+            {/*
               HOW SHE TALKS -- A CHOICE, NOT A BLANK BOX. Each option stores one
               plain sentence in the same column; "Write my own" keeps the free
               text. See admin/personaPresets.ts.
@@ -1052,6 +1126,9 @@ export default function AdminCharacterDetailPage() {
                       .split(',')
                       .map((i) => i.trim())
                       .filter(Boolean),
+                    // Blank means "no confirmed age" and is sent as null, not
+                    // skipped: clearing a wrong age has to be possible.
+                    age: ageDraft.trim() === '' ? null : Number(ageDraft.trim()),
                     ...voicePatch(voiceDraft),
                     // Sent as typed; the server trims, upper-cases a country
                     // code, validates the zone, and stores blank as null.

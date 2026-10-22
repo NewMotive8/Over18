@@ -69,6 +69,8 @@ const VALID_CHARACTER = {
   conversationStyle: 'Asks questions back. Never lectures.',
   systemPrompt: 'You are Nova, a fictional adult woman.',
   interests: ['astronomy', 'jazz'],
+  // Complete means complete: she is created live, and live needs an age.
+  age: 29,
 };
 
 beforeAll(async () => {
@@ -537,6 +539,113 @@ describe('exactly one active version', () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Her confirmed age
+ * ------------------------------------------------------------------ */
+
+describe('the confirmed age', () => {
+  const patch = (cookies: Record<string, string>, id: string, body: unknown) =>
+    ctx.app.inject({ method: 'PATCH', url: `/admin/characters/${id}`, cookies, payload: body as never });
+
+  it('starts unset, and unset is a real answer rather than a default', async () => {
+    const cookies = await adminCookies();
+    // A DRAFT: created from a name alone, with no age and not live.
+    const id = (await createCharacter(cookies, { age: null, status: 'inactive' })).json().id;
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    // Never 26, never a band-derived number: Admin reports what is KNOWN.
+    expect(got.json().character.age).toBeNull();
+  });
+
+  it('stores an adult age and reads it back', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    expect((await patch(cookies, id, { age: 32 })).statusCode).toBe(200);
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(got.json().character.age).toBe(32);
+  });
+
+  it('clears it again on a draft — a wrong age must be removable', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies, { age: null, status: 'inactive' })).json().id;
+    await patch(cookies, id, { age: 32 });
+    expect((await patch(cookies, id, { age: null })).statusCode).toBe(200);
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(got.json().character.age).toBeNull();
+  });
+
+  /**
+   * BOTH DIRECTIONS OF THE SAME RULE. Going live without an age is refused,
+   * and so is taking the age away from someone already live -- otherwise the
+   * gate would be a formality anyone could step around in a second request.
+   */
+  it('refuses to leave a LIVE character without an age', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id; // created live, age 29
+    const cleared = await patch(cookies, id, { age: null });
+    expect(cleared.statusCode).toBe(400);
+    expect(cleared.json().field).toBe('age');
+
+    // Taking her offline first makes it an ordinary edit again.
+    expect((await patch(cookies, id, { status: 'inactive' })).statusCode).toBe(200);
+    expect((await patch(cookies, id, { age: null })).statusCode).toBe(200);
+  });
+
+  it('refuses to publish a character who has no confirmed age', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies, { age: null, status: 'inactive' })).json().id;
+    const res = await patch(cookies, id, { status: 'active' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field).toBe('age');
+
+    // Age and status together, which is what the Publish button sends.
+    expect((await patch(cookies, id, { status: 'active', age: 24 })).statusCode).toBe(200);
+  });
+
+  it('leaves it alone when the patch does not mention it', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await patch(cookies, id, { age: 29 });
+    await patch(cookies, id, { personality: 'Changed something else.' });
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(got.json().character.age).toBe(29);
+  });
+
+  /**
+   * REFUSED, NEVER COERCED. Rounding 17.5 or reading "twenty" as 20 would put
+   * a number nobody typed onto a public card, and on an adult product this is
+   * the one number that must never be wrong.
+   */
+  it('refuses a minor, a fraction and anything that is not a number', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies, { age: null, status: 'inactive' })).json().id;
+    for (const bad of [17, 0, -1, 25.5, '32', 'twenty', true, {}, []]) {
+      const res = await patch(cookies, id, { age: bad });
+      expect(res.statusCode, JSON.stringify(bad)).toBe(400);
+      expect(res.json().field, JSON.stringify(bad)).toBe('age');
+    }
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(got.json().character.age).toBeNull();
+  });
+
+  it('accepts exactly 18', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    expect((await patch(cookies, id, { age: 18 })).statusCode).toBe(200);
+  });
+
+  /**
+   * THE DATABASE IS THE LAST WORD. The API check above is the friendly half;
+   * this proves the guarantee survives a writer that bypasses it.
+   */
+  it('is refused by the database itself, not only by the API', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await expect(
+      ctx.pool.query('UPDATE characters SET age = $1 WHERE id = $2', [16, id]),
+    ).rejects.toThrow(/characters_age_adult|check constraint/i);
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * Primary references
  * ------------------------------------------------------------------ */
 
@@ -871,6 +980,7 @@ describe('quick create', () => {
     const { character } = (await quickCreate(cookies)).json();
     expect(character.profileComplete).toBe(false);
     expect(character.missingProfileFields.sort()).toEqual([
+      'age',
       'conversationStyle',
       'personality',
       'shortBio',
@@ -913,12 +1023,15 @@ describe('quick create', () => {
     const before = (await ctx.app.inject({ method: 'GET', url: '/api/characters' })).json();
     expect(before.some((c: { id: string }) => c.id === character.id)).toBe(false);
 
-    await ctx.app.inject({
+    // Going live needs a confirmed age; set it in the same patch, which is
+    // exactly what the Publish button does.
+    const published = await ctx.app.inject({
       method: 'PATCH',
       url: `/admin/characters/${character.id}`,
-      payload: { status: 'active' },
+      payload: { status: 'active', age: 29 },
       cookies,
     });
+    expect(published.statusCode).toBe(200);
     const after = (await ctx.app.inject({ method: 'GET', url: '/api/characters' })).json();
     expect(after.some((c: { id: string }) => c.id === character.id)).toBe(true);
   });
@@ -1071,7 +1184,13 @@ describe('profile autofill', () => {
     expect(authorCalls[0]!.displayName).toBe('Nova');
   });
 
-  it('saving the draft is an ordinary edit, and completes the profile', async () => {
+  /**
+   * AUTOFILL CANNOT FINISH HER ANY MORE, AND THAT IS THE POINT. It writes
+   * every text field, and the one field it cannot supply is her age -- which
+   * has to be a person's decision, not a model's. So the profile is one step
+   * from complete, and that step is a human confirming a number.
+   */
+  it('saving the draft fills every text field, leaving only the age to confirm', async () => {
     const cookies = await adminCookies();
     const { character } = (await quickCreate(cookies)).json();
     const url = `/admin/characters/${character.id}/autofill`;
@@ -1084,9 +1203,19 @@ describe('profile autofill', () => {
       cookies,
     });
     expect(saved.statusCode).toBe(200);
-    expect(saved.json().profileComplete).toBe(true);
-    expect(saved.json().missingProfileFields).toEqual([]);
     expect(saved.json().shortBio).toBe(draft.shortBio);
+    expect(saved.json().missingProfileFields).toEqual(['age']);
+    expect(saved.json().profileComplete).toBe(false);
+
+    // And one confirmed age finishes her.
+    const withAge = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${character.id}`,
+      payload: { age: 29 },
+      cookies,
+    });
+    expect(withAge.json().missingProfileFields).toEqual([]);
+    expect(withAge.json().profileComplete).toBe(true);
   });
 
   it('404s for an unknown character rather than calling the model', async () => {

@@ -50,6 +50,7 @@ function character(profileImage: string | null, name = 'luna'): PublicCharacter 
   return {
     id: name,
     name,
+    age: null,
     displayName: name.charAt(0).toUpperCase() + name.slice(1),
     profileImage,
     shortBio: 'bio',

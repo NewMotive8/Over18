@@ -263,6 +263,16 @@ export interface PublicCharacter {
    * not assume it is a column, a path or a storage key.
    */
   profileImage: string | null;
+  /**
+   * Her age as an operator CONFIRMED it, or null when nobody has.
+   *
+   * Null is a real answer and not a gap to paper over: two other numbers exist
+   * -- the persona's age, written by a vision model, and the apparent-age band
+   * on her visual identity -- and neither is a statement of fact. A surface
+   * that needs something to render falls back to those, in that order; a
+   * surface that is reporting what is KNOWN shows this and nothing else.
+   */
+  age: number | null;
   shortBio: string;
   personality: string;
   interests: string[];

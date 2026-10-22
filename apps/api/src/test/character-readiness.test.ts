@@ -207,8 +207,8 @@ describe('readiness and publishability on the admin character detail', () => {
       'no_active_visual_identity',
     ]);
     expect(d.publishability.blockers[1]).toMatchObject({
-      fields: ['shortBio', 'personality', 'conversationStyle', 'systemPrompt'],
-      message: 'Her profile is incomplete: 4 fields still empty.',
+      fields: ['shortBio', 'personality', 'conversationStyle', 'systemPrompt', 'age'],
+      message: 'Her profile is incomplete: 5 fields still empty.',
     });
   });
 

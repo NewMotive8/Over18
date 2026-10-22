@@ -31,6 +31,7 @@ const character = (over: Partial<PublicCharacter> = {}): PublicCharacter => ({
   name: 'nova',
   displayName: 'Nova',
   profileImage: null,
+  age: null,
   shortBio: NOVA_BIO,
   personality: NOVA_PERSONALITY,
   interests: ['astrophotography', 'pulsars', 'abandoned observatories'],

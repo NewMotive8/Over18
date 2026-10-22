@@ -40,40 +40,42 @@ describe('the adults-only guardrail survives the US-102.4 rewrite', () => {
  * live rail read 26, 26, 26, 26, 28, 26: only the character whose band had
  * been typed by hand ("late-20s") differed from the default.
  */
-describe('displayAge: her profile first, her photo second', () => {
-  it('shows the stated age instead of the default the bare band produces', () => {
-    // The exact shape of the defect: same band, different characters.
-    expect(adultAgeFromBand('adult')).toBe(26);
-    expect(displayAge(31, 'adult')).toBe(31);
-    expect(displayAge(22, 'adult')).toBe(22);
-    expect(displayAge(44, 'adult')).toBe(44);
+/**
+ * A PUBLIC AGE IS A CONFIRMED AGE, OR NOTHING.
+ *
+ * Cards used to derive a number from the apparent-age band, which is written
+ * as the bare string 'adult' whenever an identity is provisioned
+ * automatically -- so a live rail read 26, 26, 26, 26, 28, 26. The fix is not
+ * a better fallback: a number beside her name reads as a fact, and neither
+ * the band nor a vision model's persona age is one. Null means show none, and
+ * a character now needs a confirmed age before she can go live.
+ */
+describe('displayAge: confirmed, or nothing', () => {
+  it('shows an operator-confirmed age', () => {
+    expect(displayAge(32)).toBe(32);
+    expect(displayAge(18)).toBe(18);
+    expect(displayAge(41)).toBe(41);
   });
 
-  it('prefers the stated age even when the band would give a different number', () => {
-    // The band says how old she LOOKS; the profile says how old she IS.
-    expect(adultAgeFromBand('adult (late-20s)')).toBe(28);
-    expect(displayAge(35, 'adult (late-20s)')).toBe(35);
+  it('shows NOTHING when no age is confirmed', () => {
+    expect(displayAge(null)).toBeNull();
+    expect(displayAge(undefined)).toBeNull();
   });
 
-  /** Unchanged for anyone without a persona: the band still decides. */
-  it('falls back to the band when there is no stated age', () => {
-    for (const missing of [null, undefined]) {
-      expect(displayAge(missing, 'adult (mid-30s)')).toBe(35);
-      expect(displayAge(missing, 'adult')).toBe(26);
-      expect(displayAge(missing, null)).toBe(26);
+  it('refuses anything that is not a plain adult integer', () => {
+    for (const bad of [17, 0, -5, 25.5, Number.NaN]) {
+      expect(displayAge(bad), String(bad)).toBeNull();
     }
   });
 
   /**
-   * NEVER A MINOR-CODED NUMBER, whatever the row says. This is a public label
-   * on an adult product, so an implausible or non-integer value is treated as
-   * absent and the band answers instead -- the floor is never crossed by
-   * trusting a stored value.
+   * The band still parses -- Admin may reasonably show a hedged estimate while
+   * an operator decides -- but it no longer reaches a customer-facing label.
    */
-  it('refuses an age that is not a plain adult integer', () => {
-    for (const bad of [17, 0, -5, 20, 25.5, Number.NaN] as number[]) {
-      expect(displayAge(bad, 'adult (mid-20s)')).toBe(25);
-    }
-    expect(displayAge(21, 'adult')).toBe(21); // the floor itself is allowed
+  it('keeps the band parser for Admin, with no route to a public number', () => {
+    expect(adultAgeFromBand('adult (late-20s)')).toBe(28);
+    expect(adultAgeFromBand('adult')).toBe(26);
+    // displayAge takes ONE argument now: a band cannot be passed to it at all.
+    expect(displayAge.length).toBe(1);
   });
 });

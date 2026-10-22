@@ -5,11 +5,10 @@ import { API_URL, ApiRequestError, charactersApi, conversationsApi, type PublicC
 import { useAuth } from '../auth/AuthContext';
 import {
   profileAvatarUrl,
-  apparentAge,
   characterHeaderItems,
   type CharacterMediaItem,
 } from '../lib/media';
-import { adultAgeFromBand } from '../lib/lobbyContent';
+import { displayAge } from '../lib/lobbyContent';
 import { mockRelationship } from '../lib/relationship';
 import ProfileHero from '../components/profile/ProfileHero';
 import ProfileIdentity from '../components/profile/ProfileIdentity';
@@ -286,7 +285,13 @@ export default function CharacterDetailPage() {
     // and nowhere else.
     contentRating: clip.contentRating,
   }));
-  const age = adultAgeFromBand(apparentAge(visualData));
+  /**
+   * HER PROFILE AND HER CARD MUST AGREE. Both ask `displayAge`: the confirmed
+   * age the server carries on the character, and only failing that the
+   * apparent-age band. Deriving from the band alone here is what made a
+   * profile read 26 while the same character told a caller she was 32.
+   */
+  const age = displayAge(character.age);
   const avatarPoster = profileAvatarUrl(character.profileImage, heroItems[0]?.media);
   const relationship = mockRelationship(character);
   const upgrade = upgradeAction(economy, {

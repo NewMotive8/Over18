@@ -39,6 +39,7 @@ import {
   publicBannerCreativeUrl,
   type BannerCreativeStorage,
 } from './banner-creative-service.js';
+import { usableAge as confirmedPublicAge } from './character-age.js';
 
 /**
  * Home composition (US-102.4).
@@ -220,7 +221,7 @@ export interface PublicPlayWithMeCardView {
   id: string;
   displayName: string;
   /**
-   * Her AGE, as her profile states it, or null when she has no persona age.
+   * Her CONFIRMED age, or null when nobody has set one.
    *
    * WHY THIS IS NOT THE BAND. The band describes how old she LOOKS in her
    * reference image; this is how old she IS. Every card used to derive its
@@ -911,7 +912,13 @@ async function playWithMeCards(
        * falls back to the band. `character_personas` is keyed by character, so
        * this cannot multiply the roster either.
        */
-      age: sql<string | null>`${characterPersonas.persona} ->> 'age'`,
+      personaAge: sql<string | null>`${characterPersonas.persona} ->> 'age'`,
+      /**
+       * Her CONFIRMED age, straight off the character row -- no join needed,
+       * and it outranks the persona's. See character-age.ts for why the two
+       * are separate numbers rather than one column that gets overwritten.
+       */
+      confirmedAge: characters.age,
     })
     .from(characters)
     .leftJoin(
@@ -963,7 +970,14 @@ async function playWithMeCards(
   return rows.map((row) => ({
     id: row.id,
     displayName: row.displayName,
-    age: statedAge(row.age),
+    /**
+     * CONFIRMED ONLY ON A PUBLIC SURFACE. The persona's age is a vision
+     * model's guess and the apparent-age band says how old she LOOKS; a bare
+     * number beside her name reads as a fact either way, so neither is sent.
+     * Null means "no age to show" and the card shows none -- which is the
+     * truth, and is why going live now requires one.
+     */
+    age: confirmedPublicAge(row.confirmedAge),
     // The SAME renderer the Character page's About tab uses — see renderValue.
     apparentAgeBand: renderValue(row.apparentAgeBand),
     categories: categories.get(row.id) ?? [],

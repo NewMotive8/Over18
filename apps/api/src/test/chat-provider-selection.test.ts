@@ -255,7 +255,7 @@ describe('the reply and opening providers follow the chat config', () => {
     const provider = selectReplyProvider({ ...envWith(null), isProduction: true });
     expect(() =>
       provider({
-        character: { id: 'c', name: 'n', displayName: 'N', profileImage: null, shortBio: '',
+        character: { id: 'c', name: 'n', displayName: 'N', profileImage: null, age: null, shortBio: '',
           personality: '', interests: [], conversationStyle: '' },
         systemPrompt: 'You are N.',
         history: [], priorMessageCount: 0, userMessage: 'hi',

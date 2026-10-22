@@ -429,6 +429,7 @@ describe('POC: the text agrees with the action', () => {
     name: LUNA.name,
     displayName: LUNA.displayName,
     profileImage: null,
+    age: null,
     shortBio: LUNA.shortBio,
     personality: LUNA.personality,
     interests: LUNA.interests as string[],

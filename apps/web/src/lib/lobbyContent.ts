@@ -63,14 +63,25 @@ export function personaBadge(index: number): PersonaBadge {
  * is how a rail of six cards came to read 26, 26, 26, 26, 28, 26: only the
  * one with a hand-written band ("late-20s") differed.
  *
- * Her stated age is the number an operator actually edits and the one her
- * profile shows, so it wins. The band stays as the fallback, unchanged, so a
- * character with no persona still reads exactly as she does today.
+ * SO THE BAND NO LONGER PRODUCES A PUBLIC NUMBER AT ALL. A number beside her
+ * name reads as a fact, and neither the band nor the persona's guess is one:
+ * the band describes how old she LOOKS, and the persona age was written by a
+ * vision model from a photograph. Presenting either as her age is the thing
+ * this is meant to stop, and there is no way to render "26" as "probably".
+ *
+ * Null therefore means "show no age", and that is why a character now needs a
+ * confirmed age before she can go live -- the gate and this rule are two
+ * halves of the same guarantee. `adultAgeFromBand` is kept for the Admin
+ * screens, which may reasonably show a hedged estimate while an operator is
+ * deciding what to enter.
  */
-export function displayAge(age: number | null | undefined, band?: string | null): number {
-  if (typeof age === 'number' && Number.isInteger(age) && age >= 21) return age;
-  return adultAgeFromBand(band);
+export function displayAge(age: number | null | undefined): number | null {
+  if (typeof age === 'number' && Number.isInteger(age) && age >= MINIMUM_PUBLIC_AGE) return age;
+  return null;
 }
+
+/** The floor the server and the database also enforce. */
+export const MINIMUM_PUBLIC_AGE = 18;
 
 /**
  * Derives a clearly-adult numeric age from a Visual Identity apparent-age band

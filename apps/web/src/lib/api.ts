@@ -1791,6 +1791,15 @@ export interface AdminCharacterView {
    */
   liveCallVoice: string | null;
   /**
+   * Her CONFIRMED age, or null when nobody has set one.
+   *
+   * Null renders as unset -- never as the persona's guess or a number derived
+   * from the apparent-age band. Those are display fallbacks for the customer
+   * surfaces; showing one here would present a model's answer as an
+   * operator's.
+   */
+  age: number | null;
+  /**
    * Where she lives. Every part is independently optional: an operator may know
    * the country and not the city. `timezone` is an IANA zone, validated by the
    * server; nothing is inferred from anything else.
@@ -1937,6 +1946,8 @@ export interface CharacterDraft {
   systemPrompt: string;
   interests: string[];
   status?: 'active' | 'inactive';
+  /** 18 or over, or null to clear it. Absent leaves it unchanged. */
+  age?: number | null;
 }
 
 /** What Autofill proposes. A DRAFT — nothing is saved until the operator says so. */
