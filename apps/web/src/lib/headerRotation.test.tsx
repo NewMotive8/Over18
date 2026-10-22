@@ -19,7 +19,7 @@ const clip = (n: number, mediaType: 'image' | 'video' = 'video'): PublicClip => 
   id: id(100 + n), mediaType, url: `/api/media/clip-${n}.mp4`, characterId: id(n), characterName: `Char ${n}`,
 });
 const card = (n: number, c: PublicClip | null = clip(n)): PublicPlayWithMeCard =>
-  ({ id: id(n), displayName: `Char ${n}`, apparentAgeBand: '25-29', categories: [], clip: c }) as PublicPlayWithMeCard;
+  ({ id: id(n), displayName: `Char ${n}`, age: null, apparentAgeBand: '25-29', categories: [], clip: c }) as PublicPlayWithMeCard;
 const CARDS = Array.from({ length: 12 }, (_, i) => card(i + 1));
 const seq = (...values: number[]) => {
   let i = 0;

@@ -70,6 +70,7 @@ function railCard(id = 'a', over: Partial<PublicPlayWithMeCard> = {}): PublicPla
   return {
     id,
     displayName: `Name ${id}`,
+    age: null,
     apparentAgeBand: null,
     categories: [],
     clip: clip(id),
@@ -545,6 +546,7 @@ describe('the Play with me rail issues no request of its own', () => {
         characters={[
           {
             ...videoCard('a'),
+            age: null,
             apparentAgeBand: 'adult (late-20s)',
           },
         ]}

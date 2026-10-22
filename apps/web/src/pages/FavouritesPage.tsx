@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { useFavourites } from '../hooks/useFavourites';
 import { galleryCards } from '../lib/favourites';
 import { resolveRailMedia } from '../lib/media';
-import { adultAgeFromBand } from '../lib/lobbyContent';
+import { displayAge } from '../lib/lobbyContent';
 import type { PublicPlayWithMeCard } from '../lib/api';
 import HeroMedia from '../components/HeroMedia';
 import PageContainer from '../components/PageContainer';
@@ -42,7 +42,8 @@ import { LikeIcon, SparkleIcon } from '../components/icons';
  */
 function FavouriteTile({ character }: { character: PublicPlayWithMeCard }) {
   const media = resolveRailMedia(character);
-  const age = adultAgeFromBand(character.apparentAgeBand);
+  // Her profile's age, falling back to the band -- see displayAge.
+  const age = displayAge(character.age, character.apparentAgeBand);
   const tags = character.categories.slice(0, 2);
 
   // NO REAL CLIP ⇒ NO TILE. The second lock; `galleryCards` has already

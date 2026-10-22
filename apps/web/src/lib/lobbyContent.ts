@@ -52,6 +52,27 @@ export function personaBadge(index: number): PersonaBadge {
 }
 
 /**
+ * The age a card shows: what her profile SAYS, or what her photo suggests.
+ *
+ * WHY THE ORDER IS THIS WAY ROUND. Every surface used to derive the number
+ * from the apparent-age band alone. That band is created as the bare string
+ * `'adult'` whenever an identity is provisioned automatically -- by
+ * quick-create, or by a character's first upload -- and `adultAgeFromBand`
+ * finds no digits in it and falls back to one fixed default. So every
+ * character who never had a band typed by hand rendered the SAME age, which
+ * is how a rail of six cards came to read 26, 26, 26, 26, 28, 26: only the
+ * one with a hand-written band ("late-20s") differed.
+ *
+ * Her stated age is the number an operator actually edits and the one her
+ * profile shows, so it wins. The band stays as the fallback, unchanged, so a
+ * character with no persona still reads exactly as she does today.
+ */
+export function displayAge(age: number | null | undefined, band?: string | null): number {
+  if (typeof age === 'number' && Number.isInteger(age) && age >= 21) return age;
+  return adultAgeFromBand(band);
+}
+
+/**
  * Derives a clearly-adult numeric age from a Visual Identity apparent-age band
  * (e.g. "adult (mid-20s)"). The band is already adult-validated server-side;
  * this maps it to a display number and clamps to >= 21 so the lobby can never

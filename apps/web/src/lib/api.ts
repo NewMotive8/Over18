@@ -997,7 +997,13 @@ export interface PublicCharacterCard {
 export interface PublicPlayWithMeCard {
   id: string;
   displayName: string;
-  /** Raw apparent-age band, or null. The card derives its age label from it. */
+  /**
+   * Her stated age, or null when she has no persona age. Preferred over the
+   * band -- see `displayAge`. The band says how old she LOOKS; this is how old
+   * she IS, and it is the number an operator edits on her profile.
+   */
+  age: number | null;
+  /** Raw apparent-age band, or null. Used only when there is no stated age. */
   apparentAgeBand: string | null;
   /** Real App Category membership; the card chips render these. */
   categories: Array<{ slug: string; name: string }>;

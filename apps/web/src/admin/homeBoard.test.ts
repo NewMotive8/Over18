@@ -158,7 +158,7 @@ describe('preview summary', () => {
         { id: 'h', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C' },
       ],
       playWithMe: [
-        { id: 'p', displayName: 'P', apparentAgeBand: null, categories: [], clip: null },
+        { id: 'p', displayName: 'P', age: null, apparentAgeBand: null, categories: [], clip: null },
       ],
       categories: [
         { id: 'r', slug: 'r', name: 'R', tagline: null, clips: [{ id: 'x', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C' }] },

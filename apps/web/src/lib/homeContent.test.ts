@@ -32,6 +32,7 @@ function card(id: string): PublicPlayWithMeCard {
   return {
     id,
     displayName: `Name ${id}`,
+    age: null,
     apparentAgeBand: null,
     categories: [],
     clip: clip(`clip-${id}`),
