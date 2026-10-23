@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import type { PublicClip } from '../../lib/api';
+import CardNameAge, { cardAriaLabel } from './CardNameAge';
 import ClipMedia from './ClipMedia';
-import { displayAge } from '../../lib/lobbyContent';
 
 /**
  * One search result: a real CMS content asset.
@@ -37,16 +37,6 @@ import { displayAge } from '../../lib/lobbyContent';
  * against a clip that has no such status.
  */
 export default function ClipGridCard({ clip }: { clip: PublicClip }) {
-  /**
-   * Her confirmed age, through the SAME resolver the Play with me rail uses.
-   *
-   * These rails carried no age at all until now, so a confirmed age appeared on
-   * Play with me and nowhere else -- the same character reading "Donna 32" in
-   * one rail and "Donna" in the next. `displayAge` is confirmed-only and null
-   * renders nothing, so the two rails cannot disagree.
-   */
-  const age = displayAge(clip.characterAge);
-
   // The second lock. The server filters to video; this makes an image
   // unrenderable here rather than merely unexpected.
   if (clip.mediaType !== 'video') return null;
@@ -54,17 +44,17 @@ export default function ClipGridCard({ clip }: { clip: PublicClip }) {
   return (
     <Link
       to={`/characters/${clip.characterId}`}
-      aria-label={age === null ? `Open ${clip.characterName}` : `Open ${clip.characterName}, ${age}`}
+      aria-label={cardAriaLabel(clip.characterName, clip.characterAge)}
       className="group relative block aspect-[3/4] w-full overflow-hidden rounded-2xl border border-white/5 bg-zinc-900"
     >
       <ClipMedia clip={clip} autoPlay />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent" />
-      <div className="absolute inset-x-0 bottom-0 flex items-baseline gap-1.5 p-3">
-        <span className="truncate text-base font-bold text-white drop-shadow">
-          {clip.characterName}
-        </span>
-        {age !== null && <span className="text-sm font-medium text-zinc-200">{age}</span>}
-      </div>
+      <CardNameAge
+        name={clip.characterName}
+        age={clip.characterAge}
+        size="base"
+        className="absolute inset-x-0 bottom-0 p-3"
+      />
     </Link>
   );
 }

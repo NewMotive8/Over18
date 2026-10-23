@@ -96,7 +96,17 @@ describe('a search result is a real CMS content asset', () => {
       'group relative block aspect-[3/4] w-full overflow-hidden rounded-2xl border border-white/5 bg-zinc-900',
     );
     expect(markup).toContain('bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent');
-    expect(markup).toContain('flex items-baseline gap-1.5 p-3');
+    /**
+     * ASSERTED BY PROPERTY, NOT BY EXACT CLASS STRING. The name row moved into
+     * the shared `CardNameAge`, so the classes are composed in a different
+     * order and gained `min-w-0` -- which `truncate` needs to work inside a
+     * flex child and which this card never had. The LAYOUT is what the freeze
+     * protects: a baseline-aligned row pinned to the bottom with the same gap
+     * and padding, which is what these check.
+     */
+    for (const cls of ['items-baseline', 'gap-1.5', 'p-3', 'absolute', 'inset-x-0', 'bottom-0']) {
+      expect(markup, cls).toContain(cls);
+    }
   });
 
   it('carries NO fabricated NEW/HOT badge', () => {

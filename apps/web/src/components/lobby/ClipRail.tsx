@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { Link } from 'react-router-dom';
 import type { PublicCategoryRail } from '../../lib/api';
+import CardNameAge, { cardAriaLabel } from './CardNameAge';
 import ClipMedia from './ClipMedia';
 import RailArrows from './RailArrows';
 
@@ -32,7 +33,7 @@ export default function ClipRail({ rail }: { rail: PublicCategoryRail }) {
           <Link
             key={clip.id}
             to={`/characters/${clip.characterId}`}
-            aria-label={`Open ${clip.characterName}`}
+            aria-label={cardAriaLabel(clip.characterName, clip.characterAge)}
             className="relative block aspect-[3/4] w-40 shrink-0 snap-start overflow-hidden rounded-2xl border border-white/5 bg-zinc-900 lg:w-48 xl:w-52"
           >
             {/* autoPlay, like the Hero. ClipMedia defaults it OFF, so this
@@ -41,9 +42,11 @@ export default function ClipRail({ rail }: { rail: PublicCategoryRail }) {
                 different ways on one page. Playback only: no class, no size. */}
             <ClipMedia clip={clip} autoPlay />
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-zinc-950 to-transparent" />
-            <span className="absolute inset-x-0 bottom-0 block truncate p-2.5 text-sm font-semibold text-white">
-              {clip.characterName}
-            </span>
+            <CardNameAge
+              name={clip.characterName}
+              age={clip.characterAge}
+              className="absolute inset-x-0 bottom-0 p-2.5"
+            />
           </Link>
         ))}
       </div>
