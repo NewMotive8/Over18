@@ -9,6 +9,7 @@ import {
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters } from '../db/seed.js';
 import type { VoiceSession, VoiceSessionProvider, VoiceSessionRequest } from '../voice/types.js';
+import { INSTRUCTIONS_MAX_CHARS } from '../voice/spicyapi.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -58,6 +59,7 @@ const stubSession = (over: Partial<VoiceSession> = {}): VoiceSession => ({
 
 const provider: VoiceSessionProvider = {
   name: 'spicyapi',
+  instructionsMaxChars: INSTRUCTIONS_MAX_CHARS,
   async createSession(request) {
     providerCalls.push(request);
     return providerImpl(request);

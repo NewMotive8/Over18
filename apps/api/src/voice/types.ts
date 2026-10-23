@@ -126,10 +126,63 @@ export interface VoiceSession {
   url: string;
   clientSecret: string;
   clientSecretExpiresAt: number;
+  /**
+   * WebSocket subprotocols to open the upstream socket with, when the provider
+   * authenticates that way rather than through the URL.
+   *
+   * WHY THIS EXISTS. SpicyAPI returns a session URL that carries its own
+   * credential, so the relay opens it with no second argument and this stays
+   * undefined. xAI's realtime endpoint is a bare `wss://api.x.ai/v1/realtime`
+   * and expects either an `Authorization` header -- which the WHATWG WebSocket
+   * API cannot set -- or an ephemeral token passed as a subprotocol. The
+   * subprotocol is therefore the only route that does not mean replacing the
+   * global WebSocket the relay already uses.
+   *
+   * Live credential material, like `clientSecret`: held in memory for the relay
+   * and never persisted, logged or sent to a browser.
+   */
+  subprotocols?: readonly string[];
+  /**
+   * Frames the relay must write the moment the socket opens, before anything
+   * else.
+   *
+   * WHY A PROVIDER MAY NEED THIS. SpicyAPI takes the compiled persona in the
+   * body of the REST call that creates the session, so by the time a socket
+   * exists the model is already configured and this stays undefined. xAI has no
+   * such call -- its `client_secrets` endpoint accepts only `model` and
+   * `reasoning.effort` -- so the persona can only arrive as a `session.update`
+   * frame over the open socket.
+   *
+   * THESE FRAMES CARRY THE PERSONA, so they are treated exactly as
+   * `clientSecret` is: in memory, never logged, never forwarded to a browser.
+   * They are built by the adapter from instructions the server compiled, and
+   * `session.update` remains absent from the browser's allowlist so a client
+   * cannot send one of its own.
+   */
+  onOpenFrames?: readonly string[];
 }
 
 export interface VoiceSessionProvider {
   readonly name: string;
+  /**
+   * The provider's published ceiling on `instructions`, or null when it
+   * documents none.
+   *
+   * WHY IT MOVED ONTO THE SEAM. `call-session-service` imported SpicyAPI's
+   * 8,000-character constant directly, which made one vendor's limit the
+   * arithmetic for every vendor -- so a provider with no limit would still have
+   * had a character's remembered facts trimmed to fit a number that did not
+   * apply to it, and an oversized persona refused for a reason that was not
+   * true.
+   *
+   * NULL IS NOT INFINITY WITH BETTER MANNERS. It means "this provider publishes
+   * no limit", which is a fact about the documentation rather than a promise
+   * about the provider. The budget code treats it as "do not trim and do not
+   * refuse", because inventing a ceiling nobody published would be guessing, and
+   * guessing low silently truncates a persona while guessing high does nothing
+   * at all.
+   */
+  readonly instructionsMaxChars: number | null;
   createSession(request: VoiceSessionRequest): Promise<VoiceSession>;
 }
 
@@ -142,6 +195,9 @@ export interface VoiceSessionProvider {
  */
 export const unconfiguredVoiceProvider: VoiceSessionProvider = {
   name: 'unconfigured',
+  // Nothing will be compiled for it, so the value is immaterial; null is the
+  // honest one -- an absent provider publishes no limit.
+  instructionsMaxChars: null,
   // Async, not a synchronous throw: the interface promises a Promise, and a
   // caller doing `.catch()` rather than `await` must not get an uncaught error.
   async createSession() {

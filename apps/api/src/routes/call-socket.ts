@@ -566,7 +566,12 @@ export default async function callSocketRoutes(
        */
       let request_;
       try {
-        request_ = await buildProviderSessionRequest(opts.db, claim.row);
+        request_ = await buildProviderSessionRequest(
+          opts.db,
+          claim.row,
+          // The ACTIVE provider's limit, not a constant belonging to one vendor.
+          opts.provider.instructionsMaxChars,
+        );
       } catch (error) {
         request.log.error(
           { voiceRelay: describeError(error) },
@@ -673,7 +678,21 @@ export default async function callSocketRoutes(
       /* ---------------------------------------------------------------- *
        * Upstream socket
        * ---------------------------------------------------------------- */
-      upstream = new WebSocket(session.url);
+      /**
+       * The subprotocol is how a provider that does not put its credential in
+       * the URL authenticates.
+       *
+       * SpicyAPI returns a signed URL and supplies no subprotocols, so this is
+       * `new WebSocket(url)` exactly as before. xAI returns a bare endpoint and
+       * an ephemeral token, which the WHATWG WebSocket API can only carry as a
+       * subprotocol -- it cannot set an `Authorization` header. Passing the
+       * array through is therefore the whole of the transport change, and it
+       * avoids replacing the global WebSocket with a library that can set
+       * headers.
+       */
+      upstream = session.subprotocols
+        ? new WebSocket(session.url, [...session.subprotocols])
+        : new WebSocket(session.url);
 
       connectTimer = setTimeout(() => {
         closeQuietly('provider_timeout', {
@@ -708,6 +727,29 @@ export default async function callSocketRoutes(
               socket.send(JSON.stringify(RELAY_EVENTS.connected()));
             } catch {
               /* already gone */
+            }
+            /**
+             * CONFIGURE THE SESSION BEFORE CUEING HER, when the provider needs
+             * it.
+             *
+             * SpicyAPI already has the persona -- it arrived in the body of the
+             * call that created the session -- and supplies no frames, so this
+             * loop does nothing and the ordering below is unchanged. xAI has no
+             * such call: the persona arrives here, as `session.update`, and it
+             * MUST precede the cue. Cueing an unconfigured session would have
+             * her answer the phone as a default assistant, with her persona
+             * installed a moment later -- the first thing the caller hears
+             * would be the wrong character.
+             *
+             * These frames carry the persona, so they are written and dropped:
+             * never logged, and `session.update` stays off the browser's
+             * allowlist so no client can send one.
+             */
+            for (const frame of session.onOpenFrames ?? []) {
+              if (!sendUpstream(frame)) {
+                closeQuietly('provider_closed');
+                return;
+              }
             }
             sendOpeningCue();
             // The provider's own ceiling, enforced locally too: a socket

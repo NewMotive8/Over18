@@ -14,6 +14,7 @@ import {
   withFirstCallMinute,
 } from '../services/paid-call-service.js';
 import { CREDITS_CURRENCY, grantCredits, readCommercialWallet } from '../services/wallet-service.js';
+import { INSTRUCTIONS_MAX_CHARS } from '../voice/spicyapi.js';
 import {
   TEST_DATABASE_URL,
   createTestContext,
@@ -74,6 +75,7 @@ beforeAll(async () => {
         // is claimed, and a passing preflight is asserted without connecting.
         voiceProvider: {
           name: 'fake',
+          instructionsMaxChars: INSTRUCTIONS_MAX_CHARS,
           createSession: async () => {
             throw new Error('no test may reach the provider');
           },
