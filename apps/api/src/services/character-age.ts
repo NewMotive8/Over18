@@ -81,3 +81,41 @@ export function resolveCharacterAge(
 
   return { age: null, source: null, confirmed: false };
 }
+
+/**
+ * The only age a surface the customer can see may state.
+ *
+ * ── WHY THIS EXISTS BESIDE `resolveCharacterAge` ─────────────────────────────
+ *
+ * `resolveCharacterAge` falls back to the persona's guess, and for a while its
+ * ONLY production caller was the chat and voice prompt -- so the guess reached
+ * exactly one surface: the sentence the character speaks about herself. Her card
+ * meanwhile showed nothing, because the card payload carries only
+ * `characters.age`. That is the same defect the resolver was written to end,
+ * pointing the other way: the card said nothing while she told a caller she was
+ * 32.
+ *
+ * So the rule is now explicit rather than implied by which function a caller
+ * happened to reach for. An unconfirmed age is a suggestion for an operator to
+ * approve, and a suggestion is not something she says out loud.
+ *
+ * SAYING NOTHING IS THE CORRECT BEHAVIOUR, not a gap. A character with no
+ * confirmed age states no age, on her card and in her own voice alike, and that
+ * is consistent. Stating a number nobody confirmed would make her card and her
+ * conversation disagree, which is worse than silence and much harder to notice.
+ */
+export function confirmedCharacterAge(confirmed: number | null | undefined): number | null {
+  return usableAge(confirmed);
+}
+
+/**
+ * The model's guess, for Admin review ONLY.
+ *
+ * Named so that a caller cannot reach it by accident while meaning "her age":
+ * every use is a place where an operator is being shown something to approve.
+ * It must never reach a prompt, a card, a profile or any API response the
+ * customer can read.
+ */
+export function suggestedCharacterAge(persona?: CharacterPersona | null): number | null {
+  return usableAge(persona?.age);
+}

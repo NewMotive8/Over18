@@ -1813,6 +1813,16 @@ export interface AdminCharacterView {
 import type { ProfileDivergenceStatus } from '@over18/shared';
 
 export interface AdminCharacterListItem extends AdminCharacterView {
+  /**
+   * The vision model's age guess, for review. ADMIN ONLY.
+   *
+   * Carried on the LIST so an operator can see at a glance which characters
+   * have something to confirm, instead of opening every profile to find out.
+   * Null means nothing has ever estimated her age -- a different and more
+   * expensive problem than an unconfirmed guess, since she needs a persona
+   * generated or a number typed from scratch.
+   */
+  suggestedAge: number | null;
   activeIdentityVersion: number | null;
   identityVersionCount: number;
   primaryReferenceCount: number;
@@ -2092,6 +2102,25 @@ export interface CharacterContentAsset extends AssetLifecycle {
 
 export const adminCharactersApi = {
   list: () => request<AdminCharacterListItem[]>('/admin/characters'),
+  /**
+   * Confirm ages for several characters in one request.
+   *
+   * Each age is stated explicitly rather than the server being told to "accept
+   * the suggestions": a confirmed age must always be a number a person chose,
+   * and an endpoint that could resolve suggestions itself would erode exactly
+   * the distinction `characters.age` exists for.
+   *
+   * Partial success is normal and is reported per character, so the screen can
+   * say which rows still need attention.
+   */
+  confirmAges: (confirmations: { characterId: string; age: number }[]) =>
+    request<{
+      confirmed: { characterId: string; age: number }[];
+      rejected: { characterId: string; reason: string }[];
+    }>('/admin/characters/age-confirmations', {
+      method: 'POST',
+      body: JSON.stringify({ confirmations }),
+    }),
   /**
    * A NAME is enough to create a character. Supply an image too and the server
    * also creates visual identity v1, activates it and files the image as her

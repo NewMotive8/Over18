@@ -104,8 +104,28 @@ describe('what she says about her own age', () => {
     expect(compilePersonaWhoSheIs(persona, 32)).not.toContain("She's 27.");
   });
 
-  it('states the persona age when nothing is confirmed', () => {
-    expect(compilePersonaWhoSheIs(persona, null)).toContain("She's 27.");
+  /**
+   * REVERSED DELIBERATELY. This asserted that she states the PERSONA's age when
+   * nothing is confirmed, and that was the behaviour until now.
+   *
+   * It turned out to be the original defect pointing the other way. The prompt
+   * was the only production caller of the resolver's persona fallback, so the
+   * guess reached exactly one surface: the sentence she speaks about herself.
+   * Her card showed nothing, because the card payload carries only
+   * `characters.age`. So an unconfirmed character told a caller she was 27 while
+   * her card said nothing at all -- the same card-versus-conversation
+   * disagreement that `characters.age` was created to end.
+   *
+   * An unconfirmed age is a suggestion for an operator to approve. A suggestion
+   * is not something she says out loud, so she now says nothing, on both
+   * surfaces alike.
+   */
+  it('says NOTHING about her age when nothing is confirmed, even with a suggestion', () => {
+    const facts = compilePersonaWhoSheIs(persona, null);
+    expect(facts).not.toContain("She's 27.");
+    expect(facts.join(' ')).not.toMatch(/She's \d/);
+    // She is still described; only the age is withheld.
+    expect(facts.join(' ')).toContain('nurse');
   });
 
   /** A confirmed age is worth stating even for a character with no persona. */

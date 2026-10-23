@@ -163,6 +163,23 @@ export function toPersonaGeneratorDraft(parsed: unknown): CharacterPersona {
       'The model did not return any usable persona fields.',
     );
   }
+
+  /**
+   * A NON-ADULT OR NON-INTEGER AGE IS ALREADY REFUSED ABOVE, by
+   * `validateCharacterPersona` -- "age must be an integer." and "age must
+   * denote an adult (18 or older)." It rejects the whole generation rather than
+   * dropping the field.
+   *
+   * RECORDED HERE BECAUSE A GUARD WAS ADDED AND THEN REMOVED. The obvious
+   * reading of this function is that nothing stops a sub-18 age reaching the
+   * persona record, and a second check was written on that assumption. It was
+   * unreachable: the validator throws first, so the new code could never run.
+   * A note costs nothing and stops the next person writing it again.
+   *
+   * Rejecting the whole persona is also the stricter behaviour of the two, and
+   * the right one here: a persona that describes a minor must not exist in the
+   * record at all, not merely be missing one field.
+   */
   return persona;
 }
 
@@ -424,6 +441,21 @@ export function buildPersonaPrompt(
         // and removes the pull.
         'Prefer concrete, specific, lived-in details ("knows which caf\u00e9 on her road opens earliest, because she is usually there before it does") over abstract adjective lists ("stylish, creative, adventurous"). Avoid caricature and exaggerated archetypes — but a common, ordinary job is NOT a stereotype, and is not something to avoid.',
         'She should read as an ordinary adult woman someone could plausibly meet, grounded in contemporary everyday life rather than in a novel.',
+        // AGE WAS THE ONE FIELD THE PROMPT NEVER MENTIONED, AND IT SHOWED.
+        //
+        // `age`, `ageRange` and `lifeStage` were all offered by the schema with
+        // no instruction attached, so the model filled whichever it felt able to
+        // under the standing "omit any field you cannot support" rule. Across 39
+        // generated personas that produced a range for every one and a NUMBER
+        // for all but two -- and those two then had no usable age anywhere,
+        // because `ageRange` is prose and nothing downstream can read a number
+        // out of "mid-to-late 20s" without inventing precision.
+        //
+        // So the number is now required and the range is demoted to describing
+        // the spread AROUND it, rather than standing in for it. The floor is
+        // stated because this is an adult product and a sub-18 value is the one
+        // output that must never exist, not merely be filtered later.
+        'HER AGE: always give `age` as a single whole number, and never below 18. She is an adult; if the photograph reads young, choose a number in the low twenties rather than omitting the field or going under 18. Give `ageRange` as the spread around that number ("late 20s") and `lifeStage` as the phase it belongs to — never as a substitute for `age`, which must always be present.',
         // EVIDENCE AND INVENTION ARE DIFFERENT THINGS, AND THE PROMPT HAD NO
         // WORDS FOR THE SECOND ONE. The old rule said "if the image gives an
         // obvious occupation clue use it, OTHERWISE choose a common

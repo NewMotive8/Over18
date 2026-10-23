@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import AgeConfirmationPanel from '../../components/admin/AgeConfirmationPanel';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   ApiRequestError,
@@ -172,6 +173,18 @@ export default function AdminCharactersPage() {
           {creating ? 'Cancel' : 'Create character'}
         </button>
       </header>
+
+      {/*
+        AGE CONFIRMATION, above the roster rather than on a page of its own.
+        The backlog exists because `characters.age` shipped empty, so it is a
+        one-off catch-up job -- and the screen disappears by itself once every
+        character has an age, which a separate page would not.
+      */}
+      {characters !== null && (
+        <div className="mb-6">
+          <AgeConfirmationPanel characters={characters} onConfirmed={load} />
+        </div>
+      )}
 
       {creating && (
         <form

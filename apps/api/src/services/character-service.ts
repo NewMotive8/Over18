@@ -1,8 +1,13 @@
 import { and, asc, eq } from 'drizzle-orm';
-import { isKnownVoice, type PublicCharacter } from '@over18/shared';
+import { isKnownVoice, type CharacterPersona, type PublicCharacter } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import { isValidTimezone } from './timezone.js';
-import { MAXIMUM_PLAUSIBLE_AGE, MINIMUM_ADULT_AGE, usableAge } from './character-age.js';
+import {
+  MAXIMUM_PLAUSIBLE_AGE,
+  MINIMUM_ADULT_AGE,
+  suggestedCharacterAge,
+  usableAge,
+} from './character-age.js';
 import { characters, type CharacterRow } from '../db/schema.js';
 import { resolveCharacterPortrait, resolveCharacterPortraits } from './character-portrait.js';
 
@@ -99,6 +104,20 @@ export interface AdminCharacter extends PublicCharacter {
    */
   age: number | null;
   /**
+   * The vision model's age guess, for an operator to approve or overrule.
+   *
+   * ADMIN ONLY, AND SEPARATE FROM `age` ON PURPOSE. It exists so an operator can
+   * work down the roster confirming ages without opening every character to
+   * find out whether there is anything to confirm. It is a suggestion in both
+   * directions: null here means nothing has ever estimated her age, which is a
+   * different and more expensive problem than an unconfirmed guess -- she needs
+   * a persona generated, or a number typed from scratch.
+   *
+   * It must never reach a customer-facing payload. `toPublicCharacter` does not
+   * carry it, and a test asserts that.
+   */
+  suggestedAge: number | null;
+  /**
    * Where she lives, each part independently optional. Admin-facing only: a
    * customer is told who she is, not the administrative record behind her, so
    * these deliberately do NOT join `PublicCharacter` above.
@@ -157,7 +176,16 @@ export function missingProfileFields(row: CharacterRow): ProfileField[] {
   return missing;
 }
 
-export function toAdminCharacter(row: CharacterRow, portrait: string | null): AdminCharacter {
+export function toAdminCharacter(
+  row: CharacterRow,
+  portrait: string | null,
+  /**
+   * Her persona, when the caller already has it. The admin list batches them in
+   * one query for the whole page, so passing it costs nothing; omitting it
+   * simply reports no suggestion rather than issuing a lookup per row.
+   */
+  persona?: CharacterPersona | null,
+): AdminCharacter {
   const missing = missingProfileFields(row);
   return {
     ...toPublicCharacter(row, portrait),
@@ -171,6 +199,8 @@ export function toAdminCharacter(row: CharacterRow, portrait: string | null): Ad
     // so it is reported rather than omitted, and the selector can show it.
     liveCallVoice: row.liveCallVoice,
     age: row.age ?? null,
+    // Validated, so Admin is never offered a non-adult or malformed guess.
+    suggestedAge: suggestedCharacterAge(persona),
     countryCode: row.countryCode,
     region: row.region,
     city: row.city,
