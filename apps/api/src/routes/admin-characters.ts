@@ -55,6 +55,7 @@ import {
   type LibraryUploadStorage,
 } from '../services/library-upload-service.js';
 import { listCharacterContent, mediaTypeOf } from '../services/content-review-service.js';
+import { suggestedCharacterAge } from '../services/character-age.js';
 import {
   getContentRequirementByKey,
   getPrimaryReferenceRequirementKey,
@@ -190,6 +191,16 @@ export default async function adminCharacterRoutes(
           activeIdentityVersion: active?.version ?? null,
           identityVersionCount: versions.length,
           primaryReferenceCount: primaryCount,
+          /**
+           * Her age suggestion, from the personas already batched above.
+           *
+           * Set HERE rather than left to `toAdminCharacter`, because this is
+           * where the persona is in hand -- the alternative is a lookup per row
+           * for a field the list already pays one query for. The validation
+           * still lives in one place: `suggestedCharacterAge` decides what
+           * counts as usable, so Admin cannot be offered a non-adult guess.
+           */
+          suggestedAge: suggestedCharacterAge(personas.get(character.id)?.persona ?? null),
           profileDivergence: compareProfileAndPersona({
             shortBio: character.shortBio,
             personality: character.personality,
@@ -760,6 +771,99 @@ export default async function adminCharacterRoutes(
         }
         throw error;
       }
+    },
+  );
+
+  /* ---------------------------------------------------------------- *
+   * Age confirmation
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Confirm ages for several characters at once.
+   *
+   * -- WHY A BULK ENDPOINT AT ALL ---------------------------------------------
+   *
+   * `characters.age` was created deliberately empty, so an established roster
+   * arrives with nothing confirmed and every card showing no age. Confirming
+   * them one character at a time means opening each profile to find out whether
+   * there is even a suggestion to accept. This exists so an operator can review
+   * a screen of suggestions and accept the ones that look right.
+   *
+   * -- IT CONFIRMS; IT DOES NOT GUESS ----------------------------------------
+   *
+   * Every age in the body is a number a person chose to send. The endpoint has
+   * no access to the suggestions and cannot accept "whatever was suggested" --
+   * the caller must state each age explicitly, so a confirmed age is always
+   * something somebody actually asserted. That is the distinction
+   * `characters.age` exists to protect, and a bulk screen must not quietly
+   * erode it.
+   *
+   * -- ONE WRITE PATH -------------------------------------------------------
+   *
+   * Each row goes through `updateCharacter`, exactly as the single-character
+   * PATCH does, so the adult floor, the publish gate and the rule that a live
+   * character's age cannot be cleared all apply identically. Duplicating those
+   * checks here is how they would drift.
+   *
+   * -- PARTIAL SUCCESS IS REPORTED, NOT HIDDEN -------------------------------
+   *
+   * Rows are independent: one rejected age must neither fail the other
+   * thirty-six nor vanish silently. Each outcome comes back named, so the UI can
+   * say which characters still need attention instead of leaving an operator to
+   * compare before and after.
+   */
+  app.post<{ Body: { confirmations?: unknown } }>(
+    '/admin/characters/age-confirmations',
+    adminOnly,
+    async (request, reply) => {
+      const raw = request.body?.confirmations;
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return reply.code(400).send({
+          error: 'invalid_request',
+          message: 'Send a non-empty `confirmations` array of { characterId, age }.',
+        });
+      }
+      // Bounded so one request cannot hold a connection open over the whole
+      // roster; the UI pages through if it ever needs to.
+      if (raw.length > 200) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_request', message: 'At most 200 confirmations per request.' });
+      }
+
+      const confirmed: { characterId: string; age: number }[] = [];
+      const rejected: { characterId: string; reason: string }[] = [];
+
+      for (const entry of raw) {
+        const row = (entry ?? {}) as { characterId?: unknown; age?: unknown };
+        const characterId = typeof row.characterId === 'string' ? row.characterId : '';
+        if (!UUID_RE.test(characterId)) {
+          rejected.push({ characterId: String(row.characterId ?? ''), reason: 'invalid_id' });
+          continue;
+        }
+        // Shape is checked here only so a malformed body is a clear rejection;
+        // the AGE RULES themselves stay in updateCharacter.
+        if (typeof row.age !== 'number' || !Number.isInteger(row.age)) {
+          rejected.push({ characterId, reason: 'age_must_be_a_whole_number' });
+          continue;
+        }
+        try {
+          const updated = await updateCharacter(opts.db, characterId, { age: row.age } as never);
+          if (!updated) {
+            rejected.push({ characterId, reason: 'not_found' });
+            continue;
+          }
+          confirmed.push({ characterId, age: row.age });
+        } catch (error) {
+          if (error instanceof CharacterValidationError) {
+            rejected.push({ characterId, reason: error.message });
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      return { confirmed, rejected };
     },
   );
 

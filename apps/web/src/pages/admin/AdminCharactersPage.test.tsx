@@ -45,6 +45,7 @@ const base: AdminCharacterListItem = {
   displayName: 'Nova',
   profileImage: null,
   age: null,
+  suggestedAge: null,
   shortBio: 'bio',
   personality: 'p',
   interests: [],

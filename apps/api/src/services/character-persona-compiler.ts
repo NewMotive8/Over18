@@ -1,5 +1,5 @@
 import type { CharacterPersona } from '@over18/shared';
-import { resolveCharacterAge } from './character-age.js';
+import { confirmedCharacterAge } from './character-age.js';
 
 /**
  * Deterministic persona compiler (Phase 2 avatar-derived persona).
@@ -73,17 +73,24 @@ export function compilePersonaWhoSheIs(
    */
   confirmedAge?: number | null,
 ): string[] {
-  const resolved = resolveCharacterAge(confirmedAge, persona);
+  /**
+   * CONFIRMED ONLY. She states an age an operator set, or she states none.
+   *
+   * This used to fall back to the persona's number and then to `ageRange`, so a
+   * character with no confirmed age told a caller she was 32 while her card
+   * showed nothing at all -- the two surfaces disagreeing again, just in the
+   * opposite direction from the bug that created `characters.age`. Both are
+   * driven by the confirmed age now, so they cannot diverge.
+   *
+   * `ageRange` is gone from here for the same reason: it is written by the same
+   * vision model, so "she's mid-to-late 20s" is a guess in her own voice.
+   */
+  const confirmed = confirmedCharacterAge(confirmedAge);
   // A confirmed age is worth stating even when she has no persona at all.
-  if (!persona) return resolved.age === null ? [] : [`She's ${resolved.age}.`];
+  if (!persona) return confirmed === null ? [] : [`She's ${confirmed}.`];
   const facts: string[] = [];
 
-  if (resolved.age !== null) {
-    facts.push(`She's ${resolved.age}.`);
-  } else {
-    const ageRange = clean(persona.ageRange ?? '');
-    if (ageRange.length > 0) facts.push(`She's ${ageRange}.`);
-  }
+  if (confirmed !== null) facts.push(`She's ${confirmed}.`);
 
   const lifeStage = sentence(persona.lifeStage ?? '');
   if (lifeStage.length > 0) facts.push(lifeStage);
