@@ -34,6 +34,7 @@ describe('characters schema / migration', () => {
     );
     const columns = Object.fromEntries(res.rows.map((r) => [r.column_name, r]));
     expect(Object.keys(columns).sort()).toEqual([
+      'age',
       'city',
       'conversation_style',
       'country_code',
@@ -227,6 +228,7 @@ describe('GET /api/characters', () => {
       expect(character).not.toHaveProperty('system_prompt');
       expect(character).not.toHaveProperty('status');
       expect(Object.keys(character).sort()).toEqual([
+        'age',
         'conversationStyle',
         'displayName',
         'id',

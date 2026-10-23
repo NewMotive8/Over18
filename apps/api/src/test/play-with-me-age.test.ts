@@ -80,11 +80,6 @@ describe('the projection that feeds the rail', () => {
   });
 
   /**
-   * The card no longer reads the persona age directly. It asks the resolver,
-   * which prefers an operator's confirmed age -- so the number on a card and
-   * the number she states in chat come from one rule and cannot diverge.
-   */
-  /**
    * The card sends her CONFIRMED age or nothing. It used to derive one from
    * the band -- which is how a whole rail read 26 -- and then briefly from the
    * persona, which is a vision model's guess. Neither is a fact, and a number

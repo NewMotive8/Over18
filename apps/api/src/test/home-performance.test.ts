@@ -240,7 +240,7 @@ describe('the apparent-age band travels with the Home card', () => {
     const card = (await playWithMe()).find((c) => c.id === LUNA.id)!;
 
     expect(Object.keys(card).sort()).toEqual(
-      ['apparentAgeBand', 'categories', 'clip', 'displayName', 'id'].sort(),
+      ['age', 'apparentAgeBand', 'categories', 'clip', 'displayName', 'id'].sort(),
     );
 
     const payload = (await api.home()).payload;
