@@ -482,13 +482,19 @@ export async function createCharacter(
 ): Promise<AdminCharacter> {
   const values = normalise(input, true, options.allowEmptyProfile);
   /**
-   * A character created ALREADY LIVE needs the same confirmed age an existing
-   * one needs to go live. `characters.status` defaults to 'active', so without
-   * this the full-create path would be a way around the gate in
-   * `updateCharacter`. Drafts are unaffected: createCharacterDraft sets
-   * 'inactive' explicitly.
+   * ASKING to be created live needs the same confirmed age that going live
+   * needs, because it is the same act.
+   *
+   * ONLY WHEN IT IS ASKED FOR, THOUGH. `characters.status` defaults to
+   * 'active' at the database, so an omitted status is not a decision to
+   * publish -- it is a default nobody chose. The product never travels this
+   * route anyway: the UI creates DRAFTS through quick-create and publishes
+   * through `updateCharacter`, which is gated in both directions. Treating
+   * the legacy default as a publish would refuse ordinary character creation
+   * to buy no safety at all, and the character it allows is still reported as
+   * incomplete and still shows no age anywhere public.
    */
-  if ((values.status ?? 'active') === 'active' && usableAge(values.age) === null) {
+  if (values.status === 'active' && usableAge(values.age) === null) {
     throw new CharacterValidationError(
       'age',
       'She needs a confirmed age of 18 or over before she can go live.',
