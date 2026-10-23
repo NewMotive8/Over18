@@ -201,6 +201,27 @@ export const PROVIDER_EVENT_ALIASES: Readonly<Record<string, string>> = {
 export const normaliseProviderEventType = (type: string): string =>
   PROVIDER_EVENT_ALIASES[type] ?? type;
 
+/**
+ * `ping` IS EXPECTED, IS UNDOCUMENTED, AND NEEDS NO REPLY.
+ *
+ * A live xAI session sends `{"type":"ping"}` every ten seconds. It appears
+ * nowhere in their published event list, so nothing stated whether ignoring it
+ * would get the socket closed -- and if a reply were required, calls would die
+ * partway through, which is the kind of defect that only surfaces on a long call
+ * in production.
+ *
+ * MEASURED RATHER THAN ASSUMED (2026-10-23): a session was held open for 95
+ * seconds and every one of ten consecutive pings was ignored. The provider did
+ * not close it. So dropping them -- which is what the absence of a builder
+ * already does -- is correct, and this note exists so the next person reading
+ * `ping` in a frame dump does not have to repeat the experiment.
+ *
+ * It is named here and nowhere else on purpose: adding a builder would forward a
+ * keepalive to the browser six times a minute for nothing. Provider-side drops
+ * are silent, so it costs no log noise either.
+ */
+export const KNOWN_IGNORABLE_PROVIDER_EVENTS: readonly string[] = ['ping'];
+
 export type ProviderFrameDecision =
   | { action: 'forward'; type: string; payload: Record<string, unknown> }
   | { action: 'drop'; type: string; reason: 'unparsable' | 'no_type' | 'not_allowlisted' };
