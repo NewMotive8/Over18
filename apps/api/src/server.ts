@@ -39,12 +39,26 @@ app.log.info(
       : 'AI replies: no LLM configured — using deterministic fallback provider (development only)',
 );
 
+/**
+ * Names the voice provider, and its MODEL when the provider has one.
+ *
+ * Same rule as the chat line above, and the same failure it prevents: a provider
+ * swap nobody can see. It matters more here than for chat, because the symptom
+ * of the wrong one is simply that she sounds different — which nobody would file
+ * as a bug.
+ */
 app.log.info(
   env.voiceCalls.enabled && env.voice
-    ? `Live voice calls: ENABLED (${env.voice.provider}, max ${env.voice.maxSeconds}s)`
+    ? `Live voice calls: ENABLED (provider "${env.voice.provider}"` +
+      (env.voice.provider === 'grok'
+        ? `, model "${env.voice.model ?? 'grok-voice-latest'}", key from ${
+            process.env.VOICE_GROK_API_KEY?.trim() ? 'VOICE_GROK_API_KEY' : 'XAI_API_KEY'
+          }`
+        : '') +
+      `, max ${env.voice.maxSeconds}s)`
     : env.voice
       ? 'Live voice calls: provider configured but DISABLED (set VOICE_CALLS_ENABLED=true to switch on)'
-      : 'Live voice calls: no provider configured (SPICYAPI_API_KEY unset) — calls will report unavailable',
+      : 'Live voice calls: no provider configured — set SPICYAPI_API_KEY, or VOICE_LLM_PROVIDER=grok with VOICE_GROK_API_KEY — calls will report unavailable',
 );
 
 const mediaMode =

@@ -56,6 +56,7 @@ import {
 } from './services/character-persona-generator.js';
 import type { MediaProviders } from './media-pipeline/types.js';
 import fastifyWebsocket from '@fastify/websocket';
+import { createGrokVoiceProvider, isKnownGrokVoice } from './voice/grok.js';
 import { createSpicyApiProvider } from './voice/spicyapi.js';
 import { MAX_CLIENT_FRAME_BYTES } from './voice/relay-protocol.js';
 import { unconfiguredVoiceProvider, type VoiceSessionProvider } from './voice/types.js';
@@ -313,14 +314,33 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
    * 404 -- an operator switching this on should not also have to wonder
    * whether the code shipped.
    */
-  const voiceProvider = env.voice
-    ? (options.voiceProvider ??
-      createSpicyApiProvider({
-        apiKey: env.voice.apiKey,
-        timeoutMs: env.voice.timeoutMs,
-        maxSeconds: env.voice.maxSeconds,
-      }))
-    : (options.voiceProvider ?? unconfiguredVoiceProvider);
+  /**
+   * One adapter per provider, chosen by `VOICE_LLM_PROVIDER`.
+   *
+   * Everything above this line is provider-agnostic: the call UI, the persona,
+   * memories, transcripts, session lifecycle, Credits and pricing all go through
+   * `VoiceSessionProvider` and do not know which vendor answered. Switching is
+   * one variable, and so is rolling back.
+   */
+  const voiceProvider =
+    options.voiceProvider ??
+    (env.voice === null
+      ? unconfiguredVoiceProvider
+      : env.voice.provider === 'grok'
+        ? createGrokVoiceProvider({
+            apiKey: env.voice.apiKey,
+            timeoutMs: env.voice.timeoutMs,
+            maxSeconds: env.voice.maxSeconds,
+            model: env.voice.model,
+            defaultVoice: isKnownGrokVoice(env.voice.defaultVoice)
+              ? env.voice.defaultVoice
+              : undefined,
+          })
+        : createSpicyApiProvider({
+            apiKey: env.voice.apiKey,
+            timeoutMs: env.voice.timeoutMs,
+            maxSeconds: env.voice.maxSeconds,
+          }));
 
   const voiceEnabled = env.voiceCalls.enabled && env.voice !== null;
 

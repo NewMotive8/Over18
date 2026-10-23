@@ -471,6 +471,17 @@ export async function beginConnect(
 export async function buildProviderSessionRequest(
   db: Db,
   row: CallSessionRow,
+  /**
+   * The provider's published instruction ceiling, or null when it documents
+   * none.
+   *
+   * DEFAULTS TO SPICYAPI'S so every existing caller and test is unchanged --
+   * this used to be the imported constant, unconditionally. The relay now passes
+   * the active provider's own value, because budgeting a persona against a limit
+   * belonging to a different vendor is how a prompt gets trimmed to fit a number
+   * that does not apply to it.
+   */
+  instructionsMaxChars: number | null = INSTRUCTIONS_MAX_CHARS,
 ): Promise<{ instructions: string; voice: string; userRef: string } | null> {
   const [characterRow] = await db
     .select()
@@ -569,7 +580,20 @@ export async function buildProviderSessionRequest(
     });
 
   const baseLength = promptWithout([]).length;
-  const memoryBudget = INSTRUCTIONS_MAX_CHARS - INSTRUCTION_SAFETY_MARGIN - baseLength;
+
+  /**
+   * How much room remembered facts have, under the ACTIVE provider's limit.
+   *
+   * A provider that publishes no limit gets the standing memory policy and
+   * nothing else: there is no ceiling to subtract from, so there is nothing to
+   * trim against and nothing to refuse. Substituting a large invented number
+   * would read as a limit in the error messages below and would be a claim
+   * nobody published.
+   */
+  const memoryBudget =
+    instructionsMaxChars === null
+      ? DEFAULT_MEMORY_INJECTION.maxMemoryChars
+      : instructionsMaxChars - INSTRUCTION_SAFETY_MARGIN - baseLength;
 
   /**
    * A PERSONA THAT DOES NOT FIT ON ITS OWN IS A CONTENT PROBLEM, AND IT SAYS SO.
@@ -585,7 +609,7 @@ export async function buildProviderSessionRequest(
     throw new VoiceProviderError(
       'rejected',
       `Compiled voice instructions for this character are ${baseLength} characters before any ` +
-        `remembered facts, which exceeds the ${INSTRUCTIONS_MAX_CHARS}-character limit less a ` +
+        `remembered facts, which exceeds the ${instructionsMaxChars}-character limit less a ` +
         `${INSTRUCTION_SAFETY_MARGIN}-character margin. Shorten her persona or system prompt.`,
     );
   }

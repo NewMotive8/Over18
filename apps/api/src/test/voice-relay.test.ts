@@ -8,6 +8,7 @@ import { VoiceProviderError, type VoiceSession, type VoiceSessionRequest } from 
 import { listMemories, storeMemories } from '../services/memory-service.js';
 import { deterministicMemoryExtractor } from '../services/memory-extractor.js';
 import { DEFAULT_MEMORY_INJECTION } from '../services/prompt-builder.js';
+import { INSTRUCTIONS_MAX_CHARS } from '../voice/spicyapi.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -127,6 +128,7 @@ const stubSession = (over: Partial<VoiceSession> = {}): VoiceSession => ({
 
 const provider = {
   name: 'spicyapi',
+  instructionsMaxChars: INSTRUCTIONS_MAX_CHARS,
   async createSession(request: VoiceSessionRequest) {
     providerCalls.push(request);
     return providerImpl(request);

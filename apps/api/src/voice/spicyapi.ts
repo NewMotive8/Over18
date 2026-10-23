@@ -149,6 +149,9 @@ export function createSpicyApiProvider(config: SpicyApiConfig): VoiceSessionProv
 
   return {
     name: SPICYAPI_PROVIDER,
+    // The published limit, now read through the seam rather than imported
+    // directly by the service that budgets against it.
+    instructionsMaxChars: INSTRUCTIONS_MAX_CHARS,
 
     async createSession(request: VoiceSessionRequest): Promise<VoiceSession> {
       /**

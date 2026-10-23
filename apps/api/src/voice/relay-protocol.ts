@@ -159,6 +159,48 @@ const PROVIDER_EVENT_BUILDERS: Record<string, (event: Record<string, unknown>) =
 /** The event types the browser can ever receive. Exported for the tests. */
 export const PROVIDER_TO_CLIENT_ALLOWLIST: readonly string[] = Object.keys(PROVIDER_EVENT_BUILDERS);
 
+/**
+ * Event names a provider uses for things this relay already has a name for.
+ *
+ * ── NORMALISE INBOUND; DO NOT TEACH EVERYTHING ELSE A SECOND DIALECT ─────────
+ *
+ * xAI emits the GA realtime names -- `response.output_audio.delta` where
+ * SpicyAPI emits `response.audio.delta`. The alternative to translating here is
+ * a two-provider switch in every consumer of this stream: the browser's event
+ * handler, the transcript writer, the opening-cue logic in call-socket.ts and
+ * their tests. Translating once, at the seam, keeps the provider invisible above
+ * it, which is the whole point of having a seam.
+ *
+ * Nothing SpicyAPI sends appears on the left, so its behaviour is untouched: a
+ * name needing no translation falls through to the builder table unchanged.
+ *
+ * ── ONE EVENT IS DELIBERATELY NOT ALIASED ────────────────────────────────────
+ *
+ * xAI's `conversation.item.input_audio_transcription.updated` carries the live
+ * user transcript CUMULATIVELY, where our `...transcription.delta` carries an
+ * increment. Mapping one to the other would make the browser append the whole
+ * transcript again on every update, so it is left to drop. The final
+ * `...transcription.completed` has the same name on both providers and still
+ * arrives, so what is lost is the partial text mid-utterance, not the record.
+ */
+export const PROVIDER_EVENT_ALIASES: Readonly<Record<string, string>> = {
+  'response.output_audio.delta': 'response.audio.delta',
+  'response.output_audio.done': 'response.audio.done',
+  'response.output_audio_transcript.delta': 'response.audio_transcript.delta',
+  'response.output_audio_transcript.done': 'response.audio_transcript.done',
+  'response.output_text.delta': 'response.text.delta',
+  /**
+   * The cue's confirmation, which is what triggers her opening turn. xAI names
+   * it `added`; SpicyAPI names it `created`. Aliasing it means call-socket.ts's
+   * existing trigger works for both without knowing which provider it is
+   * talking to -- and it stays builder-less, so it still reaches no browser.
+   */
+  'conversation.item.added': 'conversation.item.created',
+};
+
+export const normaliseProviderEventType = (type: string): string =>
+  PROVIDER_EVENT_ALIASES[type] ?? type;
+
 export type ProviderFrameDecision =
   | { action: 'forward'; type: string; payload: Record<string, unknown> }
   | { action: 'drop'; type: string; reason: 'unparsable' | 'no_type' | 'not_allowlisted' };
@@ -180,10 +222,14 @@ export function sanitiseProviderFrame(raw: string): ProviderFrameDecision {
     return { action: 'drop', type: '<none>', reason: 'no_type' };
   }
   const event = parsed as Record<string, unknown>;
-  const type = event.type;
-  if (typeof type !== 'string' || type.length === 0) {
+  const rawType = event.type;
+  if (typeof rawType !== 'string' || rawType.length === 0) {
     return { action: 'drop', type: '<none>', reason: 'no_type' };
   }
+  // Translated first, so everything above this seam sees one vocabulary. The
+  // NORMALISED name is what the decision reports, which is what makes
+  // call-socket.ts's opening trigger provider-agnostic.
+  const type = normaliseProviderEventType(rawType);
   const build = PROVIDER_EVENT_BUILDERS[type];
   if (!build) return { action: 'drop', type, reason: 'not_allowlisted' };
 

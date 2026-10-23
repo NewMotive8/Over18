@@ -10,6 +10,8 @@ import {
   callOpeningItemFrame,
   callOpeningResponseFrame,
   isOpeningError,
+  PROVIDER_EVENT_ALIASES,
+  normaliseProviderEventType,
 } from '../voice/relay-protocol.js';
 
 /**
@@ -481,5 +483,115 @@ describe('the opening line', () => {
 
   it('the browser still cannot send an item of its own', () => {
     expect(CLIENT_TO_PROVIDER_ALLOWLIST.has('conversation.item.create')).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Provider event-name normalisation
+ * ------------------------------------------------------------------ */
+
+describe('a second provider speaking the GA event names', () => {
+  /**
+   * xAI emits the GA realtime names where SpicyAPI emits the older ones. These
+   * assert the translation happens at the seam, so nothing above it -- the
+   * browser, the transcript writer, the opening-cue trigger -- needs to know
+   * which provider answered.
+   */
+  const CANARY = 'CANARY-RELAY-PERSONA-9d23f7';
+
+  it('delivers her audio under the name the browser listens for', () => {
+    const decision = sanitiseProviderFrame(
+      JSON.stringify({ type: 'response.output_audio.delta', delta: 'QUJD' }),
+    );
+    expect(decision).toEqual({
+      action: 'forward',
+      type: 'response.audio.delta',
+      payload: { type: 'response.audio.delta', delta: 'QUJD' },
+    });
+  });
+
+  it('delivers her finished transcript under the name the browser listens for', () => {
+    const decision = sanitiseProviderFrame(
+      JSON.stringify({ type: 'response.output_audio_transcript.done', transcript: 'hello you' }),
+    );
+    expect(decision).toEqual({
+      action: 'forward',
+      type: 'response.audio_transcript.done',
+      payload: { type: 'response.audio_transcript.done', transcript: 'hello you' },
+    });
+  });
+
+  it('reports the cue confirmation under one name, so the opening trigger is provider-agnostic', () => {
+    /**
+     * call-socket.ts fires `sendOpeningResponse()` on
+     * `conversation.item.created`. xAI calls the same moment
+     * `conversation.item.added`. The decision reports the NORMALISED name, so
+     * that trigger works for both -- and the event still has no builder, so it
+     * reaches no browser.
+     */
+    const decision = sanitiseProviderFrame(
+      JSON.stringify({ type: 'conversation.item.added', item: { id: 'x' } }),
+    );
+    expect(decision.type).toBe('conversation.item.created');
+    expect(decision.action).toBe('drop');
+  });
+
+  it('does NOT alias the cumulative live transcript onto our incremental one', () => {
+    /**
+     * xAI's `...transcription.updated` carries the whole transcript so far;
+     * ours carries an increment. Aliasing them would make the browser append
+     * the full text again on every update. Dropped instead: the final
+     * `...completed` shares a name across both providers and still arrives.
+     */
+    expect(PROVIDER_EVENT_ALIASES['conversation.item.input_audio_transcription.updated']).toBeUndefined();
+    const decision = sanitiseProviderFrame(
+      JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.updated',
+        transcript: 'half a sent',
+      }),
+    );
+    expect(decision.action).toBe('drop');
+  });
+
+  it('still forwards the final user transcript, whose name both providers share', () => {
+    const decision = sanitiseProviderFrame(
+      JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.completed',
+        transcript: 'what he said',
+      }),
+    );
+    expect(decision.action).toBe('forward');
+    expect(decision.action === 'forward' && decision.payload.transcript).toBe('what he said');
+  });
+
+  it('leaves the existing provider untouched: no SpicyAPI name is aliased', () => {
+    for (const ours of PROVIDER_TO_CLIENT_ALLOWLIST) {
+      expect(PROVIDER_EVENT_ALIASES[ours], `${ours} must not be rewritten`).toBeUndefined();
+      expect(normaliseProviderEventType(ours)).toBe(ours);
+    }
+  });
+
+  it('passes an unknown name through rather than inventing a translation', () => {
+    expect(normaliseProviderEventType('xai.something.new')).toBe('xai.something.new');
+    expect(sanitiseProviderFrame(JSON.stringify({ type: 'xai.usage', cost_usd: 1 }))).toEqual({
+      action: 'drop',
+      type: 'xai.usage',
+      reason: 'not_allowlisted',
+    });
+  });
+
+  it('never lets the persona through on a NORMALISED event either', () => {
+    for (const raw of Object.keys(PROVIDER_EVENT_ALIASES)) {
+      const hostile = JSON.stringify({
+        type: raw,
+        instructions: CANARY,
+        session: { instructions: CANARY, nested: { deeper: CANARY } },
+        error: { code: 'content_blocked', message: CANARY },
+        item: { content: [{ text: CANARY }] },
+        transcript: 'legitimate',
+        delta: 'QUJD',
+      });
+      expect(JSON.stringify(sanitiseProviderFrame(hostile)), `${raw} leaked`).not.toContain(CANARY);
+    }
   });
 });

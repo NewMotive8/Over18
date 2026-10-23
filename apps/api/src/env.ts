@@ -92,12 +92,23 @@ export interface MediaEnv {
  * unconfigured environment has no provider object at all rather than one that
  * fails on use.
  */
+export const VOICE_LLM_PROVIDERS = ['spicyapi', 'grok'] as const;
+export type VoiceLlmProviderName = (typeof VOICE_LLM_PROVIDERS)[number];
+
 export interface VoiceEnv {
-  provider: 'spicyapi';
+  provider: VoiceLlmProviderName;
   apiKey: string;
   timeoutMs: number;
-  /** The application ceiling. Clamped to the provider's 780s in the adapter. */
+  /**
+   * The application ceiling. Clamped to SpicyAPI's published 780s in that
+   * adapter; xAI publishes no per-session limit, so for Grok this is the only
+   * ceiling and the relay's own timer is what enforces it.
+   */
   maxSeconds: number;
+  /** Grok only. The realtime model; absent means the adapter's default. */
+  model?: string;
+  /** Grok only. The voice used when a character has none that maps. */
+  defaultVoice?: string;
 }
 
 /**
@@ -300,6 +311,88 @@ function envFlagTrue(name: string): boolean {
  * identity, and giving each provider its own set would mean a model swap
  * quietly changed the history window too.
  */
+/**
+ * Which provider places live voice calls.
+ *
+ * ── SAY NOTHING AND NOTHING CHANGES ──────────────────────────────────────────
+ *
+ * With `VOICE_LLM_PROVIDER` unset, this is byte-for-byte the old behaviour:
+ * SpicyAPI, gated on `SPICYAPI_API_KEY` alone. Every existing environment keeps
+ * working without a variable change, and rollback is deleting one variable.
+ *
+ * ── NAME A PROVIDER AND IT MUST BE COMPLETE ──────────────────────────────────
+ *
+ * A half-configured provider is fatal at boot, never a quiet fall back to the
+ * other one -- the rule `resolveChatLlm` sets, for the reason it sets it. The
+ * failure it prevents is worse here than for chat: a silent fall back would
+ * place billed calls against a provider nobody chose, and the only symptom
+ * would be that she sounded slightly different.
+ *
+ * INDEPENDENT OF `CHAT_LLM_PROVIDER` AND `PERSONA_VISION_MODEL`. Voice is its
+ * own decision; nothing about selecting it reaches text chat or persona
+ * generation.
+ */
+function resolveVoiceProvider(): VoiceEnv | null {
+  const timeoutMs = Number(process.env.VOICE_SESSION_TIMEOUT_MS ?? 10_000);
+  const maxSeconds = Number(process.env.VOICE_MAX_SECONDS ?? 780);
+  const raw = (process.env.VOICE_LLM_PROVIDER ?? '').trim();
+
+  if (raw.length === 0) {
+    // Unchanged default: SpicyAPI, on the key alone.
+    const spicyKey = (process.env.SPICYAPI_API_KEY ?? '').trim();
+    return spicyKey ? { provider: 'spicyapi', apiKey: spicyKey, timeoutMs, maxSeconds } : null;
+  }
+
+  const name = raw.toLowerCase() as VoiceLlmProviderName;
+  if (!VOICE_LLM_PROVIDERS.includes(name)) {
+    console.error(
+      `FATAL: unsupported VOICE_LLM_PROVIDER "${raw}" (supported: ${VOICE_LLM_PROVIDERS.join('|')}).`,
+    );
+    process.exit(1);
+  }
+
+  if (name === 'spicyapi') {
+    const apiKey = (process.env.SPICYAPI_API_KEY ?? '').trim();
+    if (!apiKey) {
+      console.error(
+        'FATAL: VOICE_LLM_PROVIDER is "spicyapi" but SPICYAPI_API_KEY is missing. ' +
+          'Voice will not silently use another provider.',
+      );
+      process.exit(1);
+    }
+    return { provider: 'spicyapi', apiKey, timeoutMs, maxSeconds };
+  }
+
+  /**
+   * Grok's key is read from `VOICE_GROK_API_KEY` and falls back to `XAI_API_KEY`.
+   *
+   * THE FALLBACK IS A CONVENIENCE, NOT A RECOMMENDATION. `XAI_API_KEY` is the
+   * image-generation credential in this project and is a DIFFERENT key from
+   * `LLM_API_KEY`, which was established by comparing them in Production. Voice
+   * is a separate xAI capability and may not be enabled on whichever key is
+   * reused, so a dedicated `VOICE_GROK_API_KEY` is the intended configuration
+   * and the boot log says which one was used.
+   */
+  const grokKey =
+    (process.env.VOICE_GROK_API_KEY ?? '').trim() || (process.env.XAI_API_KEY ?? '').trim();
+  if (!grokKey) {
+    console.error(
+      'FATAL: VOICE_LLM_PROVIDER is "grok" but neither VOICE_GROK_API_KEY nor XAI_API_KEY is set. ' +
+        'Voice will not silently use another provider.',
+    );
+    process.exit(1);
+  }
+
+  return {
+    provider: 'grok',
+    apiKey: grokKey,
+    timeoutMs,
+    maxSeconds,
+    model: (process.env.VOICE_GROK_MODEL ?? '').trim() || undefined,
+    defaultVoice: (process.env.VOICE_GROK_DEFAULT_VOICE ?? '').trim() || undefined,
+  };
+}
+
 function resolveChatLlm(fallback: LlmEnv | null): LlmEnv | null {
   const raw = (process.env.CHAT_LLM_PROVIDER ?? '').trim();
   if (raw.length === 0) return fallback;
@@ -426,19 +519,7 @@ export function loadEnv(): Env {
     };
   }
 
-  /**
-   * The live-voice provider. Gated on the key alone: there is nothing else to
-   * configure, and a half-configured provider is worse than none.
-   */
-  const spicyKey = (process.env.SPICYAPI_API_KEY ?? '').trim();
-  const voice: VoiceEnv | null = spicyKey
-    ? {
-        provider: 'spicyapi',
-        apiKey: spicyKey,
-        timeoutMs: Number(process.env.VOICE_SESSION_TIMEOUT_MS ?? 10_000),
-        maxSeconds: Number(process.env.VOICE_MAX_SECONDS ?? 780),
-      }
-    : null;
+  const voice = resolveVoiceProvider();
 
   const runpodEndpointId = (process.env.RUNPOD_ENDPOINT_ID ?? '').trim() || null;
 
