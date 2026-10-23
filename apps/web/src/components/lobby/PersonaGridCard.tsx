@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import type { PublicCharacterCard } from '../../lib/api';
-import { apparentAge, resolveHeroMedia } from '../../lib/media';
-import { adultAgeFromBand, personaBadge } from '../../lib/lobbyContent';
+import { resolveHeroMedia } from '../../lib/media';
+import { personaBadge } from '../../lib/lobbyContent';
 import { useCharacterVisual } from '../../hooks/useCharacterVisual';
 import HeroMedia from '../HeroMedia';
 
@@ -16,6 +16,19 @@ import HeroMedia from '../HeroMedia';
  * the character type: it now takes the CMS card payload instead of
  * `PublicCharacter`. Nothing about what it renders has changed — the badge, the
  * footer layout and the absence of chips are all the original's.
+ *
+ * -- THE AGE BAND IS GONE FROM HERE ------------------------------------------
+ *
+ * This read `adultAgeFromBand(apparentAge(visual))`, which turns the stored
+ * band into a display number -- and the band is the bare string 'adult' for 62
+ * of 65 characters, so it rendered the SAME age for almost the whole roster.
+ * That is the defect `characters.age` was created to end, and this was the last
+ * component still carrying it.
+ *
+ * It reaches no customer today: the results grid renders `ClipGridCard` now and
+ * this is referenced only by its own test. That is exactly why it was worth
+ * removing rather than leaving -- a dead component with the old behaviour is a
+ * loaded gun for whoever revives it, and it would come back looking correct.
  */
 export default function PersonaGridCard({
   character,
@@ -26,13 +39,21 @@ export default function PersonaGridCard({
 }) {
   const { visual } = useCharacterVisual(character.id);
   const media = resolveHeroMedia(character, visual);
-  const age = adultAgeFromBand(apparentAge(visual));
+  /**
+   * NO AGE IS RENDERED HERE AT ALL.
+   *
+   * `PublicCharacterCard` carries no confirmed age, and the right answer to
+   * that is not to reach for the band again -- it is to show nothing. Reviving
+   * this component means wiring `characters.age` through its payload
+   * deliberately, which is exactly the decision that should not be made by
+   * accident.
+   */
   const badge = personaBadge(index);
 
   return (
     <Link
       to={`/characters/${character.id}`}
-      aria-label={`Open ${character.displayName}, ${age}`}
+      aria-label={`Open ${character.displayName}`}
       className="group relative block aspect-[3/4] w-full overflow-hidden rounded-2xl border border-white/5 bg-zinc-900"
     >
       <HeroMedia media={media} alt={character.displayName} />
@@ -50,7 +71,6 @@ export default function PersonaGridCard({
 
       <div className="absolute inset-x-0 bottom-0 flex items-baseline gap-1.5 p-3">
         <span className="truncate text-base font-bold text-white drop-shadow">{character.displayName}</span>
-        <span className="text-sm font-medium text-zinc-200">{age}</span>
       </div>
     </Link>
   );

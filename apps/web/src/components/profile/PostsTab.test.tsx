@@ -21,7 +21,7 @@ const clip = (id: string, mediaType: 'image' | 'video' = 'video'): PublicClip =>
   mediaType,
   url: `/api/media/assets/${id}/file`,
   characterId: 'char-1',
-  characterName: 'Nova',
+  characterName: 'Nova', characterAge: null,
 });
 
 const render = (clips: PublicClip[], access?: ContentAccessState) =>

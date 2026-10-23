@@ -46,7 +46,7 @@ function card(over: Partial<PublicPlayWithMeCard> = {}): PublicPlayWithMeCard {
       mediaType: 'video',
       url: '/api/media/assets/asset-1/file',
       characterId: 'char-1',
-      characterName: 'Nova',
+      characterName: 'Nova', characterAge: null,
     },
     ...over,
   };

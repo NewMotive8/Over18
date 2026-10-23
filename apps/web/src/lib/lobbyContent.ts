@@ -76,12 +76,30 @@ export function personaBadge(index: number): PersonaBadge {
  * deciding what to enter.
  */
 export function displayAge(age: number | null | undefined): number | null {
-  if (typeof age === 'number' && Number.isInteger(age) && age >= MINIMUM_PUBLIC_AGE) return age;
+  if (
+    typeof age === 'number' &&
+    Number.isInteger(age) &&
+    age >= MINIMUM_PUBLIC_AGE &&
+    age <= MAXIMUM_PUBLIC_AGE
+  ) {
+    return age;
+  }
   return null;
 }
 
 /** The floor the server and the database also enforce. */
 export const MINIMUM_PUBLIC_AGE = 18;
+
+/**
+ * The ceiling, matching the server's `MAXIMUM_PLAUSIBLE_AGE`.
+ *
+ * ADDED BECAUSE THE TWO DISAGREED. The server treats anything above 120 as a
+ * corrupt row and reports no age; this had no upper bound at all, so a bad
+ * value that somehow reached a payload would have been printed beside her name.
+ * A guard that stops at one end only is not a guard, and the asymmetry was
+ * invisible precisely because the server is currently the thing preventing it.
+ */
+export const MAXIMUM_PUBLIC_AGE = 120;
 
 /**
  * Derives a clearly-adult numeric age from a Visual Identity apparent-age band

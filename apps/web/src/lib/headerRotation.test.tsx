@@ -16,7 +16,7 @@ import { FunnelPlans } from '../components/premium/PremiumFunnel';
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const clip = (n: number, mediaType: 'image' | 'video' = 'video'): PublicClip => ({
-  id: id(100 + n), mediaType, url: `/api/media/clip-${n}.mp4`, characterId: id(n), characterName: `Char ${n}`,
+  id: id(100 + n), mediaType, url: `/api/media/clip-${n}.mp4`, characterId: id(n), characterName: `Char ${n}`, characterAge: null,
 });
 const card = (n: number, c: PublicClip | null = clip(n)): PublicPlayWithMeCard =>
   ({ id: id(n), displayName: `Char ${n}`, age: null, apparentAgeBand: '25-29', categories: [], clip: c }) as PublicPlayWithMeCard;

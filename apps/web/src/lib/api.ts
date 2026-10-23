@@ -960,6 +960,14 @@ export interface PublicClip {
   url: string;
   characterId: string;
   characterName: string;
+  /**
+   * Her CONFIRMED age, or null when nobody has set one.
+   *
+   * Confirmed only, like every other customer-facing surface -- never the
+   * apparent-age band, never the persona's guess. Null renders no age, exactly
+   * as Play with me does.
+   */
+  characterAge: number | null;
 }
 
 export interface PublicCharacterCard {

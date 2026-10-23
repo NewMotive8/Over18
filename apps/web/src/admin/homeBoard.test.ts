@@ -155,13 +155,13 @@ describe('preview summary', () => {
         below_results: [],
       },
       hero: [
-        { id: 'h', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C' },
+        { id: 'h', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C', characterAge: null },
       ],
       playWithMe: [
         { id: 'p', displayName: 'P', age: null, apparentAgeBand: null, categories: [], clip: null },
       ],
       categories: [
-        { id: 'r', slug: 'r', name: 'R', tagline: null, clips: [{ id: 'x', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C' }] },
+        { id: 'r', slug: 'r', name: 'R', tagline: null, clips: [{ id: 'x', mediaType: 'image', url: '/u', characterId: 'c', characterName: 'C', characterAge: null }] },
         { id: 'empty', slug: 'e', name: 'E', tagline: null, clips: [] },
       ],
       categoryPills: [],
@@ -202,6 +202,7 @@ const heroClip = (id: string) => ({
   url: `/api/media/assets/${id}/file`,
   characterId: `c-${id}`,
   characterName: `C ${id}`,
+  characterAge: null,
 });
 
 describe('the Hero states are never confusable', () => {

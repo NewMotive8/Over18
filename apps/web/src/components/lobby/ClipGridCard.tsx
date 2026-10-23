@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import type { PublicClip } from '../../lib/api';
 import ClipMedia from './ClipMedia';
+import { displayAge } from '../../lib/lobbyContent';
 
 /**
  * One search result: a real CMS content asset.
@@ -36,6 +37,16 @@ import ClipMedia from './ClipMedia';
  * against a clip that has no such status.
  */
 export default function ClipGridCard({ clip }: { clip: PublicClip }) {
+  /**
+   * Her confirmed age, through the SAME resolver the Play with me rail uses.
+   *
+   * These rails carried no age at all until now, so a confirmed age appeared on
+   * Play with me and nowhere else -- the same character reading "Donna 32" in
+   * one rail and "Donna" in the next. `displayAge` is confirmed-only and null
+   * renders nothing, so the two rails cannot disagree.
+   */
+  const age = displayAge(clip.characterAge);
+
   // The second lock. The server filters to video; this makes an image
   // unrenderable here rather than merely unexpected.
   if (clip.mediaType !== 'video') return null;
@@ -43,7 +54,7 @@ export default function ClipGridCard({ clip }: { clip: PublicClip }) {
   return (
     <Link
       to={`/characters/${clip.characterId}`}
-      aria-label={`Open ${clip.characterName}`}
+      aria-label={age === null ? `Open ${clip.characterName}` : `Open ${clip.characterName}, ${age}`}
       className="group relative block aspect-[3/4] w-full overflow-hidden rounded-2xl border border-white/5 bg-zinc-900"
     >
       <ClipMedia clip={clip} autoPlay />
@@ -52,6 +63,7 @@ export default function ClipGridCard({ clip }: { clip: PublicClip }) {
         <span className="truncate text-base font-bold text-white drop-shadow">
           {clip.characterName}
         </span>
+        {age !== null && <span className="text-sm font-medium text-zinc-200">{age}</span>}
       </div>
     </Link>
   );

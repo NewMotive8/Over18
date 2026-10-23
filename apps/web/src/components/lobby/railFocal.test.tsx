@@ -36,6 +36,7 @@ const card = (id = 'c1'): PublicPlayWithMeCard => ({
     url: `/api/media/assets/a-${id}/file`,
     characterId: id,
     characterName: `Name ${id}`,
+  characterAge: null,
   },
 });
 

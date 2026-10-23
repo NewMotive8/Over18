@@ -21,6 +21,7 @@ const clip = (id: string, mediaType: 'image' | 'video' = 'video'): PublicClip =>
   url: `/api/media/assets/${id}/file`,
   characterId: `char-${id}`,
   characterName: `Nova ${id}`,
+  characterAge: null,
 });
 
 const render = (c: PublicClip) =>
