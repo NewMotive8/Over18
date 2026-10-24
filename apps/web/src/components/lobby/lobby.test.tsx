@@ -44,6 +44,7 @@ function clip(id = 'a'): PublicClip {
     url: `/api/media/assets/${id}/file`,
     characterId: `char-${id}`,
     characterName: `Character ${id}`,
+  characterAge: null,
   };
 }
 
@@ -303,10 +304,22 @@ describe('the adults-only guardrail still holds', () => {
 describe('the original character-card presentation', () => {
   const markup = router(<PersonaGridCard character={card('grid')} index={0} />);
 
-  it('is a character card, not a clip tile — name and age together', () => {
+  /**
+   * THE AGE HALF OF THIS IS DELIBERATELY REVERSED.
+   *
+   * It asserted that the card states an age beside the name. That number came
+   * from `adultAgeFromBand(apparentAge(visual))`, and the band is the bare
+   * string 'adult' for 62 of 65 characters -- so the card showed the SAME age
+   * for almost the whole roster. That is the defect `characters.age` exists to
+   * end, and this component was the last one still carrying it.
+   *
+   * `PublicCharacterCard` has no confirmed age to put there instead, so the
+   * card now states none. The presentation freeze still holds for everything
+   * else: the name, the link, the badge and the layout are untouched.
+   */
+  it('is a character card, not a clip tile — and states no invented age', () => {
     expect(markup).toContain('Name grid');
-    // The card states an adult age beside the name, as the design shows.
-    expect(markup).toMatch(/Name grid[\s\S]*?<span class="text-sm font-medium text-zinc-200">\d+/);
+    expect(markup).not.toMatch(/<span class="text-sm font-medium text-zinc-200">\d+/);
   });
 
   it('links to the character, not to a clip', () => {

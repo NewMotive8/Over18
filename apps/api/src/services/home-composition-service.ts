@@ -126,6 +126,20 @@ export interface PublicClipView {
   characterId: string;
   characterName: string;
   /**
+   * Her CONFIRMED age, or null when nobody has set one.
+   *
+   * CONFIRMED ONLY, like every other customer-facing surface. Never the
+   * apparent-age band and never the persona's guess: the band is the bare
+   * string 'adult' for almost the whole roster and used to render as 26 for
+   * everyone, and the persona age is a vision model's answer. A number beside
+   * her name reads as a fact, so it is only ever `characters.age`.
+   *
+   * Null means the rail shows no age, exactly as Play with me does. The clip
+   * rails previously carried no age at all, so a confirmed age appeared on
+   * Play with me and nowhere else.
+   */
+  characterAge: number | null;
+  /**
    * How an operator classified this clip, where the surface needs to know.
    *
    * OPTIONAL BECAUSE ONLY ONE SURFACE ASKS. Home's lists are already filtered
@@ -300,6 +314,7 @@ function clipView(
   asset: Pick<CharacterVisualAssetRow, 'id' | 'characterId' | 'storageKey' | 'provenance'> &
     Partial<Pick<CharacterVisualAssetRow, 'contentRating'>>,
   characterName: string,
+  characterAge: number | null,
 ): PublicClipView | null {
   const url = publicAssetUrl(asset.id, asset.storageKey);
   if (!url) return null;
@@ -309,6 +324,16 @@ function clipView(
     url,
     characterId: asset.characterId,
     characterName,
+    /**
+     * Validated on the way out, not trusted from the row.
+     *
+     * `confirmedPublicAge` is the SAME helper the Play with me card already
+     * uses a few hundred lines below, so a corrupt or non-adult value becomes
+     * "no age" here rather than a number on a card -- and the two rails cannot
+     * disagree about what counts as a usable age. The database constrains this
+     * column too; this is the second lock, and it costs nothing.
+     */
+    characterAge: confirmedPublicAge(characterAge),
     // Passed through only when the caller's query selected it -- see the field's
     // note on why every Home surface deliberately leaves it out.
     ...(asset.contentRating === undefined ? {} : { contentRating: asset.contentRating }),
@@ -377,6 +402,8 @@ export async function listPublicCharacterClips(
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
       // HER PAGE IS THE ONE SURFACE THAT HAS TO TELL THEM APART. Everything
       // listed here is hers and released; the header carousel may show only the
       // ordinary ones, and Posts shows all of them. Selected here and nowhere
@@ -415,7 +442,7 @@ export async function listPublicCharacterClips(
     .orderBy(freeFirstOrder(), desc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
 
   return rows
-    .map((row) => clipView(row, row.characterName))
+    .map((row) => clipView(row, row.characterName, row.characterAge))
     .filter((clip): clip is PublicClipView => clip !== null);
 }
 
@@ -533,6 +560,8 @@ export async function representativeClips(
       provenance: characterVisualAssets.provenance,
       isCanonical: characterVisualAssets.isCanonical,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
     })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
@@ -594,7 +623,7 @@ export async function representativeClips(
     );
 
   for (const row of rows) {
-    const view = clipView(row, row.characterName);
+    const view = clipView(row, row.characterName, row.characterAge);
     // Belt and braces: `mediaTypeOf` is still the authority on what a video is,
     // so a row the SQL translation admitted but this rule would not is dropped
     // here rather than rendered.
@@ -698,6 +727,8 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
       position: homeHeroClips.position,
     })
     .from(homeHeroClips)
@@ -720,7 +751,7 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
     .orderBy(asc(homeHeroClips.position), asc(homeHeroClips.assetId));
 
   return rows
-    .map((row) => clipView(row, row.characterName))
+    .map((row) => clipView(row, row.characterName, row.characterAge))
     .filter((clip): clip is PublicClipView => clip !== null);
 }
 
@@ -1080,6 +1111,8 @@ async function listHomeCategories(
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
       rank: sql<number>`row_number() over (
         partition by ${appCategoryAssets.categoryId}
         order by ${appCategoryAssets.position} asc, ${appCategoryAssets.assetId} asc
@@ -1125,7 +1158,7 @@ async function listHomeCategories(
   const byCategory = new Map<string, PublicClipView[]>();
   for (const row of rows) {
     const list = byCategory.get(row.categoryId) ?? [];
-    const view = clipView(row, row.characterName);
+    const view = clipView(row, row.characterName, row.characterAge);
     if (view) list.push(view);
     byCategory.set(row.categoryId, list);
   }
@@ -1541,6 +1574,8 @@ export async function browsePublicClips(
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
     })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
@@ -1552,6 +1587,6 @@ export async function browsePublicClips(
   const rows = await (options.limit != null ? base.limit(options.limit) : base);
 
   return rows
-    .map((row) => clipView(row, row.characterName))
+    .map((row) => clipView(row, row.characterName, row.characterAge))
     .filter((clip): clip is PublicClipView => clip !== null && clip.mediaType === 'video');
 }

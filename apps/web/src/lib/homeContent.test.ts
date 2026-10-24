@@ -24,7 +24,7 @@ function clip(id: string): PublicClip {
     mediaType: 'image',
     url: `/api/media/assets/${id}/file`,
     characterId: `char-${id}`,
-    characterName: `Character ${id}`,
+    characterName: `Character ${id}`, characterAge: null,
   };
 }
 

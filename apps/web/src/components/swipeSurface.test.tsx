@@ -46,7 +46,7 @@ function card(over: Partial<PublicPlayWithMeCard> = {}): PublicPlayWithMeCard {
       mediaType: 'video',
       url: '/api/media/assets/asset-1/file',
       characterId: 'char-1',
-      characterName: 'Nova',
+      characterName: 'Nova', characterAge: null,
     },
     ...over,
   };
@@ -193,24 +193,41 @@ describe('FavouritesPage', () => {
 
 describe('no surface in this feature uses localStorage', () => {
   /**
-   * ONE AGE RULE, ON EVERY SURFACE THAT SHOWS AN AGE. These three render the
-   * same card payload, so a fix applied to one of them and not the others is
-   * how the rail and the swipe deck would start disagreeing about how old she
-   * is. `displayAge` is that rule; deriving from the band directly is the bug
-   * it replaces.
+   * ONE AGE RULE, ON EVERY SURFACE THAT SHOWS AN AGE.
+   *
+   * REWRITTEN BECAUSE THE RULE MOVED, NOT BECAUSE IT WEAKENED. This asserted
+   * that each card file called `displayAge(character.age)` itself. Three files
+   * each holding their own copy of the rule is exactly how they drifted: Play
+   * with me showed an age, the results grid showed it at a different weight,
+   * and the New/Top rated/Popular rails showed none at all.
+   *
+   * The call now lives once, inside `CardNameAge`, which takes the RAW value
+   * and resolves it -- so a caller cannot pass a number from anywhere else.
+   * What is pinned here is therefore stronger than before: every card surface
+   * delegates, and none of them derives an age from the band.
    */
-  it('derives every card age from her profile first, never from the band alone', () => {
+  it('delegates every card age to the one shared rule, never the band', () => {
     for (const file of [
       './lobby/PlayWithMeCarousel.tsx',
+      './lobby/ClipRail.tsx',
+      './lobby/ClipGridCard.tsx',
       './SwipeCard.tsx',
       '../pages/FavouritesPage.tsx',
     ]) {
       const source = codeOf(file);
-      expect(source, file).toContain('displayAge(character.age)');
-      // An age is rendered only when there is a confirmed one.
-      expect(source, file).toMatch(/age !== null &&/);
+      // Either it renders the shared row, or it resolves through the shared
+      // rule directly -- SwipeCard's layout is its own and keeps its call.
+      expect(source, file).toMatch(/CardNameAge|displayAge\(/);
       expect(source, file).not.toContain('adultAgeFromBand(');
+      expect(source, file).not.toContain('apparentAge(');
     }
+  });
+
+  it('keeps the confirmed-only resolver in one place', () => {
+    const shared = codeOf('./lobby/CardNameAge.tsx');
+    expect(shared).toContain('displayAge(age)');
+    // It takes the raw value, so no caller can pre-resolve around the rule.
+    expect(shared).toMatch(/age: number \| null \| undefined/);
   });
 
   /**

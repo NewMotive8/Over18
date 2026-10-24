@@ -27,7 +27,7 @@ const video = (id: string) => ({
   mediaType: 'video' as const,
   url: `/api/media/assets/asset-${id}/file`,
   characterId: id,
-  characterName: `Name ${id}`,
+  characterName: `Name ${id}`, characterAge: null,
 });
 
 const image = (id: string) => ({ ...video(id), mediaType: 'image' as const });

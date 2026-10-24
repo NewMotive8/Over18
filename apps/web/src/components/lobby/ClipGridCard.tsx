@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import type { PublicClip } from '../../lib/api';
+import CardNameAge, { cardAriaLabel } from './CardNameAge';
 import ClipMedia from './ClipMedia';
 
 /**
@@ -43,16 +44,17 @@ export default function ClipGridCard({ clip }: { clip: PublicClip }) {
   return (
     <Link
       to={`/characters/${clip.characterId}`}
-      aria-label={`Open ${clip.characterName}`}
+      aria-label={cardAriaLabel(clip.characterName, clip.characterAge)}
       className="group relative block aspect-[3/4] w-full overflow-hidden rounded-2xl border border-white/5 bg-zinc-900"
     >
       <ClipMedia clip={clip} autoPlay />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent" />
-      <div className="absolute inset-x-0 bottom-0 flex items-baseline gap-1.5 p-3">
-        <span className="truncate text-base font-bold text-white drop-shadow">
-          {clip.characterName}
-        </span>
-      </div>
+      <CardNameAge
+        name={clip.characterName}
+        age={clip.characterAge}
+        size="base"
+        className="absolute inset-x-0 bottom-0 p-3"
+      />
     </Link>
   );
 }
