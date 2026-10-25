@@ -179,6 +179,15 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     },
     profileAuthor: options.profileAuthor ?? unconfiguredProfileAuthor,
     personaGenerator: options.personaGenerator ?? unconfiguredPersonaGenerator,
+    /**
+     * Read from env, not assumed. Admin labels the ACTIVE tab from this, so a
+     * rollback to SpicyAPI relabels the UI without a release -- and switching
+     * tabs in Admin cannot change it, because it is not a client-side choice.
+     */
+    voiceSettings: {
+      activeProvider: env.voice?.provider ?? 'spicyapi',
+      mediaDir: env.media.storageDir,
+    },
   });
   // Admin → Settings. Content requirements are configuration, so they get their
   // own plugin rather than living inside the content-review surface that reads

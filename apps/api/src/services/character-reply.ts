@@ -16,6 +16,12 @@ import type { CharacterLocation, CharacterPersona, ChatMessage, PublicCharacter 
 export interface ReplyContext {
   character: PublicCharacter;
   /**
+   * An operator's extra instruction for CALLS, when the active provider has
+   * one configured. Additive: absent changes nothing, which is why every
+   * existing character is unaffected.
+   */
+  extraVoiceInstructions?: string | null;
+  /**
    * WHICH CHANNEL SHE IS SPEAKING ON, because the two want opposite behaviour.
    *
    * Text chat is deliberately reactive: its rules were tuned across 126 live

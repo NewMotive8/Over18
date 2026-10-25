@@ -1,5 +1,19 @@
 import { and, asc, eq } from 'drizzle-orm';
-import { isKnownVoice, type CharacterPersona, type PublicCharacter } from '@over18/shared';
+import {
+  isKnownGrokVoice,
+  isKnownVoice,
+  type CharacterPersona,
+  type PublicCharacter,
+} from '@over18/shared';
+
+/**
+ * How long a speaking style or an extra instruction may be.
+ *
+ * Generous enough for a few sentences, bounded because every character of it
+ * is prepended to her call prompt, where the budget is shared with her persona
+ * and her remembered facts.
+ */
+export const GROK_INSTRUCTION_MAX_CHARS = 600;
 import type { Db } from '../db/client.js';
 import { isValidTimezone } from './timezone.js';
 import {
@@ -94,6 +108,15 @@ export interface AdminCharacter extends PublicCharacter {
    * the default. Admin-facing only, like `systemPrompt`.
    */
   liveCallVoice: string | null;
+  /**
+   * Her Grok settings, kept SEPARATE from the SpicyAPI pair above and from
+   * each other. Null means "not configured for Grok", which is a real state:
+   * the call path falls back rather than failing, so a character nobody has
+   * touched keeps sounding exactly as she does today.
+   */
+  grokVoice: string | null;
+  grokSpeakingStyle: string | null;
+  grokCallInstructions: string | null;
   /**
    * Her CONFIRMED age, or null when nobody has set one.
    *
@@ -198,6 +221,9 @@ export function toAdminCharacter(
     // Null is a real answer here -- "no voice assigned, she uses the default" --
     // so it is reported rather than omitted, and the selector can show it.
     liveCallVoice: row.liveCallVoice,
+    grokVoice: row.grokVoice ?? null,
+    grokSpeakingStyle: row.grokSpeakingStyle ?? null,
+    grokCallInstructions: row.grokCallInstructions ?? null,
     age: row.age ?? null,
     // Validated, so Admin is never offered a non-adult or malformed guess.
     suggestedAge: suggestedCharacterAge(persona),
@@ -275,6 +301,15 @@ export interface CharacterInput {
    * missing one, because `resolveVoice` turns it into the default.
    */
   liveCallVoice?: string | null;
+  /**
+   * Grok's settings. Absent means "leave alone" and null means "clear", the
+   * same contract `liveCallVoice` uses -- which is what keeps the two
+   * providers independent: a patch from one tab simply omits the other's
+   * fields, so it cannot overwrite them.
+   */
+  grokVoice?: string | null;
+  grokSpeakingStyle?: string | null;
+  grokCallInstructions?: string | null;
   /**
    * Her age, 18 or over, or null to clear it.
    *
@@ -417,6 +452,57 @@ function normalise(
    * `Serena`, and accepting it would store something the provider will not
    * recognise.
    */
+  /**
+   * GROK'S VOICE, validated against the SAME roster the adapter uses.
+   *
+   * Case-insensitive and stored lower-case, because xAI documents its ids that
+   * way -- unlike SpicyAPI's, where case matters. Null clears it and returns
+   * her to the mapped fallback.
+   */
+  if (input.grokVoice !== undefined) {
+    const raw = input.grokVoice;
+    const trimmed = typeof raw === 'string' ? raw.trim() : raw;
+    if (trimmed === null || trimmed === '') {
+      out.grokVoice = null;
+    } else if (!isKnownGrokVoice(trimmed)) {
+      throw new CharacterValidationError(
+        'grokVoice',
+        'Choose a voice from the published Grok catalogue.',
+      );
+    } else {
+      out.grokVoice = String(trimmed).trim().toLowerCase();
+    }
+  }
+
+  /**
+   * Her speaking style and any extra instruction are PROMPT MATERIAL, so they
+   * are bounded text and nothing more. They are not audio controls: xAI
+   * exposes no pace, pitch or warmth knobs on a realtime call, and promising
+   * one in Admin would be a lie the product could not keep.
+   */
+  for (const field of ['grokSpeakingStyle', 'grokCallInstructions'] as const) {
+    const raw = input[field];
+    if (raw === undefined) continue;
+    if (raw === null) {
+      out[field] = null;
+      continue;
+    }
+    if (typeof raw !== 'string') {
+      throw new CharacterValidationError(field, 'Must be text.');
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) {
+      out[field] = null;
+    } else if (trimmed.length > GROK_INSTRUCTION_MAX_CHARS) {
+      throw new CharacterValidationError(
+        field,
+        `Keep it under ${GROK_INSTRUCTION_MAX_CHARS} characters.`,
+      );
+    } else {
+      out[field] = trimmed;
+    }
+  }
+
   if (input.liveCallVoice !== undefined) {
     const raw = input.liveCallVoice;
     const trimmed = typeof raw === 'string' ? raw.trim() : raw;

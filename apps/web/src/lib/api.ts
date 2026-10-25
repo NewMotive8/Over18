@@ -1799,6 +1799,14 @@ export interface AdminCharacterView {
    */
   liveCallVoice: string | null;
   /**
+   * Her Grok settings, stored separately from the SpicyAPI pair above so a
+   * rollback to SpicyAPI restores exactly what was configured before. Null
+   * means "not configured for Grok": the call falls back, never fails.
+   */
+  grokVoice: string | null;
+  grokSpeakingStyle: string | null;
+  grokCallInstructions: string | null;
+  /**
    * Her CONFIRMED age, or null when nobody has set one.
    *
    * Null renders as unset -- never as the persona's guess or a number derived
@@ -1966,6 +1974,27 @@ export interface CharacterDraft {
   status?: 'active' | 'inactive';
   /** 18 or over, or null to clear it. Absent leaves it unchanged. */
   age?: number | null;
+  /**
+   * Grok's settings. Absent means "leave alone", so a save from one
+   * provider's tab never carries -- and therefore never overwrites -- the
+   * other's.
+   */
+  grokVoice?: string | null;
+  grokSpeakingStyle?: string | null;
+  grokCallInstructions?: string | null;
+}
+
+/** What Admin needs to render the Voice & Speaking Style section. */
+export interface AdminVoiceSettings {
+  /**
+   * Which provider places calls right now, read from `VOICE_LLM_PROVIDER` on
+   * the server. The "(Active)" label follows this, so it is never a constant
+   * in the browser and a rollback relabels the tabs with no release.
+   */
+  activeProvider: string;
+  /** The one sentence every cached sample says. */
+  sampleText: string;
+  grokVoices: Array<{ id: string; description: string; hasSample: boolean }>;
 }
 
 /** What Autofill proposes. A DRAFT — nothing is saved until the operator says so. */
@@ -2107,6 +2136,11 @@ export interface CharacterContentAsset extends AssetLifecycle {
   /** When it was archived (P0.4), or null. Its release time is kept. */
   archivedAt: string | null;
 }
+
+/** The Voice & Speaking Style section's one read. */
+export const adminVoiceApi = {
+  settings: () => request<AdminVoiceSettings>('/admin/voice/settings'),
+};
 
 export const adminCharactersApi = {
   list: () => request<AdminCharacterListItem[]>('/admin/characters'),

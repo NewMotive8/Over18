@@ -16,6 +16,7 @@ import {
   selectMemoriesForPrompt,
 } from './prompt-builder.js';
 import { listMemories } from './memory-service.js';
+import { GROK_PROVIDER } from '../voice/grok.js';
 import type { CommerceEnv } from '../env.js';
 import { canStartCall } from './paid-call-service.js';
 import { resolveVoice } from '../voice/voice-catalogue.js';
@@ -355,7 +356,21 @@ export async function startCall(
     .limit(1);
   if (!characterRow) return { ok: false, reason: 'not_found' };
 
-  const voice = resolveVoice(characterRow.liveCallVoice);
+  /**
+   * WHICH VOICE, UNDER WHICHEVER PROVIDER IS ACTIVE.
+   *
+   * An explicit Grok voice is passed straight through -- `resolveGrokVoice`
+   * accepts a Grok id as well as a SpicyAPI name, so a chosen voice is used
+   * directly and is not run through a mapping table. With none chosen, her
+   * SpicyAPI voice goes out exactly as before and the adapter maps it, which
+   * is what keeps 56 unconfigured characters sounding as they do today.
+   *
+   * Under SpicyAPI nothing here changes at all: the Grok column is not read.
+   */
+  const voice =
+    deps.provider.name === GROK_PROVIDER && characterRow.grokVoice
+      ? characterRow.grokVoice
+      : resolveVoice(characterRow.liveCallVoice);
 
   // 5. Claim the row FIRST. The unique index is what makes two simultaneous
   //    starts resolve to one: the loser's insert violates it and is told a
@@ -560,9 +575,32 @@ export async function buildProviderSessionRequest(
    * newest-to-oldest keeping whole facts and returns them oldest-first; only
    * the character budget it is handed changes.
    */
+  /**
+   * HOW SHE CARRIES THE CALL, from the ACTIVE provider's settings only.
+   *
+   * Under Grok her own speaking style is used when one is set, and
+   * `conversation_style` -- which is what a Grok call already uses today --
+   * when it is not. Under SpicyAPI `conversation_style` is read and the Grok
+   * columns are not, so neither provider's settings can leak into the other's
+   * call.
+   *
+   * These are SENTENCES IN A PROMPT, not audio controls. xAI exposes no pace,
+   * pitch or warmth parameters on a realtime session, so this changes how she
+   * speaks by telling her how to speak -- the only lever that exists.
+   */
+  // The ROW knows which provider it was created under -- `call_sessions.provider`
+  // is written when the call is claimed -- so the settings a call uses cannot
+  // drift if the environment variable changes mid-flight.
+  const usingGrok = row.provider === GROK_PROVIDER;
+  const speakingStyle = usingGrok
+    ? (characterRow.grokSpeakingStyle ?? characterRow.conversationStyle)
+    : characterRow.conversationStyle;
+  const extraCallInstructions = usingGrok ? characterRow.grokCallInstructions : null;
+
   const promptWithout = (memories: string[]) =>
     buildCharacterSystemPrompt({
-      character: toPublicCharacter(characterRow, null),
+      character: { ...toPublicCharacter(characterRow, null), conversationStyle: speakingStyle },
+      extraVoiceInstructions: extraCallInstructions,
       systemPrompt: characterRow.systemPrompt,
       persona: personaRow?.persona ?? null,
       location: {

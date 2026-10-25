@@ -111,6 +111,31 @@ export const characters = pgTable(
      */
     liveCallVoice: text('live_call_voice'),
     /**
+     * HER GROK VOICE, AND HOW SHE CARRIES A CALL ON IT.
+     *
+     * Three columns beside `live_call_voice` rather than instead of it. The
+     * SpicyAPI settings stay exactly as they are and keep working the moment
+     * `VOICE_LLM_PROVIDER` goes back to `spicyapi` -- rollback is a variable,
+     * not a migration, and that only holds if nothing here overwrites them.
+     *
+     * NULL MEANS "NOT CONFIGURED FOR GROK YET", and every one of them falls
+     * back rather than failing:
+     *   grokVoice           -> the SpicyAPI voice, through the existing
+     *                          SPICYAPI_TO_GROK mapping, then the default.
+     *   grokSpeakingStyle   -> `conversation_style`, which is what a Grok call
+     *                          already uses today.
+     *   grokCallInstructions-> nothing. It is additive by design.
+     * So 56 existing characters keep sounding exactly as they do now, and an
+     * operator changes one at a time.
+     *
+     * ALL THREE ARE PROMPT MATERIAL OR A VOICE ID -- never an audio control.
+     * xAI exposes no knobs for pace, pitch or warmth, so a "speaking style"
+     * here is a sentence in her instructions and is described as one.
+     */
+    grokVoice: text('grok_voice'),
+    grokSpeakingStyle: text('grok_speaking_style'),
+    grokCallInstructions: text('grok_call_instructions'),
+    /**
      * HER AGE, AS AN OPERATOR CONFIRMED IT. The authoritative one.
      *
      * NULL MEANS NOBODY HAS CONFIRMED ONE, and that is a state the product has

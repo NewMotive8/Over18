@@ -34,6 +34,10 @@ const base: AdminCharacterListItem = {
   // No assigned voice, which is every character's state today and keeps these
   // cases about what they were already about.
   liveCallVoice: null,
+  // No Grok settings: the fallback state every character starts in.
+  grokVoice: null,
+  grokSpeakingStyle: null,
+  grokCallInstructions: null,
   // No stated location either: the common case, and it keeps every pre-existing
   // assertion here about what it was already about.
   countryCode: null,
