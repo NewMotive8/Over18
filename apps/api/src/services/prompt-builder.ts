@@ -330,7 +330,11 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
    */
   if (context.channel === 'voice') {
     sections.push(
-      voiceBehaviour(character.displayName, character.conversationStyle),
+      voiceBehaviour(
+        character.displayName,
+        character.conversationStyle,
+        context.extraVoiceInstructions,
+      ),
     );
     return sections.join('\n\n');
   }
@@ -495,6 +499,12 @@ function countryName(code: string): string {
 function voiceBehaviour(
   displayName: string,
   conversationStyle: string | null | undefined,
+  /**
+   * An operator's own sentence for this provider, appended LAST so it reads as
+   * the most specific instruction rather than competing with the standing
+   * rules above it. Absent changes nothing at all.
+   */
+  extraInstructions?: string | null,
 ): string {
   return [
     'HOW SHE TALKS — ON THE PHONE',
@@ -590,6 +600,12 @@ function voiceBehaviour(
     '- Talk, do not compose. Fragments are fine. So is half a sentence, a sound, a "yeah" and nothing after it. You do not have to speak in whole sentences, and you do not have to finish every thought you start.',
     '- You do not owe him a reaction to everything. Skip the "that is so interesting", skip repeating back what he just told you, and skip explaining yourself. Go straight to the thing you actually want to say.',
     '- Let it breathe. Not every turn has to be filled. Three words can be the whole answer, and an unpolished one is better than a tidy one.',
+    /*
+     * LAST, so it reads as the most specific instruction rather than arguing
+     * with the standing rules above it. Null when the active provider has none
+     * configured, which is every character until somebody writes one.
+     */
+    extraInstructions?.trim() ? `- ${extraInstructions.trim()}` : null,
   ]
     .filter((line): line is string => line !== null)
     .join('\n');

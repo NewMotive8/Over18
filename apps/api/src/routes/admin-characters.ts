@@ -18,6 +18,12 @@ import {
   type ProfileAuthor,
 } from '../services/character-profile-service.js';
 import { PersonaGeneratorError, unconfiguredPersonaGenerator, type PersonaGenerator } from '../services/character-persona-generator.js';
+import { GROK_VOICE_CATALOGUE, GROK_VOICE_DESCRIPTIONS, GROK_VOICE_SAMPLE_TEXT } from '@over18/shared';
+import {
+  VOICE_SAMPLE_CONTENT_TYPE,
+  hasVoiceSample,
+  readVoiceSample,
+} from '../voice/grok-voice-samples.js';
 import {
   CharacterPersonaRegenerationError,
   CharacterPersonaValidationError,
@@ -137,6 +143,12 @@ export default async function adminCharacterRoutes(
     uploadStorage: LibraryUploadStorage;
     profileAuthor?: ProfileAuthor;
     personaGenerator?: PersonaGenerator;
+    /**
+     * Which provider places calls right now, and where the cached voice
+     * samples live. Both come from env at build time, so Admin can label the
+     * active tab from configuration instead of hard-coding a vendor name.
+     */
+    voiceSettings?: { activeProvider: string; mediaDir: string };
   },
 ) {
   const adminOnly = { preHandler: [app.requireAuth, app.requireAdmin] };
@@ -864,6 +876,53 @@ export default async function adminCharacterRoutes(
       }
 
       return { confirmed, rejected };
+    },
+  );
+
+  /* ---------------------------------------------------------------- *
+   * Voice settings: the catalogue, and the cached samples
+   * ---------------------------------------------------------------- */
+
+  /**
+   * What Admin needs to render the Voice & Speaking Style section.
+   *
+   * `activeProvider` comes from `VOICE_LLM_PROVIDER` rather than a constant in
+   * the browser, so the "(Active)" label follows the deployment and a rollback
+   * relabels the tabs without a release. `samples` lists only the voices that
+   * actually have a cached file, so the UI shows a Play button exactly where
+   * one will work -- a voice without a sample stays selectable.
+   */
+  app.get('/admin/voice/settings', adminOnly, async () => {
+    const mediaDir = opts.voiceSettings?.mediaDir ?? '';
+    return {
+      activeProvider: opts.voiceSettings?.activeProvider ?? 'spicyapi',
+      sampleText: GROK_VOICE_SAMPLE_TEXT,
+      grokVoices: GROK_VOICE_CATALOGUE.map((voice) => ({
+        id: voice,
+        description: GROK_VOICE_DESCRIPTIONS[voice],
+        hasSample: mediaDir.length > 0 && hasVoiceSample({ mediaDir }, voice),
+      })),
+    };
+  });
+
+  /**
+   * One cached sample. 404 when there is none, which is an ordinary state and
+   * not an error: the player simply does not appear for that voice.
+   */
+  app.get<{ Params: { voice: string } }>(
+    '/admin/voice/samples/:voice',
+    adminOnly,
+    async (request, reply) => {
+      const mediaDir = opts.voiceSettings?.mediaDir ?? '';
+      if (mediaDir.length === 0) return notFound(reply);
+      const bytes = await readVoiceSample({ mediaDir }, request.params.voice);
+      if (!bytes) return notFound(reply);
+      return reply
+        .header('content-type', VOICE_SAMPLE_CONTENT_TYPE)
+        // Immutable: a sample for a voice never changes without a deliberate
+        // regeneration, so the browser should never ask twice.
+        .header('cache-control', 'private, max-age=86400, immutable')
+        .send(bytes);
     },
   );
 

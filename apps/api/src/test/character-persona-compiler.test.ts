@@ -25,12 +25,24 @@ describe('compilePersonaWhoSheIs', () => {
       occupation: 'second-year ER nurse',
       hobbies: ['night runs', 'trashy reality TV'],
     };
-    const facts = compilePersonaWhoSheIs(persona);
+    // The age she states is the CONFIRMED one, passed in: see the compiler.
+    const facts = compilePersonaWhoSheIs(persona, 27);
     expect(facts).toContain("She's 27.");
     expect(facts).toContain('She works as second-year ER nurse.');
     expect(facts.some((f) => f.includes('night runs') && f.includes('trashy reality TV'))).toBe(true);
     // lifeStage renders as a standalone, capitalised sentence.
     expect(facts).toContain('Renting with two roommates, still finding her footing.');
+  });
+
+  /**
+   * THE PERSONA'S OWN AGE IS NOT AN AGE SHE MAY STATE. It is the vision
+   * model's guess, so letting her say it would put a number in her mouth that
+   * her card does not show -- the same divergence `characters.age` exists to
+   * end. Only a confirmed age is spoken.
+   */
+  it("never states the persona's own age, only a confirmed one", () => {
+    expect(compilePersonaWhoSheIs({ age: 27, occupation: 'barista' })).not.toContain("She's 27.");
+    expect(compilePersonaWhoSheIs({ age: 27 }, 31)).toContain("She's 31.");
   });
 
   it('never renders sourceSummary — it is admin-review-only', () => {

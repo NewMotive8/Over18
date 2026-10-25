@@ -74,18 +74,19 @@ export const GROK_INSTRUCTIONS_MAX_CHARS = null;
  * Lower-case because xAI documents the ids as case-insensitive, unlike
  * SpicyAPI's, where case matters.
  */
-export const GROK_VOICE_CATALOGUE = [
-  'ara', 'eve', 'leo', 'rex', 'sal', 'altair', 'atlas', 'aurora',
-  'carina', 'castor', 'celeste', 'cosmo', 'helios', 'helix', 'iris', 'kepler',
-  'liora', 'lumen', 'luna', 'lux', 'naksh', 'orion', 'perseus', 'rigel',
-  'sirius', 'ursa', 'zagan', 'zenith',
-] as const;
-
-export type GrokVoice = (typeof GROK_VOICE_CATALOGUE)[number];
-
-const GROK_VOICES = new Set<string>(GROK_VOICE_CATALOGUE);
-
-export const DEFAULT_GROK_VOICE: GrokVoice = 'eve';
+/**
+ * The roster now lives in `@over18/shared` so Admin can offer the same list the
+ * server validates against -- the move `VOICE_CATALOGUE` already made, for the
+ * same reason. Re-exported here because every existing importer reaches for it
+ * on the adapter, and what it means has not changed.
+ */
+export {
+  GROK_VOICE_CATALOGUE,
+  DEFAULT_GROK_VOICE,
+  isKnownGrokVoice,
+  type GrokVoice,
+} from '@over18/shared';
+import { DEFAULT_GROK_VOICE, isKnownGrokVoice, type GrokVoice } from '@over18/shared';
 
 /**
  * Which Grok voice a character configured for a SpicyAPI voice should speak in.
@@ -141,10 +142,6 @@ const SPICYAPI_TO_GROK: Readonly<Partial<Record<LiveCallVoice, GrokVoice>>> = {
   Emilien: 'sirius',
   Evan: 'helios',
 };
-
-export function isKnownGrokVoice(value: unknown): value is GrokVoice {
-  return typeof value === 'string' && GROK_VOICES.has(value.trim().toLowerCase());
-}
 
 /**
  * The Grok voice for a request's voice value.

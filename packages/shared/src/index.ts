@@ -600,4 +600,10 @@ export {
   DEFAULT_LIVE_CALL_VOICE,
   isKnownVoice,
   type LiveCallVoice,
+  GROK_VOICE_CATALOGUE,
+  DEFAULT_GROK_VOICE,
+  GROK_VOICE_DESCRIPTIONS,
+  GROK_VOICE_SAMPLE_TEXT,
+  isKnownGrokVoice,
+  type GrokVoice,
 } from './voice.js';

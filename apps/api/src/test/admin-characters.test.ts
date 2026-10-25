@@ -646,6 +646,155 @@ describe('the confirmed age', () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Provider-specific voice settings
+ * ------------------------------------------------------------------ */
+
+describe('Grok and SpicyAPI voice settings are independent', () => {
+  const patch = (cookies: Record<string, string>, id: string, body: unknown) =>
+    ctx.app.inject({ method: 'PATCH', url: `/admin/characters/${id}`, cookies, payload: body as never });
+
+  const read = async (cookies: Record<string, string>, id: string) =>
+    (await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies })).json().character;
+
+  it('starts with no Grok settings, which is the fallback state', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    const character = await read(cookies, id);
+    expect(character.grokVoice).toBeNull();
+    expect(character.grokSpeakingStyle).toBeNull();
+    expect(character.grokCallInstructions).toBeNull();
+  });
+
+  it('persists each Grok field and reads it back', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    expect(
+      (await patch(cookies, id, {
+        grokVoice: 'aurora',
+        grokSpeakingStyle: 'She speaks softly and takes her time.',
+        grokCallInstructions: 'Ask about his week before anything else.',
+      })).statusCode,
+    ).toBe(200);
+
+    const character = await read(cookies, id);
+    expect(character.grokVoice).toBe('aurora');
+    expect(character.grokSpeakingStyle).toBe('She speaks softly and takes her time.');
+    expect(character.grokCallInstructions).toBe('Ask about his week before anything else.');
+  });
+
+  /**
+   * THE GUARANTEE THE WHOLE DESIGN RESTS ON. Rolling back to SpicyAPI is meant
+   * to be one environment variable, and that only works if the Grok tab never
+   * wrote over what SpicyAPI was configured with.
+   */
+  it('saving Grok settings leaves the SpicyAPI ones exactly as they were', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await patch(cookies, id, {
+      liveCallVoice: 'Katerina',
+      conversationStyle: 'Soft-spoken and reflective.',
+    });
+
+    await patch(cookies, id, { grokVoice: 'luna', grokSpeakingStyle: 'Playful and quick.' });
+
+    const character = await read(cookies, id);
+    expect(character.liveCallVoice).toBe('Katerina');
+    expect(character.conversationStyle).toBe('Soft-spoken and reflective.');
+    expect(character.grokVoice).toBe('luna');
+  });
+
+  it('and saving SpicyAPI settings leaves the Grok ones alone', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await patch(cookies, id, { grokVoice: 'iris', grokCallInstructions: 'Keep it short.' });
+
+    await patch(cookies, id, { liveCallVoice: 'Serena' });
+
+    const character = await read(cookies, id);
+    expect(character.grokVoice).toBe('iris');
+    expect(character.grokCallInstructions).toBe('Keep it short.');
+    expect(character.liveCallVoice).toBe('Serena');
+  });
+
+  /** Clearing one provider's voice must not clear the other's. */
+  it('clears only what the patch names', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await patch(cookies, id, { liveCallVoice: 'Katerina', grokVoice: 'luna' });
+
+    await patch(cookies, id, { grokVoice: null });
+
+    const character = await read(cookies, id);
+    expect(character.grokVoice).toBeNull();
+    expect(character.liveCallVoice).toBe('Katerina');
+  });
+
+  it('refuses a Grok voice that is not in the Grok roster', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    // A SpicyAPI voice name is NOT a Grok voice id, and must be refused here.
+    for (const bad of ['Katerina', 'not-a-voice', 42, {}]) {
+      const res = await patch(cookies, id, { grokVoice: bad });
+      expect(res.statusCode, JSON.stringify(bad)).toBe(400);
+      expect(res.json().field, JSON.stringify(bad)).toBe('grokVoice');
+    }
+  });
+
+  it('accepts any case and stores it lower-cased', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    expect((await patch(cookies, id, { grokVoice: 'AURORA' })).statusCode).toBe(200);
+    expect((await read(cookies, id)).grokVoice).toBe('aurora');
+  });
+
+  it('refuses a speaking style longer than the prompt budget allows', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    const res = await patch(cookies, id, { grokSpeakingStyle: 'x'.repeat(601) });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field).toBe('grokSpeakingStyle');
+  });
+});
+
+describe('the voice settings endpoint', () => {
+  it('reports the active provider and the full Grok roster', async () => {
+    const cookies = await adminCookies();
+    const res = await ctx.app.inject({ method: 'GET', url: '/admin/voice/settings', cookies });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // Whatever the test app is configured with -- never hard-coded in the UI.
+    expect(typeof body.activeProvider).toBe('string');
+    expect(body.grokVoices).toHaveLength(28);
+    expect(body.sampleText).toContain('this is how I sound');
+    for (const voice of body.grokVoices) {
+      expect(typeof voice.id).toBe('string');
+      expect(typeof voice.description).toBe('string');
+      expect(typeof voice.hasSample).toBe('boolean');
+    }
+  });
+
+  /** A missing sample is an ordinary state, not an error. */
+  it('404s for a voice with no cached sample, and for an unknown voice', async () => {
+    const cookies = await adminCookies();
+    expect(
+      (await ctx.app.inject({ method: 'GET', url: '/admin/voice/samples/aurora', cookies })).statusCode,
+    ).toBe(404);
+    expect(
+      (await ctx.app.inject({ method: 'GET', url: '/admin/voice/samples/nope', cookies })).statusCode,
+    ).toBe(404);
+  });
+
+  it('is admin-only, like every other admin route', async () => {
+    expect(
+      (await ctx.app.inject({ method: 'GET', url: '/admin/voice/settings' })).statusCode,
+    ).toBe(401);
+    expect(
+      (await ctx.app.inject({ method: 'GET', url: '/admin/voice/samples/eve' })).statusCode,
+    ).toBe(401);
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * Primary references
  * ------------------------------------------------------------------ */
 
