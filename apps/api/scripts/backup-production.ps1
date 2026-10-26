@@ -224,7 +224,11 @@ else {
 # ---- Verdict and retention ------------------------------------------
 
 $report.complete = ($failures.Count -eq 0)
-$report | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $folder 'manifest.json') -Encoding utf8
+# WriteAllText rather than Set-Content -Encoding utf8: PowerShell 5.1 writes a
+# UTF-8 BOM, and a BOM makes the manifest unreadable to ordinary JSON parsers.
+[System.IO.File]::WriteAllText(
+  (Join-Path $folder 'manifest.json'),
+  ($report | ConvertTo-Json -Depth 5))
 
 Write-Host ""
 if ($report.complete) {
