@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings whatever a Windows working copy does to
+# them. A CRLF shebang fails in a container with "/bin/sh^M: bad interpreter",
+# and the failure happens at deploy time rather than at commit time.
+*.sh text eol=lf
