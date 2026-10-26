@@ -135,6 +135,8 @@ const opt = (name, fallback = null) => {
 const MODE = opt('mode');
 const WANT_HASH = flag('hash');
 const PARTIAL_ASSETS = flag('partial-assets');
+/** Rehearsal escape hatch: skip the destination media check. Never for Production. */
+const NO_MEDIA_CHECK = flag('no-media-check');
 
 /**
  * Tables this tool is permitted to write, ever.
@@ -354,27 +356,36 @@ const loadManifest = () => {
   return JSON.parse(line.startsWith('MANIFEST') ? line.slice('MANIFEST'.length) : line);
 };
 
-const runPlan = async () => {
-  const manifest = loadManifest();
-  if (manifest.kind !== 'over18-content-manifest') die('That file is not a content manifest.');
-
-  const { Client } = await import('pg');
-  const db = new Client({ connectionString: process.env.DATABASE_URL });
-  await db.connect();
+/** Everything about the target needed to decide the plan. One read, reused. */
+const readTarget = async (db) => {
   const q = async (sql, params = []) => (await db.query(sql, params)).rows;
+  return {
+    prodCharacters: await q('select id, name, status::text as status from characters'),
+    prodIdentityIds: (await q('select id from character_visual_identities')).map((r) => r.id),
+    prodAssetIds: (await q('select id from character_visual_assets')).map((r) => r.id),
+    prodKeywords: await q('select id, key from content_keywords'),
+    prodCategories: await q('select id, slug from app_categories'),
+    prodRequirements: (await q('select key from content_requirements')).map((r) => r.key),
+    prodCounts: (await q(`
+      select (select count(*) from characters)::int as characters,
+             (select count(*) from character_visual_assets)::int as assets,
+             (select count(*) from conversations)::int as conversations,
+             (select count(*) from messages)::int as messages`))[0],
+  };
+};
 
-  const prodCharacters = await q('select id, name, status::text as status from characters');
-  const prodIdentityIds = (await q('select id from character_visual_identities')).map((r) => r.id);
-  const prodAssetIds = (await q('select id from character_visual_assets')).map((r) => r.id);
-  const prodKeywords = await q('select id, key from content_keywords');
-  const prodCategories = await q('select id, slug from app_categories');
-  const prodRequirements = (await q('select key from content_requirements')).map((r) => r.key);
-  const prodCounts = (await q(`
-    select (select count(*) from characters)::int as characters,
-           (select count(*) from character_visual_assets)::int as assets,
-           (select count(*) from conversations)::int as conversations,
-           (select count(*) from messages)::int as messages`))[0];
-  await db.end();
+/**
+ * The plan: who would be inserted, who is skipped, who is blocked and why.
+ *
+ * PURE, and shared by plan and apply, so apply cannot act on a different
+ * understanding of the data than the one you reviewed. Apply re-derives this
+ * against the live target and refuses if the token has moved.
+ */
+const computePlan = (manifest, target) => {
+  const {
+    prodCharacters, prodIdentityIds, prodAssetIds,
+    prodKeywords, prodCategories, prodRequirements,
+  } = target;
 
   const prodByName = new Map(prodCharacters.map((c) => [c.name, c]));
   const prodById = new Map(prodCharacters.map((c) => [c.id, c]));
@@ -507,7 +518,13 @@ const runPlan = async () => {
       if (!target) {
         notes.push(`Category "${row.category_slug}" does not exist in Production; that placement will not be applied.`);
       } else {
-        categoryPlan.push({ slug: row.category_slug, remapped: target !== row.category_id });
+        categoryPlan.push({
+          slug: row.category_slug,
+          remapped: target !== row.category_id,
+          assetId: row.asset_id,
+          position: row.position,
+          featured: row.featured,
+        });
       }
     }
 
@@ -540,7 +557,46 @@ const runPlan = async () => {
     else plan.insert.push(entry);
   }
 
-  report(manifest, plan, prodCounts);
+  plan.insert.sort((a, b) => a.character.name.localeCompare(b.character.name));
+  return plan;
+};
+
+/**
+ * The token that ties an approval to a specific plan.
+ *
+ * Deliberately covers the SHAPE of the work -- which characters, how many
+ * assets, how many files, how many bytes -- so that anything materially
+ * different on the target produces a different token and apply refuses.
+ */
+const planToken = (plan) => {
+  const totals = plan.insert.reduce(
+    (acc, e) => ({
+      assets: acc.assets + e.assets.length,
+      files: acc.files + e.fileCount,
+      bytes: acc.bytes + e.byteCount,
+    }),
+    { assets: 0, files: 0, bytes: 0 },
+  );
+  return createHash('sha256')
+    .update(JSON.stringify({
+      names: plan.insert.map((e) => e.character.name).sort(),
+      ...totals,
+    }))
+    .digest('hex')
+    .slice(0, 16);
+};
+
+const runPlan = async () => {
+  const manifest = loadManifest();
+  if (manifest.kind !== 'over18-content-manifest') die('That file is not a content manifest.');
+
+  const { Client } = await import('pg');
+  const db = new Client({ connectionString: process.env.DATABASE_URL });
+  await db.connect();
+  const target = await readTarget(db);
+  await db.end();
+
+  report(manifest, computePlan(manifest, target), target.prodCounts);
 };
 
 /* ------------------------------------------------------------------ *
@@ -684,23 +740,16 @@ const report = (manifest, plan, prodCounts) => {
   out('  falls back to remapping.');
   out();
 
-  const token = createHash('sha256')
-    .update(JSON.stringify({
-      names: plan.insert.map((e) => e.character.name).sort(),
-      assets: totalAssets, files: totalFiles, bytes: totalBytes,
-    }))
-    .digest('hex')
-    .slice(0, 16);
-
   out(rule('='));
   out('  NEXT STEP');
   out(rule('='));
   out();
-  out(`  Plan token: ${token}`);
+  out(`  Plan token: ${planToken(plan)}`);
   out();
-  out('  Applying is a SEPARATE approval. The write path is not implemented in');
-  out('  this file, so there is nothing to run accidentally. When approved, apply');
-  out('  must re-derive this plan live and refuse if the token has changed.');
+  out('  Applying is a SEPARATE approval and needs this exact token:');
+  out('    --mode=apply --confirm=<token>');
+  out('  Apply re-derives the plan against the live target and refuses if the');
+  out('  token has moved, so an approval cannot be replayed against changed data.');
   out();
   if (PARTIAL_ASSETS) {
     out('  NOTE: --partial-assets was set, so characters with unusable media would');
@@ -710,17 +759,289 @@ const report = (manifest, plan, prodCounts) => {
 };
 
 /* ------------------------------------------------------------------ *
+ * apply -- the only mode that writes
+ * ------------------------------------------------------------------ */
+
+/**
+ * Insert one character and everything that belongs to her, in ONE transaction.
+ *
+ * ON CONFLICT DO NOTHING on every statement, so a rerun after a partial
+ * failure cannot duplicate a row and cannot fail on one that already landed.
+ * Combined with preserved UUIDs that makes the whole operation idempotent
+ * without a bookkeeping table to fall out of step with reality.
+ *
+ * WHAT IS DELIBERATELY REWRITTEN ON THE WAY IN:
+ *   status        -> 'inactive', always, whatever Staging says. This is the
+ *                    gate every public surface checks, so it is what keeps the
+ *                    import invisible until an operator releases her.
+ *   published_at  -> NULL on every asset. Not sufficient on its own (see the
+ *                    header), but correct.
+ *   approved_by   -> NULL, and archived_by too. They reference Staging's
+ *   archived_by      operator accounts, which do not exist here. approved_at
+ *                    is KEPT: the approval happened, and a timestamp with no
+ *                    actor is honest where a fabricated actor would not be.
+ *   source_asset_id  kept only when it points at one of her own migrating
+ *                    assets; otherwise NULL rather than at a stranger.
+ */
+const insertCharacter = async (db, entry, maps) => {
+  const { character, identities, assets, persona, keywords, categories } = entry;
+  const counts = { identities: 0, assets: 0, personas: 0, keywords: 0, categories: 0 };
+
+  await db.query('begin');
+  try {
+    await db.query(
+      `insert into characters (
+         id, name, display_name, profile_image, short_bio, personality, interests,
+         conversation_style, system_prompt, status, live_call_voice,
+         country_code, region, city, timezone, age,
+         grok_voice, grok_speaking_style, grok_call_instructions,
+         created_at, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'inactive',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+       on conflict (id) do nothing`,
+      [
+        character.id, character.name, character.display_name, character.profile_image,
+        character.short_bio, character.personality, character.interests,
+        character.conversation_style, character.system_prompt, character.live_call_voice,
+        character.country_code, character.region, character.city, character.timezone,
+        character.age, character.grok_voice, character.grok_speaking_style,
+        character.grok_call_instructions, character.created_at, character.updated_at,
+      ],
+    );
+
+    for (const identity of identities) {
+      const r = await db.query(
+        `insert into character_visual_identities
+           (id, character_id, version, status, visual_dna, label, created_at, updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing`,
+        [identity.id, identity.character_id, identity.version, identity.status,
+          identity.visual_dna, identity.label, identity.created_at, identity.updated_at],
+      );
+      counts.identities += r.rowCount;
+    }
+
+    for (const asset of assets) {
+      const r = await db.query(
+        `insert into character_visual_assets (
+           id, character_id, visual_identity_id, kind, status, is_canonical, position,
+           storage_key, provenance, content_rating, approved_by, approved_at,
+           requirement_key, published_at, origin, archived_at, archived_by,
+           created_at, updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULL,$11,$12,NULL,$13,$14,NULL,$15,$16)
+         on conflict (id) do nothing`,
+        [asset.id, asset.character_id, asset.visual_identity_id, asset.kind, asset.status,
+          asset.is_canonical, asset.position, asset.storage_key, asset.provenance,
+          asset.content_rating, asset.approved_at, asset.requirement_key,
+          asset.origin, asset.archived_at, asset.created_at, asset.updated_at],
+      );
+      counts.assets += r.rowCount;
+    }
+
+    if (persona) {
+      const ownAsset = assets.some((a) => a.id === persona.source_asset_id);
+      const r = await db.query(
+        `insert into character_personas
+           (character_id, persona, edited_fields, source_asset_id, generated_at, created_at, updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7) on conflict (character_id) do nothing`,
+        [persona.character_id, persona.persona, persona.edited_fields,
+          ownAsset ? persona.source_asset_id : null,
+          persona.generated_at, persona.created_at, persona.updated_at],
+      );
+      counts.personas += r.rowCount;
+    }
+
+    for (const link of keywords) {
+      const keywordId = maps.keywordByKey.get(link.key);
+      if (!keywordId) continue;
+      const r = await db.query(
+        `insert into character_keywords (character_id, keyword_id)
+         values ($1,$2) on conflict (character_id, keyword_id) do nothing`,
+        [character.id, keywordId],
+      );
+      counts.keywords += r.rowCount;
+    }
+
+    for (const placement of categories) {
+      const categoryId = maps.categoryBySlug.get(placement.slug);
+      if (!categoryId) continue;
+      const r = await db.query(
+        `insert into app_category_assets (category_id, asset_id, position, featured)
+         values ($1,$2,$3,$4) on conflict (category_id, asset_id) do nothing`,
+        [categoryId, placement.assetId, placement.position, placement.featured],
+      );
+      counts.categories += r.rowCount;
+    }
+
+    await db.query('commit');
+    return { ok: true, counts };
+  } catch (error) {
+    await db.query('rollback');
+    return { ok: false, error: error.message, counts };
+  }
+};
+
+const runApply = async () => {
+  const manifest = loadManifest();
+  if (manifest.kind !== 'over18-content-manifest') die('That file is not a content manifest.');
+
+  const confirm = opt('confirm');
+  if (!confirm) {
+    die(
+      'Apply needs the token printed by the dry run:\n' +
+      '    --mode=apply --confirm=<token>\n' +
+      '  Run --mode=plan first and read what it says it would do.',
+    );
+  }
+
+  const { Client } = await import('pg');
+  const db = new Client({ connectionString: process.env.DATABASE_URL });
+  await db.connect();
+
+  const target = await readTarget(db);
+  const plan = computePlan(manifest, target);
+  const token = planToken(plan);
+
+  if (token !== confirm) {
+    await db.end();
+    die(
+      `The plan has changed since it was approved.\n` +
+      `    approved: ${confirm}\n` +
+      `    now     : ${token}\n` +
+      '  Re-run --mode=plan, read the new report, and approve that instead.',
+    );
+  }
+
+  const out = (s = '') => process.stdout.write(`${s}\n`);
+  out();
+  out(rule('='));
+  out('  STAGING -> PRODUCTION CONTENT SYNC : APPLY');
+  out(`  token ${token} (matches the approved plan)`);
+  out(rule('='));
+  out();
+
+  /**
+   * MEDIA FIRST, ALWAYS.
+   *
+   * The files must already be on this volume before any row references them,
+   * so a half-finished run leaves orphaned FILES -- which are invisible and
+   * harmless -- rather than rows pointing at nothing, which is a broken card
+   * in front of a customer. Verified by stat and a real read, exactly as the
+   * export verified the source.
+   */
+  const storageDir = process.env.MEDIA_STORAGE_DIR ?? 'var/media';
+  if (!NO_MEDIA_CHECK) {
+    out('  Verifying media is already on this volume...');
+    const missing = [];
+    for (const entry of plan.insert) {
+      for (const asset of entry.assets) {
+        const probe = manifest.media[asset.id];
+        if (!probe?.resolved) continue;
+        for (const file of probe.files) {
+          if (!file.ok || file.optional) continue;
+          const here = verifyFile(file.path, false);
+          if (!here.ok) missing.push({ name: entry.character.name, path: file.path, why: here.reason });
+          else if (here.size !== file.size) {
+            missing.push({ name: entry.character.name, path: file.path, why: `size ${here.size} != source ${file.size}` });
+          }
+        }
+      }
+    }
+    if (missing.length > 0) {
+      await db.end();
+      const sample = missing.slice(0, 6).map((m) => `    ${m.name}: ${m.path} (${m.why})`).join('\n');
+      die(
+        `${missing.length} media file(s) are not on this volume yet, so no rows were inserted.\n` +
+        `  Copy the media across first, then re-run apply.\n${sample}`,
+      );
+    }
+    out(`  OK -- every required file is present and the right size (root ${storageDir}).`);
+  } else {
+    out('  !! MEDIA CHECK SKIPPED (--no-media-check). Rehearsal only; never for Production.');
+  }
+  out();
+
+  const maps = {
+    keywordByKey: new Map(target.prodKeywords.map((k) => [k.key, k.id])),
+    categoryBySlug: new Map(target.prodCategories.map((c) => [c.slug, c.id])),
+  };
+
+  const results = [];
+  for (const entry of plan.insert) {
+    const result = await insertCharacter(db, entry, maps);
+    results.push({ name: entry.character.name, ...result });
+    const c = result.counts;
+    out(result.ok
+      ? `  ${entry.character.name.padEnd(14)} ok    identities ${c.identities}  assets ${c.assets}  persona ${c.personas}  categories ${c.categories}`
+      : `  ${entry.character.name.padEnd(14)} FAILED  ${result.error}`);
+  }
+  out();
+
+  /* -- verification, against the database rather than against hope -- */
+  const after = await readTarget(db);
+  const names = plan.insert.map((e) => e.character.name);
+  const landed = await db.query(
+    `select c.name, c.status::text as status,
+            (select count(*) from character_visual_assets a where a.character_id = c.id)::int as assets,
+            (select count(*) from character_visual_assets a where a.character_id = c.id and a.published_at is not null)::int as published,
+            (select count(*) from character_visual_identities i where i.character_id = c.id)::int as identities,
+            (select count(*) from character_personas p where p.character_id = c.id)::int as personas
+       from characters c where c.name = any($1) order by c.name`,
+    [names],
+  );
+  await db.end();
+
+  const expected = new Map(plan.insert.map((e) => [e.character.name, e]));
+  const problems = [];
+  for (const row of landed.rows) {
+    const want = expected.get(row.name);
+    if (row.status !== 'inactive') problems.push(`${row.name} is ${row.status}, expected inactive`);
+    if (row.assets !== want.assets.length) problems.push(`${row.name} has ${row.assets} assets, expected ${want.assets.length}`);
+    if (row.published !== 0) problems.push(`${row.name} has ${row.published} PUBLISHED assets, expected 0`);
+    if (row.identities !== want.identities.length) problems.push(`${row.name} has ${row.identities} identities, expected ${want.identities.length}`);
+    if (row.personas !== (want.persona ? 1 : 0)) problems.push(`${row.name} persona count ${row.personas}`);
+  }
+  if (landed.rows.length !== names.length) {
+    problems.push(`${names.length - landed.rows.length} character(s) did not land at all`);
+  }
+  if (after.prodCounts.conversations !== target.prodCounts.conversations) {
+    problems.push(`CONVERSATIONS CHANGED: ${target.prodCounts.conversations} -> ${after.prodCounts.conversations}`);
+  }
+  if (after.prodCounts.messages !== target.prodCounts.messages) {
+    problems.push(`MESSAGES CHANGED: ${target.prodCounts.messages} -> ${after.prodCounts.messages}`);
+  }
+
+  out(rule());
+  out('  VERIFICATION');
+  out(rule());
+  out();
+  out(`  characters     ${target.prodCounts.characters} -> ${after.prodCounts.characters}`);
+  out(`  assets         ${target.prodCounts.assets} -> ${after.prodCounts.assets}`);
+  out(`  conversations  ${target.prodCounts.conversations} -> ${after.prodCounts.conversations}   ${after.prodCounts.conversations === target.prodCounts.conversations ? 'UNCHANGED' : 'CHANGED !!'}`);
+  out(`  messages       ${target.prodCounts.messages} -> ${after.prodCounts.messages}   ${after.prodCounts.messages === target.prodCounts.messages ? 'UNCHANGED' : 'CHANGED !!'}`);
+  out();
+  out(`  inserted ${landed.rows.length} of ${names.length} characters`);
+  out();
+  if (problems.length > 0) {
+    out('  PROBLEMS:');
+    for (const p of problems) out(`     ! ${p}`);
+    out();
+    process.exitCode = 2;
+  } else {
+    out('  No discrepancies. Every character is inactive, carries the expected');
+    out('  identities, assets and persona, and nothing published.');
+    out();
+    out('  The 25 are now in Production and invisible. Release them one at a');
+    out('  time from Admin when you are ready.');
+    out();
+  }
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length > 0) process.exitCode = 2;
+};
+
+/* ------------------------------------------------------------------ *
  * Entry
  * ------------------------------------------------------------------ */
 
 if (MODE === 'export') await runExport();
 else if (MODE === 'plan') await runPlan();
-else if (MODE === 'apply') {
-  die(
-    'Apply is not implemented. Inserting into Production is a separate, explicit\n' +
-    '  approval, and this file deliberately contains no write path -- so there is\n' +
-    '  no flag, no environment variable and no token that can make it write.',
-  );
-} else {
-  die('Use --mode=export (inside Staging) or --mode=plan --manifest=<file>.');
-}
+else if (MODE === 'apply') await runApply();
+else die('Use --mode=export (inside Staging), --mode=plan, or --mode=apply --confirm=<token>.');
