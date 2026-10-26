@@ -345,6 +345,8 @@ describe('every card carries real published content and nothing else', () => {
     const card = (await api.swipe()).json().characters[0];
 
     expect(Object.keys(card).sort()).toEqual([
+      // Her CONFIRMED age, or null -- never a number derived from the band.
+      'age',
       'apparentAgeBand',
       'categories',
       'clip',

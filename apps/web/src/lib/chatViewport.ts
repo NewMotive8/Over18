@@ -96,6 +96,7 @@ export function createViewportAnchor(options: ViewportAnchorOptions): ViewportAn
 
   let container: HTMLElement | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let boundList: HTMLElement | null = null;
   let frame: number | null = null;
   /**
    * Set while a viewport resize is in flight. A resize makes the browser emit
@@ -118,11 +119,30 @@ export function createViewportAnchor(options: ViewportAnchorOptions): ViewportAn
     options.onScroll(metricsOf(container));
   };
 
+  /**
+   * WHICH ELEMENT SCROLLS CAN CHANGE WITHOUT A RESIZE. An empty conversation
+   * does not overflow its list, so nothing nearer than the document qualifies;
+   * a few messages later the list does. Resolving once at mount would keep
+   * pinning the old answer -- so every pin asks again, and moves the scroll
+   * listener when the answer changed.
+   */
+  const retarget = () => {
+    const next = resolveScrollContainer(options.getList());
+    if (next === container) return;
+    scrollEventTarget()?.removeEventListener('scroll', handleScroll);
+    container = next;
+    scrollEventTarget()?.addEventListener('scroll', handleScroll, { passive: true });
+  };
+
   const pin = (force = false) => {
+    retarget();
     if (!container) return;
     if (!force && !options.shouldFollow()) return;
     pinToBottom(container);
   };
+
+  /** Media finishing its load grows the content without resizing the list's own box. */
+  const handleMediaLoad = () => pin();
 
   /**
    * A resize (the keyboard opening or closing) changes clientHeight, and the
@@ -156,6 +176,10 @@ export function createViewportAnchor(options: ViewportAnchorOptions): ViewportAn
       resizeObserver = new ResizeObserver(() => pin());
       resizeObserver.observe(list);
     }
+    // `load` does not bubble, so it is caught on the way down.
+    list?.addEventListener('load', handleMediaLoad, true);
+    list?.addEventListener('loadedmetadata', handleMediaLoad, true);
+    boundList = list;
   };
 
   const unbind = () => {
@@ -165,6 +189,9 @@ export function createViewportAnchor(options: ViewportAnchorOptions): ViewportAn
     window.visualViewport?.removeEventListener('resize', handleViewportResize);
     resizeObserver?.disconnect();
     resizeObserver = null;
+    boundList?.removeEventListener('load', handleMediaLoad, true);
+    boundList?.removeEventListener('loadedmetadata', handleMediaLoad, true);
+    boundList = null;
   };
 
   return {

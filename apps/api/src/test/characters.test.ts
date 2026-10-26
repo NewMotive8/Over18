@@ -34,11 +34,15 @@ describe('characters schema / migration', () => {
     );
     const columns = Object.fromEntries(res.rows.map((r) => [r.column_name, r]));
     expect(Object.keys(columns).sort()).toEqual([
+      'age',
       'city',
       'conversation_style',
       'country_code',
       'created_at',
       'display_name',
+      'grok_call_instructions',
+      'grok_speaking_style',
+      'grok_voice',
       'id',
       'interests',
       'live_call_voice',
@@ -59,6 +63,12 @@ describe('characters schema / migration', () => {
     // Nullable by design: null means "use the server default voice", so a
     // character needs no configuration to be callable.
     expect(columns.live_call_voice.is_nullable).toBe('YES');
+    // The Grok columns are nullable for the same reason, and null is where
+    // every character starts: she falls back to her mapped SpicyAPI voice and
+    // her existing conversation style, which is what she does today.
+    expect(columns.grok_voice.is_nullable).toBe('YES');
+    expect(columns.grok_speaking_style.is_nullable).toBe('YES');
+    expect(columns.grok_call_instructions.is_nullable).toBe('YES');
     expect(columns.system_prompt.is_nullable).toBe('NO');
   });
 
@@ -227,6 +237,7 @@ describe('GET /api/characters', () => {
       expect(character).not.toHaveProperty('system_prompt');
       expect(character).not.toHaveProperty('status');
       expect(Object.keys(character).sort()).toEqual([
+        'age',
         'conversationStyle',
         'displayName',
         'id',

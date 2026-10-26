@@ -7,6 +7,7 @@ import {
   createLlmPersonaGenerator,
   sampleOccupations,
   extractJsonObject,
+  parsePersonaReply,
   toPersonaGeneratorDraft,
   toProposedProfile,
   unconfiguredPersonaGenerator,
@@ -29,14 +30,103 @@ const GOOD = {
 
 const INPUT = { displayName: 'Nova', imageBytes: Buffer.from('fake-bytes'), imageMimeType: 'image/jpeg' };
 
-function clientReturning(raw: string, capture?: LlmVisionRequest[]): LlmVisionClient {
+/**
+ * A stub endpoint. `finishReason` defaults to 'stop' because that is what a
+ * reply that said everything it meant to says; the truncation tests below are
+ * the ones that pass 'length'.
+ */
+function clientReturning(
+  raw: string,
+  capture?: LlmVisionRequest[],
+  finishReason: string | null = 'stop',
+): LlmVisionClient {
   return {
     generate: async (request) => {
       capture?.push(request);
-      return raw;
+      return { text: raw, finishReason };
     },
   };
 }
+
+/**
+ * WHY A CUT-OFF REPLY IS INDISTINGUISHABLE FROM A REFUSAL WITHOUT THE STOP
+ * REASON. Every requested field is a string or a string array, so a persona
+ * object has exactly ONE closing brace, at the very end. These tests pin that
+ * property of the fixture and then pin the behaviour that depends on it.
+ */
+describe('telling a cut-off reply from an unusable one', () => {
+  const full = JSON.stringify(GOOD);
+
+  it('has exactly one closing brace, which truncation therefore always removes', () => {
+    expect(full.split('}').length - 1).toBe(1);
+    expect(full.slice(0, -1)).not.toContain('}');
+  });
+
+  it('blames the ceiling only when the model reported hitting it', () => {
+    const cutOff = full.slice(0, 40);
+    const truncated = (() => {
+      try {
+        parsePersonaReply(cutOff, 'length');
+      } catch (e) {
+        return e as PersonaGeneratorError;
+      }
+      throw new Error('expected a throw');
+    })();
+    expect(truncated.kind).toBe('truncated');
+
+    const refused = (() => {
+      try {
+        parsePersonaReply(cutOff, 'stop');
+      } catch (e) {
+        return e as PersonaGeneratorError;
+      }
+      throw new Error('expected a throw');
+    })();
+    expect(refused.kind).toBe('invalid_output');
+    expect(refused.message).toBe('The model did not return a persona.');
+  });
+
+  /** An absent stop reason is not evidence of anything — diagnose as before. */
+  it('keeps the original diagnosis when no stop reason was reported', () => {
+    expect(() => parsePersonaReply('nothing useful here', null)).toThrow(
+      'The model did not return a persona.',
+    );
+  });
+
+  /**
+   * A reply that parses is a success whatever the stop reason says. Checking
+   * the reason AFTER parsing is what makes this true, and is the reason the
+   * check lives in the generator rather than in the adapter.
+   */
+  it('never discards a reply that parsed, even one that hit the ceiling', () => {
+    expect(parsePersonaReply(full, 'length')).toMatchObject({ age: 27 });
+    expect(parsePersonaReply(`prose ${full} more prose`, 'length')).toMatchObject({ age: 27 });
+  });
+
+  /**
+   * Braced but unparseable at the ceiling is still a length problem: with one
+   * brace per object, the only way to hold a brace and not parse is to have
+   * been cut off mid-value after a nested-looking fragment. Saying "cut off"
+   * is both likelier and more actionable than "malformed".
+   */
+  it('prefers the truncation diagnosis for a braced fragment that hit the ceiling', () => {
+    const error = (() => {
+      try {
+        parsePersonaReply('{"age": 27, "lifeStage": "ren}', 'length');
+      } catch (e) {
+        return e as PersonaGeneratorError;
+      }
+      throw new Error('expected a throw');
+    })();
+    expect(error.kind).toBe('truncated');
+  });
+
+  it('still calls a malformed reply malformed when the model finished', () => {
+    expect(() => parsePersonaReply('{"age": 27, "lifeStage": "ren}', 'stop')).toThrow(
+      'The model returned a malformed persona.',
+    );
+  });
+});
 
 describe('extracting the model reply', () => {
   it('reads a bare object, a fenced one, and one buried in prose', () => {

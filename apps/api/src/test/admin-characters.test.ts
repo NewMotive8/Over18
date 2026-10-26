@@ -69,6 +69,8 @@ const VALID_CHARACTER = {
   conversationStyle: 'Asks questions back. Never lectures.',
   systemPrompt: 'You are Nova, a fictional adult woman.',
   interests: ['astronomy', 'jazz'],
+  // Complete means complete: she is created live, and live needs an age.
+  age: 29,
 };
 
 beforeAll(async () => {
@@ -537,6 +539,262 @@ describe('exactly one active version', () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Her confirmed age
+ * ------------------------------------------------------------------ */
+
+describe('the confirmed age', () => {
+  const patch = (cookies: Record<string, string>, id: string, body: unknown) =>
+    ctx.app.inject({ method: 'PATCH', url: `/admin/characters/${id}`, cookies, payload: body as never });
+
+  it('starts unset, and unset is a real answer rather than a default', async () => {
+    const cookies = await adminCookies();
+    // A DRAFT: created from a name alone, with no age and not live.
+    const id = (await createCharacter(cookies, { age: null, status: 'inactive' })).json().id;
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    // Never 26, never a band-derived number: Admin reports what is KNOWN.
+    expect(got.json().character.age).toBeNull();
+  });
+
+  it('stores an adult age and reads it back', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    expect((await patch(cookies, id, { age: 32 })).statusCode).toBe(200);
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(got.json().character.age).toBe(32);
+  });
+
+  it('clears it again on a draft — a wrong age must be removable', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies, { age: null, status: 'inactive' })).json().id;
+    await patch(cookies, id, { age: 32 });
+    expect((await patch(cookies, id, { age: null })).statusCode).toBe(200);
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(got.json().character.age).toBeNull();
+  });
+
+  /**
+   * BOTH DIRECTIONS OF THE SAME RULE. Going live without an age is refused,
+   * and so is taking the age away from someone already live -- otherwise the
+   * gate would be a formality anyone could step around in a second request.
+   */
+  it('refuses to leave a LIVE character without an age', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id; // created live, age 29
+    const cleared = await patch(cookies, id, { age: null });
+    expect(cleared.statusCode).toBe(400);
+    expect(cleared.json().field).toBe('age');
+
+    // Taking her offline first makes it an ordinary edit again.
+    expect((await patch(cookies, id, { status: 'inactive' })).statusCode).toBe(200);
+    expect((await patch(cookies, id, { age: null })).statusCode).toBe(200);
+  });
+
+  it('refuses to publish a character who has no confirmed age', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies, { age: null, status: 'inactive' })).json().id;
+    const res = await patch(cookies, id, { status: 'active' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field).toBe('age');
+
+    // Age and status together, which is what the Publish button sends.
+    expect((await patch(cookies, id, { status: 'active', age: 24 })).statusCode).toBe(200);
+  });
+
+  it('leaves it alone when the patch does not mention it', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await patch(cookies, id, { age: 29 });
+    await patch(cookies, id, { personality: 'Changed something else.' });
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(got.json().character.age).toBe(29);
+  });
+
+  /**
+   * REFUSED, NEVER COERCED. Rounding 17.5 or reading "twenty" as 20 would put
+   * a number nobody typed onto a public card, and on an adult product this is
+   * the one number that must never be wrong.
+   */
+  it('refuses a minor, a fraction and anything that is not a number', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies, { age: null, status: 'inactive' })).json().id;
+    for (const bad of [17, 0, -1, 25.5, '32', 'twenty', true, {}, []]) {
+      const res = await patch(cookies, id, { age: bad });
+      expect(res.statusCode, JSON.stringify(bad)).toBe(400);
+      expect(res.json().field, JSON.stringify(bad)).toBe('age');
+    }
+    const got = await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies });
+    expect(got.json().character.age).toBeNull();
+  });
+
+  it('accepts exactly 18', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    expect((await patch(cookies, id, { age: 18 })).statusCode).toBe(200);
+  });
+
+  /**
+   * THE DATABASE IS THE LAST WORD. The API check above is the friendly half;
+   * this proves the guarantee survives a writer that bypasses it.
+   */
+  it('is refused by the database itself, not only by the API', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await expect(
+      ctx.pool.query('UPDATE characters SET age = $1 WHERE id = $2', [16, id]),
+    ).rejects.toThrow(/characters_age_adult|check constraint/i);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Provider-specific voice settings
+ * ------------------------------------------------------------------ */
+
+describe('Grok and SpicyAPI voice settings are independent', () => {
+  const patch = (cookies: Record<string, string>, id: string, body: unknown) =>
+    ctx.app.inject({ method: 'PATCH', url: `/admin/characters/${id}`, cookies, payload: body as never });
+
+  const read = async (cookies: Record<string, string>, id: string) =>
+    (await ctx.app.inject({ method: 'GET', url: `/admin/characters/${id}`, cookies })).json().character;
+
+  it('starts with no Grok settings, which is the fallback state', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    const character = await read(cookies, id);
+    expect(character.grokVoice).toBeNull();
+    expect(character.grokSpeakingStyle).toBeNull();
+    expect(character.grokCallInstructions).toBeNull();
+  });
+
+  it('persists each Grok field and reads it back', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    expect(
+      (await patch(cookies, id, {
+        grokVoice: 'aurora',
+        grokSpeakingStyle: 'She speaks softly and takes her time.',
+        grokCallInstructions: 'Ask about his week before anything else.',
+      })).statusCode,
+    ).toBe(200);
+
+    const character = await read(cookies, id);
+    expect(character.grokVoice).toBe('aurora');
+    expect(character.grokSpeakingStyle).toBe('She speaks softly and takes her time.');
+    expect(character.grokCallInstructions).toBe('Ask about his week before anything else.');
+  });
+
+  /**
+   * THE GUARANTEE THE WHOLE DESIGN RESTS ON. Rolling back to SpicyAPI is meant
+   * to be one environment variable, and that only works if the Grok tab never
+   * wrote over what SpicyAPI was configured with.
+   */
+  it('saving Grok settings leaves the SpicyAPI ones exactly as they were', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await patch(cookies, id, {
+      liveCallVoice: 'Katerina',
+      conversationStyle: 'Soft-spoken and reflective.',
+    });
+
+    await patch(cookies, id, { grokVoice: 'luna', grokSpeakingStyle: 'Playful and quick.' });
+
+    const character = await read(cookies, id);
+    expect(character.liveCallVoice).toBe('Katerina');
+    expect(character.conversationStyle).toBe('Soft-spoken and reflective.');
+    expect(character.grokVoice).toBe('luna');
+  });
+
+  it('and saving SpicyAPI settings leaves the Grok ones alone', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await patch(cookies, id, { grokVoice: 'iris', grokCallInstructions: 'Keep it short.' });
+
+    await patch(cookies, id, { liveCallVoice: 'Serena' });
+
+    const character = await read(cookies, id);
+    expect(character.grokVoice).toBe('iris');
+    expect(character.grokCallInstructions).toBe('Keep it short.');
+    expect(character.liveCallVoice).toBe('Serena');
+  });
+
+  /** Clearing one provider's voice must not clear the other's. */
+  it('clears only what the patch names', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    await patch(cookies, id, { liveCallVoice: 'Katerina', grokVoice: 'luna' });
+
+    await patch(cookies, id, { grokVoice: null });
+
+    const character = await read(cookies, id);
+    expect(character.grokVoice).toBeNull();
+    expect(character.liveCallVoice).toBe('Katerina');
+  });
+
+  it('refuses a Grok voice that is not in the Grok roster', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    // A SpicyAPI voice name is NOT a Grok voice id, and must be refused here.
+    for (const bad of ['Katerina', 'not-a-voice', 42, {}]) {
+      const res = await patch(cookies, id, { grokVoice: bad });
+      expect(res.statusCode, JSON.stringify(bad)).toBe(400);
+      expect(res.json().field, JSON.stringify(bad)).toBe('grokVoice');
+    }
+  });
+
+  it('accepts any case and stores it lower-cased', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    expect((await patch(cookies, id, { grokVoice: 'AURORA' })).statusCode).toBe(200);
+    expect((await read(cookies, id)).grokVoice).toBe('aurora');
+  });
+
+  it('refuses a speaking style longer than the prompt budget allows', async () => {
+    const cookies = await adminCookies();
+    const id = (await createCharacter(cookies)).json().id;
+    const res = await patch(cookies, id, { grokSpeakingStyle: 'x'.repeat(601) });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().field).toBe('grokSpeakingStyle');
+  });
+});
+
+describe('the voice settings endpoint', () => {
+  it('reports the active provider and the full Grok roster', async () => {
+    const cookies = await adminCookies();
+    const res = await ctx.app.inject({ method: 'GET', url: '/admin/voice/settings', cookies });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // Whatever the test app is configured with -- never hard-coded in the UI.
+    expect(typeof body.activeProvider).toBe('string');
+    expect(body.grokVoices).toHaveLength(28);
+    expect(body.sampleText).toContain('this is how I sound');
+    for (const voice of body.grokVoices) {
+      expect(typeof voice.id).toBe('string');
+      expect(typeof voice.description).toBe('string');
+      expect(typeof voice.hasSample).toBe('boolean');
+    }
+  });
+
+  /** A missing sample is an ordinary state, not an error. */
+  it('404s for a voice with no cached sample, and for an unknown voice', async () => {
+    const cookies = await adminCookies();
+    expect(
+      (await ctx.app.inject({ method: 'GET', url: '/admin/voice/samples/aurora', cookies })).statusCode,
+    ).toBe(404);
+    expect(
+      (await ctx.app.inject({ method: 'GET', url: '/admin/voice/samples/nope', cookies })).statusCode,
+    ).toBe(404);
+  });
+
+  it('is admin-only, like every other admin route', async () => {
+    expect(
+      (await ctx.app.inject({ method: 'GET', url: '/admin/voice/settings' })).statusCode,
+    ).toBe(401);
+    expect(
+      (await ctx.app.inject({ method: 'GET', url: '/admin/voice/samples/eve' })).statusCode,
+    ).toBe(401);
+  });
+});
+
+/* ------------------------------------------------------------------ *
  * Primary references
  * ------------------------------------------------------------------ */
 
@@ -547,6 +805,137 @@ describe('primary references', () => {
     await activate(cookies, identity.id);
     return { characterId, identityId: identity.id as string };
   }
+
+  /**
+   * THE DEAD END. A character saved WITHOUT a photo gets no identity version
+   * on purpose, and the only reference route was scoped to an identity id --
+   * so there was nothing to post to, and her main image could never be
+   * supplied at all. The admin page could only tell the operator to activate
+   * a version that did not exist.
+   *
+   * These pin the way out: the upload is addressed to the CHARACTER, and the
+   * version she lacks is provisioned by the upload itself.
+   */
+  describe('a character who has no visual identity version yet', () => {
+    it('accepts her main image and provisions her first version with it', async () => {
+      const cookies = await adminCookies();
+      const characterId = (await createCharacter(cookies)).json().id;
+
+      // She genuinely has none -- that is the whole premise.
+      const before = (
+        await ctx.app.inject({ method: 'GET', url: `/admin/characters/${characterId}`, cookies })
+      ).json();
+      expect(before.identities).toHaveLength(0);
+      expect(before.activeIdentity).toBeNull();
+
+      const { payload, headers } = multipart(PNG);
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/admin/characters/${characterId}/references`,
+        headers,
+        payload,
+        cookies,
+      });
+
+      expect(res.statusCode).toBe(201);
+      const ref = res.json();
+      expect(ref.kind).toBe('reference');
+      expect(ref.isPrimary).toBe(true);
+      expect(ref.status).toBe('approved');
+      expect(ref.characterId).toBe(characterId);
+      expect(ref.visualIdentityId).toBeTruthy();
+
+      // v1 now exists, is ACTIVE, and owns the image.
+      const after = (
+        await ctx.app.inject({ method: 'GET', url: `/admin/characters/${characterId}`, cookies })
+      ).json();
+      expect(after.identities).toHaveLength(1);
+      expect(after.activeIdentity).not.toBeNull();
+      expect(after.activeIdentity.version).toBe(1);
+      expect(after.activeIdentity.id).toBe(ref.visualIdentityId);
+      expect(after.primaryReferences).toHaveLength(1);
+      expect(after.primaryReferences[0].assetId).toBe(ref.assetId);
+
+      // Still no storage internals on the way out.
+      expect(res.payload).not.toContain('storagePath');
+      expect(res.payload).not.toContain('provenance');
+    });
+
+    /**
+     * ONE version, not one per upload: the second image must join the version
+     * the first one created rather than quietly starting a v2 and orphaning
+     * the portrait that was already there.
+     */
+    it('puts a second image on the same version rather than making another', async () => {
+      const cookies = await adminCookies();
+      const characterId = (await createCharacter(cookies)).json().id;
+
+      const upload = async () => {
+        const { payload, headers } = multipart(PNG);
+        return ctx.app.inject({
+          method: 'POST',
+          url: `/admin/characters/${characterId}/references`,
+          headers,
+          payload,
+          cookies,
+        });
+      };
+      const first = (await upload()).json();
+      const second = (await upload()).json();
+
+      expect(second.visualIdentityId).toBe(first.visualIdentityId);
+      const detail = (
+        await ctx.app.inject({ method: 'GET', url: `/admin/characters/${characterId}`, cookies })
+      ).json();
+      expect(detail.identities).toHaveLength(1);
+      expect(detail.primaryReferences).toHaveLength(2);
+    });
+
+    /** With a version already active, it is used -- never a fresh one. */
+    it('uses her ACTIVE version when she already has one', async () => {
+      const cookies = await adminCookies();
+      const { characterId, identityId } = await characterWithActiveIdentity(cookies);
+      const { payload, headers } = multipart(PNG);
+
+      const ref = (
+        await ctx.app.inject({
+          method: 'POST',
+          url: `/admin/characters/${characterId}/references`,
+          headers,
+          payload,
+          cookies,
+        })
+      ).json();
+
+      expect(ref.visualIdentityId).toBe(identityId);
+      const detail = (
+        await ctx.app.inject({ method: 'GET', url: `/admin/characters/${characterId}`, cookies })
+      ).json();
+      expect(detail.identities).toHaveLength(1);
+    });
+
+    it('404s for a character that does not exist, and rejects a non-multipart body', async () => {
+      const cookies = await adminCookies();
+      const missing = await ctx.app.inject({
+        method: 'POST',
+        url: '/admin/characters/00000000-0000-4000-8000-000000000001/references',
+        headers: (() => multipart(PNG).headers)(),
+        payload: multipart(PNG).payload,
+        cookies,
+      });
+      expect(missing.statusCode).toBe(404);
+
+      const characterId = (await createCharacter(cookies)).json().id;
+      const notMultipart = await ctx.app.inject({
+        method: 'POST',
+        url: `/admin/characters/${characterId}/references`,
+        headers: { 'content-type': 'application/json' },
+        payload: JSON.stringify({ file: 'nope' }),
+        cookies,
+      });
+      expect(notMultipart.statusCode).toBe(400);
+    });
+  });
 
   it('uploads a reference and links it to the identity version as primary', async () => {
     const cookies = await adminCookies();
@@ -740,6 +1129,7 @@ describe('quick create', () => {
     const { character } = (await quickCreate(cookies)).json();
     expect(character.profileComplete).toBe(false);
     expect(character.missingProfileFields.sort()).toEqual([
+      'age',
       'conversationStyle',
       'personality',
       'shortBio',
@@ -782,12 +1172,15 @@ describe('quick create', () => {
     const before = (await ctx.app.inject({ method: 'GET', url: '/api/characters' })).json();
     expect(before.some((c: { id: string }) => c.id === character.id)).toBe(false);
 
-    await ctx.app.inject({
+    // Going live needs a confirmed age; set it in the same patch, which is
+    // exactly what the Publish button does.
+    const published = await ctx.app.inject({
       method: 'PATCH',
       url: `/admin/characters/${character.id}`,
-      payload: { status: 'active' },
+      payload: { status: 'active', age: 29 },
       cookies,
     });
+    expect(published.statusCode).toBe(200);
     const after = (await ctx.app.inject({ method: 'GET', url: '/api/characters' })).json();
     expect(after.some((c: { id: string }) => c.id === character.id)).toBe(true);
   });
@@ -940,7 +1333,13 @@ describe('profile autofill', () => {
     expect(authorCalls[0]!.displayName).toBe('Nova');
   });
 
-  it('saving the draft is an ordinary edit, and completes the profile', async () => {
+  /**
+   * AUTOFILL CANNOT FINISH HER ANY MORE, AND THAT IS THE POINT. It writes
+   * every text field, and the one field it cannot supply is her age -- which
+   * has to be a person's decision, not a model's. So the profile is one step
+   * from complete, and that step is a human confirming a number.
+   */
+  it('saving the draft fills every text field, leaving only the age to confirm', async () => {
     const cookies = await adminCookies();
     const { character } = (await quickCreate(cookies)).json();
     const url = `/admin/characters/${character.id}/autofill`;
@@ -953,9 +1352,19 @@ describe('profile autofill', () => {
       cookies,
     });
     expect(saved.statusCode).toBe(200);
-    expect(saved.json().profileComplete).toBe(true);
-    expect(saved.json().missingProfileFields).toEqual([]);
     expect(saved.json().shortBio).toBe(draft.shortBio);
+    expect(saved.json().missingProfileFields).toEqual(['age']);
+    expect(saved.json().profileComplete).toBe(false);
+
+    // And one confirmed age finishes her.
+    const withAge = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/admin/characters/${character.id}`,
+      payload: { age: 29 },
+      cookies,
+    });
+    expect(withAge.json().missingProfileFields).toEqual([]);
+    expect(withAge.json().profileComplete).toBe(true);
   });
 
   it('404s for an unknown character rather than calling the model', async () => {
@@ -1016,6 +1425,7 @@ describe('authorization boundaries', () => {
       ['GET', '/admin/characters/00000000-0000-4000-8000-000000000001/identities'],
       ['POST', '/admin/characters/00000000-0000-4000-8000-000000000001/identities'],
       ['POST', '/admin/identities/00000000-0000-4000-8000-000000000001/activate'],
+      ['POST', '/admin/characters/00000000-0000-4000-8000-000000000001/references'],
       ['GET', '/admin/identities/00000000-0000-4000-8000-000000000001/references'],
       ['POST', '/admin/references/00000000-0000-4000-8000-000000000001/primary'],
       ['DELETE', '/admin/references/00000000-0000-4000-8000-000000000001/primary'],

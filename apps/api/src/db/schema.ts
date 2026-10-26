@@ -111,6 +111,51 @@ export const characters = pgTable(
      */
     liveCallVoice: text('live_call_voice'),
     /**
+     * HER GROK VOICE, AND HOW SHE CARRIES A CALL ON IT.
+     *
+     * Three columns beside `live_call_voice` rather than instead of it. The
+     * SpicyAPI settings stay exactly as they are and keep working the moment
+     * `VOICE_LLM_PROVIDER` goes back to `spicyapi` -- rollback is a variable,
+     * not a migration, and that only holds if nothing here overwrites them.
+     *
+     * NULL MEANS "NOT CONFIGURED FOR GROK YET", and every one of them falls
+     * back rather than failing:
+     *   grokVoice           -> the SpicyAPI voice, through the existing
+     *                          SPICYAPI_TO_GROK mapping, then the default.
+     *   grokSpeakingStyle   -> `conversation_style`, which is what a Grok call
+     *                          already uses today.
+     *   grokCallInstructions-> nothing. It is additive by design.
+     * So 56 existing characters keep sounding exactly as they do now, and an
+     * operator changes one at a time.
+     *
+     * ALL THREE ARE PROMPT MATERIAL OR A VOICE ID -- never an audio control.
+     * xAI exposes no knobs for pace, pitch or warmth, so a "speaking style"
+     * here is a sentence in her instructions and is described as one.
+     */
+    grokVoice: text('grok_voice'),
+    grokSpeakingStyle: text('grok_speaking_style'),
+    grokCallInstructions: text('grok_call_instructions'),
+    /**
+     * HER AGE, AS AN OPERATOR CONFIRMED IT. The authoritative one.
+     *
+     * NULL MEANS NOBODY HAS CONFIRMED ONE, and that is a state the product has
+     * to be able to represent. Two other numbers exist and neither is this:
+     * the persona's `age`, which a vision model wrote, and the apparent-age
+     * BAND on her visual identity, which describes how old she LOOKS. Both are
+     * fallbacks for display; only this column is a statement of fact, and
+     * Admin must never show either of them as though it were.
+     *
+     * The column is nullable so no character is blocked by a number nobody has
+     * decided yet, and the CHECK is what makes "18 or over" a guarantee of the
+     * database rather than a rule three layers above it. A row that would be a
+     * minor cannot exist, whatever reaches the API.
+     *
+     * SURVIVES PERSONA REGENERATION, by not being part of the persona at all.
+     * Regeneration rewrites `character_personas`; it cannot reach this column,
+     * which is the structural reason an operator's answer outlives a model's.
+     */
+    age: integer('age'),
+    /**
      * WHERE SHE LIVES. Four independent, nullable facts an operator sets; none
      * is inferred from another. A city does not imply a zone -- large countries
      * have several -- so `timezone` is chosen and validated separately against
@@ -128,7 +173,15 @@ export const characters = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('characters_status_idx').on(table.status)],
+  (table) => [
+    index('characters_status_idx').on(table.status),
+    /**
+     * Adult or absent -- never a minor, and never a zero or a negative from a
+     * mis-typed form. Stated here so it is enforced for every writer, including
+     * a migration, a script or a hand-run UPDATE.
+     */
+    check('characters_age_adult', sql`${table.age} is null or ${table.age} >= 18`),
+  ],
 );
 
 /**

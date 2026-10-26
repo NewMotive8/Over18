@@ -52,6 +52,56 @@ export function personaBadge(index: number): PersonaBadge {
 }
 
 /**
+ * The age a card shows: what her profile SAYS, or what her photo suggests.
+ *
+ * WHY THE ORDER IS THIS WAY ROUND. Every surface used to derive the number
+ * from the apparent-age band alone. That band is created as the bare string
+ * `'adult'` whenever an identity is provisioned automatically -- by
+ * quick-create, or by a character's first upload -- and `adultAgeFromBand`
+ * finds no digits in it and falls back to one fixed default. So every
+ * character who never had a band typed by hand rendered the SAME age, which
+ * is how a rail of six cards came to read 26, 26, 26, 26, 28, 26: only the
+ * one with a hand-written band ("late-20s") differed.
+ *
+ * SO THE BAND NO LONGER PRODUCES A PUBLIC NUMBER AT ALL. A number beside her
+ * name reads as a fact, and neither the band nor the persona's guess is one:
+ * the band describes how old she LOOKS, and the persona age was written by a
+ * vision model from a photograph. Presenting either as her age is the thing
+ * this is meant to stop, and there is no way to render "26" as "probably".
+ *
+ * Null therefore means "show no age", and that is why a character now needs a
+ * confirmed age before she can go live -- the gate and this rule are two
+ * halves of the same guarantee. `adultAgeFromBand` is kept for the Admin
+ * screens, which may reasonably show a hedged estimate while an operator is
+ * deciding what to enter.
+ */
+export function displayAge(age: number | null | undefined): number | null {
+  if (
+    typeof age === 'number' &&
+    Number.isInteger(age) &&
+    age >= MINIMUM_PUBLIC_AGE &&
+    age <= MAXIMUM_PUBLIC_AGE
+  ) {
+    return age;
+  }
+  return null;
+}
+
+/** The floor the server and the database also enforce. */
+export const MINIMUM_PUBLIC_AGE = 18;
+
+/**
+ * The ceiling, matching the server's `MAXIMUM_PLAUSIBLE_AGE`.
+ *
+ * ADDED BECAUSE THE TWO DISAGREED. The server treats anything above 120 as a
+ * corrupt row and reports no age; this had no upper bound at all, so a bad
+ * value that somehow reached a payload would have been printed beside her name.
+ * A guard that stops at one end only is not a guard, and the asymmetry was
+ * invisible precisely because the server is currently the thing preventing it.
+ */
+export const MAXIMUM_PUBLIC_AGE = 120;
+
+/**
  * Derives a clearly-adult numeric age from a Visual Identity apparent-age band
  * (e.g. "adult (mid-20s)"). The band is already adult-validated server-side;
  * this maps it to a display number and clamps to >= 21 so the lobby can never

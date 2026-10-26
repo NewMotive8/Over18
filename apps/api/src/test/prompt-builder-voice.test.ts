@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PublicCharacter } from '@over18/shared';
 import type { ReplyContext } from '../services/character-reply.js';
-import { buildCharacterSystemPrompt, conversationStage } from '../services/prompt-builder.js';
+import { buildCharacterSystemPrompt } from '../services/prompt-builder.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 
 /**
@@ -26,6 +26,7 @@ function publicCharacter(seed: (typeof SEED_CHARACTERS)[number]): PublicCharacte
     name: seed.name,
     displayName: seed.displayName,
     profileImage: seed.profileImage ?? null,
+    age: null,
     shortBio: seed.shortBio,
     personality: seed.personality,
     interests: seed.interests as string[],
@@ -86,17 +87,32 @@ describe('a call gets the voice behavioural layer, not the text one', () => {
  * What the layer actually asks for
  * ------------------------------------------------------------------ */
 
-describe('the voice layer asks her to carry the conversation', () => {
+describe('the voice layer follows the caller instead of running a script', () => {
   const prompt = voicePrompt();
 
-  it('makes keeping it going her job too', () => {
-    expect(prompt).toContain('Carry the conversation');
-    expect(prompt).toContain('If it goes quiet, fill it');
+  /**
+   * WHAT THESE REPLACE. "Carry the conversation", "Volunteer things", "Lead
+   * sometimes" and "Flirt, and let it build" were four standing obligations, so
+   * a caller who rang to say he had had a rough day was flirted at and talked
+   * over by a character obeying all four at once. Each is now a conditional
+   * keyed to what HE is doing, or gone.
+   */
+  it('makes filling a silence a permission, not a duty', () => {
+    expect(prompt).toContain('Hold up your end of the call');
+    expect(prompt).toContain('If he goes quiet, you can fill it');
+    expect(prompt).not.toContain('Carry the conversation');
   });
 
-  it('asks her to volunteer things rather than wait to be asked', () => {
-    expect(prompt).toContain('Volunteer things');
-    expect(prompt).toContain('instead of waiting to be asked');
+  it('no longer obliges her to volunteer or to lead', () => {
+    expect(prompt).not.toContain('Volunteer things');
+    expect(prompt).not.toContain('Lead sometimes');
+    expect(prompt).not.toContain('You do not need permission for every step');
+  });
+
+  /** The one thing a caller always gets: his subject, not hers. */
+  it('answers what he came for', () => {
+    expect(prompt).toContain('follow what he came for');
+    expect(prompt).toContain('What you never do is interview him');
   });
 
   /** An interview is the failure mode a caller actually notices. */
@@ -109,20 +125,46 @@ describe('the voice layer asks her to carry the conversation', () => {
     expect(prompt).toContain('Pick threads back up');
   });
 
-  it('lets her lead without asking permission for every step', () => {
-    expect(prompt).toContain('Lead sometimes');
-    expect(prompt).toContain('You do not need permission for every step');
-  });
-
   it('asks for emotional reaction before the sentence', () => {
     expect(prompt).toContain('React before you answer');
   });
 
-  /** Intimacy that follows him, never one that pushes. */
-  it('lets her flirt and build, and pins it to his engagement', () => {
-    expect(prompt).toContain('Flirt, and let it build');
-    expect(prompt).toContain('follow his temperature');
-    expect(prompt).toContain('never push past where he is');
+  /**
+   * CONSENT IN BOTH DIRECTIONS. The old line was three brakes and no
+   * accelerator -- "follow his temperature... ease off when he cools, and never
+   * push past where he is" -- so a model told to flirt, told where to stop, and
+   * never told it may go further stopped at flirting. That was the reported
+   * fault.
+   */
+  it('follows him up as well as down, with no one-way ceiling', () => {
+    expect(prompt).toContain('Go where he goes, both ways');
+    expect(prompt).toContain('Follow his conversational lead');
+    expect(prompt).toContain('respect both his boundaries and your own');
+    expect(prompt).not.toContain('never push past where he is');
+  });
+
+  /**
+   * The downward limit is kept, as a bound on HER initiative — and it is now
+   * stated ONCE.
+   *
+   * The line shipped saying it twice: "if he cools off or changes the subject,
+   * go with that just as readily" and then "if he changes direction, change
+   * with him" are the same instruction in two sentences. This file argues
+   * elsewhere that saying a thing twice is what gives a prompt its liturgical
+   * quality, and a repeated rule also reads as the loudest one in the layer —
+   * which is wrong here, because easing off is the half that was never broken.
+   *
+   * The negative assertion is the part that matters: it stops the second
+   * phrasing coming back the next time this line is edited.
+   */
+  it('still refuses to take him somewhere he has not gone, and says so once', () => {
+    expect(prompt).toContain('rather than taking it there yourself');
+    expect(prompt).toContain('If he changes direction, change with him');
+    expect(prompt).not.toContain('go with that just as readily');
+  });
+
+  it('does not flirt at a caller who did not invite it', () => {
+    expect(prompt).not.toContain('Flirt, and let it build');
   });
 
   it('creates anticipation rather than closing every thought', () => {
@@ -175,48 +217,45 @@ describe('a call keeps the same person and the same limits', () => {
 });
 
 /* ------------------------------------------------------------------ *
- * The stage, which was frozen at `new` on every call ever made
+ * The stage is gone, and that is the point
  * ------------------------------------------------------------------ */
 
-describe('the conversational stage', () => {
+describe('a call no longer varies by message count', () => {
   /**
-   * The bug: `priorMessageCount` was hardcoded to 0 in the call path, so
-   * `conversationStage` returned `new` for every call a customer ever made,
-   * however long they had known each other.
+   * WHY STAGING WAS RIGHT TO REMOVE RATHER THAN RETUNE.
+   *
+   * Two faults, and neither is fixable by moving the thresholds. Instructions
+   * are sent ONCE at session creation and the provider accepts only
+   * `turn_detection` on a session update, so whichever variant was chosen
+   * governed the WHOLE call -- a text conversation grows out of its stage and a
+   * call cannot. And the count read the `messages` table, which call turns never
+   * enter, so somebody who only ever phoned her stayed `new` permanently no
+   * matter how many calls they made.
    */
-  it('moves through the three stages as the relationship grows', () => {
-    expect(conversationStage(0)).toBe('new');
-    expect(conversationStage(3)).toBe('new');
-    expect(conversationStage(4)).toBe('early');
-    expect(conversationStage(19)).toBe('early');
-    expect(conversationStage(20)).toBe('established');
+  it('gives a brand-new caller and a long-standing one the same instructions', () => {
+    expect(voicePrompt({ priorMessageCount: 0 })).toBe(voicePrompt({ priorMessageCount: 500 }));
   });
 
-  it('is new and curious for two people who have just met', () => {
+  it('drops all three stage variants', () => {
     const prompt = voicePrompt({ priorMessageCount: 0 });
-    expect(prompt).toContain('You two are new to each other');
-    // Even at the start she carries the call; "new" is not "guarded".
-    expect(prompt).toContain('New does not mean guarded');
-  });
-
-  it('gives more of herself once they know each other a little', () => {
-    const prompt = voicePrompt({ priorMessageCount: 10 });
-    expect(prompt).toContain('You know each other a little now');
     expect(prompt).not.toContain('You two are new to each other');
+    expect(prompt).not.toContain('You know each other a little now');
+    expect(prompt).not.toContain('You have known each other a while');
   });
 
-  it('is direct and comfortable with someone she has known a while', () => {
-    const prompt = voicePrompt({ priorMessageCount: 200 });
-    expect(prompt).toContain('You have known each other a while');
-    expect(prompt).toContain('Be direct about what you think and what you want');
+  /** It existed only to compensate for a stage that could not advance. */
+  it('drops the line that apologised for the stage being frozen', () => {
+    expect(voicePrompt()).not.toContain('A call warms up as it runs');
   });
 
   /**
-   * Instructions are sent once and cannot be re-sent mid-call, so the layer
-   * says in words what it cannot express by re-staging.
+   * What the three variants were really protecting -- an opening turn that
+   * recites her whole profile -- is kept, by the same always-on line the text
+   * layer uses.
    */
-  it('tells her a call warms up as it runs, since the stage cannot be re-sent', () => {
-    expect(voicePrompt()).toContain('A call warms up as it runs');
+  it('keeps the anti-recital guard that the stage rules carried', () => {
+    expect(voicePrompt()).toContain('Let her life come out a detail at a time');
+    expect(voicePrompt()).toContain('never an introduction to herself');
   });
 });
 
@@ -239,8 +278,20 @@ describe('text chat is not disturbed by any of this', () => {
     expect(defaulted).toBe(explicit);
   });
 
-  it('still keeps its own stage wording, which the voice layer does not borrow', () => {
-    expect(textPrompt({ priorMessageCount: 0 })).toContain('leave it there');
+  /**
+   * The text channel's self-disclosure rule, which the voice layer does not
+   * borrow. It used to be a message-count stage rule ending "leave it there";
+   * Phase 1 replaced that with one always-on rule, keeping the guard it was
+   * built for and dropping the register it had drifted into carrying.
+   */
+  it('keeps its disclosure wording, which the voice layer now shares', () => {
+    const text = textPrompt({ priorMessageCount: 0 });
+    expect(text).toContain('Let her life come out a detail at a time');
+    expect(text).not.toContain('leave it there');
+    // Voice used to keep three stage-keyed variants of its own. It now reads
+    // the SAME constant, so there is one wording to maintain rather than two
+    // that drift.
+    expect(voicePrompt()).toContain('Let her life come out a detail at a time');
   });
 });
 
@@ -305,15 +356,23 @@ describe('her own sound comes from her own record', () => {
     expect(prompt).toContain(STYLE);
   });
 
-  /** It is the only per-character line in the layer, so it goes nearest the speech. */
-  it('places it last, closest to the words she is about to say', () => {
+  /**
+   * IT MOVED, AND THE REASON IS TRUNCATION. It used to sit last, "closest to
+   * the words she is about to say". But the provider keeps the FIRST 8,000
+   * characters and discards the tail, so last is also FIRST TO BE LOST -- and
+   * this is the only per-character line in the layer, so losing it is precisely
+   * what makes every character sound alike. It now sits in the protected head,
+   * above the tone permissions, which are the right thing to lose instead.
+   */
+  it('places it in the protected head, above the tone permissions', () => {
     const prompt = buildCharacterSystemPrompt(
       contextFor({
         channel: 'voice',
         character: { ...publicCharacter(LUNA), conversationStyle: STYLE },
       }),
     );
-    expect(prompt.indexOf(STYLE)).toBeGreaterThan(prompt.indexOf('Let it breathe'));
+    expect(prompt.indexOf(STYLE)).toBeLessThan(prompt.indexOf('Let it breathe'));
+    expect(prompt.indexOf(STYLE)).toBeGreaterThan(prompt.indexOf('She is an adult and so is he'));
   });
 
   /** No style stated is no line — never a default asserted on her behalf. */
@@ -353,27 +412,101 @@ describe('her own sound comes from her own record', () => {
 describe('the proactive rules from the previous change survive', () => {
   const prompt = voicePrompt();
 
-  it('still carries every behaviour the voice layer already had', () => {
+  it('still carries the behaviours that were never the problem', () => {
     for (const rule of [
-      'Carry the conversation',
-      'Volunteer things',
       'Do not end every turn with a question',
       'Pick threads back up',
-      'Lead sometimes',
       'React before you answer',
-      'Flirt, and let it build',
       'short enough to interrupt',
       'Leave something hanging',
-      'A call warms up as it runs',
     ]) {
       expect(prompt).toContain(rule);
     }
   });
 
-  it('still keeps the stage, identity and safety lines', () => {
-    expect(prompt).toContain('You two are new to each other');
+  /** The four obligations, and the line that apologised for a frozen stage. */
+  it('drops the four standing obligations and the stage apology', () => {
+    for (const rule of [
+      'Carry the conversation',
+      'Volunteer things',
+      'Lead sometimes',
+      'Flirt, and let it build',
+      'A call warms up as it runs',
+    ]) {
+      expect(prompt).not.toContain(rule);
+    }
+  });
+
+  it('still keeps identity and the safety lines, and no longer a stage', () => {
+    expect(prompt).not.toContain('You two are new to each other');
     expect(prompt).toContain('WHO SHE IS');
     expect(prompt).toContain('What you are here for:');
     expect(prompt).toContain('never break character');
+    expect(prompt).toContain('She is an adult and so is he');
+  });
+});
+
+/**
+ * PHASE 1 TOUCHED TEXT ONLY, AND THIS IS WHAT PROVES IT.
+ *
+ * Text chat lost its message-count register rule, lost the regex that routed
+ * scenes, and gained an adult-fiction line. None of those were meant to reach
+ * a call: `buildCharacterSystemPrompt` returns for voice before any of them is
+ * assembled. These cases pin that boundary, because the three changes all live
+ * in a function the voice path also calls.
+ */
+describe('the voice prompt is untouched by the Phase 1 text changes', () => {
+  const voice = (priorMessageCount = 0) =>
+    buildCharacterSystemPrompt(contextFor({ channel: 'voice', priorMessageCount }));
+
+  /**
+   * THE TYPED WORDING STAYS TEXT-ONLY, but the RULES no longer do. "Writing a
+   * scene", "no asterisks" and "no room, no staging" are artefacts of a typed
+   * medium and are nonsense aloud, so the voice layer states the same two
+   * permissions in spoken form instead of borrowing the strings.
+   */
+  it('carries none of the typed phrasing the text layer uses', () => {
+    for (const textOnly of [
+      'Ordinary conversation is what this is',
+      'Nothing is happening except the two of you talking',
+      'If he is writing a scene',
+      'When he reaches for you physically',
+      'No room, no staging, no asterisks',
+    ]) {
+      expect(voice()).not.toContain(textOnly);
+    }
+  });
+
+  it('states the same two permissions in spoken form', () => {
+    expect(voice()).toContain('If he starts acting something out');
+    expect(voice()).toContain('speaking as though it is happening');
+    expect(voice()).toContain('answer it out loud');
+    // Stepping back out with him is the half a per-message regex could never
+    // express, and it matters more on a call than in text.
+    expect(voice()).toContain('step out with him');
+  });
+
+  /**
+   * NO LONGER TEXT-ONLY. The channel branch used to return above the adult
+   * framing, so a call was the one surface that never stated the frame it was
+   * operating under -- and a model with no stated frame defaults to caution.
+   */
+  it('now carries the adult-fiction line, which a call never used to get', () => {
+    expect(voice()).toContain('She is an adult and so is he');
+  });
+
+  /** One wording for both channels, so there is one line to maintain. */
+  it('shares the text self-disclosure rule rather than keeping its own', () => {
+    expect(voice()).toContain('Let her life come out a detail at a time');
+  });
+
+  it('no longer varies by message count at all', () => {
+    expect(voice(0)).toBe(voice(30));
+  });
+
+  it('still keeps identity, memories framing and the capability boundary', () => {
+    expect(voice()).toContain('WHO SHE IS');
+    expect(voice()).toContain('What you are here for:');
+    expect(voice()).toContain('never break character');
   });
 });

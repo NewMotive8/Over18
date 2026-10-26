@@ -5,11 +5,10 @@ import { API_URL, ApiRequestError, charactersApi, conversationsApi, type PublicC
 import { useAuth } from '../auth/AuthContext';
 import {
   profileAvatarUrl,
-  apparentAge,
   characterHeaderItems,
   type CharacterMediaItem,
 } from '../lib/media';
-import { adultAgeFromBand } from '../lib/lobbyContent';
+import { displayAge } from '../lib/lobbyContent';
 import { mockRelationship } from '../lib/relationship';
 import ProfileHero from '../components/profile/ProfileHero';
 import ProfileIdentity from '../components/profile/ProfileIdentity';
@@ -259,7 +258,13 @@ export default function CharacterDetailPage() {
    * while her videos sat two tabs away. One function decides the whole deck;
    * see `characterHeaderItems` for the precedence and the fallback.
    */
-  const heroItems: CharacterMediaItem[] = characterHeaderItems(character, clips, visualData);
+  /**
+   * ONE CLIP IN THE HERO. The deck is still built the same way; the header
+   * shows the clip it leads with and no more -- no dots, no arrows, nothing to
+   * page through. The rest of her clips are in the Posts tab, where they are
+   * laid out to be browsed.
+   */
+  const heroItems: CharacterMediaItem[] = characterHeaderItems(character, clips, visualData).slice(0, 1);
   /**
    * The viewer items for the Posts tab — her posts, in the order shown.
    *
@@ -280,7 +285,13 @@ export default function CharacterDetailPage() {
     // and nowhere else.
     contentRating: clip.contentRating,
   }));
-  const age = adultAgeFromBand(apparentAge(visualData));
+  /**
+   * HER PROFILE AND HER CARD MUST AGREE. Both ask `displayAge`: the confirmed
+   * age the server carries on the character, and only failing that the
+   * apparent-age band. Deriving from the band alone here is what made a
+   * profile read 26 while the same character told a caller she was 32.
+   */
+  const age = displayAge(character.age);
   const avatarPoster = profileAvatarUrl(character.profileImage, heroItems[0]?.media);
   const relationship = mockRelationship(character);
   const upgrade = upgradeAction(economy, {

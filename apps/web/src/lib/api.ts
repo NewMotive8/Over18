@@ -200,11 +200,21 @@ export const callsApi = {
       `/api/calls/${encodeURIComponent(callSessionId)}`,
     );
   },
-  /** Hang up. Idempotent: ending an ended call is not an error. */
-  end(callSessionId: string): Promise<{ callSession: VoiceCallSession; alreadyEnded?: boolean }> {
+  /**
+   * Hang up. Idempotent: ending an ended call is not an error.
+   *
+   * `reason` says WHICH ending this was -- the person pressing End, the
+   * countdown running out, or the socket dying under us. The server keeps an
+   * allow-list and ignores anything it does not know, so this is a hint and
+   * never a value the browser gets to write.
+   */
+  end(
+    callSessionId: string,
+    reason?: string,
+  ): Promise<{ callSession: VoiceCallSession; alreadyEnded?: boolean }> {
     return request<{ callSession: VoiceCallSession; alreadyEnded?: boolean }>(
       `/api/calls/${encodeURIComponent(callSessionId)}/end`,
-      { method: 'POST' },
+      { method: 'POST', body: JSON.stringify({ reason: reason ?? null }) },
     );
   },
 };
@@ -950,6 +960,14 @@ export interface PublicClip {
   url: string;
   characterId: string;
   characterName: string;
+  /**
+   * Her CONFIRMED age, or null when nobody has set one.
+   *
+   * Confirmed only, like every other customer-facing surface -- never the
+   * apparent-age band, never the persona's guess. Null renders no age, exactly
+   * as Play with me does.
+   */
+  characterAge: number | null;
 }
 
 export interface PublicCharacterCard {
@@ -987,7 +1005,13 @@ export interface PublicCharacterCard {
 export interface PublicPlayWithMeCard {
   id: string;
   displayName: string;
-  /** Raw apparent-age band, or null. The card derives its age label from it. */
+  /**
+   * Her stated age, or null when she has no persona age. Preferred over the
+   * band -- see `displayAge`. The band says how old she LOOKS; this is how old
+   * she IS, and it is the number an operator edits on her profile.
+   */
+  age: number | null;
+  /** Raw apparent-age band, or null. Used only when there is no stated age. */
   apparentAgeBand: string | null;
   /** Real App Category membership; the card chips render these. */
   categories: Array<{ slug: string; name: string }>;
@@ -1775,6 +1799,23 @@ export interface AdminCharacterView {
    */
   liveCallVoice: string | null;
   /**
+   * Her Grok settings, stored separately from the SpicyAPI pair above so a
+   * rollback to SpicyAPI restores exactly what was configured before. Null
+   * means "not configured for Grok": the call falls back, never fails.
+   */
+  grokVoice: string | null;
+  grokSpeakingStyle: string | null;
+  grokCallInstructions: string | null;
+  /**
+   * Her CONFIRMED age, or null when nobody has set one.
+   *
+   * Null renders as unset -- never as the persona's guess or a number derived
+   * from the apparent-age band. Those are display fallbacks for the customer
+   * surfaces; showing one here would present a model's answer as an
+   * operator's.
+   */
+  age: number | null;
+  /**
    * Where she lives. Every part is independently optional: an operator may know
    * the country and not the city. `timezone` is an IANA zone, validated by the
    * server; nothing is inferred from anything else.
@@ -1788,6 +1829,16 @@ export interface AdminCharacterView {
 import type { ProfileDivergenceStatus } from '@over18/shared';
 
 export interface AdminCharacterListItem extends AdminCharacterView {
+  /**
+   * The vision model's age guess, for review. ADMIN ONLY.
+   *
+   * Carried on the LIST so an operator can see at a glance which characters
+   * have something to confirm, instead of opening every profile to find out.
+   * Null means nothing has ever estimated her age -- a different and more
+   * expensive problem than an unconfirmed guess, since she needs a persona
+   * generated or a number typed from scratch.
+   */
+  suggestedAge: number | null;
   activeIdentityVersion: number | null;
   identityVersionCount: number;
   primaryReferenceCount: number;
@@ -1921,6 +1972,29 @@ export interface CharacterDraft {
   systemPrompt: string;
   interests: string[];
   status?: 'active' | 'inactive';
+  /** 18 or over, or null to clear it. Absent leaves it unchanged. */
+  age?: number | null;
+  /**
+   * Grok's settings. Absent means "leave alone", so a save from one
+   * provider's tab never carries -- and therefore never overwrites -- the
+   * other's.
+   */
+  grokVoice?: string | null;
+  grokSpeakingStyle?: string | null;
+  grokCallInstructions?: string | null;
+}
+
+/** What Admin needs to render the Voice & Speaking Style section. */
+export interface AdminVoiceSettings {
+  /**
+   * Which provider places calls right now, read from `VOICE_LLM_PROVIDER` on
+   * the server. The "(Active)" label follows this, so it is never a constant
+   * in the browser and a rollback relabels the tabs with no release.
+   */
+  activeProvider: string;
+  /** The one sentence every cached sample says. */
+  sampleText: string;
+  grokVoices: Array<{ id: string; description: string; hasSample: boolean }>;
 }
 
 /** What Autofill proposes. A DRAFT — nothing is saved until the operator says so. */
@@ -2063,8 +2137,32 @@ export interface CharacterContentAsset extends AssetLifecycle {
   archivedAt: string | null;
 }
 
+/** The Voice & Speaking Style section's one read. */
+export const adminVoiceApi = {
+  settings: () => request<AdminVoiceSettings>('/admin/voice/settings'),
+};
+
 export const adminCharactersApi = {
   list: () => request<AdminCharacterListItem[]>('/admin/characters'),
+  /**
+   * Confirm ages for several characters in one request.
+   *
+   * Each age is stated explicitly rather than the server being told to "accept
+   * the suggestions": a confirmed age must always be a number a person chose,
+   * and an endpoint that could resolve suggestions itself would erode exactly
+   * the distinction `characters.age` exists for.
+   *
+   * Partial success is normal and is reported per character, so the screen can
+   * say which rows still need attention.
+   */
+  confirmAges: (confirmations: { characterId: string; age: number }[]) =>
+    request<{
+      confirmed: { characterId: string; age: number }[];
+      rejected: { characterId: string; reason: string }[];
+    }>('/admin/characters/age-confirmations', {
+      method: 'POST',
+      body: JSON.stringify({ confirmations }),
+    }),
   /**
    * A NAME is enough to create a character. Supply an image too and the server
    * also creates visual identity v1, activates it and files the image as her
@@ -2139,6 +2237,23 @@ export const adminCharactersApi = {
     request<PrimaryReferenceView[]>(
       `/admin/identities/${encodeURIComponent(identityId)}/references`,
     ),
+  /**
+   * Uploads her main image, whichever state her visual identity is in.
+   *
+   * Character-scoped on purpose: a character saved without a photo has NO
+   * identity version, so there was no id to post to and her portrait could
+   * not be supplied at all. The server resolves her active version or
+   * provisions her first one, the same way a content upload always has.
+   */
+  uploadCharacterReference: (characterId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return postMultipart<PrimaryReferenceView>(
+      `/admin/characters/${encodeURIComponent(characterId)}/references`,
+      form,
+      'Upload failed',
+    );
+  },
   /** Multipart, so the browser must set the boundary — see postMultipart. */
   uploadReference: (identityId: string, file: File) => {
     const form = new FormData();

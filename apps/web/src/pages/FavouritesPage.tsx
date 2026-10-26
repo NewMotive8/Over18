@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { useFavourites } from '../hooks/useFavourites';
 import { galleryCards } from '../lib/favourites';
 import { resolveRailMedia } from '../lib/media';
-import { adultAgeFromBand } from '../lib/lobbyContent';
+import CardNameAge, { cardAriaLabel } from '../components/lobby/CardNameAge';
 import type { PublicPlayWithMeCard } from '../lib/api';
 import HeroMedia from '../components/HeroMedia';
 import PageContainer from '../components/PageContainer';
@@ -42,7 +42,6 @@ import { LikeIcon, SparkleIcon } from '../components/icons';
  */
 function FavouriteTile({ character }: { character: PublicPlayWithMeCard }) {
   const media = resolveRailMedia(character);
-  const age = adultAgeFromBand(character.apparentAgeBand);
   const tags = character.categories.slice(0, 2);
 
   // NO REAL CLIP ⇒ NO TILE. The second lock; `galleryCards` has already
@@ -52,7 +51,7 @@ function FavouriteTile({ character }: { character: PublicPlayWithMeCard }) {
   return (
     <Link
       to={`/characters/${character.id}`}
-      aria-label={`Open ${character.displayName}`}
+      aria-label={cardAriaLabel(character.displayName, character.age)}
       data-testid="favourite-tile"
       className="group relative block aspect-[3/4] overflow-hidden rounded-2xl border border-white/5 bg-zinc-900"
     >
@@ -76,10 +75,7 @@ function FavouriteTile({ character }: { character: PublicPlayWithMeCard }) {
         <LikeIcon width={15} height={15} />
       </span>
       <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1 p-2.5">
-        <div className="flex items-baseline gap-1.5">
-          <span className="truncate text-sm font-bold text-white">{character.displayName}</span>
-          <span className="text-xs text-zinc-300">{age}</span>
-        </div>
+        <CardNameAge name={character.displayName} age={character.age} />
         <div className="flex flex-wrap gap-1">
           {tags.map((tag) => (
             <span

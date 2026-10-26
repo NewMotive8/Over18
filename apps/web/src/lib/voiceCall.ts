@@ -528,7 +528,13 @@ export function createCallController(deps: CallControllerDeps): CallController {
       const id = sessionId;
       sessionId = null;
       try {
-        await api.end(id);
+        /**
+         * The reason travels with the hang-up, so the server can tell a
+         * deliberate End from a countdown running out from a socket that
+         * died. Without it every one of those arrived as `user_ended` and
+         * the three became uncountable.
+         */
+        await api.end(id, reason ?? undefined);
       } catch {
         /* the server settles it from the closed socket, or the deadline does */
       }

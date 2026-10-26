@@ -38,6 +38,7 @@ function card(over: Partial<PublicPlayWithMeCard> = {}): PublicPlayWithMeCard {
   return {
     id: 'char-1',
     displayName: 'Nova',
+    age: null,
     apparentAgeBand: 'late 20s',
     categories: [{ slug: 'sexy', name: 'Sexy' }],
     clip: {
@@ -45,7 +46,7 @@ function card(over: Partial<PublicPlayWithMeCard> = {}): PublicPlayWithMeCard {
       mediaType: 'video',
       url: '/api/media/assets/asset-1/file',
       characterId: 'char-1',
-      characterName: 'Nova',
+      characterName: 'Nova', characterAge: null,
     },
     ...over,
   };
@@ -191,6 +192,57 @@ describe('FavouritesPage', () => {
 });
 
 describe('no surface in this feature uses localStorage', () => {
+  /**
+   * ONE AGE RULE, ON EVERY SURFACE THAT SHOWS AN AGE.
+   *
+   * REWRITTEN BECAUSE THE RULE MOVED, NOT BECAUSE IT WEAKENED. This asserted
+   * that each card file called `displayAge(character.age)` itself. Three files
+   * each holding their own copy of the rule is exactly how they drifted: Play
+   * with me showed an age, the results grid showed it at a different weight,
+   * and the New/Top rated/Popular rails showed none at all.
+   *
+   * The call now lives once, inside `CardNameAge`, which takes the RAW value
+   * and resolves it -- so a caller cannot pass a number from anywhere else.
+   * What is pinned here is therefore stronger than before: every card surface
+   * delegates, and none of them derives an age from the band.
+   */
+  it('delegates every card age to the one shared rule, never the band', () => {
+    for (const file of [
+      './lobby/PlayWithMeCarousel.tsx',
+      './lobby/ClipRail.tsx',
+      './lobby/ClipGridCard.tsx',
+      './SwipeCard.tsx',
+      '../pages/FavouritesPage.tsx',
+    ]) {
+      const source = codeOf(file);
+      // Either it renders the shared row, or it resolves through the shared
+      // rule directly -- SwipeCard's layout is its own and keeps its call.
+      expect(source, file).toMatch(/CardNameAge|displayAge\(/);
+      expect(source, file).not.toContain('adultAgeFromBand(');
+      expect(source, file).not.toContain('apparentAge(');
+    }
+  });
+
+  it('keeps the confirmed-only resolver in one place', () => {
+    const shared = codeOf('./lobby/CardNameAge.tsx');
+    expect(shared).toContain('displayAge(age)');
+    // It takes the raw value, so no caller can pre-resolve around the rule.
+    expect(shared).toMatch(/age: number \| null \| undefined/);
+  });
+
+  /**
+   * THE PROFILE PAGE TOO. It takes its band from a different payload, so it
+   * was the one surface a card-only fix left behind -- and a profile reading
+   * 26 beside a card reading 32 is worse than both reading 26.
+   */
+  it('the character profile derives its age the same way', () => {
+    const source = codeOf('../pages/CharacterDetailPage.tsx');
+    expect(source).toContain('displayAge(character.age)');
+    // The band no longer reaches this page at all.
+    expect(source).not.toContain('apparentAge(');
+    expect(source).not.toContain('adultAgeFromBand(');
+  });
+
   it('holds favourites on the server only', () => {
     for (const file of [
       '../hooks/useFavourites.ts',

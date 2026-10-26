@@ -1,6 +1,6 @@
 import { LlmError } from '../llm/types.js';
 import { createOpenAiCompatibleVisionClient } from '../llm/openai-compatible-vision.js';
-import type { LlmVisionClient } from '../llm/vision-types.js';
+import type { LlmVisionClient, LlmVisionReply } from '../llm/vision-types.js';
 import type { Env } from '../env.js';
 import type { CharacterPersona, ProposedCharacterProfile } from '@over18/shared';
 import {
@@ -74,7 +74,7 @@ export type PersonaGenerator = (input: PersonaGeneratorInput) => Promise<Persona
 
 export class PersonaGeneratorError extends Error {
   constructor(
-    public readonly kind: 'not_configured' | 'unavailable' | 'invalid_output',
+    public readonly kind: 'not_configured' | 'unavailable' | 'invalid_output' | 'truncated',
     message: string,
   ) {
     super(message);
@@ -111,6 +111,37 @@ export function extractJsonObject(raw: string): unknown {
 }
 
 /**
+ * `extractJsonObject`, but able to say WHY a reply held no object.
+ *
+ * THE MESSAGE USED TO POINT AT THE WRONG THING. The persona object is
+ * FLAT -- every requested key is a string or a string array -- so its only
+ * closing brace is the very last character of the reply. Any reply cut off
+ * at the token ceiling therefore contains no `}` at all, and the generic
+ * parser reported it as "the model did not return a persona": a message that
+ * reads as a refusal or a bad photo, when nothing was wrong with either and
+ * the fix was simply more room.
+ *
+ * `finishReason` is the only thing that separates the two cases, and it is
+ * checked AFTER parsing rather than before: a reply that ran out of room but
+ * still happens to close its object is perfectly usable, and must not be
+ * thrown away for a reason that did not cost anything.
+ */
+export function parsePersonaReply(raw: string, finishReason: string | null): unknown {
+  try {
+    return extractJsonObject(raw);
+  } catch (error) {
+    if (finishReason === 'length') {
+      throw new PersonaGeneratorError(
+        'truncated',
+        'The AI ran out of room before it finished her persona, so the reply was cut off. ' +
+          'Try again — and if it keeps happening, raise PERSONA_VISION_MAX_TOKENS.',
+      );
+    }
+    throw error;
+  }
+}
+
+/**
  * Validates a model reply into a persona. An empty-but-technically-valid
  * object (every field omitted or rejected) is itself treated as a failure —
  * a "successful" generation that yields nothing useful is a bad response
@@ -132,6 +163,23 @@ export function toPersonaGeneratorDraft(parsed: unknown): CharacterPersona {
       'The model did not return any usable persona fields.',
     );
   }
+
+  /**
+   * A NON-ADULT OR NON-INTEGER AGE IS ALREADY REFUSED ABOVE, by
+   * `validateCharacterPersona` -- "age must be an integer." and "age must
+   * denote an adult (18 or older)." It rejects the whole generation rather than
+   * dropping the field.
+   *
+   * RECORDED HERE BECAUSE A GUARD WAS ADDED AND THEN REMOVED. The obvious
+   * reading of this function is that nothing stops a sub-18 age reaching the
+   * persona record, and a second check was written on that assumption. It was
+   * unreachable: the validator throws first, so the new code could never run.
+   * A note costs nothing and stops the next person writing it again.
+   *
+   * Rejecting the whole persona is also the stricter behaviour of the two, and
+   * the right one here: a persona that describes a minor must not exist in the
+   * record at all, not merely be missing one field.
+   */
   return persona;
 }
 
@@ -393,6 +441,21 @@ export function buildPersonaPrompt(
         // and removes the pull.
         'Prefer concrete, specific, lived-in details ("knows which caf\u00e9 on her road opens earliest, because she is usually there before it does") over abstract adjective lists ("stylish, creative, adventurous"). Avoid caricature and exaggerated archetypes — but a common, ordinary job is NOT a stereotype, and is not something to avoid.',
         'She should read as an ordinary adult woman someone could plausibly meet, grounded in contemporary everyday life rather than in a novel.',
+        // AGE WAS THE ONE FIELD THE PROMPT NEVER MENTIONED, AND IT SHOWED.
+        //
+        // `age`, `ageRange` and `lifeStage` were all offered by the schema with
+        // no instruction attached, so the model filled whichever it felt able to
+        // under the standing "omit any field you cannot support" rule. Across 39
+        // generated personas that produced a range for every one and a NUMBER
+        // for all but two -- and those two then had no usable age anywhere,
+        // because `ageRange` is prose and nothing downstream can read a number
+        // out of "mid-to-late 20s" without inventing precision.
+        //
+        // So the number is now required and the range is demoted to describing
+        // the spread AROUND it, rather than standing in for it. The floor is
+        // stated because this is an adult product and a sub-18 value is the one
+        // output that must never exist, not merely be filtered later.
+        'HER AGE: always give `age` as a single whole number, and never below 18. She is an adult; if the photograph reads young, choose a number in the low twenties rather than omitting the field or going under 18. Give `ageRange` as the spread around that number ("late 20s") and `lifeStage` as the phase it belongs to — never as a substitute for `age`, which must always be present.',
         // EVIDENCE AND INVENTION ARE DIFFERENT THINGS, AND THE PROMPT HAD NO
         // WORDS FOR THE SECOND ONE. The old rule said "if the image gives an
         // obvious occupation clue use it, OTHERWISE choose a common
@@ -459,17 +522,37 @@ export interface LlmPersonaGeneratorOptions {
   temperature?: number;
 }
 
+/**
+ * The output ceiling for one persona.
+ *
+ * MEASURED, NOT GUESSED. A real Staging generation from a real reference
+ * image returned a complete, valid persona in 627 completion tokens -- 90% of
+ * the 700 this used to allow. That 700 was set when the model was asked for
+ * 18 keys; proposedShortBio, proposedPersonality and proposedInterests were
+ * added to the same request afterwards and the ceiling was never raised, so
+ * an average reply now finishes a few dozen tokens below it and a
+ * longer-than-average one does not finish at all.
+ *
+ * The validator alone permits 600 characters of bio and 1200 of personality
+ * -- roughly 450 tokens between them -- so the headroom here is sized for the
+ * request the prompt actually makes, not for the reply it usually gets.
+ */
+const DEFAULT_PERSONA_MAX_TOKENS = 2_000;
+
+/** Unchanged, and stated once so the env default and this one cannot drift. */
+const DEFAULT_PERSONA_TEMPERATURE = 0.4;
+
 export function createLlmPersonaGenerator(
   client: LlmVisionClient,
   options: LlmPersonaGeneratorOptions = {},
 ): PersonaGenerator {
   return async (input) => {
-    let raw: string;
+    let reply: LlmVisionReply;
     try {
-      raw = await client.generate({
+      reply = await client.generate({
         messages: buildPersonaPrompt(input),
-        maxTokens: options.maxTokens ?? 700,
-        temperature: options.temperature ?? 0.4,
+        maxTokens: options.maxTokens ?? DEFAULT_PERSONA_MAX_TOKENS,
+        temperature: options.temperature ?? DEFAULT_PERSONA_TEMPERATURE,
       });
     } catch (error) {
       // Never surface a provider body or key. Kind only, like Autofill/chat.
@@ -483,7 +566,7 @@ export function createLlmPersonaGenerator(
       }
       throw error;
     }
-    const parsed = extractJsonObject(raw);
+    const parsed = parsePersonaReply(reply.text, reply.finishReason);
     // The persona is required; the profile rewrite is an offer that may be
     // absent, malformed or instructional without costing the operator the
     // persona they asked for.
@@ -497,9 +580,25 @@ export function createLlmPersonaGenerator(
  * env.ts) so nothing extra needs to be set to try it against the already
  * configured model. With no vision config at all, generation reports itself
  * unavailable instead of inventing a persona.
+ *
+ * THE SAMPLING SETTINGS NOW ACTUALLY ARRIVE. env.ts has parsed
+ * PERSONA_VISION_MAX_TOKENS and PERSONA_VISION_TEMPERATURE since this feature
+ * shipped, but nothing passed them on: the adapter's config carries only the
+ * endpoint, so both values were read and dropped and the hard-coded defaults
+ * below were what every request used. Setting either variable did nothing at
+ * all, which is the worst way for a tuning knob to fail -- it looks applied.
+ *
+ * A value is honoured only when it is a usable number. A malformed one (NaN
+ * from a typo, a negative ceiling) falls back to the default rather than
+ * reaching the wire, where `max_tokens: null` would be a confusing upstream
+ * error instead of an obviously-ignored setting.
  */
 export function selectPersonaGenerator(env: Env): PersonaGenerator {
-  return env.personaVision
-    ? createLlmPersonaGenerator(createOpenAiCompatibleVisionClient(env.personaVision))
-    : unconfiguredPersonaGenerator;
+  if (!env.personaVision) return unconfiguredPersonaGenerator;
+  const { maxTokens, temperature } = env.personaVision;
+  return createLlmPersonaGenerator(createOpenAiCompatibleVisionClient(env.personaVision), {
+    maxTokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : undefined,
+    // Zero is a legitimate temperature, so the floor is 0 rather than 1.
+    temperature: Number.isFinite(temperature) && temperature >= 0 ? temperature : undefined,
+  });
 }

@@ -4,7 +4,8 @@ import type { CharacterPersona } from '@over18/shared';
 import { characterPersonas, characterVisualAssets, characters, users } from '../db/schema.js';
 import { SEED_CHARACTERS } from '../db/seed-data.js';
 import { seedCharacters } from '../db/seed.js';
-import { createCharacterDraft } from '../services/character-service.js';
+import { createCharacterDraft, getCharacterForAdmin, updateCharacter } from '../services/character-service.js';
+import { resolveCharacterAge } from '../services/character-age.js';
 import { activateVisualIdentityVersion, createVisualIdentityVersion } from '../services/visual-identity-service.js';
 import type { PersonaGenerator } from '../services/character-persona-generator.js';
 import { PersonaGeneratorError } from '../services/character-persona-generator.js';
@@ -271,6 +272,57 @@ describe('regenerateCharacterPersona', () => {
     expect(row.sourceAssetId).not.toBeNull();
     expect(row.generatedAt).not.toBeNull();
     expect(row.editedFields).toEqual([]); // regeneration never adds to editedFields
+  });
+
+  /**
+   * AN OPERATOR'S AGE OUTLIVES THE MODEL'S, STRUCTURALLY.
+   *
+   * It is not protected by `editedFields` or by any merge rule -- it is not in
+   * the persona at all. Regeneration rewrites `character_personas`; the
+   * confirmed age is a column on `characters`, which that write cannot reach.
+   * This pins the separation, because a future refactor that moved the age
+   * into the persona would quietly make a model able to overwrite a person.
+   */
+  it("a confirmed age on the character is untouched by regenerating her persona", async () => {
+    const characterId = await characterWithAvatar();
+    await updateCharacter(ctx.db, characterId, { age: 41 } as never);
+
+    const { row } = await regenerateCharacterPersona(
+      ctx.db,
+      { displayName: 'Nova' },
+      characterId,
+      stubGenerator({ occupation: 'barista', age: 24 }),
+    );
+
+    // The persona did take the model's number...
+    expect(row.persona.age).toBe(24);
+
+    // ...and the confirmed age did not move, so she still reads as 41.
+    const after = await getCharacterForAdmin(ctx.db, characterId);
+    expect(after!.age).toBe(41);
+    expect(resolveCharacterAge(after!.age, row.persona)).toMatchObject({
+      age: 41,
+      source: 'confirmed',
+      confirmed: true,
+    });
+  });
+
+  /** Without a confirmed age, the persona's number is what she reads as. */
+  it('with no confirmed age, regeneration does change what she reads as', async () => {
+    const characterId = await characterWithAvatar();
+    const { row } = await regenerateCharacterPersona(
+      ctx.db,
+      { displayName: 'Nova' },
+      characterId,
+      stubGenerator({ occupation: 'barista', age: 24 }),
+    );
+    const after = await getCharacterForAdmin(ctx.db, characterId);
+    expect(after!.age).toBeNull();
+    expect(resolveCharacterAge(after!.age, row.persona)).toMatchObject({
+      age: 24,
+      source: 'persona',
+      confirmed: false,
+    });
   });
 
   it('THE CORE PROPERTY: an explicitly edited field survives regeneration', async () => {

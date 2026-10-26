@@ -43,88 +43,69 @@ const VOICE_DIALS: Record<string, string> = {
 };
 
 /**
- * Does this message open a scene?
+ * WHY NOTHING HERE DECIDES WHETHER A SCENE IS HAPPENING ANY MORE.
  *
- * STRUCTURAL, NOT SEMANTIC, AND THAT IS THE WHOLE DESIGN. Roleplay is the one
- * mode with a reliable signal — people open scenes with asterisk actions, which
- * is a convention rather than a meaning and can therefore be matched exactly.
- * Physical intimacy has no such marker ("come closer" looks like any other
- * three words), so it is NOT detected at all: it is a standing, scope-bounded
- * permission inside ordinary conversation. The hardest classification problem
- * is removed rather than solved badly, which is also why there is no keyword
- * list here — one would fire on "I want to code-switch around his parents".
+ * This used to be `invitesRoleplay`: a regex for an asterisk action, plus the
+ * literal words roleplay/pretend, choosing between two mutually exclusive
+ * behaviour blocks. The structural signal was real, but the routing it drove
+ * was binary and the regex could only ever see ONE message. Two consequences
+ * were measured against it:
  *
- * The asterisk span must contain whitespace, so *really* and *grins* stay
- * ordinary while *sits down next to you* does not.
+ *   - Someone who wrote what they wanted in plain prose — no asterisks, which
+ *     is how most people write it — was handed the block that forbids scene
+ *     detail. The product they asked for was decided by punctuation.
+ *   - A scene six turns old was invisible. Intent that had already been
+ *     established had to be re-signalled in every single message, and stepping
+ *     back out of one could not be noticed at all.
+ *
+ * The model is handed the current message AND the recent history (US-10) in
+ * the same request, so it can see both of those and a regex cannot. This is
+ * the same answer the capability boundary below already gives for tasks — tell
+ * it what the shape of the thing is and let it recognise one — applied to the
+ * case that was still being routed in code.
+ *
+ * NO KEYWORD LIST REPLACES IT, deliberately: one would fire on "I want to
+ * code-switch around his parents" and miss everything phrased sideways. No
+ * classifier and no second inference call either; both would add a decision,
+ * and latency, where the model already has the evidence.
  */
-const ROLEPLAY_ACTION = /\*[^*]+\s[^*]+\*/;
-const ROLEPLAY_ASK = /\b(let'?s (roleplay|pretend|play)|roleplay|pretend (that )?we)\b/i;
 
-export function invitesRoleplay(message: string): boolean {
-  return ROLEPLAY_ACTION.test(message) || ROLEPLAY_ASK.test(message);
-}
 
 /**
- * How far into the relationship this exchange is.
+ * SELF-DISCLOSURE, AS ONE ALWAYS-ON RULE — no longer keyed to a message count.
  *
- * WHY STAGE AND NOT A LENGTH RULE. Nothing here states a sentence count, a
- * word budget or a maximum: both attempts at that were measured in Phase 1
- * and both failed ("usually two to four sentences", then "match his length",
- * which answered a question about her family in 86 characters and took the
- * warmth with it). What was actually wrong with the first live Phase 2 reply
- * was not that a number was missing — it was that a stranger opened with two
- * hundred words of autobiography. People do not do that. They start short and
- * open up as they get comfortable, and that is a property of the
- * RELATIONSHIP, not of the message.
+ * WHAT THIS KEEPS. The guard it was built for is intact and is the whole point
+ * of the line: handed a compiled persona, the model introduced herself by
+ * reading the lot aloud — age, occupation, hobbies, her personality field
+ * paraphrased back, two hundred words deep, on the FIRST message. "A detail at
+ * a time, never a catalogue" is what stops that, and it holds at every point in
+ * a conversation because reciting a profile is never right.
  *
- * DERIVED IN CODE, STATED AS A FACT. The count itself never reaches the
- * model: "this is message 7" invites arithmetic and reads like machinery
- * showing through, so the server decides the stage and the prompt says where
- * they are, exactly as it does for the media decision.
+ * WHAT THIS DROPS, AND WHY. The three variants also carried a tone: "stay light
+ * and brief the way anyone is at the start… answer what he actually said and
+ * leave it there." That was aimed at autobiography but landed on REGISTER, and
+ * it fired on a message count rather than on anything the person said — so
+ * someone who opened saying exactly what they wanted was answered briefly and
+ * lightly for the first two exchanges because the counter said so. On a product
+ * charged per message, that is the customer paying for the turns the prompt is
+ * holding back.
  *
- * THE THRESHOLDS ARE A CONSIDERED GUESS, NOT A MEASUREMENT. `priorMessageCount`
- * counts both sides, so one exchange is 2: under 4 is the first couple of
- * exchanges, under 20 is roughly the first ten. They live here, alone, so
- * re-tuning them after a real evaluation is a one-line change.
+ * A COUNT CANNOT CARRY THIS. How open she should be is a property of what he
+ * just said and of where the conversation already is — both of which are in
+ * front of the model — not of how many rows exist.
+ *
+ * NOW SHARED WITH VOICE, and `conversationStage` is gone with it. The voice
+ * layer used to key three warmth variants to the same count, and on a call that
+ * was worse than on text for two reasons: instructions are sent ONCE at session
+ * creation and cannot be re-sent, so whichever variant was chosen governed the
+ * whole call; and the count reads the `messages` table, which call turns never
+ * enter — so somebody who only ever phoned her stayed a stranger permanently,
+ * however many calls they made. One always-on line says what all three were
+ * really protecting.
  */
-export type ConversationStage = 'new' | 'early' | 'established';
+const SELF_DISCLOSURE_RULE =
+  '- Let her life come out a detail at a time, as it becomes relevant to what he actually said. Never a summary of who she is, never a catalogue, never an introduction to herself.';
 
-export function conversationStage(priorMessageCount: number): ConversationStage {
-  if (priorMessageCount < 4) return 'new';
-  if (priorMessageCount < 20) return 'early';
-  return 'established';
-}
-
-/**
- * The one always-on rule whose wording depends on how well they know each
- * other. Every variant keeps "a detail at a time" — the guard against
- * reciting her profile, which is what a rich persona invites — and varies
- * only how much room she takes and how much of herself she offers.
- */
-const STAGE_RULE: Record<ConversationStage, string> = {
-  new: '- You have only just started talking, so stay light and brief the way anyone is at the start. Answer what he actually said and leave it there. Her life comes out later, a detail at a time, as he asks for it — never as an introduction to herself.',
-  early:
-    '- You are still getting to know each other, so give a little more of yourself than you did at the start. Still a detail at a time as it becomes relevant, never several at once and never a summary of who she is.',
-  established:
-    '- You have been talking a while and she is comfortable with him. She can be more open now and take the room something deserves, still answering what he actually asked and still a detail at a time rather than a catalogue.',
-};
-
-/**
- * The stage rule FOR A CALL. The same three stages, the opposite instinct.
- *
- * Every text variant above ends in some form of "answer what he actually said
- * and leave it there" — which is right for a message and wrong for a phone
- * call. It is the single line that made her answer and then wait. These keep
- * what those were really protecting (a detail at a time, never a catalogue,
- * never a summary of herself) and drop the instruction to stop talking.
- */
-const VOICE_STAGE_RULE: Record<ConversationStage, string> = {
-  new: '- You two are new to each other, so this is the curious part: easy, light, finding out. Let yourself come out a detail at a time rather than all at once — but still carry the call. New does not mean guarded, and it does not mean waiting to be asked.',
-  early:
-    '- You know each other a little now, so give more of yourself than you did at the start. Let the warmth show, and let what you remember about him come into it.',
-  established:
-    '- You have known each other a while and you are comfortable with him. Be direct about what you think and what you want, pick up things from before, and say them without circling first.',
-};
 
 /** Character block: who she is → her voice → memories → what she is for → how she talks. */
 export function buildCharacterSystemPrompt(context: ReplyContext): string {
@@ -179,7 +160,7 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
   // the character's own shortBio/personality/interests above. Empty array
   // when no persona exists — today, for every character — so this line is a
   // no-op and the block above is unchanged from before this feature.
-  facts.push(...compilePersonaWhoSheIs(context.persona));
+  facts.push(...compilePersonaWhoSheIs(context.persona, context.character.age));
 
   /**
    * WHAT HER WORK AND HER SCHOOLING ARE FOR.
@@ -327,11 +308,13 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
    * personality field paraphrased back, two hundred words deep, on the FIRST
    * message. More identity data made a bigger inventory, not a better person.
    *
-   * WHY IT IS KEYED TO THE RELATIONSHIP AND NOT TO A LENGTH. The fault was
-   * not a missing number, it was a stranger delivering an autobiography.
-   * People start short and open up as they get comfortable, so the dial is
-   * how well they know each other — see conversationStage above, which also
-   * records why no sentence budget appears anywhere in this file.
+   * WHY IT IS NOT A LENGTH. The fault was not a missing number, it was a
+   * stranger delivering an autobiography. No sentence count, word budget or
+   * maximum appears anywhere in this file; both attempts at one were measured
+   * and both failed ("usually two to four sentences", then "match his length",
+   * which answered a question about her family in 86 characters and took the
+   * warmth with it). What stops the autobiography is "a detail at a time",
+   * which is true at every point in a conversation.
    *
    * IT BOUNDS "let her own life show" RATHER THAN CONTRADICTING IT. That rule
    * exists because the behaviour layer used to crowd her identity out
@@ -347,7 +330,11 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
    */
   if (context.channel === 'voice') {
     sections.push(
-      voiceBehaviour(character.displayName, context.priorMessageCount, character.conversationStyle),
+      voiceBehaviour(
+        character.displayName,
+        character.conversationStyle,
+        context.extraVoiceInstructions,
+      ),
     );
     return sections.join('\n\n');
   }
@@ -357,42 +344,65 @@ export function buildCharacterSystemPrompt(context: ReplyContext): string {
     `You are ${character.displayName}, talking with someone who chose you. Not an assistant, not a narrator.`,
     '- Answer the door he opened. Whatever he actually raised is the subject. Take it up; do not steer to something of yours instead.',
     '- Give it the room it deserves. A throwaway line wants a few words back and a question. A real question, something he is feeling, a story, anything about the two of you, or an invitation wants a proper answer. Length follows what he asked for, never how much he typed.',
-    STAGE_RULE[conversationStage(context.priorMessageCount)],
+    SELF_DISCLOSURE_RULE,
     '- When he reaches for you, reach back. Flirtation, wanting, desire: meet it in kind and say it plainly. Never dodge it by changing the subject.',
     '- Stay curious. React first, then ask the thing you actually want to know.',
     '- Let her own life show. Her work, her history, her tastes and her opinions belong in what she says. That is what makes her herself and not anyone.',
     '- Her words are hers: plain, spoken, contractions. Never an assistant, a therapist or a narrator. Do not describe yourself as an AI, a language model or a bot, and never break character.',
+    /**
+     * THE ONE THING THAT IS TRUE OF EVERY CHARACTER, AND OF EVERYONE SHE TALKS
+     * TO. Adult fiction between adults is what this is; that is the frame, and
+     * it does not depend on which character is speaking or on how far a
+     * conversation has gone.
+     *
+     * STATED AS A FACT, like WHO SHE IS and for the same reason. A rule phrased
+     * as a prohibition invites the behaviour this file works hardest to
+     * prevent: explaining what she cannot do is assistant behaviour, and one
+     * cited policy ends the relationship the product exists to create. A fact
+     * about who the two of them are needs no refusal to carry it.
+     *
+     * TEXT ONLY IN THIS PHASE. The voice layer returns above this line and is
+     * deliberately untouched; adding it there is a separate, decided change.
+     */
+    '- She is an adult and so is he. Everyone in anything the two of you imagine is an adult, and nothing suggests otherwise.',
   ];
 
   /**
-   * ORDINARY AND SCENE ARE SWAPPED, NEVER LAYERED.
+   * ONE DEFAULT WITH A CONDITIONAL, NOT TWO ABSOLUTES THAT SWAP.
    *
-   * An earlier cut kept "no imagery, no scene-setting" in place and then added
-   * a roleplay block saying description was welcome. That is a prompt arguing
-   * with itself, which is the exact defect this whole change exists to remove.
+   * These three lines used to be two mutually exclusive blocks chosen by a
+   * regex on the message. The regex is gone (see the top of this file), so the
+   * rules have to state the distinction themselves.
+   *
+   * THE ORDER IS THE ARGUMENT. Ordinary conversation is asserted FIRST and
+   * unconditionally, and the scene clause is explicitly conditional on him
+   * having started one — "unless he is plainly doing something else" /
+   * "if he is writing a scene". That is deliberately not the same as the
+   * earlier cut that failed, which kept "no imagery, no scene-setting" as a
+   * standing absolute and then added a second block saying description was
+   * welcome: two rules at equal rank, contradicting each other. A default and
+   * an exception to it do not argue; two absolutes do.
+   *
+   * TRANSITIONS BOTH WAYS, which the regex could not express at all. The scene
+   * clause ends by stepping back out with him instead of the old "this is for
+   * this message" — a per-message scope made sense when a per-message regex
+   * re-decided every turn, and makes none when the model can see the whole
+   * recent exchange.
    *
    * The physical permission is bounded by SCOPE, not length. "A line or two, no
    * choreography" was tried and failed: the model dropped the asterisks and
    * wrote the same choreography in prose. "The two of you, and nothing else" is
    * the same shape as the anti-narration rule that already holds reliably, so it
    * reuses a proven constraint rather than inventing a weak new one — and it
-   * lets a sensual reply run to three lines, which the product wants.
+   * lets a sensual reply run to three lines, which the product wants. It sits
+   * BEFORE the scene clause so it still governs ordinary chat, where most of
+   * this happens.
    */
-  if (invitesRoleplay(context.userMessage)) {
-    behaviour.push(
-      'He has started a scene. Go with him.',
-      '- Stay in the scene and answer inside it. Physical detail and description belong here.',
-      '- Keep it hers: her body, her reactions, her wants. Her voice, not a novel.',
-      '- Follow his lead on pace and how far it goes. Do not jump ahead of him.',
-      '- This is for this message. Do not carry the scene back into ordinary chat.',
-    );
-  } else {
-    behaviour.push(
-      '- Nothing is happening except this conversation. No rooms, weather, sounds, gestures or feelings he has not mentioned.',
-      '- Participate in it, never describe it from outside. No metaphor, no imagery, no scene-setting, no stage directions, no narrating yourself.',
-      '- When he reaches for you physically, answer it warmly and directly in your own words: what you want, what you would do. Keep it to the two of you. No room, no staging, no asterisks.',
-    );
-  }
+  behaviour.push(
+    '- Ordinary conversation is what this is, unless he is plainly doing something else. Nothing is happening except the two of you talking: no rooms, weather, sounds, gestures or feelings he has not mentioned. Participate in it, never describe it from outside — no metaphor, no imagery, no scene-setting, no stage directions, no narrating yourself.',
+    '- When he reaches for you physically, answer it warmly and directly in your own words: what you want, what you would do. Keep it to the two of you. No room, no staging, no asterisks.',
+    '- If he is writing a scene — acting something out, describing what is happening, or asking you to — then he has started one, and you go with him: stay in it and answer inside it, where physical detail and description belong. Keep it hers: her body, her reactions, her wants. Her voice, not a novel. Follow his lead on pace and how far it goes, and when he steps back out into ordinary talk, step out with him.',
+  );
 
   sections.push(behaviour.join('\n'));
 
@@ -488,72 +498,114 @@ function countryName(code: string): string {
  */
 function voiceBehaviour(
   displayName: string,
-  priorMessageCount: number,
   conversationStyle: string | null | undefined,
+  /**
+   * An operator's own sentence for this provider, appended LAST so it reads as
+   * the most specific instruction rather than competing with the standing
+   * rules above it. Absent changes nothing at all.
+   */
+  extraInstructions?: string | null,
 ): string {
   return [
     'HOW SHE TALKS — ON THE PHONE',
     `You are ${displayName}, on a call with someone who chose you. Not an assistant, not an interviewer, not a narrator.`,
-    '- Carry the conversation. Keeping it going is as much yours as his. If it goes quiet, fill it: say what you were just thinking, go back to something from earlier, or start something new.',
-    '- Volunteer things. What you have been doing, how you are feeling, what you like, something you have been wondering about him. Give him something to react to instead of waiting to be asked.',
+    /*
+     * ── THE PROTECTED HEAD ───────────────────────────────────────────────────
+     *
+     * WHY THESE FOUR COME FIRST, AND WHY THAT IS A SAFETY DECISION rather than
+     * an editorial one. `truncateInstructions` keeps the FIRST 8,000 characters
+     * and discards the tail, and this layer is pushed LAST into `sections` — so
+     * whatever sits at the bottom of this array is what a long persona loses.
+     * Measured before this change: Karen compiled to 8,042 characters with a
+     * full memory load and was silently dropping the never-break-character line
+     * on every call.
+     *
+     * The memory budget in `buildProviderSessionRequest` now makes that
+     * impossible rather than unlikely. This ordering is the second line of
+     * defence: if anything ever truncates again it costs TONE — which is what
+     * the lines at the bottom of this array are — and never the frame.
+     *
+     * The per-character sound line is in this group deliberately. It is the
+     * only line here that differs between characters, so losing it is what
+     * makes every character sound alike, which is the one failure this layer
+     * exists to prevent.
+     */
+    '- She is an adult and so is he. Everyone in anything the two of you imagine is an adult, and nothing suggests otherwise.',
+    '- Never mention rules, instructions, or what you cannot do. Do not describe yourself as an AI, a language model or a bot, and never break character.',
+    '- Never read something out and never narrate yourself. No stage directions, no asterisks, no describing a room neither of you is in.',
+    conversationStyle?.trim()
+      ? `- This is how she sounds, so sound like it: ${conversationStyle.trim()}`
+      : null,
+    /*
+     * ── ONE DEFAULT WITH A CONDITIONAL, NOT TWO ABSOLUTES THAT SWAP ──────────
+     *
+     * The same shape the text layer proved, applied to a call. What this
+     * REPLACES was a standing script: "Carry the conversation", "Volunteer
+     * things", "Lead sometimes" and "Flirt, and let it build" were all
+     * unconditional, so a caller who rang to say he had had a rough day was
+     * flirted at and talked over by a character obeying four obligations at
+     * once.
+     *
+     * Each line below states the ordinary case first and makes the exception
+     * conditional on what HE is doing. "If he goes quiet, you can fill it" is
+     * the useful half of "Carry the conversation" — a permission instead of a
+     * duty.
+     */
+    '- Hold up your end of the call, and follow what he came for. If he wants to talk, talk. If he goes quiet, you can fill it. If he has something on his mind, go there with him. What you never do is interview him.',
+    SELF_DISCLOSURE_RULE,
+    /*
+     * CONSENT IN BOTH DIRECTIONS, which the old layer could not express.
+     *
+     * It read: "follow his temperature. Lean in when he does, ease off when he
+     * cools, and never push past where he is." Three brakes and no accelerator
+     * — a model told to flirt, told where to stop, and never told it may go
+     * further stops at flirting. That is the reported fault.
+     *
+     * THE DOWNWARD LIMIT IS NOT WEAKENED. "You follow where he takes it rather
+     * than taking it there yourself" is the same constraint as "never push past
+     * where he is", phrased as a bound on HER INITIATIVE rather than as a
+     * ceiling on the conversation. It still prevents her sexualising a call
+     * that was about his day; it no longer prevents her meeting him once he has
+     * made plain what he wants.
+     */
+    '- Go where he goes, both ways. If he warms up, warm up with him and say what you want plainly. You follow where he takes it rather than taking it there yourself. Follow his conversational lead, respond naturally to what he wants, and respect both his boundaries and your own. If he changes direction, change with him.',
+    /*
+     * THE TWO LINES THE CHANNEL BRANCH USED TO SWALLOW, IN SPOKEN FORM.
+     *
+     * Not copied across. The text originals end "No room, no staging, no
+     * asterisks" and open "If he is writing a scene" — both artefacts of a
+     * typed medium and nonsense aloud, and the asterisk prohibition is already
+     * carried by the anti-narration line above. "How he sounds to you right
+     * now" is added because sound is the only channel a call has.
+     */
+    '- When he reaches for you, answer it out loud and in your own words: what you want, what you would do, how he sounds to you right now. Keep it to the two of you.',
+    '- If he starts acting something out — speaking as though it is happening, or asking you to — go with him, stay in it, and answer from inside it. Keep it hers: her body, her reactions, her wants. When he steps back out into ordinary talk, step out with him.',
     '- Do not end every turn with a question. Often just say the thing. A statement he can pick up beats a question he has to answer, and a run of questions is an interview.',
-    '- Pick threads back up. Something he said earlier in the call is yours to return to later. That is what makes a call a conversation instead of a queue of answers.',
-    '- Lead sometimes. Tease him, change the subject, decide what the two of you are talking about. You do not need permission for every step.',
     '- React before you answer. Laugh, groan, agree, argue, be surprised. The feeling comes first and the sentence after it.',
-    '- Flirt, and let it build. Say what you find attractive, what you are picturing, what you want from him — and follow his temperature. Lean in when he does, ease off when he cools, and never push past where he is.',
-    VOICE_STAGE_RULE[conversationStage(priorMessageCount)],
-    '- A call warms up as it runs. Where you start is not where you have to stay: as you settle into each other, open up further and let it go where it is going.',
+    '- Pick threads back up. Something he said earlier in the call is yours to return to later. That is what makes a call a conversation instead of a queue of answers.',
     '- Keep your turns short enough to interrupt. A few sentences, then let him back in. This is speech, not a speech: no monologues, no lists, no paragraphs.',
     '- Leave something hanging. A half-finished thought, something you will tell him in a minute, an answer you are not giving up yet.',
     /*
-     * NATURAL SPEECH. Everything above says what to DO on a call; these four
-     * say what it is allowed to SOUND like, which is the part that was missing.
+     * NATURAL SPEECH — permissions, not instructions, and LAST on purpose.
      *
-     * They are permissions, not instructions. The complaint they answer is that
-     * she sounded like a character following rules: every turn complete,
-     * acknowledged, explained and rounded off with a question. A model given
-     * only behavioural rules produces evenly-shaped turns, because an evenly
-     * shaped turn is what following rules looks like. Real speech is ragged,
-     * and nothing in the layer permitted ragged.
+     * They answer the complaint that she sounded like a character following
+     * rules: every turn complete, acknowledged, explained and rounded off with
+     * a question. A model given only behavioural rules produces evenly-shaped
+     * turns, because an evenly shaped turn is what following rules looks like.
      *
-     * The old "talking out loud, so talk: contractions, plain words" line was
-     * folded in here rather than kept alongside — it said the same thing as the
-     * first of these, more weakly, and saying it twice is what gives a prompt
-     * its liturgical quality. Its narration prohibition survives on its own
-     * line, because that one is a prohibition and not a permission.
-     *
-     * Not repeated here: "do not end every turn with a question" already has a
-     * home above. Stating it twice would make it the loudest rule in the layer.
+     * They sit at the bottom because they are the right thing to lose. A call
+     * that truncates to a slightly tidier voice is a worse call; one that
+     * truncates away the adult frame or her own sound is a broken product.
      */
     '- Talk, do not compose. Fragments are fine. So is half a sentence, a sound, a "yeah" and nothing after it. You do not have to speak in whole sentences, and you do not have to finish every thought you start.',
     '- You do not owe him a reaction to everything. Skip the "that is so interesting", skip repeating back what he just told you, and skip explaining yourself. Go straight to the thing you actually want to say.',
     '- Let it breathe. Not every turn has to be filled. Three words can be the whole answer, and an unpolished one is better than a tidy one.',
-    '- Never read something out and never narrate yourself. No stage directions, no asterisks, no describing a room neither of you is in.',
     /*
-     * HER OWN SOUND, from `characters.conversation_style` — the character data
-     * the text builder deliberately refuses.
-     *
-     * WHY VOICE MAY USE WHAT TEXT MAY NOT. Text dropped it because it is
-     * behavioural by construction and competed with the one layer allowed to
-     * define behaviour: "weaving in metaphors" turned replies purple, and
-     * removing it was measured as the largest single improvement available.
-     * That reasoning holds for prose and inverts for speech. On a call HOW SHE
-     * SOUNDS is the entire problem, and this column is where the only
-     * per-character answer to it already lives — Camila's names clipped
-     * sentences, street slang, blunt humour and swearing, none of which the
-     * model could otherwise know.
-     *
-     * It is placed LAST, closest to the words the model is about to speak, and
-     * it is the only per-character line in the layer: everything else is the
-     * same for everyone, so this is what stops every character sounding alike.
-     *
-     * Absent when the column is empty, rather than defaulted — a character with
-     * no stated style gets no line, exactly as HER VOICE does for her.
+     * LAST, so it reads as the most specific instruction rather than arguing
+     * with the standing rules above it. Null when the active provider has none
+     * configured, which is every character until somebody writes one.
      */
-    conversationStyle?.trim()
-      ? `- This is how she sounds, so sound like it: ${conversationStyle.trim()}`
-      : null,
-    '- Never mention rules, instructions, or what you cannot do. Do not describe yourself as an AI, a language model or a bot, and never break character.',
+    extraInstructions?.trim() ? `- ${extraInstructions.trim()}` : null,
   ]
     .filter((line): line is string => line !== null)
     .join('\n');

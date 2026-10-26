@@ -11,6 +11,7 @@ import {
   appCategoryAssets,
   characters,
   characterVisualAssets,
+  characterPersonas,
   characterVisualIdentities,
   homeHeroClips,
   homePlayWithMeCharacters,
@@ -38,6 +39,7 @@ import {
   publicBannerCreativeUrl,
   type BannerCreativeStorage,
 } from './banner-creative-service.js';
+import { usableAge as confirmedPublicAge } from './character-age.js';
 
 /**
  * Home composition (US-102.4).
@@ -124,6 +126,20 @@ export interface PublicClipView {
   characterId: string;
   characterName: string;
   /**
+   * Her CONFIRMED age, or null when nobody has set one.
+   *
+   * CONFIRMED ONLY, like every other customer-facing surface. Never the
+   * apparent-age band and never the persona's guess: the band is the bare
+   * string 'adult' for almost the whole roster and used to render as 26 for
+   * everyone, and the persona age is a vision model's answer. A number beside
+   * her name reads as a fact, so it is only ever `characters.age`.
+   *
+   * Null means the rail shows no age, exactly as Play with me does. The clip
+   * rails previously carried no age at all, so a confirmed age appeared on
+   * Play with me and nowhere else.
+   */
+  characterAge: number | null;
+  /**
    * How an operator classified this clip, where the surface needs to know.
    *
    * OPTIONAL BECAUSE ONLY ONE SURFACE ASKS. Home's lists are already filtered
@@ -197,10 +213,46 @@ export interface PublicCharacterCardView {
  * `/api/characters/:id/visual-identity` already serves properly to the surface
  * that genuinely needs it.
  */
+/**
+ * Her stated age as a number, or null when there is not a usable one.
+ *
+ * THE ONLY AGE THAT LEAVES THIS SERVICE IS AN ADULT ONE. The persona validator
+ * already refuses an age below 18 where personas are written, but this is a
+ * public projection on an adult product and it does not get to assume the row
+ * it read was written through that path. A value that is not a plain integer,
+ * or is below the floor, is reported as ABSENT rather than clamped upward --
+ * clamping would invent an age for a row that is wrong, and the band fallback
+ * is a better answer than a number nobody chose.
+ */
+export function statedAge(raw: string | number | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null;
+  const value = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isInteger(value) || value < 18 || value > 120) return null;
+  return value;
+}
+
 export interface PublicPlayWithMeCardView {
   id: string;
   displayName: string;
-  /** Raw apparent-age band, or null. The card derives its age label from it. */
+  /**
+   * Her CONFIRMED age, or null when nobody has set one.
+   *
+   * WHY THIS IS NOT THE BAND. The band describes how old she LOOKS in her
+   * reference image; this is how old she IS. Every card used to derive its
+   * number from the band alone, and the band is created as the bare string
+   * `'adult'` by quick-create and by the first upload that provisions her
+   * identity -- a string with no digits in it, which fell to one hard-coded
+   * default. The roster therefore showed the SAME age for every character who
+   * had never had a band written by hand, which is how six cards on one rail
+   * came to read 26.
+   *
+   * The persona age is the number an operator actually edits, validated as an
+   * adult integer where it is written. The band stays as the fallback for a
+   * character who has no persona yet, so nothing that reads correctly today
+   * starts reading differently.
+   */
+  age: number | null;
+  /** Raw apparent-age band, or null. Used only when there is no stated age. */
   apparentAgeBand: string | null;
   /**
    * The App Categories this character's publicly reachable clips belong to.
@@ -262,6 +314,7 @@ function clipView(
   asset: Pick<CharacterVisualAssetRow, 'id' | 'characterId' | 'storageKey' | 'provenance'> &
     Partial<Pick<CharacterVisualAssetRow, 'contentRating'>>,
   characterName: string,
+  characterAge: number | null,
 ): PublicClipView | null {
   const url = publicAssetUrl(asset.id, asset.storageKey);
   if (!url) return null;
@@ -271,6 +324,16 @@ function clipView(
     url,
     characterId: asset.characterId,
     characterName,
+    /**
+     * Validated on the way out, not trusted from the row.
+     *
+     * `confirmedPublicAge` is the SAME helper the Play with me card already
+     * uses a few hundred lines below, so a corrupt or non-adult value becomes
+     * "no age" here rather than a number on a card -- and the two rails cannot
+     * disagree about what counts as a usable age. The database constrains this
+     * column too; this is the second lock, and it costs nothing.
+     */
+    characterAge: confirmedPublicAge(characterAge),
     // Passed through only when the caller's query selected it -- see the field's
     // note on why every Home surface deliberately leaves it out.
     ...(asset.contentRating === undefined ? {} : { contentRating: asset.contentRating }),
@@ -339,6 +402,8 @@ export async function listPublicCharacterClips(
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
       // HER PAGE IS THE ONE SURFACE THAT HAS TO TELL THEM APART. Everything
       // listed here is hers and released; the header carousel may show only the
       // ordinary ones, and Posts shows all of them. Selected here and nowhere
@@ -377,7 +442,7 @@ export async function listPublicCharacterClips(
     .orderBy(freeFirstOrder(), desc(characterVisualAssets.createdAt), asc(characterVisualAssets.id));
 
   return rows
-    .map((row) => clipView(row, row.characterName))
+    .map((row) => clipView(row, row.characterName, row.characterAge))
     .filter((clip): clip is PublicClipView => clip !== null);
 }
 
@@ -495,6 +560,8 @@ export async function representativeClips(
       provenance: characterVisualAssets.provenance,
       isCanonical: characterVisualAssets.isCanonical,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
     })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
@@ -556,7 +623,7 @@ export async function representativeClips(
     );
 
   for (const row of rows) {
-    const view = clipView(row, row.characterName);
+    const view = clipView(row, row.characterName, row.characterAge);
     // Belt and braces: `mediaTypeOf` is still the authority on what a video is,
     // so a row the SQL translation admitted but this rule would not is dropped
     // here rather than rendered.
@@ -660,6 +727,8 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
       position: homeHeroClips.position,
     })
     .from(homeHeroClips)
@@ -682,7 +751,7 @@ export async function listHeroClips(db: Db): Promise<PublicClipView[]> {
     .orderBy(asc(homeHeroClips.position), asc(homeHeroClips.assetId));
 
   return rows
-    .map((row) => clipView(row, row.characterName))
+    .map((row) => clipView(row, row.characterName, row.characterAge))
     .filter((clip): clip is PublicClipView => clip !== null);
 }
 
@@ -865,6 +934,22 @@ async function playWithMeCards(
        * 'active', so this cannot multiply the roster.
        */
       apparentAgeBand: sql<unknown>`${characterVisualIdentities.visualDna} -> 'apparentAgeBand'`,
+      /**
+       * `->>`, not `->`: this one IS wanted as text and parsed to a number
+       * below. The band above uses `->` because `renderValue` must see the
+       * stored JSON type; an age is a scalar and has no such requirement.
+       *
+       * A LEFT JOIN again, so a character with no persona keeps her card and
+       * falls back to the band. `character_personas` is keyed by character, so
+       * this cannot multiply the roster either.
+       */
+      personaAge: sql<string | null>`${characterPersonas.persona} ->> 'age'`,
+      /**
+       * Her CONFIRMED age, straight off the character row -- no join needed,
+       * and it outranks the persona's. See character-age.ts for why the two
+       * are separate numbers rather than one column that gets overwritten.
+       */
+      confirmedAge: characters.age,
     })
     .from(characters)
     .leftJoin(
@@ -874,6 +959,7 @@ async function playWithMeCards(
         eq(characterVisualIdentities.status, 'active'),
       ),
     )
+    .leftJoin(characterPersonas, eq(characterPersonas.characterId, characters.id))
     .where(
       restrictTo
         ? and(eq(characters.status, 'active'), inArray(characters.id, restrictTo))
@@ -915,6 +1001,14 @@ async function playWithMeCards(
   return rows.map((row) => ({
     id: row.id,
     displayName: row.displayName,
+    /**
+     * CONFIRMED ONLY ON A PUBLIC SURFACE. The persona's age is a vision
+     * model's guess and the apparent-age band says how old she LOOKS; a bare
+     * number beside her name reads as a fact either way, so neither is sent.
+     * Null means "no age to show" and the card shows none -- which is the
+     * truth, and is why going live now requires one.
+     */
+    age: confirmedPublicAge(row.confirmedAge),
     // The SAME renderer the Character page's About tab uses — see renderValue.
     apparentAgeBand: renderValue(row.apparentAgeBand),
     categories: categories.get(row.id) ?? [],
@@ -1017,6 +1111,8 @@ async function listHomeCategories(
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
       rank: sql<number>`row_number() over (
         partition by ${appCategoryAssets.categoryId}
         order by ${appCategoryAssets.position} asc, ${appCategoryAssets.assetId} asc
@@ -1062,7 +1158,7 @@ async function listHomeCategories(
   const byCategory = new Map<string, PublicClipView[]>();
   for (const row of rows) {
     const list = byCategory.get(row.categoryId) ?? [];
-    const view = clipView(row, row.characterName);
+    const view = clipView(row, row.characterName, row.characterAge);
     if (view) list.push(view);
     byCategory.set(row.categoryId, list);
   }
@@ -1478,6 +1574,8 @@ export async function browsePublicClips(
       storageKey: characterVisualAssets.storageKey,
       provenance: characterVisualAssets.provenance,
       characterName: characters.displayName,
+      // Confirmed only -- see PublicClipView.characterAge.
+      characterAge: characters.age,
     })
     .from(characterVisualAssets)
     .innerJoin(characters, eq(characters.id, characterVisualAssets.characterId))
@@ -1489,6 +1587,6 @@ export async function browsePublicClips(
   const rows = await (options.limit != null ? base.limit(options.limit) : base);
 
   return rows
-    .map((row) => clipView(row, row.characterName))
+    .map((row) => clipView(row, row.characterName, row.characterAge))
     .filter((clip): clip is PublicClipView => clip !== null && clip.mediaType === 'video');
 }

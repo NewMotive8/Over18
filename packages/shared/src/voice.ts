@@ -64,3 +64,88 @@ const CATALOGUE = new Set<string>(VOICE_CATALOGUE);
 export function isKnownVoice(value: unknown): value is LiveCallVoice {
   return typeof value === 'string' && CATALOGUE.has(value);
 }
+
+/* ------------------------------------------------------------------ *
+ * Grok
+ * ------------------------------------------------------------------ */
+
+/**
+ * The Grok voice roster, and the one-line character xAI publishes for each.
+ *
+ * ── WHY IT MOVED HERE FROM `apps/api/src/voice/grok.ts` ──────────────────────
+ *
+ * The same reason `VOICE_CATALOGUE` moved: an admin choosing a Grok voice needs
+ * the list the server validates against, and the browser can only see
+ * `@over18/shared`. The adapter still owns everything about PLACING a call --
+ * the mapping from a SpicyAPI voice, the session frame, the default. It just no
+ * longer owns the list.
+ *
+ * VERIFIED AGAINST THE LIVE API, not transcribed and hoped for:
+ * `GET /v1/tts/voices` returned exactly these 28 ids on 2026-10-25, with no
+ * voice missing and none unknown. The descriptions are xAI's own words from the
+ * published voice table, kept so an operator has something to choose BY before
+ * pressing play.
+ *
+ * IDS ARE LOWER-CASE because xAI documents them as case-insensitive, unlike
+ * SpicyAPI's, where case matters. `isKnownGrokVoice` lowercases before testing.
+ */
+export const GROK_VOICE_CATALOGUE = [
+  'ara', 'eve', 'leo', 'rex', 'sal', 'altair', 'atlas', 'aurora',
+  'carina', 'castor', 'celeste', 'cosmo', 'helios', 'helix', 'iris', 'kepler',
+  'liora', 'lumen', 'luna', 'lux', 'naksh', 'orion', 'perseus', 'rigel',
+  'sirius', 'ursa', 'zagan', 'zenith',
+] as const;
+
+export type GrokVoice = (typeof GROK_VOICE_CATALOGUE)[number];
+
+/** The Grok voice used when a character has none and none can be mapped. */
+export const DEFAULT_GROK_VOICE: GrokVoice = 'eve';
+
+const GROK_CATALOGUE = new Set<string>(GROK_VOICE_CATALOGUE);
+
+/** Case-insensitive membership — xAI's ids are documented as such. */
+export function isKnownGrokVoice(value: unknown): value is GrokVoice {
+  return typeof value === 'string' && GROK_CATALOGUE.has(value.trim().toLowerCase());
+}
+
+/** xAI's own one-line description of each voice, for the selector. */
+export const GROK_VOICE_DESCRIPTIONS: Readonly<Record<GrokVoice, string>> = {
+  ara: 'Warm and friendly',
+  eve: 'Energetic and upbeat — British accent',
+  leo: 'Authoritative and strong — British accent',
+  rex: 'Confident and clear',
+  sal: 'Smooth and balanced',
+  altair: 'Elegant, refined, and effortlessly premium',
+  atlas: 'Confident, commanding, and reassuring',
+  aurora: 'Serene, steady, and radiant',
+  carina: 'Soft, empathetic, and soothing',
+  castor: 'Charismatic, down-to-earth, and easygoing',
+  celeste: 'Compassionate, confident, and reassuring',
+  cosmo: 'Bright, curious, and easy to follow',
+  helios: 'Upbeat, energetic, and endlessly versatile',
+  helix: 'Bold, dynamic, and adrenaline-fueled',
+  iris: 'Friendly, upbeat, and naturally charming',
+  kepler: 'Inventive, forward-thinking, and charismatic',
+  liora: 'Calm, grounded, and luminous',
+  lumen: 'Warm, articulate, and engaging',
+  luna: 'Gentle, patient, and deeply nurturing',
+  lux: 'Grounded, calm, and quietly wise',
+  naksh: 'Warm, thoughtful, and wise — Indian accent',
+  orion: 'Rich, cinematic, and resonant',
+  perseus: 'Strong, confident, and trustworthy',
+  rigel: 'Precise, professional, and calmly confident — Australian accent',
+  sirius: 'Quick-witted, clever, and playful',
+  ursa: 'Friendly, warm, and steadfast',
+  zagan: 'Powerful, dramatic, and unmistakable',
+  zenith: 'Sharp, focused, and driven',
+};
+
+/**
+ * The one sentence every cached sample says.
+ *
+ * Shared so the generator and the player cannot disagree about what an operator
+ * is listening to, and neutral so the comparison is between VOICES rather than
+ * between scripts.
+ */
+export const GROK_VOICE_SAMPLE_TEXT =
+  "Hi, this is how I sound. Tell me what you'd like to talk about.";

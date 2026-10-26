@@ -5,19 +5,39 @@ import {
   callTranscriptTurns,
   characterPersonas,
   characters,
-  conversations,
-  messages,
   type CallSessionRow,
 } from '../db/schema.js';
 import { getConversationForUser } from './conversation-service.js';
 import { toPublicCharacter } from './character-service.js';
 import { getActiveVisualIdentity, isAdultAgeBand } from './visual-identity-service.js';
-import { buildCharacterSystemPrompt, selectMemoriesForPrompt } from './prompt-builder.js';
+import {
+  buildCharacterSystemPrompt,
+  DEFAULT_MEMORY_INJECTION,
+  selectMemoriesForPrompt,
+} from './prompt-builder.js';
 import { listMemories } from './memory-service.js';
+import { GROK_PROVIDER } from '../voice/grok.js';
 import type { CommerceEnv } from '../env.js';
 import { canStartCall } from './paid-call-service.js';
 import { resolveVoice } from '../voice/voice-catalogue.js';
 import { VoiceProviderError, type VoiceSessionProvider } from '../voice/types.js';
+import { INSTRUCTIONS_MAX_CHARS } from '../voice/spicyapi.js';
+
+/**
+ * Head-room held back from the provider's 8,000-character instruction limit.
+ *
+ * NOT SUPERSTITION, AND NOT A ROUND NUMBER FOR ITS OWN SAKE. The budget is
+ * computed from a prompt built with NO memories, and the real prompt then has
+ * the rendered memory block added to it -- a heading and one bullet prefix per
+ * fact that the measured base does not contain. The margin covers that
+ * difference and leaves room for a persona edited slightly longer between the
+ * measurement and the call.
+ *
+ * It is deliberately generous relative to what it protects: 200 characters is
+ * about one and a half remembered facts, against the never-break-character and
+ * adult-framing lines it keeps inside the limit.
+ */
+export const INSTRUCTION_SAFETY_MARGIN = 200;
 
 /**
  * Live voice-call sessions -- Phase 1: lifecycle only.
@@ -336,7 +356,21 @@ export async function startCall(
     .limit(1);
   if (!characterRow) return { ok: false, reason: 'not_found' };
 
-  const voice = resolveVoice(characterRow.liveCallVoice);
+  /**
+   * WHICH VOICE, UNDER WHICHEVER PROVIDER IS ACTIVE.
+   *
+   * An explicit Grok voice is passed straight through -- `resolveGrokVoice`
+   * accepts a Grok id as well as a SpicyAPI name, so a chosen voice is used
+   * directly and is not run through a mapping table. With none chosen, her
+   * SpicyAPI voice goes out exactly as before and the adapter maps it, which
+   * is what keeps 56 unconfigured characters sounding as they do today.
+   *
+   * Under SpicyAPI nothing here changes at all: the Grok column is not read.
+   */
+  const voice =
+    deps.provider.name === GROK_PROVIDER && characterRow.grokVoice
+      ? characterRow.grokVoice
+      : resolveVoice(characterRow.liveCallVoice);
 
   // 5. Claim the row FIRST. The unique index is what makes two simultaneous
   //    starts resolve to one: the loser's insert violates it and is told a
@@ -452,6 +486,17 @@ export async function beginConnect(
 export async function buildProviderSessionRequest(
   db: Db,
   row: CallSessionRow,
+  /**
+   * The provider's published instruction ceiling, or null when it documents
+   * none.
+   *
+   * DEFAULTS TO SPICYAPI'S so every existing caller and test is unchanged --
+   * this used to be the imported constant, unconditionally. The relay now passes
+   * the active provider's own value, because budgeting a persona against a limit
+   * belonging to a different vendor is how a prompt gets trimmed to fit a number
+   * that does not apply to it.
+   */
+  instructionsMaxChars: number | null = INSTRUCTIONS_MAX_CHARS,
 ): Promise<{ instructions: string; voice: string; userRef: string } | null> {
   const [characterRow] = await db
     .select()
@@ -508,30 +553,110 @@ export async function buildProviderSessionRequest(
   const verifiedAdultAgeBand =
     typeof band === 'string' && isAdultAgeBand(band) ? band.trim() : null;
 
+
   /**
-   * HOW WELL THESE TWO ALREADY KNOW EACH OTHER, which decides her stage.
+   * HOW MANY REMEMBERED FACTS ACTUALLY FIT, computed rather than assumed.
    *
-   * This was hardcoded to 0, so `conversationStage` returned `new` on every call
-   * a customer ever made. On the text layer that meant "stay light and brief,
-   * answer what he actually said and leave it there" — the most reactive rule in
-   * the prompt, permanently in force, no matter how long they had known each
-   * other. A caller who had exchanged three hundred messages with her was
-   * greeted by someone behaving as though they had just met.
+   * The provider truncates `instructions` at 8,000 characters, keeping the
+   * FIRST 8,000 and discarding the tail -- and the behaviour layer is pushed
+   * last, so a prompt that overflows loses its rules and keeps its persona.
+   * Measured before this change: one character (Karen) compiled to 8,042
+   * characters with a full memory load and was silently dropping the
+   * never-break-character line on every single call.
    *
-   * Counted across ALL their conversations, because the relationship is with the
-   * character and not with one thread — the same scope `memories` already uses.
+   * A FIXED 2,000-CHARACTER MEMORY BUDGET CANNOT BE RIGHT FOR EVERY CHARACTER,
+   * because what is left over depends on how long her persona is. Personas and
+   * the behaviour layer are both fixed-size; the remembered facts are the only
+   * elastic input, so they are the only honest thing to trim. Compiling twice
+   * is free: `buildCharacterSystemPrompt` is pure, does no I/O, and the first
+   * pass costs microseconds against a call that takes seconds to place.
    *
-   * IT CANNOT ADVANCE MID-CALL, and nothing here pretends otherwise: the
-   * instructions are sent once at session creation and the provider accepts only
-   * `turn_detection` on a session update. The voice layer covers the rest in
-   * words ("a call warms up as it runs"). Turns taken during the call are
-   * recorded as transcript rows and will count towards the NEXT call.
+   * SELECTION PRIORITY IS UNTOUCHED. `selectMemoriesForPrompt` still walks
+   * newest-to-oldest keeping whole facts and returns them oldest-first; only
+   * the character budget it is handed changes.
    */
-  const [priorMessages] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(messages)
-    .innerJoin(conversations, eq(conversations.id, messages.conversationId))
-    .where(and(eq(conversations.userId, row.userId), eq(conversations.characterId, row.characterId)));
+  /**
+   * HOW SHE CARRIES THE CALL, from the ACTIVE provider's settings only.
+   *
+   * Under Grok her own speaking style is used when one is set, and
+   * `conversation_style` -- which is what a Grok call already uses today --
+   * when it is not. Under SpicyAPI `conversation_style` is read and the Grok
+   * columns are not, so neither provider's settings can leak into the other's
+   * call.
+   *
+   * These are SENTENCES IN A PROMPT, not audio controls. xAI exposes no pace,
+   * pitch or warmth parameters on a realtime session, so this changes how she
+   * speaks by telling her how to speak -- the only lever that exists.
+   */
+  // The ROW knows which provider it was created under -- `call_sessions.provider`
+  // is written when the call is claimed -- so the settings a call uses cannot
+  // drift if the environment variable changes mid-flight.
+  const usingGrok = row.provider === GROK_PROVIDER;
+  const speakingStyle = usingGrok
+    ? (characterRow.grokSpeakingStyle ?? characterRow.conversationStyle)
+    : characterRow.conversationStyle;
+  const extraCallInstructions = usingGrok ? characterRow.grokCallInstructions : null;
+
+  const promptWithout = (memories: string[]) =>
+    buildCharacterSystemPrompt({
+      character: { ...toPublicCharacter(characterRow, null), conversationStyle: speakingStyle },
+      extraVoiceInstructions: extraCallInstructions,
+      systemPrompt: characterRow.systemPrompt,
+      persona: personaRow?.persona ?? null,
+      location: {
+        countryCode: characterRow.countryCode,
+        region: characterRow.region,
+        city: characterRow.city,
+        timezone: characterRow.timezone,
+      },
+      history: [],
+      channel: 'voice',
+      priorMessageCount: 0,
+      userMessage: '',
+      memories,
+      verifiedAdultAgeBand,
+    });
+
+  const baseLength = promptWithout([]).length;
+
+  /**
+   * How much room remembered facts have, under the ACTIVE provider's limit.
+   *
+   * A provider that publishes no limit gets the standing memory policy and
+   * nothing else: there is no ceiling to subtract from, so there is nothing to
+   * trim against and nothing to refuse. Substituting a large invented number
+   * would read as a limit in the error messages below and would be a claim
+   * nobody published.
+   */
+  const memoryBudget =
+    instructionsMaxChars === null
+      ? DEFAULT_MEMORY_INJECTION.maxMemoryChars
+      : instructionsMaxChars - INSTRUCTION_SAFETY_MARGIN - baseLength;
+
+  /**
+   * A PERSONA THAT DOES NOT FIT ON ITS OWN IS A CONTENT PROBLEM, AND IT SAYS SO.
+   *
+   * Trimming memories cannot help here -- there is nothing left to trim -- so
+   * the alternative to failing is letting the provider cut the frame off the
+   * end, which is what this whole change exists to stop. A call that refuses
+   * with a nameable reason is recoverable by editing the persona; a call that
+   * quietly drops the adult framing is not recoverable at all, because nobody
+   * finds out.
+   */
+  if (memoryBudget < 0) {
+    throw new VoiceProviderError(
+      'rejected',
+      `Compiled voice instructions for this character are ${baseLength} characters before any ` +
+        `remembered facts, which exceeds the ${instructionsMaxChars}-character limit less a ` +
+        `${INSTRUCTION_SAFETY_MARGIN}-character margin. Shorten her persona or system prompt.`,
+    );
+  }
+
+  const memoriesForPrompt = selectMemoriesForPrompt(rememberedFacts, {
+    maxMemories: DEFAULT_MEMORY_INJECTION.maxMemories,
+    // The smaller of the standing policy and what this character has room for.
+    maxMemoryChars: Math.min(DEFAULT_MEMORY_INJECTION.maxMemoryChars, memoryBudget),
+  });
 
   return {
     instructions: buildCharacterSystemPrompt({
@@ -549,9 +674,11 @@ export async function buildProviderSessionRequest(
       // A call is a conversation, not a message exchange: the behaviour layer
       // branches on this and nothing else does.
       channel: 'voice',
-      priorMessageCount: priorMessages?.count ?? 0,
+      // Nothing reads this on a call any more: the voice layer dropped
+      // message-count staging, and `ReplyContext` still requires the field.
+      priorMessageCount: 0,
       userMessage: '',
-      memories: selectMemoriesForPrompt(rememberedFacts),
+      memories: memoriesForPrompt,
       verifiedAdultAgeBand,
     }),
     // The voice resolved when the call was claimed, so a change to the
@@ -802,6 +929,52 @@ async function settleFailed(db: Db, callSessionId: string, reason: string): Prom
   } catch {
     // Left pending on purpose; the deadline sweep will settle it.
   }
+}
+
+/**
+ * What the BROWSER is allowed to say about why a call stopped, and what that
+ * becomes in the row.
+ *
+ * WHY THIS EXISTS. `endCall` stamped every client-initiated end `user_ended`,
+ * and the browser calls it from every termination path it has -- the person
+ * pressing End, the countdown reaching zero, and the socket dying. Three
+ * different events, one indistinguishable code. Asked how often calls were
+ * dropping, the table could only answer "at least once", because a real drop
+ * and a deliberate hang-up looked identical.
+ *
+ * WHY IT IS AN ALLOW-LIST AND NOT THE STRING. The reason column is documented
+ * as a short code and never a message body, and this is the one path into it
+ * that an untrusted client can reach. A free-text reason would let a browser
+ * write anything into operational data that people read and count. Only these
+ * fixed codes get through; anything else is simply the default.
+ *
+ * WHY THE STORED CODE SAYS `reported_`. The server did not observe these. It
+ * observes a socket closing (`client_disconnected`) and its own deadline
+ * (`max_duration`); these are the browser's account of events the server
+ * missed, and an operator counting drops must be able to tell the two apart.
+ * The prefix is the provenance, carried in the value rather than in a second
+ * column nothing else needs.
+ */
+export const CLIENT_END_REASONS: Readonly<Record<string, string>> = Object.freeze({
+  /** The countdown reached zero before the server's own deadline fired. */
+  max_duration: 'reported_max_duration',
+  /** The socket died under the browser -- what a tester calls a disconnection. */
+  connection_lost: 'reported_connection_lost',
+});
+
+/** The code recorded when the browser says nothing, or says something unknown. */
+export const DEFAULT_END_REASON = 'user_ended';
+
+/**
+ * The reason to store for a client-initiated end.
+ *
+ * Deliberately total: every input yields a valid short code, so a malformed or
+ * hostile body cannot fail the request. Ending the call is the important part
+ * and must not depend on the browser describing it correctly.
+ */
+export function storedEndReason(reported: unknown): string {
+  if (typeof reported !== 'string') return DEFAULT_END_REASON;
+  return CLIENT_END_REASONS[reported] ?? DEFAULT_END_REASON;
 }
 
 export type EndCallOutcome =

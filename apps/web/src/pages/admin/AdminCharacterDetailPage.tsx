@@ -6,6 +6,18 @@ import ProfileDivergencePanel from '../../admin/ProfileDivergencePanel';
 import CharacterAccessSection from './CharacterAccessPanel';
 import { voiceOptions, voicePatch, voiceSelectValue } from '../../admin/characterVoice';
 import {
+  CUSTOM_GROK_STYLE,
+  GROK_SPEAKING_STYLES,
+  NO_GROK_VOICE,
+  grokSampleUrl,
+  grokStyleKeyOf,
+  grokStyleTextOf,
+  grokVoiceOptions,
+  grokVoicePatch,
+  grokVoiceSelectValue,
+  providerTabLabel,
+} from '../../admin/grokVoice';
+import {
   CONVERSATION_STYLES,
   CUSTOM_STYLE,
   MISSING_BOX_CLASS,
@@ -57,6 +69,8 @@ import {
   API_URL,
   ApiRequestError,
   adminCharactersApi,
+  adminVoiceApi,
+  type AdminVoiceSettings,
   contentLibraryApi,
   adminDiscoveryApi,
   type AdminCharacterDetail,
@@ -136,6 +150,12 @@ export default function AdminCharacterDetailPage() {
 
   const [personaOpen, setPersonaOpen] = useState(false);
   const [personaDraft, setPersonaDraft] = useState({ displayName: '', shortBio: '', personality: '', conversationStyle: '', systemPrompt: '' });
+  /**
+   * Her confirmed age, as typed. Held as a STRING so an empty box is a real
+   * state -- "no confirmed age" -- rather than being coerced to 0 or NaN on
+   * the way through a number input.
+   */
+  const [ageDraft, setAgeDraft] = useState('');
   // True once "Write my own" is chosen, so the box stays open while it is still empty.
   const [customStyle, setCustomStyle] = useState(false);
   /**
@@ -146,6 +166,17 @@ export default function AdminCharacterDetailPage() {
   const [locationDraft, setLocationDraft] = useState({ countryCode: '', region: '', city: '', timezone: '' });
   /** The voice select's value: '' is "Default (Serena)", otherwise a catalogue name. */
   const [voiceDraft, setVoiceDraft] = useState('');
+  /**
+   * WHICH TAB IS OPEN, AND NOTHING MORE. It decides what an operator is
+   * editing; the provider that actually places calls is the server's
+   * `VOICE_LLM_PROVIDER`, read below into `voiceSettings`.
+   */
+  const [voiceTab, setVoiceTab] = useState<'grok' | 'spicyapi'>('grok');
+  const [voiceSettings, setVoiceSettings] = useState<AdminVoiceSettings | null>(null);
+  const [grokVoiceDraft, setGrokVoiceDraft] = useState('');
+  const [grokStyleKey, setGrokStyleKey] = useState('');
+  const [grokStyleDraft, setGrokStyleDraft] = useState('');
+  const [grokInstructionsDraft, setGrokInstructionsDraft] = useState('');
   const [interestsText, setInterestsText] = useState('');
 
   // Phase 2 — avatar-derived persona.
@@ -275,6 +306,26 @@ export default function AdminCharacterDetailPage() {
   const [keywordEntry, setKeywordEntry] = useState('');
   const [keywordBusy, setKeywordBusy] = useState(false);
 
+  /**
+   * Read ONCE, from the server. Which provider is active is configuration and
+   * not a browser choice, so the tabs label themselves from this -- a rollback
+   * relabels them with no release, and no click here can change it.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    adminVoiceApi
+      .settings()
+      .then((settings) => {
+        if (!cancelled) setVoiceSettings(settings);
+      })
+      .catch(() => {
+        /* the section still renders; Play simply does not appear */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const load = useCallback(() => {
     if (!characterId) return;
     setError(null);
@@ -289,7 +340,15 @@ export default function AdminCharacterDetailPage() {
           conversationStyle: next.character.conversationStyle,
           systemPrompt: next.character.systemPrompt,
         });
+        // Null reads as an empty box; a blank box saves back as null.
+        setAgeDraft(next.character.age === null ? '' : String(next.character.age));
         setVoiceDraft(voiceSelectValue(next.character.liveCallVoice));
+        // Each provider seeds from its OWN columns, so neither can show the
+        // other's values and neither can save over them.
+        setGrokVoiceDraft(grokVoiceSelectValue(next.character.grokVoice));
+        setGrokStyleKey(grokStyleKeyOf(next.character.grokSpeakingStyle));
+        setGrokStyleDraft(next.character.grokSpeakingStyle ?? '');
+        setGrokInstructionsDraft(next.character.grokCallInstructions ?? '');
         setInterestsText(next.character.interests.join(', '));
         // Null reads as an empty box; the server turns a blank box back to null.
         setLocationDraft({
@@ -677,6 +736,27 @@ export default function AdminCharacterDetailPage() {
   };
 
   // The required persona fields still empty in the editor: outlined in red, the first one focused.
+  /**
+   * The persona's age, offered as a SUGGESTION only.
+   *
+   * It is a vision model's reading of one photograph, which is useful to see
+   * and must never be mistaken for a confirmed fact -- so it is never written
+   * into the field without a click.
+   */
+  const suggestedAge = (() => {
+    const raw = avatarPersona?.persona?.age;
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= 18 ? raw : null;
+  })();
+
+  /** The one sample a Play control points at, or null when there is none. */
+  const sampleUrl = grokSampleUrl(
+    API_URL,
+    grokVoiceDraft,
+    (voiceSettings?.grokVoices ?? []).some(
+      (v: { id: string; hasSample: boolean }) => v.id === grokVoiceDraft && v.hasSample,
+    ),
+  );
+
   const draftMissing = missingDraftKeys(personaDraft);
   const styleMissing = draftMissing.includes('conversationStyle');
 
@@ -749,33 +829,37 @@ export default function AdminCharacterDetailPage() {
           <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
             Primary references
           </h2>
-          {activeIdentity && (
-            <>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (!file) return;
-                  void run(
-                    () => adminCharactersApi.uploadReference(activeIdentity.id, file),
-                    "Couldn't upload that reference.",
-                  );
-                }}
-              />
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => fileInput.current?.click()}
-                className="text-sm text-rose-400 hover:text-rose-300 disabled:opacity-50"
-              >
-                Add reference
-              </button>
-            </>
-          )}
+          {/* NOT GATED ON AN IDENTITY ANY MORE. This used to render only when
+              one was active, so a character saved without a photo -- who has
+              no version by design -- had no control here at all, and the
+              empty state below told her operator to activate something that
+              did not exist. The upload is character-scoped now and the server
+              provisions her first version, so there is nothing to do first. */}
+          <>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file || !characterId) return;
+                void run(
+                  () => adminCharactersApi.uploadCharacterReference(characterId, file),
+                  "Couldn't upload that reference.",
+                );
+              }}
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => fileInput.current?.click()}
+              className="text-sm text-rose-400 hover:text-rose-300 disabled:opacity-50"
+            >
+              Add reference
+            </button>
+          </>
         </div>
 
         {/* WHY THIS IS AT THE TOP NOW. A reference photo is what the
@@ -792,7 +876,8 @@ export default function AdminCharacterDetailPage() {
 
         {!activeIdentity ? (
           <div className="rounded-lg border border-dashed border-zinc-800 px-6 py-10 text-center text-sm text-zinc-500">
-            Activate a visual identity version first — references belong to a version.
+            No image yet. Add one above and she gets her first visual identity version
+            with it — there is nothing to set up first.
           </div>
         ) : (
           <>
@@ -906,6 +991,60 @@ export default function AdminCharacterDetailPage() {
               </label>
             ))}
             {/*
+              HER AGE -- CONFIRMED, OR HONESTLY BLANK.
+              The box shows ONLY `characters.age`. When nobody has set one it
+              stays empty and the hint names what the customer surfaces fall
+              back to, labelled as a guess. Pre-filling it with the persona's
+              number would turn a model's answer into an operator's with one
+              unread Save.
+            */}
+            <label className="block">
+              <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                Age
+              </span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={18}
+                max={120}
+                step={1}
+                data-testid="character-age-input"
+                placeholder="Not set"
+                value={ageDraft}
+                onChange={(e) => setAgeDraft(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+              />
+              {/*
+                THE SUGGESTION SITS BESIDE THE FIELD, NEVER INSIDE IT.
+                Pre-filling the box with the model's number would make a guess
+                indistinguishable from a decision after one unread Save. Shown
+                as a suggestion with an explicit action, the operator's click
+                is what turns it into confirmed data.
+              */}
+              {suggestedAge !== null && String(suggestedAge) !== ageDraft.trim() && (
+                <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                  <span>
+                    Suggested <strong className="text-zinc-300">{suggestedAge}</strong>, read from
+                    her photo — a guess, not a confirmed age.
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="use-suggested-age"
+                    onClick={() => setAgeDraft(String(suggestedAge))}
+                    className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600"
+                  >
+                    Use suggested age
+                  </button>
+                </p>
+              )}
+              <p className="mt-1 text-xs text-zinc-500">
+                {ageDraft.trim() === ''
+                  ? 'Not set. She cannot go live without one, and her cards show no age until it is set.'
+                  : 'Shown on her cards, her profile, and in what she says about herself. 18 or over.'}
+              </p>
+            </label>
+
+            {/*
               HOW SHE TALKS -- A CHOICE, NOT A BLANK BOX. Each option stores one
               plain sentence in the same column; "Write my own" keeps the free
               text. See admin/personaPresets.ts.
@@ -994,31 +1133,169 @@ export default function AdminCharacterDetailPage() {
               <span className="mt-1 block text-xs text-zinc-500">Comma separated.</span>
             </label>
             {/*
-              HER LIVE-CALL VOICE. The list is the shared catalogue the server
-              validates against, so the form cannot offer something the PATCH
-              would refuse. "Default (Serena)" saves null, which is what the
-              existing fallback already handles -- and is what makes an
-              assignment reversible without database access.
+              VOICE & SPEAKING STYLE -- ONE SECTION, TWO PROVIDERS.
+              The tabs choose WHICH SETTINGS ARE BEING EDITED, never which
+              provider places calls: that is `VOICE_LLM_PROVIDER` on the
+              server, and the "(Active)" label is read from it rather than
+              written here. Switching tabs therefore cannot change how anyone
+              sounds, and each provider's values are saved independently --
+              a save from one tab omits the other's fields entirely.
             */}
-            <label className="block">
+            <div className="rounded-lg border border-zinc-800 p-3">
               <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
-                Live-call voice
+                Voice &amp; speaking style
               </span>
-              <select
-                value={voiceDraft}
-                onChange={(e) => setVoiceDraft(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
-              >
-                {voiceOptions().map((option) => (
-                  <option key={option.value || 'default'} value={option.value}>
-                    {option.label}
-                  </option>
+              <div className="mt-2 flex gap-2" role="tablist">
+                {(['grok', 'spicyapi'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    aria-selected={voiceTab === tab}
+                    data-testid={'voice-tab-' + tab}
+                    onClick={() => setVoiceTab(tab)}
+                    className={
+                      voiceTab === tab
+                        ? 'rounded-lg border border-rose-500 px-3 py-1 text-xs text-rose-300'
+                        : 'rounded-lg border border-zinc-700 px-3 py-1 text-xs text-zinc-400 hover:border-zinc-600'
+                    }
+                  >
+                    {providerTabLabel(voiceSettings?.activeProvider ?? 'spicyapi', tab)}
+                  </button>
                 ))}
-              </select>
-              <span className="mt-1 block text-xs text-zinc-500">
-                Used for live voice calls. Leave on the default if she has no assigned voice.
-              </span>
-            </label>
+              </div>
+              <p className="mt-2 text-xs text-zinc-500">
+                Switching tabs only changes what you are editing. Calls use{' '}
+                <strong className="text-zinc-300">{voiceSettings?.activeProvider ?? 'spicyapi'}</strong>
+                , which is set on the server.
+              </p>
+
+              {voiceTab === 'grok' ? (
+                <div className="mt-3 space-y-3">
+                  <label className="block">
+                    <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                      Grok voice
+                    </span>
+                    <select
+                      data-testid="grok-voice-select"
+                      value={grokVoiceDraft}
+                      onChange={(e) => setGrokVoiceDraft(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                    >
+                      {grokVoiceOptions(voiceSettings?.grokVoices ?? []).map((option) => (
+                        <option key={option.value || 'default'} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    {/*
+                      PLAY APPEARS ONLY WHERE A SAMPLE EXISTS. A voice with no
+                      cached file is still selectable -- being unable to
+                      audition one is not a reason to be unable to choose it.
+                    */}
+                    {sampleUrl ? (
+                      <audio
+                        data-testid="grok-voice-sample"
+                        key={sampleUrl}
+                        src={sampleUrl}
+                        controls
+                        preload="none"
+                        className="mt-2 h-8 w-full [color-scheme:dark]"
+                      />
+                    ) : (
+                      <span className="mt-1 block text-xs text-zinc-500">
+                        {grokVoiceDraft === NO_GROK_VOICE
+                          ? 'She will use the Grok voice her SpicyAPI voice maps to.'
+                          : 'No preview available for this voice yet.'}
+                      </span>
+                    )}
+                  </label>
+
+                  <label className="block">
+                    <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                      Speaking style
+                    </span>
+                    <select
+                      data-testid="grok-style-select"
+                      value={grokStyleKey}
+                      onChange={(e) => {
+                        setGrokStyleKey(e.target.value);
+                        const text = grokStyleTextOf(e.target.value);
+                        if (text !== null) setGrokStyleDraft(text);
+                        else if (e.target.value === '') setGrokStyleDraft('');
+                      }}
+                      className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                    >
+                      <option value="">Use her existing &ldquo;How she talks&rdquo;</option>
+                      {GROK_SPEAKING_STYLES.map((style) => (
+                        <option key={style.key} value={style.key}>
+                          {style.label}
+                        </option>
+                      ))}
+                      <option value={CUSTOM_GROK_STYLE}>Write my own</option>
+                    </select>
+                    {grokStyleKey === CUSTOM_GROK_STYLE && (
+                      <textarea
+                        rows={2}
+                        data-testid="grok-style-text"
+                        value={grokStyleDraft}
+                        onChange={(e) => setGrokStyleDraft(e.target.value)}
+                        placeholder="Describe how she sounds on a call, in a sentence."
+                        className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                      />
+                    )}
+                  </label>
+
+                  <label className="block">
+                    <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                      Extra call instruction (optional)
+                    </span>
+                    <textarea
+                      rows={2}
+                      data-testid="grok-instructions"
+                      value={grokInstructionsDraft}
+                      onChange={(e) => setGrokInstructionsDraft(e.target.value)}
+                      placeholder="One more thing she should do on a call."
+                      className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                    />
+                    <span className="mt-1 block text-xs text-zinc-500">
+                      Goes into what she is told on a call. It changes what she says and how she
+                      says it — it is not a pace, pitch or volume control.
+                    </span>
+                  </label>
+                </div>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  {/*
+                    THE EXISTING SPICYAPI SELECTOR, UNCHANGED. Its value is
+                    preserved for rollback and is never written by the Grok
+                    tab, so returning VOICE_LLM_PROVIDER to "spicyapi" restores
+                    exactly what was configured before.
+                  */}
+                  <label className="block">
+                    <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+                      Live-call voice
+                    </span>
+                    <select
+                      data-testid="spicyapi-voice-select"
+                      value={voiceDraft}
+                      onChange={(e) => setVoiceDraft(e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
+                    >
+                      {voiceOptions().map((option) => (
+                        <option key={option.value || 'default'} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="mt-1 block text-xs text-zinc-500">
+                      Used for live voice calls on SpicyAPI. Her &ldquo;How she talks&rdquo;
+                      setting above is the speaking style this provider uses.
+                    </span>
+                  </label>
+                </div>
+              )}
+            </div>
             <details className="rounded-lg border border-zinc-800 px-3 py-2">
               <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-zinc-500">Advanced</summary>
               <label className="mt-3 block">
@@ -1047,7 +1324,18 @@ export default function AdminCharacterDetailPage() {
                       .split(',')
                       .map((i) => i.trim())
                       .filter(Boolean),
+                    // Blank means "no confirmed age" and is sent as null, not
+                    // skipped: clearing a wrong age has to be possible.
+                    age: ageDraft.trim() === '' ? null : Number(ageDraft.trim()),
                     ...voicePatch(voiceDraft),
+                    // BOTH providers' fields are sent, each from its own draft
+                    // seeded from its own column -- so saving never copies one
+                    // provider's value into the other's.
+                    ...grokVoicePatch({
+                      voice: grokVoiceDraft,
+                      speakingStyle: grokStyleDraft,
+                      callInstructions: grokInstructionsDraft,
+                    }),
                     // Sent as typed; the server trims, upper-cases a country
                     // code, validates the zone, and stores blank as null.
                     ...locationDraft,

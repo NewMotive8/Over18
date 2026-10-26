@@ -1,5 +1,5 @@
 import { LlmError } from './types.js';
-import type { LlmVisionClient, LlmVisionRequest } from './vision-types.js';
+import type { LlmVisionClient, LlmVisionReply, LlmVisionRequest } from './vision-types.js';
 
 export interface OpenAiCompatibleVisionConfig {
   /** Base URL of the inference endpoint, e.g. https://<host>/v1 */
@@ -35,7 +35,7 @@ export function createOpenAiCompatibleVisionClient(
   const url = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
   return {
-    async generate(request: LlmVisionRequest): Promise<string> {
+    async generate(request: LlmVisionRequest): Promise<LlmVisionReply> {
       let response: Response;
       try {
         response = await fetch(url, {
@@ -71,12 +71,23 @@ export function createOpenAiCompatibleVisionClient(
         throw new LlmError('invalid_response', 'Inference endpoint returned non-JSON output.');
       }
 
-      const content = (body as { choices?: Array<{ message?: { content?: unknown } }> })
-        ?.choices?.[0]?.message?.content;
+      const choice = (
+        body as {
+          choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown }>;
+        }
+      )?.choices?.[0];
+      const content = choice?.message?.content;
       if (typeof content !== 'string' || content.trim().length === 0) {
         throw new LlmError('invalid_response', 'Inference endpoint returned an empty completion.');
       }
-      return content.trim();
+      // REPORTED, NOT JUDGED. 'length' means the reply hit the token ceiling
+      // and stopped mid-sentence; whether that makes it useless depends on
+      // what the caller wanted, so the caller decides. An endpoint that
+      // reports nothing yields null rather than a guess at 'stop'.
+      return {
+        text: content.trim(),
+        finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : null,
+      };
     },
   };
 }

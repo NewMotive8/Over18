@@ -2657,7 +2657,8 @@ describe('manual content workflow, end to end', () => {
     const activated = await on.app.inject({
       method: 'PATCH',
       url: `/admin/characters/${created.id}`,
-      payload: { status: 'active' },
+      // A confirmed age is required to go live -- see characters_age_adult.
+      payload: { status: 'active', age: 29 },
       cookies: adminCookies,
     });
     expect(activated.statusCode).toBe(200);
@@ -2962,6 +2963,7 @@ describe('the Nova journey', () => {
         personality: 'Warm.',
         conversationStyle: 'Playful.',
         systemPrompt: 'You are Nova.',
+        age: 29,
         status: 'active',
       },
       cookies: adminCookies,
@@ -3065,6 +3067,8 @@ describe('an uploaded video becomes the public card’s clip', () => {
         personality: 'p',
         conversationStyle: 'c',
         systemPrompt: 's',
+        // Going live needs a confirmed age; this is the Publish button's patch.
+        age: 29,
         status: 'active',
       },
       cookies: adminCookies,
@@ -3544,7 +3548,7 @@ describe('a character’s public content collection', () => {
     await on.app.inject({
       method: 'PATCH',
       url: `/admin/characters/${bare.id}`,
-      payload: { shortBio: 'b', personality: 'p', conversationStyle: 'c', systemPrompt: 's', status: 'active' },
+      payload: { shortBio: 'b', personality: 'p', conversationStyle: 'c', systemPrompt: 's', age: 29, status: 'active' },
       cookies: adminCookies,
     });
     const res = await clipsFor(bare.id);

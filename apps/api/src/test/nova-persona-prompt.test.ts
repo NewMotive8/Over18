@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import type { CharacterPersona, PublicCharacter } from '@over18/shared';
-import { buildCharacterSystemPrompt, conversationStage } from '../services/prompt-builder.js';
+import { buildCharacterSystemPrompt } from '../services/prompt-builder.js';
 import type { ReplyContext } from '../services/character-reply.js';
 
 /**
@@ -31,6 +31,7 @@ const character = (over: Partial<PublicCharacter> = {}): PublicCharacter => ({
   name: 'nova',
   displayName: 'Nova',
   profileImage: null,
+  age: null,
   shortBio: NOVA_BIO,
   personality: NOVA_PERSONALITY,
   interests: ['astrophotography', 'pulsars', 'abandoned observatories'],
@@ -101,13 +102,16 @@ describe("Nova's real generated persona reaches the prompt", () => {
     expect(section(withPersona, 'HOW SHE TALKS')).toBe(section(withoutPersona, 'HOW SHE TALKS'));
   });
 
-  it('keeps the relationship-stage rule working alongside a real persona', () => {
-    expect(conversationStage(0)).toBe('new');
-    expect(conversationStage(10)).toBe('early');
-    expect(conversationStage(40)).toBe('established');
+  /**
+   * Message-count staging is gone from BOTH channels now. Nova's real persona
+   * gets the same conversation rules on message one as on message forty, and
+   * the anti-autobiography guard the old stage rule carried is what remains.
+   */
+  it('no longer varies text behaviour by stage, but keeps the recital guard', () => {
     const newTalk = section(buildCharacterSystemPrompt(context({ persona, priorMessageCount: 0 })), 'HOW SHE TALKS');
     const oldTalk = section(buildCharacterSystemPrompt(context({ persona, priorMessageCount: 40 })), 'HOW SHE TALKS');
-    expect(newTalk).not.toBe(oldTalk);
-    expect(newTalk).toContain('only just started talking');
+    expect(newTalk).toBe(oldTalk);
+    expect(newTalk).not.toContain('only just started talking');
+    expect(newTalk).toContain('a detail at a time');
   });
 });

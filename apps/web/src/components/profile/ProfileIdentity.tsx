@@ -20,7 +20,8 @@ export default function ProfileIdentity({
   avatarPoster,
 }: {
   name: string;
-  age: number;
+  /** Her confirmed age, or null when nobody has set one -- then none is shown. */
+  age: number | null;
   avatarPoster?: string;
 }) {
   return (
@@ -29,7 +30,7 @@ export default function ProfileIdentity({
       <div className="min-w-0">
         <div className="flex items-center gap-3">
           <h1 className="truncate text-4xl font-black tracking-tight text-white">{name}</h1>
-          <span className="text-2xl font-semibold text-zinc-200">{age}</span>
+          {age !== null && <span className="text-2xl font-semibold text-zinc-200">{age}</span>}
           <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/90 px-2.5 py-1 text-xs font-bold text-amber-950">
             <CrownIcon className="h-3.5 w-3.5" /> VIP
           </span>

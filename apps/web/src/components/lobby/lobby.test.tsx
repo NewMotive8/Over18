@@ -44,6 +44,7 @@ function clip(id = 'a'): PublicClip {
     url: `/api/media/assets/${id}/file`,
     characterId: `char-${id}`,
     characterName: `Character ${id}`,
+  characterAge: null,
   };
 }
 
@@ -70,6 +71,7 @@ function railCard(id = 'a', over: Partial<PublicPlayWithMeCard> = {}): PublicPla
   return {
     id,
     displayName: `Name ${id}`,
+    age: null,
     apparentAgeBand: null,
     categories: [],
     clip: clip(id),
@@ -302,10 +304,22 @@ describe('the adults-only guardrail still holds', () => {
 describe('the original character-card presentation', () => {
   const markup = router(<PersonaGridCard character={card('grid')} index={0} />);
 
-  it('is a character card, not a clip tile — name and age together', () => {
+  /**
+   * THE AGE HALF OF THIS IS DELIBERATELY REVERSED.
+   *
+   * It asserted that the card states an age beside the name. That number came
+   * from `adultAgeFromBand(apparentAge(visual))`, and the band is the bare
+   * string 'adult' for 62 of 65 characters -- so the card showed the SAME age
+   * for almost the whole roster. That is the defect `characters.age` exists to
+   * end, and this component was the last one still carrying it.
+   *
+   * `PublicCharacterCard` has no confirmed age to put there instead, so the
+   * card now states none. The presentation freeze still holds for everything
+   * else: the name, the link, the badge and the layout are untouched.
+   */
+  it('is a character card, not a clip tile — and states no invented age', () => {
     expect(markup).toContain('Name grid');
-    // The card states an adult age beside the name, as the design shows.
-    expect(markup).toMatch(/Name grid[\s\S]*?<span class="text-sm font-medium text-zinc-200">\d+/);
+    expect(markup).not.toMatch(/<span class="text-sm font-medium text-zinc-200">\d+/);
   });
 
   it('links to the character, not to a clip', () => {
@@ -539,28 +553,31 @@ describe('the Play with me rail issues no request of its own', () => {
     expect(code).not.toMatch(/fetch\(/);
   });
 
-  it('renders the age from the band the Home payload sent', () => {
+  it('shows the confirmed age, and only that', () => {
     const markup = router(
-      <PlayWithMeCarousel
-        characters={[
-          {
-            ...videoCard('a'),
-            apparentAgeBand: 'adult (late-20s)',
-          },
-        ]}
-      />,
+      <PlayWithMeCarousel characters={[{ ...videoCard('a'), age: 34 }]} />,
     );
-    // adultAgeFromBand('adult (late-20s)') — the same function, the same input,
-    // and therefore the same label the per-card fetch used to produce.
-    expect(markup).toContain('28');
+    expect(markup).toContain('34');
   });
 
-  it('falls back to the safe default age when no band was sent', () => {
-    // Exactly the state a failed or empty visual-identity fetch produced.
-    const markup = router(
-      <PlayWithMeCarousel characters={[{ ...videoCard('a'), apparentAgeBand: null }]} />,
+  /**
+   * THE BAND NO LONGER PRODUCES A LABEL. It used to: a card derived 28 from
+   * "late-20s" and 26 from nothing at all, which is how a whole rail came to
+   * read 26. A number beside her name is read as a fact, and the band only
+   * says how old she LOOKS -- so an unconfirmed age now shows as no age.
+   */
+  it('shows NO age when none is confirmed, whatever the band says', () => {
+    const withBand = router(
+      <PlayWithMeCarousel
+        characters={[{ ...videoCard('a'), age: null, apparentAgeBand: 'adult (late-20s)' }]}
+      />,
     );
-    expect(markup).toContain('26');
+    expect(withBand).not.toContain('>28<');
+
+    const withoutBand = router(
+      <PlayWithMeCarousel characters={[{ ...videoCard('a'), age: null, apparentAgeBand: null }]} />,
+    );
+    expect(withoutBand).not.toContain('>26<');
   });
 
   it('still shows no minor-coded term for any band', () => {

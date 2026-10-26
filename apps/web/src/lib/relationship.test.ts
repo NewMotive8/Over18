@@ -8,6 +8,7 @@ function character(id: string): PublicCharacter {
     name: 'x',
     displayName: 'X',
     profileImage: null,
+    age: null,
     shortBio: '',
     personality: '',
     interests: [],

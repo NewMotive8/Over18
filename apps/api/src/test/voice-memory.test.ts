@@ -1167,7 +1167,15 @@ describe('the call prompt states her apparent age', () => {
 
     const instructions = await instructionsFor(user);
     expect(instructions).not.toContain('Her apparent age');
-    expect(instructions).not.toContain('adult');
+    /**
+     * THE BAND ITSELF must not leak, which is what this is really guarding.
+     * It used to assert the prompt contained no occurrence of the bare word
+     * "adult" — a proxy that stopped working when the voice layer gained
+     * "She is an adult and so is he", a line about the two PEOPLE that says
+     * nothing about HER RECORDED AGE. Matching the band text is both narrower
+     * and stricter: a refused band may not appear anywhere, in any wording.
+     */
+    expect(instructions).not.toContain(band);
   });
 
   it.each(['teen', 'child', 'minor', 'adolescent', 'underage'])(
@@ -1243,7 +1251,11 @@ describe('a live call is built as a call, not as a text thread', () => {
     const prompt = await instructions(user);
 
     expect(prompt).toContain('HOW SHE TALKS — ON THE PHONE');
-    expect(prompt).toContain('Carry the conversation');
+    // "Carry the conversation" was the old marker here and is deliberately
+    // gone: it was a standing obligation to fill silence. The phone layer is
+    // now identified by what only it says.
+    expect(prompt).toContain('Hold up your end of the call');
+    expect(prompt).toContain('Keep your turns short enough to interrupt');
     // The rules that made her answer and stop.
     expect(prompt).not.toContain('Answer the door he opened');
     expect(prompt).not.toContain('leave it there');
@@ -1255,54 +1267,44 @@ describe('a live call is built as a call, not as a text thread', () => {
    * answer what he actually said and leave it there" -- however long the two had
    * been talking.
    */
-  it('opens at the new stage for two people who have only just met', async () => {
-    const user = await register('vm.stagenew@example.com');
-    expect(await instructions(user)).toContain('You two are new to each other');
+  /**
+   * STAGING IS GONE FROM A CALL, and these replace the five tests that pinned
+   * it. The three warmth variants were keyed to a count of rows in `messages`,
+   * which call turns never enter -- so somebody who only ever phoned her stayed
+   * permanently `new`. And because instructions are sent once at session
+   * creation and cannot be re-sent, whichever variant was chosen governed the
+   * entire call.
+   */
+  it('gives the same instructions however much history they have', async () => {
+    const fresh = await register('vm.stagefresh@example.com');
+    const freshPrompt = await instructions(fresh);
+
+    const known = await register('vm.stageknown@example.com');
+    await saySomething(known, 40);
+    const knownPrompt = await instructions(known);
+
+    expect(freshPrompt).toBe(knownPrompt);
   });
 
-  it('is past the new stage once they have exchanged a few messages', async () => {
-    const user = await register('vm.stageearly@example.com');
-    await saySomething(user, 10);
-
+  it('carries none of the three stage variants', async () => {
+    const user = await register('vm.nostagewording@example.com');
     const prompt = await instructions(user);
-    expect(prompt).toContain('You know each other a little now');
+
     expect(prompt).not.toContain('You two are new to each other');
-  });
-
-  it('is comfortable and direct with someone she has talked to for a long time', async () => {
-    const user = await register('vm.stageestablished@example.com');
-    await saySomething(user, 40);
-
-    const prompt = await instructions(user);
-    expect(prompt).toContain('You have known each other a while');
-    expect(prompt).toContain('Be direct about what you think and what you want');
+    expect(prompt).not.toContain('You know each other a little now');
+    expect(prompt).not.toContain('You have known each other a while');
   });
 
   /**
-   * The relationship is with the CHARACTER, not with one thread -- the same
-   * scope her memories already use. A second conversation with her counts.
+   * What the stage rules were protecting -- an opening turn that recites her
+   * whole profile -- survives as the always-on line text already uses.
    */
-  it('counts every conversation they have had with her, not just one', async () => {
-    const user = await register('vm.stageacross@example.com');
-    await saySomething(user, 10);
-    const second = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/conversations',
-      payload: { characterId: user.characterId },
-      cookies: user.cookies,
-    });
-    await saySomething({ conversationId: second.json().id as string }, 12);
+  it('keeps the anti-recital guard the stage rules carried', async () => {
+    const user = await register('vm.recitalguard@example.com');
+    const prompt = await instructions(user);
 
-    expect(await instructions(user)).toContain('You have known each other a while');
-  });
-
-  /** Somebody else's history with her is not this caller's relationship. */
-  it('does not count another person’s messages with the same character', async () => {
-    const stranger = await register('vm.stranger@example.com');
-    await saySomething(stranger, 40);
-    const fresh = await register('vm.freshcaller@example.com');
-
-    expect(await instructions(fresh)).toContain('You two are new to each other');
+    expect(prompt).toContain('Let her life come out a detail at a time');
+    expect(prompt).toContain('never an introduction to herself');
   });
 
   it('still carries who she is and what she is for', async () => {

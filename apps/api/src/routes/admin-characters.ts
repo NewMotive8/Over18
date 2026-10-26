@@ -18,6 +18,12 @@ import {
   type ProfileAuthor,
 } from '../services/character-profile-service.js';
 import { PersonaGeneratorError, unconfiguredPersonaGenerator, type PersonaGenerator } from '../services/character-persona-generator.js';
+import { GROK_VOICE_CATALOGUE, GROK_VOICE_DESCRIPTIONS, GROK_VOICE_SAMPLE_TEXT } from '@over18/shared';
+import {
+  VOICE_SAMPLE_CONTENT_TYPE,
+  hasVoiceSample,
+  readVoiceSample,
+} from '../voice/grok-voice-samples.js';
 import {
   CharacterPersonaRegenerationError,
   CharacterPersonaValidationError,
@@ -55,6 +61,7 @@ import {
   type LibraryUploadStorage,
 } from '../services/library-upload-service.js';
 import { listCharacterContent, mediaTypeOf } from '../services/content-review-service.js';
+import { suggestedCharacterAge } from '../services/character-age.js';
 import {
   getContentRequirementByKey,
   getPrimaryReferenceRequirementKey,
@@ -136,6 +143,12 @@ export default async function adminCharacterRoutes(
     uploadStorage: LibraryUploadStorage;
     profileAuthor?: ProfileAuthor;
     personaGenerator?: PersonaGenerator;
+    /**
+     * Which provider places calls right now, and where the cached voice
+     * samples live. Both come from env at build time, so Admin can label the
+     * active tab from configuration instead of hard-coding a vendor name.
+     */
+    voiceSettings?: { activeProvider: string; mediaDir: string };
   },
 ) {
   const adminOnly = { preHandler: [app.requireAuth, app.requireAdmin] };
@@ -190,6 +203,16 @@ export default async function adminCharacterRoutes(
           activeIdentityVersion: active?.version ?? null,
           identityVersionCount: versions.length,
           primaryReferenceCount: primaryCount,
+          /**
+           * Her age suggestion, from the personas already batched above.
+           *
+           * Set HERE rather than left to `toAdminCharacter`, because this is
+           * where the persona is in hand -- the alternative is a lookup per row
+           * for a field the list already pays one query for. The validation
+           * still lives in one place: `suggestedCharacterAge` decides what
+           * counts as usable, so Admin cannot be offered a non-adult guess.
+           */
+          suggestedAge: suggestedCharacterAge(personas.get(character.id)?.persona ?? null),
           profileDivergence: compareProfileAndPersona({
             shortBio: character.shortBio,
             personality: character.personality,
@@ -764,6 +787,146 @@ export default async function adminCharacterRoutes(
   );
 
   /* ---------------------------------------------------------------- *
+   * Age confirmation
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Confirm ages for several characters at once.
+   *
+   * -- WHY A BULK ENDPOINT AT ALL ---------------------------------------------
+   *
+   * `characters.age` was created deliberately empty, so an established roster
+   * arrives with nothing confirmed and every card showing no age. Confirming
+   * them one character at a time means opening each profile to find out whether
+   * there is even a suggestion to accept. This exists so an operator can review
+   * a screen of suggestions and accept the ones that look right.
+   *
+   * -- IT CONFIRMS; IT DOES NOT GUESS ----------------------------------------
+   *
+   * Every age in the body is a number a person chose to send. The endpoint has
+   * no access to the suggestions and cannot accept "whatever was suggested" --
+   * the caller must state each age explicitly, so a confirmed age is always
+   * something somebody actually asserted. That is the distinction
+   * `characters.age` exists to protect, and a bulk screen must not quietly
+   * erode it.
+   *
+   * -- ONE WRITE PATH -------------------------------------------------------
+   *
+   * Each row goes through `updateCharacter`, exactly as the single-character
+   * PATCH does, so the adult floor, the publish gate and the rule that a live
+   * character's age cannot be cleared all apply identically. Duplicating those
+   * checks here is how they would drift.
+   *
+   * -- PARTIAL SUCCESS IS REPORTED, NOT HIDDEN -------------------------------
+   *
+   * Rows are independent: one rejected age must neither fail the other
+   * thirty-six nor vanish silently. Each outcome comes back named, so the UI can
+   * say which characters still need attention instead of leaving an operator to
+   * compare before and after.
+   */
+  app.post<{ Body: { confirmations?: unknown } }>(
+    '/admin/characters/age-confirmations',
+    adminOnly,
+    async (request, reply) => {
+      const raw = request.body?.confirmations;
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return reply.code(400).send({
+          error: 'invalid_request',
+          message: 'Send a non-empty `confirmations` array of { characterId, age }.',
+        });
+      }
+      // Bounded so one request cannot hold a connection open over the whole
+      // roster; the UI pages through if it ever needs to.
+      if (raw.length > 200) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_request', message: 'At most 200 confirmations per request.' });
+      }
+
+      const confirmed: { characterId: string; age: number }[] = [];
+      const rejected: { characterId: string; reason: string }[] = [];
+
+      for (const entry of raw) {
+        const row = (entry ?? {}) as { characterId?: unknown; age?: unknown };
+        const characterId = typeof row.characterId === 'string' ? row.characterId : '';
+        if (!UUID_RE.test(characterId)) {
+          rejected.push({ characterId: String(row.characterId ?? ''), reason: 'invalid_id' });
+          continue;
+        }
+        // Shape is checked here only so a malformed body is a clear rejection;
+        // the AGE RULES themselves stay in updateCharacter.
+        if (typeof row.age !== 'number' || !Number.isInteger(row.age)) {
+          rejected.push({ characterId, reason: 'age_must_be_a_whole_number' });
+          continue;
+        }
+        try {
+          const updated = await updateCharacter(opts.db, characterId, { age: row.age } as never);
+          if (!updated) {
+            rejected.push({ characterId, reason: 'not_found' });
+            continue;
+          }
+          confirmed.push({ characterId, age: row.age });
+        } catch (error) {
+          if (error instanceof CharacterValidationError) {
+            rejected.push({ characterId, reason: error.message });
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      return { confirmed, rejected };
+    },
+  );
+
+  /* ---------------------------------------------------------------- *
+   * Voice settings: the catalogue, and the cached samples
+   * ---------------------------------------------------------------- */
+
+  /**
+   * What Admin needs to render the Voice & Speaking Style section.
+   *
+   * `activeProvider` comes from `VOICE_LLM_PROVIDER` rather than a constant in
+   * the browser, so the "(Active)" label follows the deployment and a rollback
+   * relabels the tabs without a release. `samples` lists only the voices that
+   * actually have a cached file, so the UI shows a Play button exactly where
+   * one will work -- a voice without a sample stays selectable.
+   */
+  app.get('/admin/voice/settings', adminOnly, async () => {
+    const mediaDir = opts.voiceSettings?.mediaDir ?? '';
+    return {
+      activeProvider: opts.voiceSettings?.activeProvider ?? 'spicyapi',
+      sampleText: GROK_VOICE_SAMPLE_TEXT,
+      grokVoices: GROK_VOICE_CATALOGUE.map((voice) => ({
+        id: voice,
+        description: GROK_VOICE_DESCRIPTIONS[voice],
+        hasSample: mediaDir.length > 0 && hasVoiceSample({ mediaDir }, voice),
+      })),
+    };
+  });
+
+  /**
+   * One cached sample. 404 when there is none, which is an ordinary state and
+   * not an error: the player simply does not appear for that voice.
+   */
+  app.get<{ Params: { voice: string } }>(
+    '/admin/voice/samples/:voice',
+    adminOnly,
+    async (request, reply) => {
+      const mediaDir = opts.voiceSettings?.mediaDir ?? '';
+      if (mediaDir.length === 0) return notFound(reply);
+      const bytes = await readVoiceSample({ mediaDir }, request.params.voice);
+      if (!bytes) return notFound(reply);
+      return reply
+        .header('content-type', VOICE_SAMPLE_CONTENT_TYPE)
+        // Immutable: a sample for a voice never changes without a deliberate
+        // regeneration, so the browser should never ask twice.
+        .header('cache-control', 'private, max-age=86400, immutable')
+        .send(bytes);
+    },
+  );
+
+  /* ---------------------------------------------------------------- *
    * Visual identity versions
    * ---------------------------------------------------------------- */
 
@@ -905,6 +1068,76 @@ export default async function adminCharacterRoutes(
         );
         // approveVisualAsset promotes ONLY references to canonical — so this
         // is already a primary reference.
+        return reply.code(201).send(referenceView(asset));
+      } catch (error) {
+        if (error instanceof LibraryUploadError) {
+          return reply.code(400).send({ error: error.kind, message: error.message });
+        }
+        if (error instanceof VisualAssetScopeError) {
+          return reply.code(400).send({ error: 'scope_error', message: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
+  /**
+   * Uploads a primary reference for a CHARACTER, whether or not she already
+   * has a visual identity version.
+   *
+   * THE DEAD END THIS REMOVES. A character created without a photo gets no
+   * identity version on purpose -- quick-create says so, and leaves it to her
+   * first upload to provision one. But the sibling route above is scoped to an
+   * identity id, so there was no id to post to and no way to supply her main
+   * image at all: the page could only tell the operator to "activate a visual
+   * identity version first", with none to activate. Creating one by hand was
+   * three steps in a different section, and a draft version is not active, so
+   * even that did not restore the button until it was activated too.
+   *
+   * NOTHING NEW DECIDES ANYTHING HERE. Omitting `visualIdentityId` is already
+   * defined behaviour: uploadLibraryAsset resolves her ACTIVE version, or
+   * provisions v1 and activates it, which is exactly why the content shelves
+   * never had this problem. This route is the reference-shaped door to the
+   * same hallway -- it is `kind: 'reference'` + `approve: true`, the two
+   * fields that make an upload her portrait, and nothing else.
+   */
+  app.post<{ Params: { characterId: string } }>(
+    '/admin/characters/:characterId/references',
+    adminOnly,
+    async (request, reply) => {
+      const { characterId } = request.params;
+      if (!UUID_RE.test(characterId)) return notFound(reply);
+      if (!(await getCharacterForAdmin(opts.db, characterId))) return notFound(reply);
+
+      if (typeof request.isMultipart !== 'function' || !request.isMultipart()) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_request', message: 'Expected a multipart upload.' });
+      }
+      const file = await request.file({ limits: { fileSize: MAX_UPLOAD_BYTES } });
+      if (!file) {
+        return reply.code(400).send({ error: 'invalid_request', message: 'No file was provided.' });
+      }
+      const bytes = await file.toBuffer();
+
+      try {
+        const asset = await uploadLibraryAsset(opts.db, opts.uploadStorage, {
+          characterId,
+          /**
+           * DELIBERATELY ABSENT. Naming a version here would reintroduce the
+           * very requirement this route exists to remove; leaving it out is
+           * what lets a character with no version yet receive her first image.
+           */
+          kind: 'reference',
+          // Identity, not content (see quick-create above): explicit.
+          approve: true,
+          mimeType: file.mimetype,
+          bytes,
+          originalName: file.filename,
+          uploadedBy: request.currentUser!.id,
+        });
+        // approveVisualAsset promotes ONLY references to canonical -- so this
+        // is already a primary reference, on whichever version it landed.
         return reply.code(201).send(referenceView(asset));
       } catch (error) {
         if (error instanceof LibraryUploadError) {

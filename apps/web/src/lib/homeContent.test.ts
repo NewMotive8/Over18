@@ -24,7 +24,7 @@ function clip(id: string): PublicClip {
     mediaType: 'image',
     url: `/api/media/assets/${id}/file`,
     characterId: `char-${id}`,
-    characterName: `Character ${id}`,
+    characterName: `Character ${id}`, characterAge: null,
   };
 }
 
@@ -32,6 +32,7 @@ function card(id: string): PublicPlayWithMeCard {
   return {
     id,
     displayName: `Name ${id}`,
+    age: null,
     apparentAgeBand: null,
     categories: [],
     clip: clip(`clip-${id}`),
