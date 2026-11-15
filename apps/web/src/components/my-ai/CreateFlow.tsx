@@ -65,8 +65,8 @@ import OptionChips from './OptionChips';
  * The photograph on the Realistic card. Served from the web app's own public
  * assets like every other tile, so it needs no API and no provider.
  *
- * If the file is missing the card still renders and is still selectable — the
- * label sits on the placeholder tint instead of a broken-image glyph.
+ * If the file is missing the card still renders and is still selectable: the
+ * label sits on the card's own dark tint, and the next load tries again.
  */
 const REALISTIC_ART = '/create/style-realistic.jpg';
 
@@ -114,7 +114,6 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
    * path lands this step becomes a genuine choice without being rebuilt.
    */
   const [style, setStyle] = useState<'realistic'>('realistic');
-  const [styleArtBroken, setStyleArtBroken] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -273,15 +272,26 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
             }`}
           >
             <div className="relative aspect-[3/4] w-full bg-zinc-900">
-              {!styleArtBroken && (
-                <img
-                  src={REALISTIC_ART}
-                  alt=""
-                  decoding="async"
-                  onError={() => setStyleArtBroken(true)}
-                  className="h-full w-full object-cover"
-                />
-              )}
+              {/*
+               * NO onError LATCH HERE, deliberately removed.
+               *
+               * It used to flip a `broken` flag and unmount the <img> for the
+               * rest of the session. That is strictly worse than leaving the
+               * element alone: an `<img>` with `alt=""` that fails renders
+               * nothing anyway — the card falls back to its own dark tint and
+               * the label either way — so the flag bought no visual change and
+               * cost a one-way door. One slow or failed request (or, as
+               * happened here, a 404 cached from a load made before the file
+               * was deployed) blanked the first screen of the flow with no way
+               * to recover but a hard refresh. Without the flag the browser
+               * simply retries on the next load and the card heals itself.
+               */}
+              <img
+                src={REALISTIC_ART}
+                alt=""
+                decoding="async"
+                className="h-full w-full object-cover"
+              />
               <span className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col bg-gradient-to-t from-black/90 via-black/50 to-transparent px-3 pb-2.5 pt-8">
                 <span className="text-base font-semibold text-white">Realistic</span>
                 <span className="text-xs text-zinc-300">Photo-real</span>
