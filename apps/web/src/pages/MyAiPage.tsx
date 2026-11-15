@@ -88,12 +88,24 @@ export default function MyAiPage() {
       .catch((err) => {
         if (cancelled) return;
         /*
-         * A signed-out visitor gets 401 here, which is not a fault to report —
-         * they simply own nothing. Anything else is worth saying out loud, but
-         * it still must not block the flow: having no companions and being
-         * unable to look them up lead to the same next action.
+         * ONLY WARN SOMEONE WHO MIGHT HAVE LOST SIGHT OF SOMETHING.
+         *
+         * "We could not load your companions" reads as *something has happened
+         * to my things*. For most people landing here that is a false alarm
+         * about a problem they cannot act on:
+         *
+         *   401 — signed out, so they own nothing to load.
+         *   404 — the endpoint is not deployed in this environment at all.
+         *         Nothing is wrong with THEIR data; the feature is half-built.
+         *
+         * Both of those lead to the same place as having no companions — the
+         * flow — so they are shown the flow and nothing else. The warning is
+         * kept for the one case it actually describes: a signed-in user whose
+         * list genuinely failed to load, who may well have companions that are
+         * not on screen and deserves to know why.
          */
-        if (!(err instanceof ApiRequestError) || err.status !== 401) {
+        const status = err instanceof ApiRequestError ? err.status : 0;
+        if (user && status !== 401 && status !== 404) {
           setNotice('We could not load your companions just now.');
         }
         setCompanions([]);
