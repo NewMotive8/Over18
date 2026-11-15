@@ -297,6 +297,28 @@ export interface MyAiDraft {
  * route the lobby uses, which serves anyone who asks. Fetching it proves the
  * caller owns her. Null while she is still being drawn.
  */
+/**
+ * Her look and character as OUR option ids — what gets persisted.
+ *
+ * Name, age and voice are deliberately NOT in here: they are columns of their
+ * own because they are read and displayed on their own, while these eleven are
+ * only ever used together to compose a generation request.
+ */
+export type MyAiAttributes = Pick<
+  MyAiDraft,
+  | 'ethnicity'
+  | 'hairColour'
+  | 'hairStyle'
+  | 'eyeColour'
+  | 'figure'
+  | 'breasts'
+  | 'butt'
+  | 'personality'
+  | 'relationship'
+  | 'job'
+  | 'interests'
+>;
+
 export type MyAiStatus = 'generating' | 'ready' | 'failed';
 
 export interface MyAiCompanion {

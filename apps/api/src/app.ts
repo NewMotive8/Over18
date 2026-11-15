@@ -28,6 +28,7 @@ import callRoutes from './routes/calls.js';
 import callSocketRoutes, { voiceSocketErrorHandler } from './routes/call-socket.js';
 import conversationMediaRoutes from './routes/conversation-media.js';
 import internalMediaRoutes from './routes/internal-media.js';
+import myAiRoutes from './routes/my-ai.js';
 import generationRoutes from './routes/generation.js';
 import adminPromptGenerationRoutes from './routes/admin-prompt-generation.js';
 import { selectPromptGenerationDeps } from './prompt-generation/select-providers.js';
@@ -410,6 +411,22 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     db,
     storageDir: env.media.storageDir,
     analytics,
+  });
+
+  /*
+   * My AI — the companions a user builds for themselves.
+   *
+   * Registered UNCONDITIONALLY, including where `env.myAi` is null. Reading
+   * your companions and fetching one's portrait are plain database and file
+   * reads that need no provider; only creating one does, and that route says
+   * so itself with a 503. Registering the whole plugin behind the key would
+   * mean an environment that loses the key also loses access to companions
+   * its users already own.
+   */
+  await app.register(myAiRoutes, {
+    db,
+    myAi: env.myAi,
+    storageDir: env.media.storageDir,
   });
 
   // US-36 internal media endpoints — registered only when providers are

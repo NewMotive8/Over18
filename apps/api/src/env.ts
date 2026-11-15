@@ -255,6 +255,14 @@ export interface CommerceEnv {
   analyticsEnabled: boolean;
 }
 
+/** OhAPI credentials for My AI. The key is server-side only, always. */
+export interface MyAiEnv {
+  ohApiKey: string;
+  ohBaseUrl: string;
+  /** One HTTP call, not the whole generation — that is polled. */
+  timeoutMs: number;
+}
+
 export interface Env {
   databaseUrl: string;
   port: number;
@@ -284,6 +292,17 @@ export interface Env {
   memory: MemoryEnv;
   media: MediaEnv;
   chatMedia: ChatMediaEnv;
+  /**
+   * My AI — user-built companions, rendered by OhAPI.
+   *
+   * NULL WHEN `OH_API_KEY` IS ABSENT, and that is a supported state rather
+   * than a misconfiguration: the wizard is a pure client-side flow and stays
+   * browsable, the create route answers with a plain "not available here",
+   * and nothing else in the app notices. Production does not have the key yet;
+   * booting fatally on that would take the whole API down for a feature it is
+   * not running.
+   */
+  myAi: MyAiEnv | null;
   voice: VoiceEnv | null;
   voiceCalls: VoiceCallsEnv;
   promptGeneration: PromptGenerationEnv;
@@ -451,6 +470,24 @@ function envNonEmpty(name: string): boolean {
   return (process.env[name] ?? '').trim().length > 0;
 }
 
+/**
+ * My AI's provider credentials, or null when the key is not set here.
+ *
+ * Gated on the key ALONE — there is no separate enable flag. A flag plus a key
+ * is two things to get right and one more way to have a feature that is on in
+ * name and broken in fact; having the credential is the only state that
+ * actually means "this environment can render a companion".
+ */
+function myAiEnv(): MyAiEnv | null {
+  const ohApiKey = (process.env.OH_API_KEY ?? '').trim();
+  if (!ohApiKey) return null;
+  return {
+    ohApiKey,
+    ohBaseUrl: (process.env.OH_BASE_URL ?? 'https://api.oh.xyz').replace(/\/+$/, ''),
+    timeoutMs: Number(process.env.OH_TIMEOUT_MS ?? 30_000),
+  };
+}
+
 export function loadEnv(): Env {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -544,6 +581,7 @@ export function loadEnv(): Env {
     },
     // Default OFF: anything other than exactly "true" leaves chat text-only.
     chatMedia: { enabled: envFlagTrue('CHAT_MEDIA_ENABLED') },
+    myAi: myAiEnv(),
     voice,
     voiceCalls: { enabled: envFlagTrue('VOICE_CALLS_ENABLED') },
     admin: {

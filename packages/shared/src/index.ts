@@ -626,6 +626,7 @@ export {
   type MyAiOption,
   type MyAiDraft,
   type MyAiCompanion,
+  type MyAiAttributes,
   type MyAiStatus,
   type MyAiEthnicity,
   type MyAiChoiceField,

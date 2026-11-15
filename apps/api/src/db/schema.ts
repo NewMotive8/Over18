@@ -17,7 +17,7 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { CharacterPersona, VisualDna } from '@over18/shared';
+import type { CharacterPersona, MyAiAttributes, VisualDna } from '@over18/shared';
 
 /**
  * users — one row per registered account.
@@ -3544,3 +3544,93 @@ export type PaymentRow = typeof payments.$inferSelect;
 export type PaymentEventRow = typeof paymentEvents.$inferSelect;
 export type CallSessionRow = typeof callSessions.$inferSelect;
 export type CallTranscriptTurnRow = typeof callTranscriptTurns.$inferSelect;
+
+/**
+ * ── My AI: companions a USER built ──────────────────────────────────────
+ *
+ * DELIBERATELY NOT A ROW IN `characters`.
+ *
+ * `characters` is the operator-curated catalogue. Its visibility is governed
+ * by `status`, by `published_at` and by category placement, and a dozen public
+ * queries read it — Home, Discovery, Play with me, Swipe, Favourites, the
+ * category rails. Putting a user's private companion in that table would mean
+ * every one of those queries needs a new exclusion, for ever, and a single
+ * missed `WHERE` would publish a stranger's companion to the lobby. The
+ * failure is silent, immediate and impossible to take back.
+ *
+ * A separate table cannot leak into a surface that never reads it. That is the
+ * entire argument, and it is worth the duplication.
+ *
+ * NOTHING HERE IS PUBLIC. There is no `status: active`, no publication, no
+ * placement — a companion is visible to exactly one account, enforced by
+ * `user_id` on every read, which is taken from the session and never from a
+ * parameter.
+ */
+export const userCompanionStatus = pgEnum('user_companion_status', [
+  'generating',
+  'ready',
+  'failed',
+]);
+
+export const userCompanions = pgTable(
+  'user_companions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    name: text('name').notNull(),
+    age: integer('age').notNull(),
+    /** A value from the shared live-call catalogue, as Admin also stores. */
+    voice: text('voice').notNull(),
+
+    /**
+     * Her look and character, as the OPTION IDS the wizard posted
+     * (`{ ethnicity: 'latina', breasts: 'huge', ... }`) — never the generation
+     * provider's vocabulary. Keeping our own ids means a provider renaming a
+     * value, or being replaced entirely, does not rewrite anybody's companion.
+     */
+    attributes: jsonb('attributes').$type<MyAiAttributes>().notNull(),
+
+    status: userCompanionStatus('status').notNull().default('generating'),
+
+    /**
+     * The provider's own id for her, kept only so an in-flight generation can
+     * be polled and a support question answered. Never sent to a client.
+     */
+    providerCharacterGuid: text('provider_character_guid'),
+
+    /**
+     * ABSOLUTE PATH TO HER PORTRAIT ON THE MEDIA VOLUME, and named `image_path`
+     * rather than `storage_key` on purpose: in this codebase `storage_key`
+     * means an API serve path for a character asset, and reusing the name here
+     * for a filesystem path is how someone ends up feeding one to the other.
+     *
+     * Null until the provider finishes. The bytes are OURS — downloaded from
+     * the provider's URL rather than linked, because a link we do not host
+     * expires, and a companion whose picture vanishes is not a companion.
+     */
+    imagePath: text('image_path'),
+
+    /** Why it failed, for the owner. Provider text is never echoed verbatim. */
+    errorMessage: text('error_message'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Every read is "this user's companions, newest first".
+    index('user_companions_user_created_idx').on(t.userId, t.createdAt),
+    /*
+     * 21, not 18. The platform's floor is 18, but the provider that renders
+     * her refuses anything under 21 server-side — so a row below it could
+     * never have been drawn, and storing one would mean a companion whose
+     * displayed age and whose generated age disagree. The confirmed-age work
+     * exists to stop exactly that.
+     */
+    check('user_companions_age_21_plus', sql`age >= 21`),
+  ],
+);
+
+export type UserCompanionRow = typeof userCompanions.$inferSelect;

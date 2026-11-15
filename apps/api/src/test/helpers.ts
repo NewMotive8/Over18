@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import { createDb } from '../db/client.js';
 import { buildApp, type BuildAppOptions } from '../app.js';
@@ -29,6 +30,9 @@ export const testEnv: Env = {
   cookieSameSite: 'lax',
   sessionTtlDays: 30,
   isProduction: false,
+  // Null, like every other provider here: a test must never reach OhAPI, and
+  // the create route refusing with 503 is itself worth asserting.
+  myAi: null,
   llm: null, // tests always inject providers explicitly — no real endpoint
   chatLlm: null, // same: character chat's endpoint is injected, never dialled
   personaVision: null, // tests always inject a PersonaGenerator explicitly
@@ -116,7 +120,16 @@ export const testEnv: Env = {
 
 export function migrateTestDb(): void {
   execSync('npx drizzle-kit migrate', {
-    cwd: new URL('../..', import.meta.url).pathname,
+    /*
+     * `fileURLToPath`, NOT `.pathname`.
+     *
+     * On Windows a file URL's `pathname` is `/C:/Users/...` — leading slash,
+     * percent-encoded spaces — which is not a path any process can chdir to,
+     * so `execSync` fails with ENOENT and the whole API suite is unrunnable on
+     * a Windows checkout. `fileURLToPath` is the documented conversion and is
+     * identical to `.pathname` on POSIX, so nothing changes on CI or on a Mac.
+     */
+    cwd: fileURLToPath(new URL('../..', import.meta.url)),
     env: { ...process.env, DATABASE_URL: TEST_DATABASE_URL },
     stdio: 'pipe',
   });
