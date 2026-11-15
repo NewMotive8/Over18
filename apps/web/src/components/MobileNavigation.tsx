@@ -1,6 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
 import { PRIMARY_DESTINATIONS, activeDestinationKey, type DestinationKey } from './nav/destinations';
-import { DiscoverIcon, GoSteadyIcon, LikeIcon, ProfileIcon } from './icons';
+import { DiscoverIcon, MyAiIcon, LikeIcon, ProfileIcon } from './icons';
 
 /**
  * Persistent, mobile-first primary navigation (US-18).
@@ -12,7 +12,7 @@ import { DiscoverIcon, GoSteadyIcon, LikeIcon, ProfileIcon } from './icons';
  */
 const ICONS: Record<DestinationKey, (props: { className?: string }) => JSX.Element> = {
   discover: DiscoverIcon,
-  'go-steady': GoSteadyIcon,
+  'my-ai': MyAiIcon,
   // The filled heart — the same mark the swipe deck's favourite action uses, so
   // the tab and the action a user just took are visibly the same thing.
   favourites: LikeIcon,

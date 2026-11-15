@@ -48,15 +48,22 @@ describe('app shell + routes', () => {
     const html = renderApp('/characters');
     expect(html).toContain('Over'); // brand
     expect(html).toContain('aria-label="Primary"'); // persistent nav
-    expect(html).toContain('Go Steady');
+    expect(html).toContain('My AI');
     expect(html).toContain('Profile');
     expect(html).toContain('Discover');
   });
 
-  it('renders the Go Steady future-state', () => {
-    const html = renderApp('/go-steady');
-    expect(html).toContain('Go Steady');
-    expect(html).toContain('closer connections');
+  /*
+   * Effects do not run here, so the page is caught in its pre-fetch state:
+   * it has not yet learned whether this user owns a companion, and it must
+   * NOT guess. Flashing the create flow at someone who already has one — and
+   * then replacing it a tick later — is the defect this asserts against.
+   */
+  it('renders My AI without assuming the user has no companion', () => {
+    const html = renderApp('/my-ai');
+    expect(html).toContain('My AI'); // the nav tab
+    expect(html).toContain('Loading');
+    expect(html).not.toContain('Her background');
   });
 
   it('renders the Profile/Account destination', () => {

@@ -16,11 +16,11 @@ describe('MobileNavigation', () => {
     const html = renderAt('/characters');
     expect(html).toContain('aria-label="Primary"');
     expect(html).toContain('Discover');
-    expect(html).toContain('Go Steady');
+    expect(html).toContain('My AI');
     expect(html).toContain('Profile');
     // links point at the canonical routes
     expect(html).toContain('href="/characters"');
-    expect(html).toContain('href="/go-steady"');
+    expect(html).toContain('href="/my-ai"');
     expect(html).toContain('href="/profile"');
   });
 
@@ -31,7 +31,7 @@ describe('MobileNavigation', () => {
   });
 
   it('exposes exactly one active tab per primary route', () => {
-    for (const path of ['/characters', '/go-steady', '/profile']) {
+    for (const path of ['/characters', '/my-ai', '/profile']) {
       const count = (renderAt(path).match(/aria-current="page"/g) ?? []).length;
       expect(count).toBe(1);
     }

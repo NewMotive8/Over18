@@ -595,6 +595,43 @@ export * from './profileDivergence.js';
  * The live-call voice catalogue. Shared so the admin selector offers exactly
  * the list the server validates against; `resolveVoice` stays on the API side.
  */
+/**
+ * "My AI" — the user-built companion vocabulary. Shared so the wizard's
+ * options and the server's validation are the same list; carries no vendor
+ * values (see myAi.ts).
+ */
+export {
+  MY_AI_ETHNICITIES,
+  MY_AI_HAIR_COLOURS,
+  MY_AI_HAIR_STYLES,
+  MY_AI_EYE_COLOURS,
+  MY_AI_FIGURES,
+  MY_AI_BREASTS,
+  MY_AI_BUTTS,
+  MY_AI_PERSONALITIES,
+  MY_AI_RELATIONSHIPS,
+  MY_AI_JOBS,
+  MY_AI_INTERESTS,
+  MY_AI_VOICES,
+  MY_AI_CHOICES,
+  MY_AI_PHOTO_FIELDS,
+  MY_AI_MAX_INTERESTS,
+  MY_AI_MIN_AGE,
+  MY_AI_MAX_AGE,
+  MY_AI_DEFAULT_AGE,
+  MY_AI_NAME_MAX_LENGTH,
+  myAiDraftProblems,
+  myAiTileUrl,
+  myAiEthnicityTileUrl,
+  type MyAiOption,
+  type MyAiDraft,
+  type MyAiCompanion,
+  type MyAiStatus,
+  type MyAiEthnicity,
+  type MyAiChoiceField,
+  type MyAiPhotoField,
+} from './myAi.js';
+
 export {
   VOICE_CATALOGUE,
   DEFAULT_LIVE_CALL_VOICE,

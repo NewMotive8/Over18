@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import CreditsPill from '../CreditsPill';
-import { DiscoverIcon, GoSteadyIcon, LikeIcon, ProfileIcon, SparkleIcon } from '../icons';
+import { DiscoverIcon, MyAiIcon, LikeIcon, ProfileIcon, SparkleIcon } from '../icons';
 import { PRIMARY_DESTINATIONS, activeDestinationKey, type DestinationKey } from './destinations';
 
 /**
@@ -20,7 +20,7 @@ import { PRIMARY_DESTINATIONS, activeDestinationKey, type DestinationKey } from 
  */
 const ICONS: Record<DestinationKey, (props: { className?: string }) => JSX.Element> = {
   discover: DiscoverIcon,
-  'go-steady': GoSteadyIcon,
+  'my-ai': MyAiIcon,
   favourites: LikeIcon,
   profile: ProfileIcon,
 };

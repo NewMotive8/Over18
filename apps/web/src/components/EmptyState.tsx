@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
  * Reusable empty / future / unavailable state (US-18).
  *
  * One coherent presentation for "there's intentionally nothing here yet" across
- * Go Steady, Profile, and Discover's empty/error branches — so future areas
+ * My AI, Profile, and Discover's empty/error branches — so future areas
  * read as deliberate product surfaces, never as broken pages.
  */
 export default function EmptyState({

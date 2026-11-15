@@ -1,0 +1,242 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import type { MyAiCompanion, MyAiDraft } from '@over18/shared';
+import { ApiRequestError, myAiApi } from '../lib/api';
+import { useAuth } from '../auth/AuthContext';
+import CreateFlow from '../components/my-ai/CreateFlow';
+import PageHeader from '../components/PageHeader';
+import { MyAiIcon } from '../components/icons';
+
+/**
+ * My AI — where a user builds and keeps their own companion.
+ *
+ * ── WHAT THE ROUTE SHOWS ────────────────────────────────────────────────────
+ *
+ * Nothing created yet  -> the five-step flow, immediately. A first visit should
+ *                         be the thing itself, not a poster advertising it.
+ * One or more created  -> the companions they own, with a way to make another.
+ *
+ * ── SIGNED OUT ──────────────────────────────────────────────────────────────
+ *
+ * The flow is still shown and still playable. Making choices costs nothing and
+ * reveals nothing, and a visitor who has designed someone has a far better
+ * reason to register than one who was bounced to a login screen by a tab. The
+ * server is the boundary, not this page: creating her needs a session and says
+ * so at the moment it matters.
+ *
+ * ── WAITING ─────────────────────────────────────────────────────────────────
+ *
+ * Creation returns at once with `generating`; the drawing takes the provider
+ * the better part of a minute. So the page polls, and it STOPS polling — on
+ * success, on failure, on unmount, and after a bounded number of attempts.
+ * An unbounded poll against a stuck job is a tab that heats a phone until it
+ * is closed.
+ */
+
+/** Poll every 3s for up to 3 minutes — comfortably longer than a good run. */
+const POLL_INTERVAL_MS = 3_000;
+const POLL_MAX_ATTEMPTS = 60;
+
+function CompanionCard({ companion }: { companion: MyAiCompanion }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
+      <div className="relative aspect-[3/4] w-full bg-zinc-900">
+        {companion.imageUrl ? (
+          <img
+            src={companion.imageUrl}
+            alt={`${companion.name}`}
+            loading="lazy"
+            decoding="async"
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-sm text-zinc-500">
+            {companion.status === 'failed' ? "Couldn't be drawn" : 'Drawing her…'}
+          </div>
+        )}
+        <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-3 pb-2 pt-8 text-sm font-semibold text-white">
+          {companion.name} <span className="font-normal text-zinc-300">· {companion.age}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+export default function MyAiPage() {
+  const { user } = useAuth();
+  const [companions, setCompanions] = useState<MyAiCompanion[] | null>(null);
+  const [pending, setPending] = useState<MyAiCompanion | null>(null);
+  const [creatingAnother, setCreatingAnother] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  /** Set on unmount so a poll in flight cannot update a dead component. */
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    myAiApi
+      .list()
+      .then((res) => {
+        if (!cancelled) setCompanions(res.companions);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        /*
+         * A signed-out visitor gets 401 here, which is not a fault to report —
+         * they simply own nothing. Anything else is worth saying out loud, but
+         * it still must not block the flow: having no companions and being
+         * unable to look them up lead to the same next action.
+         */
+        if (!(err instanceof ApiRequestError) || err.status !== 401) {
+          setNotice('We could not load your companions just now.');
+        }
+        setCompanions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  const poll = useCallback((id: string) => {
+    let attempts = 0;
+    const tick = async () => {
+      if (!live.current) return;
+      attempts += 1;
+      try {
+        const { companion } = await myAiApi.get(id);
+        if (!live.current) return;
+        setPending(companion);
+        if (companion.status === 'ready') {
+          setCompanions((prev) => [companion, ...(prev ?? []).filter((c) => c.id !== companion.id)]);
+          setPending(null);
+          return;
+        }
+        if (companion.status === 'failed') return;
+      } catch {
+        // A blip between polls is not a failure; the attempt cap ends it.
+      }
+      if (attempts < POLL_MAX_ATTEMPTS && live.current) {
+        window.setTimeout(tick, POLL_INTERVAL_MS);
+      }
+    };
+    window.setTimeout(tick, POLL_INTERVAL_MS);
+  }, []);
+
+  const submit = async (draft: MyAiDraft) => {
+    try {
+      const { companion } = await myAiApi.create(draft);
+      setPending(companion);
+      setCreatingAnother(false);
+      poll(companion.id);
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 401) {
+        throw new Error('Sign in to create her — everything you picked is kept.');
+      }
+      throw err;
+    }
+  };
+
+  /* ---------------------------------------------------------------- *
+   * Waiting for the provider
+   * ---------------------------------------------------------------- */
+  if (pending) {
+    const failed = pending.status === 'failed';
+    return (
+      <section className="flex flex-col gap-5">
+        <PageHeader
+          eyebrow="My AI"
+          title={failed ? 'That did not work' : `Making ${pending.name}`}
+          subtitle={
+            failed
+              ? 'Nothing was charged. You can try again.'
+              : 'This takes about a minute. You can leave this screen — she will be here when you come back.'
+          }
+        />
+        <div className="mx-auto w-full max-w-[16rem]">
+          <CompanionCard companion={pending} />
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setPending(null);
+            setCreatingAnother(failed);
+          }}
+          className="w-full rounded-xl border border-zinc-700 px-5 py-3 text-sm font-semibold text-zinc-200 transition-colors hover:border-zinc-600"
+        >
+          {failed ? 'Start again' : 'Back to My AI'}
+        </button>
+      </section>
+    );
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Still loading the list — render nothing rather than flashing the
+   * wizard at someone who already has companions.
+   * ---------------------------------------------------------------- */
+  if (companions === null) {
+    return <div className="py-16 text-center text-sm text-zinc-500">Loading…</div>;
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Nothing yet (or making another) — the flow itself
+   * ---------------------------------------------------------------- */
+  if (companions.length === 0 || creatingAnother) {
+    return (
+      <section className="flex flex-col gap-4">
+        {notice && (
+          <p className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-400">
+            {notice}
+          </p>
+        )}
+        {creatingAnother && (
+          <button
+            type="button"
+            onClick={() => setCreatingAnother(false)}
+            className="self-start text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-200"
+          >
+            ← My companions
+          </button>
+        )}
+        <CreateFlow onSubmit={submit} />
+      </section>
+    );
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Her, and any others
+   * ---------------------------------------------------------------- */
+  return (
+    <section className="flex flex-col gap-5">
+      <PageHeader
+        eyebrow="My AI"
+        title="Your companions"
+        subtitle="Only you can see these."
+      />
+
+      <div className="grid grid-cols-2 gap-3">
+        {companions.map((companion) => (
+          <CompanionCard key={companion.id} companion={companion} />
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setCreatingAnother(true)}
+        className="flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+      >
+        <MyAiIcon className="h-4 w-4" />
+        Create another
+      </button>
+
+      <Link to="/characters" className="text-center text-sm text-zinc-400 transition-colors hover:text-zinc-200">
+        Browse everyone else
+      </Link>
+    </section>
+  );
+}

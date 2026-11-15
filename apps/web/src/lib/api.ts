@@ -45,6 +45,8 @@ import type {
   PlanDraftInput,
   RulesetDraftInput,
   HealthResponse,
+  MyAiCompanion,
+  MyAiDraft,
   PublicCharacter,
   SendMessageResult,
 } from '@over18/shared';
@@ -124,6 +126,35 @@ export const charactersApi = {
     return request<{ clips: PublicClip[] }>(
       `/api/characters/${encodeURIComponent(characterId)}/clips`,
     );
+  },
+};
+
+/**
+ * "My AI" — the companions this user built.
+ *
+ * Every route here is scoped to the session on the server: there is no
+ * `userId` parameter to pass and none to tamper with. The list returns what
+ * the caller owns and nothing else.
+ */
+export const myAiApi = {
+  /** Everything the signed-in user has created, newest first. */
+  list(): Promise<{ companions: MyAiCompanion[] }> {
+    return request<{ companions: MyAiCompanion[] }>('/api/my-ai');
+  },
+  /**
+   * Create one. Returns immediately with `status: 'generating'` — drawing her
+   * takes the provider the better part of a minute, so the wizard hands over
+   * to a waiting screen rather than holding a request open that long.
+   */
+  create(draft: MyAiDraft): Promise<{ companion: MyAiCompanion }> {
+    return request<{ companion: MyAiCompanion }>('/api/my-ai', {
+      method: 'POST',
+      body: JSON.stringify(draft),
+    });
+  },
+  /** Poll one while she is generating. */
+  get(id: string): Promise<{ companion: MyAiCompanion }> {
+    return request<{ companion: MyAiCompanion }>(`/api/my-ai/${encodeURIComponent(id)}`);
   },
 };
 

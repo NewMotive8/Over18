@@ -3,7 +3,7 @@ import type { PublicCharacter } from '@over18/shared';
 /**
  * Relationship progression model (US-29) — deterministic mock.
  *
- * The backend has no relationship system (that's the future "Go Steady" work,
+ * The backend has no relationship system (that's the future "My AI" work,
  * explicitly out of scope). To render the brief's Relationship Tracker without
  * inventing a backend, this derives a STABLE per-character tier + progress from
  * the character id, so the profile always shows a current tier, in-tier

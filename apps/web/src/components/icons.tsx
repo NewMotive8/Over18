@@ -29,11 +29,20 @@ export function DiscoverIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-export function GoSteadyIcon(props: SVGProps<SVGSVGElement>) {
-  // heart
+export function MyAiIcon(props: SVGProps<SVGSVGElement>) {
+  /*
+   * A figure with a spark — "the companion you made".
+   *
+   * Deliberately NOT a heart: Favourites already uses one (LikeIcon), and two
+   * hearts in a four-tab bar is a coin toss for the user every time. The spark
+   * is the only mark in the set that says "created", which is what separates
+   * this tab from Discover's browsing.
+   */
   return (
     <svg {...base} {...props}>
-      <path d="M12 20s-7-4.35-9.5-8.5C1 8.5 2.5 5.5 5.5 5.5c1.8 0 3 1 2.5 1 .5 0 1.7-1 2.5-1 3 0 4.5 3 3 6C19 15.65 12 20 12 20Z" />
+      <circle cx="9.5" cy="8" r="3.5" />
+      <path d="M3 19.5c0-3.3 2.9-5.75 6.5-5.75 1 0 2 .2 2.9.55" />
+      <path d="M18 3.5l1 2.5 2.5 1-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1 1-2.5Z" />
     </svg>
   );
 }

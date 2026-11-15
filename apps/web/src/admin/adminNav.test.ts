@@ -57,7 +57,7 @@ describe('US-99 admin navigation model', () => {
   });
 
   it('does not claim consumer routes', () => {
-    for (const path of ['/characters', '/go-steady', '/profile', '/chat/1']) {
+    for (const path of ['/characters', '/my-ai', '/profile', '/chat/1']) {
       expect(activeAdminDestination(path)).toBeNull();
     }
   });
