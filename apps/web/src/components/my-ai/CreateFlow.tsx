@@ -61,6 +61,15 @@ import OptionChips from './OptionChips';
  * is just already filled in.
  */
 
+/**
+ * The photograph on the Realistic card. Served from the web app's own public
+ * assets like every other tile, so it needs no API and no provider.
+ *
+ * If the file is missing the card still renders and is still selectable — the
+ * label sits on the placeholder tint instead of a broken-image glyph.
+ */
+const REALISTIC_ART = '/create/style-realistic.jpg';
+
 /** Pre-filled so the confirm screen is never an empty form. */
 const SUGGESTED_NAMES = [
   'Lisa', 'Maya', 'Elena', 'Sofia', 'Nora', 'Ivy', 'Chloe', 'Aria',
@@ -98,6 +107,14 @@ export interface CreateFlowProps {
 
 export default function CreateFlow({ onSubmit }: CreateFlowProps) {
   const [step, setStep] = useState(0);
+  /*
+   * Pre-selected, because it is currently the only path that exists — asking
+   * for a tap to confirm the one available answer is friction with no decision
+   * in it. It is still a real selection with a real tick, so when the Anime
+   * path lands this step becomes a genuine choice without being rebuilt.
+   */
+  const [style, setStyle] = useState<'realistic'>('realistic');
+  const [styleArtBroken, setStyleArtBroken] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -205,26 +222,24 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
     options.find((o) => o.id === id)?.label ?? '—';
 
   return (
-    <div className="flex flex-col gap-5 pb-2">
+    /* pb-24 reserves the height of the fixed action bar, so the last row of
+       tiles can be scrolled clear of it instead of hiding underneath. */
+    <div className="flex flex-col gap-5 pb-24">
       {/* ---------------------------------------------------------------- *
        * Progress. Five segments, because the confirm screen is a review of
        * work already done rather than a sixth thing to fill in.
        * ---------------------------------------------------------------- */}
       <div className="flex flex-col gap-2">
-        <div className="flex items-baseline justify-between">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-            {step === CONFIRM_STEP ? 'Review' : `Step ${step + 1} of 5`}
-          </span>
-          {step > 0 && (
-            <button
-              type="button"
-              onClick={() => setStep((s) => s - 1)}
-              className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-200"
-            >
-              Back
-            </button>
-          )}
-        </div>
+        {/*
+         * No Back up here any more — it lived at the top of a page that is
+         * several screens long, so the moment you scrolled down to the second
+         * row of tiles the only way out of the step was off-screen. It is in
+         * the sticky bar at the bottom instead, beside Continue, where it is
+         * reachable from anywhere in the step.
+         */}
+        <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+          {step === CONFIRM_STEP ? 'Review' : `Step ${step + 1} of 5`}
+        </span>
         <div className="flex gap-1" aria-hidden>
           {STEP_TITLES.slice(0, CONFIRM_STEP).map((_, i) => (
             <span
@@ -244,16 +259,46 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
        * Step 1 — realistic or anime
        * ---------------------------------------------------------------- */}
       {step === 0 && (
-        <div className="grid grid-cols-2 gap-3">
+        <div role="radiogroup" aria-label="Style" data-group="style" className="grid grid-cols-2 gap-3">
           <button
             type="button"
+            role="radio"
             data-style="realistic"
-            onClick={() => setStep(1)}
-            className="flex flex-col items-start gap-1 rounded-xl border border-rose-500 bg-rose-500/10 p-4 text-left ring-1 ring-rose-500"
+            aria-checked={style === 'realistic'}
+            onClick={() => setStyle('realistic')}
+            className={`relative block overflow-hidden rounded-xl border text-left transition ${
+              style === 'realistic'
+                ? 'border-rose-500 ring-1 ring-rose-500'
+                : 'border-zinc-800 hover:border-zinc-700'
+            }`}
           >
-            <span className="text-base font-semibold text-white">Realistic</span>
-            <span className="text-xs text-zinc-400">Photo-real</span>
+            <div className="relative aspect-[3/4] w-full bg-zinc-900">
+              {!styleArtBroken && (
+                <img
+                  src={REALISTIC_ART}
+                  alt=""
+                  decoding="async"
+                  onError={() => setStyleArtBroken(true)}
+                  className="h-full w-full object-cover"
+                />
+              )}
+              <span className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col bg-gradient-to-t from-black/90 via-black/50 to-transparent px-3 pb-2.5 pt-8">
+                <span className="text-base font-semibold text-white">Realistic</span>
+                <span className="text-xs text-zinc-300">Photo-real</span>
+              </span>
+              {style === 'realistic' && (
+                <span
+                  aria-hidden
+                  className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-rose-500 text-white shadow"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                </span>
+              )}
+            </div>
           </button>
+
           {/*
            * Anime is visible and disabled rather than absent. Leaving it out
            * would make the five-step flow look like the whole product; showing
@@ -262,10 +307,14 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
            */}
           <div
             aria-disabled
-            className="flex cursor-not-allowed flex-col items-start gap-1 rounded-xl border border-zinc-800 p-4 text-left opacity-55"
+            className="relative cursor-not-allowed overflow-hidden rounded-xl border border-zinc-800 opacity-60"
           >
-            <span className="text-base font-semibold text-zinc-300">Anime</span>
-            <span className="text-xs text-zinc-500">Coming soon</span>
+            <div className="relative flex aspect-[3/4] w-full items-end bg-zinc-900">
+              <span className="flex w-full flex-col px-3 pb-2.5">
+                <span className="text-base font-semibold text-zinc-300">Anime</span>
+                <span className="text-xs text-zinc-500">Coming soon</span>
+              </span>
+            </div>
           </div>
         </div>
       )}
@@ -419,15 +468,46 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
        * Actions. Sticky inside the scroll region so it stacks ABOVE the
        * shell's own bottom navigation rather than fighting it for the edge.
        * ---------------------------------------------------------------- */}
-      {step > 0 && (
-        <div className="sticky bottom-0 -mx-4 border-t border-zinc-800 bg-zinc-950/95 px-4 py-3 backdrop-blur">
+      {/* The bar is on EVERY step, step 1 included — a flow where the way
+          forward appears only after the first screen makes the first screen
+          look like it is waiting for something else. Back is the part that
+          is conditional, because on step 1 there is nowhere behind. */}
+      {
+        /*
+         * FIXED, NOT STICKY — and that distinction is the whole bug.
+         *
+         * `sticky bottom-0` looked right and pinned nothing: the shell's
+         * `<main>` carries `overflow-y-auto`, which makes it the containing
+         * block for sticky even though it never actually scrolls (the document
+         * does — AppShell measured this). So the bar stuck to the bottom of
+         * main's box, which sits far below the fold, and simply rode along in
+         * the page flow. Measured at 411x915: bar top 891 with scrollY 0 —
+         * a 24px sliver, which is why there appeared to be no way back.
+         *
+         * Fixed to the viewport instead, matching the Credits Store's bar.
+         * It clears the primary navigation on a phone; from `lg` that
+         * navigation is hidden and the bar takes the bottom edge itself.
+         */
+        <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-20 mx-auto w-full max-w-lg lg:bottom-0">
+         <div className="flex gap-2 border-t border-zinc-800 bg-zinc-950/95 px-4 py-3 backdrop-blur">
+          {step > 0 && (
+            <button
+              type="button"
+              id="back"
+              onClick={() => setStep((s) => s - 1)}
+              aria-label="Back to the previous step"
+              className="shrink-0 rounded-xl border border-zinc-700 px-4 py-3 text-sm font-semibold text-zinc-300 transition-colors hover:border-zinc-600 hover:text-white"
+            >
+              Back
+            </button>
+          )}
           {step < CONFIRM_STEP ? (
             <button
               type="button"
               id="next"
               disabled={!stepComplete}
               onClick={() => setStep((s) => s + 1)}
-              className="w-full rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+              className="flex-1 rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
             >
               {stepComplete ? 'Continue' : 'Choose to continue'}
             </button>
@@ -437,13 +517,14 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
               id="create"
               disabled={problems.length > 0 || submitting}
               onClick={create}
-              className="w-full rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+              className="flex-1 rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
             >
               {submitting ? 'Creating her…' : `Create ${draft.name.trim() || 'her'}`}
             </button>
           )}
+         </div>
         </div>
-      )}
+      }
     </div>
   );
 }
