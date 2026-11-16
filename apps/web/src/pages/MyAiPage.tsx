@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { MyAiCompanion, MyAiDraft } from '@over18/shared';
 import { ApiRequestError, myAiApi } from '../lib/api';
+import { MyAiSignInRequired } from '../lib/myAiDraft';
 import { useAuth } from '../auth/AuthContext';
 import CreateFlow from '../components/my-ai/CreateFlow';
 import PageHeader from '../components/PageHeader';
@@ -148,7 +149,7 @@ export default function MyAiPage() {
       poll(companion.id);
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 401) {
-        throw new Error('Sign in to create her — everything you picked is kept.');
+        throw new MyAiSignInRequired();
       }
       throw err;
     }

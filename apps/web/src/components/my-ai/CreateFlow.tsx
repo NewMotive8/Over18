@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   MY_AI_BREASTS,
   MY_AI_BUTTS,
@@ -26,6 +27,7 @@ import {
 } from '@over18/shared';
 import TileRow from './TileRow';
 import OptionChips from './OptionChips';
+import { MyAiSignInRequired, myAiDraftStash } from '../../lib/myAiDraft';
 
 /**
  * "My AI" — the five-step flow a user builds their own companion in.
@@ -106,7 +108,15 @@ export interface CreateFlowProps {
 }
 
 export default function CreateFlow({ onSubmit }: CreateFlowProps) {
-  const [step, setStep] = useState(0);
+  /*
+   * Anything kept from before the trip to Sign in. Read once, at mount: a
+   * signed-out visitor who pressed Create was sent to /login with their work
+   * stashed, and this is them coming back to it. Null on an ordinary first
+   * visit, which is every other case.
+   */
+  const [restored] = useState(() => myAiDraftStash.read());
+
+  const [step, setStep] = useState(() => Math.min(restored?.step ?? 0, CONFIRM_STEP));
   /*
    * Pre-selected, because it is currently the only path that exists — asking
    * for a tap to confirm the one available answer is friction with no decision
@@ -117,6 +127,8 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
   const [editing, setEditing] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The create was refused for want of a session: offer the way to one. */
+  const [needsSignIn, setNeedsSignIn] = useState(false);
 
   const [draft, setDraft] = useState<Draft>(() => ({
     ethnicity: '',
@@ -133,6 +145,8 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
     voice: MY_AI_VOICES[0].id,
     job: 'model',
     interests: [],
+    // Whatever survived validation wins over the defaults above.
+    ...restored?.draft,
   }));
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
@@ -209,9 +223,13 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
     if (problems.length > 0 || submitting) return;
     setSubmitting(true);
     setError(null);
+    setNeedsSignIn(false);
     try {
       await onSubmit(draft as MyAiDraft);
+      // She exists now; the kept draft is spent and must not reappear.
+      myAiDraftStash.clear();
     } catch (e) {
+      setNeedsSignIn(e instanceof MyAiSignInRequired);
       setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
       setSubmitting(false);
     }
@@ -467,9 +485,34 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
           </p>
 
           {error && (
-            <p role="alert" className="rounded-lg border border-rose-900 bg-rose-950/40 px-3 py-2 text-sm text-rose-200">
-              {error}
-            </p>
+            <div
+              role="alert"
+              className="flex flex-col gap-3 rounded-lg border border-rose-900 bg-rose-950/40 px-3 py-3 text-sm text-rose-200"
+            >
+              <p>{error}</p>
+              {/*
+                * THE WAY OUT, not just the diagnosis.
+                *
+                * "Sign in to create her" with no way to sign in leaves the
+                * visitor to find the route themselves, at the end of the one
+                * flow where they are least willing to start again.
+                *
+                * `state.from` brings them back to /my-ai after they log in
+                * (AuthForm honours it), and the click stashes the draft so
+                * "everything you picked is kept" is literally true -- React
+                * state does not survive the route change, sessionStorage does.
+                */}
+              {needsSignIn && (
+                <Link
+                  to="/login"
+                  state={{ from: '/my-ai' }}
+                  onClick={() => myAiDraftStash.write(draft, step)}
+                  className="self-start rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+                >
+                  Sign in
+                </Link>
+              )}
+            </div>
           )}
         </div>
       )}
