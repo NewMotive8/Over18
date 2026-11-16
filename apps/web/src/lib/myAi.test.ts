@@ -5,6 +5,7 @@ import {
   MY_AI_ETHNICITIES,
   MY_AI_INTERESTS,
   MY_AI_MAX_INTERESTS,
+  MY_AI_MAX_AGE,
   MY_AI_MIN_AGE,
   MY_AI_PHOTO_FIELDS,
   myAiDraftProblems,
@@ -171,5 +172,36 @@ describe('her portrait is fetched from the API, not the web host', () => {
     // Guards the assumption above: the route the server hands back starts
     // with /api/, which is the only prefix the helper rewrites.
     expect(absoluteMediaUrl('/api/my-ai/abc/image')).toBe(`${API_URL}/api/my-ai/abc/image`);
+  });
+});
+
+describe('her age', () => {
+  it('runs from 21 to 55', () => {
+    expect(MY_AI_MIN_AGE).toBe(21);
+    expect(MY_AI_MAX_AGE).toBe(55);
+    expect(myAiDraftProblems({ ...COMPLETE, age: MY_AI_MAX_AGE })).toEqual([]);
+    expect(myAiDraftProblems({ ...COMPLETE, age: MY_AI_MAX_AGE + 1 })).toEqual(['age']);
+  });
+});
+
+describe('naming her is a step, not a row on the review', () => {
+  /*
+   * Name and age were pre-filled tap-to-expand rows on the confirm screen,
+   * and the flow read as having no way to name her at all -- reported after
+   * using it. A decision the user is meant to make needs a heading.
+   */
+  it('step 5 asks for both, and will not continue without a name', () => {
+    const flow = readFileSync(
+      new URL('../components/my-ai/CreateFlow.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(flow).toContain("['name', 'age', 'personality', 'relationship'],");
+    expect(flow).toContain('id="my-ai-name"');
+    expect(flow).toContain('id="my-ai-age"');
+  });
+
+  it('an empty name is a problem the step can see', () => {
+    // Which is what makes Continue go dim rather than failing at the end.
+    expect(myAiDraftProblems({ ...COMPLETE, name: '' })).toEqual(['name']);
   });
 });

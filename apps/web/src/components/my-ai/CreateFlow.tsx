@@ -87,7 +87,7 @@ const STEP_TITLES = [
   { title: 'Her background', sub: 'Everything after this is shown her way.' },
   { title: 'Her look', sub: 'Hair and eyes.' },
   { title: 'Her shape', sub: "She's yours to design." },
-  { title: 'Her vibe', sub: 'How she behaves when you talk.' },
+  { title: 'Name her', sub: 'Her age, and how she behaves when you talk.' },
   { title: 'Meet her', sub: 'Change anything, or just create her.' },
 ];
 
@@ -97,7 +97,15 @@ const STEP_FIELDS: readonly (readonly (keyof Draft)[])[] = [
   ['ethnicity'],
   ['hairColour', 'hairStyle', 'eyeColour'],
   ['figure', 'breasts', 'butt'],
-  ['personality', 'relationship'],
+  /*
+   * Name and age are REQUIRED HERE, not on the confirm screen.
+   *
+   * They were tap-to-expand rows on the review, pre-filled and therefore easy
+   * to walk straight past — which is exactly what happened: the flow read as
+   * having no way to name her at all. A thing the user is meant to decide
+   * belongs on a step with a heading, not folded into a summary.
+   */
+  ['name', 'age', 'personality', 'relationship'],
   [],
 ];
 
@@ -385,10 +393,65 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
       )}
 
       {/* ---------------------------------------------------------------- *
-       * Step 5 — her vibe
+       * Step 5 — her name, her age, her vibe
        * ---------------------------------------------------------------- */}
       {step === 4 && (
         <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-2">
+            <label htmlFor="my-ai-name" className="text-sm font-medium text-zinc-300">
+              Her name
+            </label>
+            <input
+              id="my-ai-name"
+              type="text"
+              value={draft.name}
+              maxLength={MY_AI_NAME_MAX_LENGTH}
+              onChange={(e) => set('name', e.target.value)}
+              placeholder="Give her a name"
+              autoComplete="off"
+              /* text-base, not text-sm: iOS zooms the whole page in on a
+                 focused input under 16px and does not zoom back out. */
+              className="w-full rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-base text-white placeholder-zinc-600 outline-none focus:border-rose-500"
+            />
+            {/* Pre-filled with a suggestion, so nobody is made to invent one —
+                but clearing it genuinely blocks Continue, because an unnamed
+                companion is not something to let through by accident. */}
+            {!draft.name.trim() && (
+              <p className="text-xs text-rose-300">She needs a name before you can go on.</p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="flex items-baseline justify-between">
+              <label htmlFor="my-ai-age" className="text-sm font-medium text-zinc-300">
+                Her age
+              </label>
+              <span className="text-lg font-semibold tabular-nums text-white">{draft.age}</span>
+            </div>
+            <input
+              id="my-ai-age"
+              type="range"
+              min={MY_AI_MIN_AGE}
+              max={MY_AI_MAX_AGE}
+              value={draft.age}
+              onChange={(e) => set('age', Number(e.target.value))}
+              className="h-1 w-full accent-rose-500"
+            />
+            <div className="flex justify-between text-xs tabular-nums text-zinc-500">
+              <span>{MY_AI_MIN_AGE}</span>
+              <span>{MY_AI_MAX_AGE}</span>
+            </div>
+            {/*
+             * Stated, not hidden. The platform's own floor is 18, but the
+             * provider that renders her enforces 21 and refuses anything
+             * below it — so the slider stops at 21 and says why, rather than
+             * failing at the last step for a reason the user cannot see.
+             */}
+            <p className="text-xs text-zinc-500">
+              All companions are adults, {MY_AI_MIN_AGE} and over.
+            </p>
+          </div>
+
           <OptionChips label="Personality" name="personality" options={MY_AI_PERSONALITIES} value={draft.personality || null} onChange={(v) => set('personality', v)} />
           <OptionChips label="She is your…" name="relationship" options={MY_AI_RELATIONSHIPS} value={draft.relationship || null} onChange={(v) => set('relationship', v)} />
         </div>

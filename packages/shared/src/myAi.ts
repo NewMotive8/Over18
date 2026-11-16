@@ -257,7 +257,14 @@ export const MY_AI_VOICES = [
  * that fails at the last step for reasons the user cannot see.
  */
 export const MY_AI_MIN_AGE = 21;
-export const MY_AI_MAX_AGE = 70;
+/**
+ * 55 — the product's own ceiling, not the provider's.
+ *
+ * OhAPI accepts far higher, but the catalogue this sits beside does not go
+ * there and a slider that runs to 70 spends most of its travel on ages nobody
+ * picks. Narrowing it makes every position on the track a plausible choice.
+ */
+export const MY_AI_MAX_AGE = 55;
 export const MY_AI_DEFAULT_AGE = 24;
 
 export const MY_AI_NAME_MAX_LENGTH = 40;
