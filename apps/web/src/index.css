@@ -12,3 +12,26 @@
     background-color: var(--color-zinc-950);
   }
 }
+
+/*
+ * A sweep of light across a placeholder, for the minute a companion in My AI
+ * takes to be drawn.
+ *
+ * `animate-pulse` on its own reads as "disabled" when it is a large dark
+ * rectangle; something that MOVES across the frame reads as work happening,
+ * which is the whole point while a provider is drawing. Declared here because
+ * Tailwind ships no sweep of its own -- an `--animate-*` entry in `@theme` is
+ * how v4 publishes one as a utility, so this is `animate-shimmer`.
+ */
+@theme {
+  --animate-shimmer: shimmer 2.2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}

@@ -38,6 +38,53 @@ import { MyAiIcon } from '../components/icons';
 const POLL_INTERVAL_MS = 3_000;
 const POLL_MAX_ATTEMPTS = 60;
 
+/**
+ * How long this has been going, counting up.
+ *
+ * Deliberately elapsed time and NOT a progress bar: OhAPI reports no progress,
+ * only `generating` and then `ready`, so a bar would be a number we invented.
+ * A clock that is visibly moving says "still working" just as well and does
+ * not claim to know how far along she is.
+ */
+function ElapsedSeconds() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setSeconds((s) => s + 1), 1_000);
+    return () => window.clearInterval(id);
+  }, []);
+  return <>{seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`}</>;
+}
+
+/**
+ * The minute she takes to draw, made visible.
+ *
+ * A still "Drawing her…" on a dark rectangle is indistinguishable from a
+ * screen that has stopped working — which is exactly what it must not look
+ * like while the provider is busy and the clock is running. Three independent
+ * signs of life instead: the frame breathes, a sweep of light crosses it, and
+ * the seconds count up.
+ */
+function CreatingPortrait() {
+  return (
+    <div className="absolute inset-0 overflow-hidden bg-zinc-900">
+      <div className="absolute inset-0 animate-pulse bg-gradient-to-br from-zinc-800 via-zinc-900 to-zinc-800" />
+      {/* motion-safe: a sweep is decoration, and nobody who asked their
+          machine for less motion needs it to know something is happening. */}
+      <span className="pointer-events-none absolute inset-y-0 left-0 w-full bg-gradient-to-r from-transparent via-white/10 to-transparent motion-safe:animate-shimmer" />
+      <div className="relative flex h-full w-full flex-col items-center justify-center gap-3 px-4 text-center">
+        <span
+          aria-hidden="true"
+          className="h-9 w-9 animate-spin rounded-full border-2 border-zinc-700 border-t-rose-500"
+        />
+        <span className="text-sm font-medium text-zinc-200">Creating…</span>
+        <span className="text-xs tabular-nums text-zinc-500">
+          <ElapsedSeconds />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function CompanionCard({ companion }: { companion: MyAiCompanion }) {
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
@@ -50,10 +97,12 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
             decoding="async"
             className="h-full w-full object-cover"
           />
-        ) : (
+        ) : companion.status === 'failed' ? (
           <div className="flex h-full w-full items-center justify-center text-sm text-zinc-500">
-            {companion.status === 'failed' ? "Couldn't be drawn" : 'Drawing her…'}
+            Couldn&apos;t be drawn
           </div>
+        ) : (
+          <CreatingPortrait />
         )}
         <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-3 pb-2 pt-8 text-sm font-semibold text-white">
           {companion.name} <span className="font-normal text-zinc-300">· {companion.age}</span>
@@ -164,10 +213,18 @@ export default function MyAiPage() {
       <section className="flex flex-col gap-5">
         <PageHeader
           eyebrow="My AI"
-          title={failed ? 'That did not work' : `Making ${pending.name}`}
+          title={failed ? 'That did not work' : `Creating ${pending.name}`}
           subtitle={
             failed
-              ? 'Nothing was charged. You can try again.'
+              ? /*
+                 * NOT "nothing was charged", which we cannot promise. Some
+                 * failures happen after the provider has already drawn her —
+                 * the first live creation failed on the download, with the
+                 * picture sitting finished at the other end. Telling someone
+                 * their money is safe when it may not be is worse than saying
+                 * nothing about it.
+                 */
+                'She was not created. You can try again.'
               : 'This takes about a minute. You can leave this screen — she will be here when you come back.'
           }
         />

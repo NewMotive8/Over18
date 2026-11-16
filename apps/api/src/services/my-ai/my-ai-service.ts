@@ -6,7 +6,13 @@ import type { Db } from '../../db/client.js';
 import { userCompanions, type UserCompanionRow } from '../../db/schema.js';
 import type { MyAiEnv } from '../../env.js';
 import { toOhPayload } from './oh-mapping.js';
-import { generateCharacter, getCharacterStatus, saveCharacter, OhRequestError } from './oh-client.js';
+import {
+  generateCharacter,
+  getCharacterStatus,
+  saveCharacter,
+  OhRequestError,
+  type OhStatus,
+} from './oh-client.js';
 
 /**
  * My AI — creating, owning and reading back a user's companions.
@@ -25,6 +31,25 @@ const POLL_TIMEOUT_MS = 4 * 60 * 1000;
 const POLL_INTERVAL_MS = 4_000;
 /** A portrait is a few hundred KB. Anything far past that is not one. */
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+
+/**
+ * The provider states that mean she has been drawn.
+ *
+ * `saving` and `saved` count: those are OhAPI's own bookkeeping after the
+ * drawing is finished, and a generation that raced past `ready` between two
+ * polls must not be mistaken for one still in progress.
+ */
+export const RENDERED_STATUSES: readonly OhStatus[] = ['ready', 'saving', 'saved'];
+export const isRendered = (status: OhStatus): boolean => RENDERED_STATUSES.includes(status);
+
+/**
+ * How long to keep asking for the picture after she is drawn.
+ *
+ * Six attempts, five seconds apart. The URL is named in the very first
+ * response and the file appears behind it a moment later; this is the gap.
+ */
+const DOWNLOAD_ATTEMPTS = 6;
+const DOWNLOAD_RETRY_MS = 5_000;
 
 export function toWire(row: UserCompanionRow): MyAiCompanion {
   return {
@@ -146,16 +171,38 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       .set({ providerCharacterGuid: started.characterGuid, updatedAt: new Date() })
       .where(eq(userCompanions.id, companionId));
 
-    // Poll until ready, failed, or we run out of patience.
-    const deadline = now() + POLL_TIMEOUT_MS;
-    let imageUrl = started.images?.nsfw_image ?? null;
+    /*
+     * WHERE THE PICTURE COMES FROM, AND WHY WAITING IS A SEPARATE QUESTION.
+     *
+     * THE FIRST COMPANION EVER CREATED FAILED HERE, 1.3 SECONDS IN, on
+     * "portrait download 404". The reason is that these two facts come from
+     * two different places and the old loop assumed they came from one:
+     *
+     *   · The 202 that accepts the job ALREADY NAMES the image URLs. They are
+     *     where the picture will be, not where it is — OhAPI is still drawing.
+     *     Measured on staging 2026-11-16: accepted 06:15:06.490, ready
+     *     06:15:17. Downloading on acceptance is downloading eleven seconds
+     *     too early, every single time.
+     *
+     *   · The status endpoint says WHEN she is drawn — and carries no images
+     *     at all. Verified against that same finished character: status
+     *     `ready`, no `images` key in the body. So waiting for a URL to appear
+     *     in a poll would simply time out after four minutes.
+     *
+     * The URL therefore comes from the 202 and the readiness from the poll.
+     * Neither one on its own is enough.
+     */
+    let imageUrl = started.images?.nsfw_image ?? started.images?.sfw_image ?? null;
     let status = started.status;
 
-    while (!imageUrl && status !== 'failed' && now() < deadline) {
+    const deadline = now() + POLL_TIMEOUT_MS;
+    while (!isRendered(status) && now() < deadline) {
       await sleep(POLL_INTERVAL_MS);
       const polled = await getCharacterStatus(env, started.characterGuid);
       status = polled.status;
-      imageUrl = polled.images?.nsfw_image ?? null;
+      // Taken if it is ever offered — today it never is. Never overwritten
+      // with nothing, because the 202's URL is the one that works.
+      imageUrl = polled.images?.nsfw_image ?? polled.images?.sfw_image ?? imageUrl;
       if (status === 'failed') {
         log.warn({ companionId, providerStatus: status, providerDetail: polled.errorMessage }, 'my-ai generation failed at the provider');
         await fail(db, companionId, 'She could not be created. Nothing was charged.');
@@ -163,13 +210,19 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       }
     }
 
-    if (!imageUrl) {
+    if (!isRendered(status)) {
       log.warn({ companionId, providerStatus: status }, 'my-ai generation timed out');
       await fail(db, companionId, 'She took too long to create. Please try again.');
       return;
     }
 
-    const imagePath = await downloadPortrait(imageUrl, deps.storageDir, companionId);
+    if (!imageUrl) {
+      log.warn({ companionId, providerStatus: status }, 'my-ai generation finished with no picture to fetch');
+      await fail(db, companionId, 'Her picture could not be downloaded.');
+      return;
+    }
+
+    const imagePath = await downloadPortrait(imageUrl, deps.storageDir, companionId, sleep);
 
     await db
       .update(userCompanions)
@@ -213,30 +266,55 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
  * it survives exactly as long as our account does. Downloading the bytes once
  * means a companion keeps her face if we change provider, and puts her inside
  * the same volume the backup process already covers.
+ *
+ * AND IT ASKS MORE THAN ONCE. The URL is named before the file exists, so a
+ * 404 just after she is drawn means "not uploaded yet", not "wrong address".
+ * One attempt is how a finished companion gets thrown away over a second of
+ * CDN lag. Anything that is not a 404 or a 403 is not going to improve by
+ * asking again, so it stops immediately.
+ *
+ * Exported for testing: this is the one part whose behaviour is a sequence of
+ * provider responses rather than a value, and it is where the first live
+ * creation failed.
  */
-async function downloadPortrait(
+export async function downloadPortrait(
   url: string,
   storageDir: string,
   companionId: string,
+  sleep: (ms: number) => Promise<void>,
+  attempts = DOWNLOAD_ATTEMPTS,
 ): Promise<string> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-  if (!response.ok) {
-    throw new OhRequestError(response.status, `portrait download ${response.status}`, 'Her picture could not be downloaded.');
+  let lastStatus = 0;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+
+    if (response.ok) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.byteLength === 0 || buffer.byteLength > MAX_IMAGE_BYTES) {
+        throw new OhRequestError(200, `portrait size ${buffer.byteLength}`, 'Her picture could not be downloaded.');
+      }
+
+      /*
+       * The filename is built from the companion's own UUID and a fixed
+       * extension — never from the provider's URL, which is attacker-adjacent
+       * input and the usual way a path escapes its directory. There is nothing
+       * here for `..` to come from.
+       */
+      const path = resolve(join(storageDir, 'my-ai', `${companionId}.jpg`));
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, buffer);
+      return path;
+    }
+
+    lastStatus = response.status;
+    if (response.status !== 404 && response.status !== 403) break;
+    if (attempt < attempts) await sleep(DOWNLOAD_RETRY_MS);
   }
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.byteLength === 0 || buffer.byteLength > MAX_IMAGE_BYTES) {
-    throw new OhRequestError(200, `portrait size ${buffer.byteLength}`, 'Her picture could not be downloaded.');
-  }
-
-  /*
-   * The filename is built from the companion's own UUID and a fixed
-   * extension — never from the provider's URL, which is attacker-adjacent
-   * input and the usual way a path escapes its directory. There is nothing
-   * here for `..` to come from.
-   */
-  const path = resolve(join(storageDir, 'my-ai', `${companionId}.jpg`));
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, buffer);
-  return path;
+  throw new OhRequestError(
+    lastStatus,
+    `portrait download ${lastStatus}`,
+    'Her picture could not be downloaded.',
+  );
 }
