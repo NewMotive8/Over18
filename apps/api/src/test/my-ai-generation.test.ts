@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { OhRequestError } from '../services/my-ai/oh-client.js';
+import { OhRequestError, getCharacterStatus } from '../services/my-ai/oh-client.js';
 import { downloadPortrait, isRendered } from '../services/my-ai/my-ai-service.js';
 
 /**
@@ -143,5 +143,54 @@ describe('when she counts as drawn', () => {
     expect(source.indexOf('const imagePath = await downloadPortrait(')).toBeGreaterThan(
       source.indexOf('while (!isRendered(status)'),
     );
+  });
+});
+
+describe('the provider id that makes a second photograph possible', () => {
+  const env = { ohApiKey: 'test-key', ohBaseUrl: 'https://provider.invalid', timeoutMs: 5_000 };
+  const json = (body: unknown) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  });
+
+  /*
+   * THE DISTINCTION THIS EXISTS TO HOLD. The guid names a generation job and
+   * exists from the moment OhAPI accepts one. The numeric id appears only
+   * once she is SAVED, and it is what their image endpoint addresses a
+   * character by -- so reading it is how "another photograph of her" ever
+   * becomes possible. Both states were measured live on staging.
+   */
+  it('reads the number from a saved character', async () => {
+    fetchMock.mockResolvedValue(
+      json({ characterGuid: 'g', status: 'saved', characterId: 27956, errorMessage: null }),
+    );
+    const status = await getCharacterStatus(env, 'g');
+    expect(status.status).toBe('saved');
+    expect(status.characterId).toBe(27956);
+  });
+
+  it('reports null for one that is drawn but not saved', async () => {
+    fetchMock.mockResolvedValue(
+      json({ characterGuid: 'g', status: 'ready', characterId: null, errorMessage: null }),
+    );
+    const status = await getCharacterStatus(env, 'g');
+    expect(status.status).toBe('ready');
+    expect(status.characterId).toBeNull();
+  });
+
+  it('never invents one from a body that omits it', async () => {
+    fetchMock.mockResolvedValue(json({ characterGuid: 'g', status: 'generating' }));
+    expect((await getCharacterStatus(env, 'g')).characterId).toBeNull();
+  });
+
+  it('is stored on the companion once the save lands', () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('../services/my-ai/my-ai-service.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(source).toContain('await saveCharacter(env, started.characterGuid);');
+    expect(source).toContain('const characterId = await awaitSavedId(deps, started.characterGuid);');
+    expect(source).toContain('.set({ providerCharacterId: characterId, updatedAt: new Date() })');
   });
 });

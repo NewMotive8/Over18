@@ -1,0 +1,11 @@
+-- My AI: remember the provider's NUMERIC character id, not just the guid.
+--
+-- The guid identifies a generation job and exists from the moment OhAPI
+-- accepts one. The numeric id is different: it is minted only when the
+-- character is SAVED, and it is what their image endpoint addresses a
+-- character by. Measured on staging 2026-11-16 -- an unsaved character
+-- reports `characterId: null`, a saved one reports a number.
+--
+-- Without it stored, "another photograph of the same companion" means asking
+-- the provider who she is all over again on every request.
+ALTER TABLE "user_companions" ADD COLUMN "provider_character_id" integer;

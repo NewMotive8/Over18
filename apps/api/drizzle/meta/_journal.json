@@ -428,6 +428,13 @@
       "when": 1794769496623,
       "tag": "0060_my_ai_user_companions",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1794769497623,
+      "tag": "0061_my_ai_provider_character_id",
+      "breakpoints": true
     }
   ]
 }

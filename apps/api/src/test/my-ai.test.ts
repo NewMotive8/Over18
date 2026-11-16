@@ -197,6 +197,19 @@ describe('what the client is told about her', () => {
     expect(res.body).not.toContain('oh.xyz');
   });
 
+  it('never hands over the provider’s ids', async () => {
+    // Her guid and her numeric id are ours: they address her at OhAPI, and a
+    // client that knows them is a client that can ask OhAPI about her.
+    const hers = await giveCompanion(aliceId);
+    await on.pool.query(
+      "UPDATE user_companions SET provider_character_guid = 'guid-abc', provider_character_id = 27956 WHERE id = $1",
+      [hers.id],
+    );
+    const res = await on.app.inject({ method: 'GET', url: '/api/my-ai', cookies: alice });
+    expect(res.body).not.toContain('guid-abc');
+    expect(res.body).not.toContain('27956');
+  });
+
   it('reports no image while she is still being made', async () => {
     await giveCompanion(aliceId, { status: 'generating', withImage: false });
     const res = await on.app.inject({ method: 'GET', url: '/api/my-ai', cookies: alice });

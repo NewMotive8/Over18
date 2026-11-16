@@ -3600,6 +3600,16 @@ export const userCompanions = pgTable(
      * be polled and a support question answered. Never sent to a client.
      */
     providerCharacterGuid: text('provider_character_guid'),
+    /*
+     * The provider's NUMERIC id, which is not the same thing as the guid.
+     *
+     * The guid names a generation job and exists the moment OhAPI accepts
+     * one. This appears only once the character is SAVED there, and it is how
+     * their image endpoint addresses a character — so it is what any future
+     * "another photograph of her" depends on. Null until she is saved, and
+     * null for ever on one whose save never completed.
+     */
+    providerCharacterId: integer('provider_character_id'),
 
     /**
      * ABSOLUTE PATH TO HER PORTRAIT ON THE MEDIA VOLUME, and named `image_path`

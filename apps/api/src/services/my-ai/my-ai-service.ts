@@ -286,12 +286,35 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
     log.info({ companionId }, 'my-ai companion ready');
 
     /*
-     * Provider-side bookkeeping, and deliberately after we are already done.
-     * Her picture is downloaded and her row says ready, so a failure here
-     * changes nothing the user can see and must not undo any of it.
+     * SAVE HER AT THE PROVIDER, and keep the id that comes back.
+     *
+     * Not bookkeeping — this is what gives her a lasting identity there.
+     * A generated-but-unsaved character has `characterId: null`, and that
+     * numeric id is how OhAPI's image endpoint addresses a character, so
+     * until she is saved there can never be a second photograph of her.
+     * Measured on staging: unsaved reports null, saved reports a number.
+     *
+     * It happens automatically rather than behind a "Confirm" button,
+     * because saving costs nothing, cannot be done twice ("already saved" is
+     * a 400), and a companion who is finished but unsaved is one who can
+     * never be photographed again — a worse outcome than a saved companion
+     * the user deletes, which is a button they already have.
+     *
+     * Deliberately AFTER we are done: her picture is downloaded and her row
+     * says ready, so a failure here must not undo any of it. She simply has
+     * no provider id, which is recoverable later and invisible for now.
      */
     try {
       await saveCharacter(env, started.characterGuid);
+      const characterId = await awaitSavedId(deps, started.characterGuid);
+      if (characterId !== null) {
+        await db
+          .update(userCompanions)
+          .set({ providerCharacterId: characterId, updatedAt: new Date() })
+          .where(eq(userCompanions.id, companionId));
+      } else {
+        log.warn({ companionId }, 'my-ai: provider save did not report an id in time');
+      }
     } catch (cause) {
       log.warn(
         { companionId, providerDetail: cause instanceof OhRequestError ? cause.providerDetail : String(cause) },
@@ -310,6 +333,35 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       cause instanceof OhRequestError ? cause.message : 'She could not be created. Please try again.',
     ).catch(() => {});
   }
+}
+
+/** How long to wait for a save to land before giving up on the id for now. */
+const SAVE_TIMEOUT_MS = 60_000;
+const SAVE_INTERVAL_MS = 3_000;
+
+/**
+ * Wait for the save to finish and report the id it minted.
+ *
+ * `save` answers 202 and finishes behind the request, exactly like generate,
+ * so the id is not in its response — it appears on the status endpoint when
+ * the status reaches `saved`.
+ *
+ * Returns null rather than throwing on a timeout. By this point she is
+ * already complete and visible to her owner; not having the provider id is a
+ * missing future capability, not a failed creation.
+ */
+async function awaitSavedId(deps: GenerationDeps, guid: string): Promise<number | null> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const now = deps.now ?? (() => Date.now());
+  const deadline = now() + SAVE_TIMEOUT_MS;
+
+  while (now() < deadline) {
+    await sleep(SAVE_INTERVAL_MS);
+    const polled = await getCharacterStatus(deps.env, guid);
+    if (polled.characterId !== null) return polled.characterId;
+    if (polled.status === 'failed') return null;
+  }
+  return null;
 }
 
 /**

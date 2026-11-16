@@ -37,6 +37,16 @@ export interface OhStatusResult {
   status: OhStatus;
   images: { nsfw_image?: string; sfw_image?: string } | null;
   errorMessage: string | null;
+  /**
+   * The provider's numeric id for her — null until she is SAVED there.
+   *
+   * Verified on staging 2026-11-16 against two characters at once: an
+   * unsaved one reports `characterId: null` with status `ready`, a saved one
+   * reports a number with status `saved`. It is the id their image endpoint
+   * takes, so saving is what makes a second photograph of the same companion
+   * possible at all.
+   */
+  characterId: number | null;
 }
 
 /** Thrown for anything the provider refused or could not answer. */
@@ -122,12 +132,18 @@ export async function generateCharacter(
 export async function getCharacterStatus(env: MyAiEnv, guid: string): Promise<OhStatusResult> {
   const body = (await ohFetch(env, `/api/v2/characters/${encodeURIComponent(guid)}/status`, {
     method: 'GET',
-  })) as { status?: OhStatus; images?: OhStatusResult['images']; errorMessage?: string };
+  })) as {
+    status?: OhStatus;
+    images?: OhStatusResult['images'];
+    errorMessage?: string;
+    characterId?: number | null;
+  };
 
   return {
     status: body.status ?? 'generating',
     images: body.images ?? null,
     errorMessage: body.errorMessage ?? null,
+    characterId: typeof body.characterId === 'number' ? body.characterId : null,
   };
 }
 
