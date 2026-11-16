@@ -221,6 +221,19 @@ export async function generateImage(
       prompt: input.prompt,
       prompt_enhancement: true,
       style: input.style,
+      /*
+       * ASKED FOR EXPLICITLY, AND THIS IS WHERE THE MINUTE WENT.
+       *
+       * Left unset, the provider rendered 1080x1920 — 2.25x the pixels of
+       * the reference images, and roughly 50 of the 67 seconds a companion
+       * took to create. 9:16 is their 720x1280 preset: the same size every
+       * reference portrait already is, the same shape the card displays, and
+       * a 2.8 MB file down to about 1.1 MB on a phone.
+       *
+       * It is a quality decision as much as a speed one. If these ever need
+       * to be sharper, this one value is the whole change.
+       */
+      resolution: '9:16',
     },
   })) as { job_id?: string; status?: OhJobStatus };
 

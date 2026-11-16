@@ -187,6 +187,9 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = deps.now ?? (() => Date.now());
 
+  const startedAt = now();
+  const since = () => Math.round((now() - startedAt) / 1000);
+
   try {
     const [row] = await db
       .select()
@@ -260,6 +263,8 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
      * 400), and a companion who is finished but unsaved could never be
      * photographed again.
      */
+    log.info({ companionId, afterSeconds: since() }, 'my-ai: character drawn');
+
     await saveCharacter(env, started.characterGuid);
     const characterId = await awaitSavedId(deps, started.characterGuid);
     if (characterId === null) {
@@ -289,6 +294,8 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
      * that is not pornographic by default, and there is no cheaper mechanism
      * at this provider.
      */
+    log.info({ companionId, afterSeconds: since() }, 'my-ai: character saved');
+
     const prompt = openingPhotoPrompt({ name: withId.name, attributes: withId.attributes });
     let imagePath: string | null = null;
     try {
@@ -330,7 +337,16 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       return;
     }
 
-    log.info({ companionId, withPhoto: imagePath !== null }, 'my-ai companion ready');
+    /*
+     * The stage timings are logged because "it took over a minute" was
+     * otherwise a question only archaeology could answer: three provider
+     * jobs, and no way to tell which one was slow without reconstructing it
+     * from timestamps afterwards.
+     */
+    log.info(
+      { companionId, withPhoto: imagePath !== null, afterSeconds: since() },
+      'my-ai companion ready',
+    );
   } catch (cause) {
     // Provider text goes to the log; the owner gets something plain.
     log.error(
