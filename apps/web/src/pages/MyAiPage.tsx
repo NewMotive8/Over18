@@ -60,7 +60,18 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
       to={`/my-ai/${companion.id}`}
       className="relative block overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900"
     >
-      <div className="relative aspect-[3/4] w-full">
+      {/*
+       * NO FIXED ASPECT ON A LOADED PICTURE — this is where heads got cut.
+       *
+       * The frame was `aspect-[3/4]` with `object-cover`, and the provider
+       * returns 720x1280 (9:16). A taller image poured into a shorter box is
+       * cropped top AND bottom, and the top of a portrait is somebody's head.
+       *
+       * The picture now sets the height and is never cropped, whatever ratio
+       * the provider sends. Only the placeholders, which have no intrinsic
+       * size, keep a fixed shape.
+       */}
+      <div className="relative w-full">
         {companion.imageUrl ? (
           /*
            * `absoluteMediaUrl`, NOT the bare path — where the first finished
@@ -75,14 +86,18 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
             alt={companion.name}
             loading="lazy"
             decoding="async"
-            className="h-full w-full object-cover"
+            className="block w-full"
           />
         ) : companion.status === 'failed' ? (
-          <div className="flex h-full w-full items-center justify-center text-sm text-zinc-500">
+          <div className="flex aspect-[3/4] w-full items-center justify-center bg-zinc-900 text-sm text-zinc-500">
             Couldn&apos;t be drawn
           </div>
         ) : (
-          <CreatingPortrait />
+          /* The placeholder has no picture to take its height from, so it
+             keeps a shape of its own. */
+          <div className="relative aspect-[3/4] w-full">
+            <CreatingPortrait />
+          </div>
         )}
 
         <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent px-4 pb-5 pt-20">

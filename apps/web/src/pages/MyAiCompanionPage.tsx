@@ -282,21 +282,30 @@ function GalleryPhoto({
 
   return (
     <figure className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/40">
-      <div className="relative aspect-[3/4] w-full bg-zinc-900">
+      {/*
+       * The PICTURE sets the height. A fixed `aspect-[3/4]` frame with
+       * `object-cover` is what cut the heads off: the provider returns 9:16,
+       * and a taller image poured into a shorter box loses its top and
+       * bottom. Nothing here is cropped, whatever ratio comes back.
+       */}
+      <div className="relative w-full bg-zinc-900">
         {photo.url ? (
           <img
             src={absoluteMediaUrl(photo.url)}
             alt={photo.prompt || name}
             loading="lazy"
             decoding="async"
-            className="h-full w-full object-cover"
+            className="block w-full"
           />
         ) : photo.status === 'failed' ? (
-          <div className="flex h-full w-full items-center justify-center px-6 text-center text-sm text-zinc-500">
+          <div className="flex aspect-[3/4] w-full items-center justify-center px-6 text-center text-sm text-zinc-500">
             That photo could not be made.
           </div>
         ) : (
-          <CreatingPortrait />
+          /* No picture yet, so no height of its own to take. */
+          <div className="relative aspect-[3/4] w-full">
+            <CreatingPortrait />
+          </div>
         )}
 
         {!confirming && (

@@ -323,3 +323,39 @@ describe('asking for another photo of her', () => {
     expect(page).toContain('disabled={busy}');
   });
 });
+
+describe('nothing crops her face', () => {
+  /*
+   * REPORTED FROM THE LIVE FEED: "we cut the head of the characters."
+   *
+   * The frames were `aspect-[3/4]` with `object-cover`, and the provider
+   * returns 720x1280 — 9:16. A taller picture poured into a shorter box is
+   * cropped top and bottom in equal measure, and the top of a portrait is
+   * somebody's head. The picture now sets its own height on both surfaces,
+   * so nothing is cropped whatever ratio comes back.
+   */
+  const surfaces = ['../pages/MyAiPage.tsx', '../pages/MyAiCompanionPage.tsx'];
+
+  it('never covers a companion picture into a fixed frame', () => {
+    for (const rel of surfaces) {
+      const page = readFileSync(new URL(rel, import.meta.url), 'utf8');
+      // The class, not the word: both files explain the fix in a comment.
+      expect(page, rel).not.toMatch(/className="[^"]*object-cover/);
+    }
+  });
+
+  it('lets the picture set the height', () => {
+    for (const rel of surfaces) {
+      const page = readFileSync(new URL(rel, import.meta.url), 'utf8');
+      expect(page, rel).toContain('className="block w-full"');
+    }
+  });
+
+  it('keeps a shape only where there is no picture yet', () => {
+    // The creating placeholder has no intrinsic size, so it still needs one.
+    for (const rel of surfaces) {
+      const page = readFileSync(new URL(rel, import.meta.url), 'utf8');
+      expect(page, rel).toContain('relative aspect-[3/4] w-full');
+    }
+  });
+});
