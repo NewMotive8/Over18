@@ -4,12 +4,19 @@ import type { FastifyInstance } from 'fastify';
 import {
   MY_AI_REFERENCE_PHOTO_ID,
   myAiDraftProblems,
+  myAiMessageProblem,
   myAiPhotoProblems,
   type MyAiDraft,
 } from '@over18/shared';
 import type { Db } from '../db/client.js';
 import type { MyAiEnv } from '../env.js';
+import type { ReplyProvider } from '../services/character-reply.js';
 import { isInsideStorageRoot } from '../services/message-media-service.js';
+import {
+  listMessages,
+  sendMessage,
+  toMessageWire,
+} from '../services/my-ai/my-ai-chat.js';
 import {
   countGenerating,
   createPhoto,
@@ -51,7 +58,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 export default async function myAiRoutes(
   app: FastifyInstance,
-  opts: { db: Db; myAi: MyAiEnv | null; storageDir: string },
+  opts: { db: Db; myAi: MyAiEnv | null; storageDir: string; replyProvider: ReplyProvider },
 ) {
   const { db, storageDir } = opts;
 
@@ -314,6 +321,99 @@ export default async function myAiRoutes(
       if (!UUID_RE.test(photoId)) return notFound();
       const removed = await deletePhoto(db, request.currentUser!.id, id, photoId, storageDir);
       return removed ? reply.code(204).send() : notFound();
+    },
+  );
+
+  /* ---------------------------------------------------------------- *
+   * Talking to her
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Her conversation, oldest first.
+   *
+   * There is no conversation id anywhere in these routes: a companion belongs
+   * to exactly one account, so SHE is the thread. Ownership is the same check
+   * as every other route here, and there is no second place to get it wrong.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/my-ai/:id/messages',
+    { preHandler: app.requireAuth },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!UUID_RE.test(id)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+      const companion = await getCompanion(db, request.currentUser!.id, id);
+      if (!companion) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+      const rows = await listMessages(db, id);
+      return { messages: rows.map(toMessageWire) };
+    },
+  );
+
+  /**
+   * Say something to her.
+   *
+   * SYNCHRONOUS, unlike making a picture: a reply arrives in a second or two,
+   * and a chat that returned 202 and asked the client to poll for an answer
+   * would be a worse version of waiting. Both messages are stored only after
+   * the provider answers — a user message with no reply would replay as
+   * history next turn and she would appear to have ignored it.
+   *
+   * NOT CHARGED. Catalogue chat deducts credits per message; companion chat
+   * does not, because pricing for My AI is a decision that has not been made.
+   * This is a deliberate gap, not an oversight, and it is the same gap the
+   * photographs have.
+   */
+  app.post<{ Params: { id: string }; Body: { body?: unknown } }>(
+    '/api/my-ai/:id/messages',
+    { preHandler: app.requireAuth },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!UUID_RE.test(id)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+
+      const problem = myAiMessageProblem(request.body?.body);
+      if (problem) {
+        return reply
+          .code(400)
+          .send({ error: 'invalid_message', message: 'Say something to her first.' });
+      }
+
+      const companion = await getCompanion(db, request.currentUser!.id, id);
+      if (!companion) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+
+      /*
+       * A companion still being drawn has nothing to talk with yet — her
+       * attributes exist, but answering as somebody half-made is worse than
+       * saying so. A FAILED one is a different matter: she may still have
+       * enough of herself to hold a conversation, and refusing would strand
+       * the user with nothing at all.
+       */
+      if (companion.status === 'generating') {
+        return reply
+          .code(409)
+          .send({ error: 'companion_not_ready', message: 'She is still being made.' });
+      }
+
+      try {
+        const { user, reply: answer } = await sendMessage(
+          db,
+          opts.replyProvider,
+          companion,
+          request.body!.body as string,
+        );
+        return { messages: [toMessageWire(user), toMessageWire(answer)] };
+      } catch (cause) {
+        request.log.error({ companionId: id, cause: String(cause) }, 'my-ai reply failed');
+        return reply
+          .code(502)
+          .send({ error: 'reply_failed', message: 'She could not answer just now.' });
+      }
     },
   );
 

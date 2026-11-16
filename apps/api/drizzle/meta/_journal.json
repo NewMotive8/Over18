@@ -442,6 +442,13 @@
       "when": 1794769498623,
       "tag": "0062_my_ai_companion_photos",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1794769499623,
+      "tag": "0063_my_ai_companion_messages",
+      "breakpoints": true
     }
   ]
 }

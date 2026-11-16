@@ -428,6 +428,10 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     db,
     myAi: env.myAi,
     storageDir: env.media.storageDir,
+    // The SAME mind the catalogue's chat uses. A companion is a different
+    // person, not a different model, and none of the behaviour tuning that
+    // went into this provider is about who she is.
+    replyProvider: options.replyProvider ?? deterministicReplyProvider,
   });
 
   /*

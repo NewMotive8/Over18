@@ -8,6 +8,7 @@ import SwipePage from './pages/SwipePage';
 import CharacterDetailPage from './pages/CharacterDetailPage';
 import MyAiPage from './pages/MyAiPage';
 import MyAiCompanionPage from './pages/MyAiCompanionPage';
+import MyAiChatPage from './pages/MyAiChatPage';
 import FavouritesPage from './pages/FavouritesPage';
 import ProfilePage from './pages/ProfilePage';
 import SubscriptionPage from './pages/SubscriptionPage';
@@ -137,6 +138,7 @@ export default function App() {
         <Route path="/characters" element={<LobbyPage />} />
         <Route path="/my-ai" element={<MyAiPage />} />
         <Route path="/my-ai/:id" element={<MyAiCompanionPage />} />
+        <Route path="/my-ai/:id/chat" element={<MyAiChatPage />} />
         {/*
           Favourites — the user's saved characters. NOT wrapped in RequireAuth:
           the page reports "sign in to see your Favourites" in place, which

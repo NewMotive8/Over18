@@ -5,7 +5,7 @@ import { ApiRequestError, myAiApi } from '../lib/api';
 import { absoluteMediaUrl } from '../lib/media';
 import CreatingPortrait from '../components/my-ai/CreatingPortrait';
 import PhotoComposer from '../components/my-ai/PhotoComposer';
-import { ChevronLeftIcon, TrashIcon } from '../components/icons';
+import { ChevronLeftIcon, MessageIcon, TrashIcon } from '../components/icons';
 
 /**
  * One companion, full screen, with everything that exists of her.
@@ -186,6 +186,14 @@ export default function MyAiCompanionPage() {
         </p>
       )}
 
+      <Link
+        to={`/my-ai/${id}/chat`}
+        className="flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+      >
+        <MessageIcon className="h-4 w-4" />
+        Chat with {companion.name}
+      </Link>
+
       {composing ? (
         <PhotoComposer
           name={companion.name}
@@ -198,7 +206,7 @@ export default function MyAiCompanionPage() {
           type="button"
           onClick={() => setComposing(true)}
           disabled={busy}
-          className="w-full rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+          className="w-full rounded-xl border border-zinc-700 px-5 py-3 text-sm font-semibold text-zinc-200 transition-colors hover:border-zinc-600 disabled:cursor-not-allowed disabled:text-zinc-600"
         >
           {busy ? 'A photo is being made…' : `New photo of ${companion.name}`}
         </button>

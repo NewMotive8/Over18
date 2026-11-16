@@ -3704,3 +3704,33 @@ export const userCompanionPhotos = pgTable(
 );
 
 export type UserCompanionPhotoRow = typeof userCompanionPhotos.$inferSelect;
+
+/**
+ * Talking to a companion you made.
+ *
+ * ── NO CONVERSATION ROW ─────────────────────────────────────────────────────
+ *
+ * A catalogue character is talked to by thousands of people, so
+ * `conversations` exists to keep one person's thread apart from another's. A
+ * companion belongs to exactly one account: she IS the thread. A conversation
+ * row here would carry a user id that could only ever hold her owner's, and
+ * give ownership a second place to be got wrong.
+ *
+ * `messageSender` is the existing enum. She is a "character" in the only
+ * sense this column cares about: which side of the conversation spoke.
+ */
+export const userCompanionMessages = pgTable(
+  'user_companion_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    companionId: uuid('companion_id')
+      .notNull()
+      .references(() => userCompanions.id, { onDelete: 'cascade' }),
+    sender: messageSender('sender').notNull(),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('user_companion_messages_companion_created_idx').on(t.companionId, t.createdAt)],
+);
+
+export type UserCompanionMessageRow = typeof userCompanionMessages.$inferSelect;

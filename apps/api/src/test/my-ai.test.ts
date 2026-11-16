@@ -4,6 +4,10 @@ import { join } from 'node:path';
 import type { MyAiDraft } from '@over18/shared';
 import { userCompanionPhotos, userCompanions } from '../db/schema.js';
 import {
+  companionAsCharacter,
+  companionReplyContext,
+} from '../services/my-ai/my-ai-chat.js';
+import {
   createTestContext,
   destroyTestContext,
   extractSessionCookie,
@@ -643,5 +647,200 @@ describe('deleting photographs', () => {
     expect(paths.some((p) => existsSync(p))).toBe(false);
     const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companion_photos');
     expect(rows[0].n).toBe(0);
+  });
+});
+
+/**
+ * Talking to a companion you made.
+ *
+ * SHE IS THE THREAD — there is no conversation row and no conversation id in
+ * any of these routes, because a companion belongs to exactly one account.
+ * These tests hold that the ownership check is the only gate and that it is
+ * on every path.
+ */
+describe('her conversation', () => {
+  it('starts empty and keeps what is said, in order', async () => {
+    const hers = await giveCompanion(aliceId);
+
+    const empty = await on.app.inject({
+      method: 'GET',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: alice,
+    });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json<{ messages: unknown[] }>().messages).toEqual([]);
+
+    const sent = await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: alice,
+      payload: { body: 'Hello you' },
+    });
+    expect(sent.statusCode).toBe(200);
+    const pair = sent.json<{ messages: { sender: string; body: string }[] }>().messages;
+    expect(pair).toHaveLength(2);
+    expect(pair[0].sender).toBe('user');
+    expect(pair[0].body).toBe('Hello you');
+    expect(pair[1].sender).toBe('character');
+    expect(pair[1].body.length).toBeGreaterThan(0);
+
+    const thread = await on.app.inject({
+      method: 'GET',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: alice,
+    });
+    const all = thread.json<{ messages: { sender: string }[] }>().messages;
+    expect(all.map((m) => m.sender)).toEqual(['user', 'character']);
+  });
+
+  it('is nobody else’s to read or to write to', async () => {
+    const hers = await giveCompanion(aliceId);
+    await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: alice,
+      payload: { body: 'Something private' },
+    });
+
+    const read = await on.app.inject({
+      method: 'GET',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: bob,
+    });
+    const write = await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: bob,
+      payload: { body: 'Hello stranger' },
+    });
+
+    expect(read.statusCode).toBe(404);
+    expect(write.statusCode).toBe(404);
+    // And nothing of his was written against her.
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companion_messages');
+    expect(rows[0].n).toBe(2);
+  });
+
+  it('needs a session', async () => {
+    const hers = await giveCompanion(aliceId);
+    expect(
+      (await on.app.inject({ method: 'GET', url: `/api/my-ai/${hers.id}/messages` })).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await on.app.inject({
+          method: 'POST',
+          url: `/api/my-ai/${hers.id}/messages`,
+          payload: { body: 'hi' },
+        })
+      ).statusCode,
+    ).toBe(401);
+  });
+
+  it('refuses an empty message rather than asking her to answer nothing', async () => {
+    const hers = await giveCompanion(aliceId);
+    for (const body of ['', '   ', 'x'.repeat(3000), 42, null]) {
+      const res = await on.app.inject({
+        method: 'POST',
+        url: `/api/my-ai/${hers.id}/messages`,
+        cookies: alice,
+        payload: { body },
+      });
+      expect(res.statusCode, JSON.stringify(body).slice(0, 20)).toBe(400);
+    }
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companion_messages');
+    expect(rows[0].n).toBe(0);
+  });
+
+  it('will not talk to one who is still being made', async () => {
+    const half = await giveCompanion(aliceId, { status: 'generating', withImage: false });
+    const res = await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${half.id}/messages`,
+      cookies: alice,
+      payload: { body: 'Hello?' },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  /*
+   * A FAILED companion still talks. Her attributes are all there — only her
+   * picture is missing — and refusing would strand the user with nothing at
+   * all for a companion they already paid to create.
+   */
+  it('talks to one whose picture failed', async () => {
+    const hers = await giveCompanion(aliceId, { status: 'failed', withImage: false });
+    const res = await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: alice,
+      payload: { body: 'Are you there?' },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('goes when she goes', async () => {
+    const hers = await giveCompanion(aliceId);
+    await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: alice,
+      payload: { body: 'Hello you' },
+    });
+
+    await on.app.inject({ method: 'DELETE', url: `/api/my-ai/${hers.id}`, cookies: alice });
+
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companion_messages');
+    expect(rows[0].n).toBe(0);
+  });
+});
+
+describe('what the model is told about her', () => {
+  /*
+   * Only five fields reach the prompt: name, bio, personality, interests and
+   * age. Everything about a companion has to travel in those, because
+   * `prompt-builder` deliberately renders neither a stored system prompt nor
+   * a conversation style — both are behavioural, and character data issuing
+   * behavioural orders is the bug that made production write scenes instead
+   * of having conversations.
+   */
+  it('describes her as facts, never as instructions', () => {
+    const companion = {
+      id: 'c1',
+      name: 'Maya',
+      age: 24,
+      attributes: {
+        ethnicity: 'latina', hairColour: 'blonde', hairStyle: 'wavy', eyeColour: 'green',
+        figure: 'curvy', breasts: 'large', butt: 'medium', personality: 'flirty',
+        relationship: 'girlfriend', job: 'nurse', interests: ['yoga', 'travel'],
+      },
+    } as never;
+
+    const character = companionAsCharacter(companion);
+    expect(character.displayName).toBe('Maya');
+    expect(character.age).toBe(24);
+    expect(character.shortBio).toContain('blonde wavy hair');
+    expect(character.shortBio).toContain('green eyes');
+    expect(character.shortBio).toContain('nurse');
+    expect(character.personality).toBe("She's flirty.");
+    expect(character.interests.length).toBe(2);
+
+    // Behavioural slots left empty on purpose: the builder ignores them, and
+    // writing into an ignored slot is how a prompt quietly stops matching.
+    expect(character.conversationStyle).toBe('');
+  });
+
+  it('states her age as verified, which for a companion it is', () => {
+    // Four independent gates stop one existing under 21: the wizard, the
+    // shared validator, a database CHECK and the provider itself.
+    const context = companionReplyContext(
+      { id: 'c1', name: 'Maya', age: 24, attributes: { ethnicity: 'latina', hairColour: 'blonde', hairStyle: 'wavy', eyeColour: 'green', figure: 'curvy', breasts: 'large', butt: 'medium', personality: 'flirty', relationship: 'girlfriend', job: 'nurse', interests: [] } } as never,
+      [],
+      'hello',
+    );
+    expect(context.verifiedAdultAgeBand).toBe('24');
+    expect(context.systemPrompt).toBe('');
+    expect(context.channel).toBe('text');
+    expect(context.priorMessageCount).toBe(0);
   });
 });

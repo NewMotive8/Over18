@@ -7,7 +7,7 @@ import { absoluteMediaUrl } from '../lib/media';
 import { useAuth } from '../auth/AuthContext';
 import CreateFlow from '../components/my-ai/CreateFlow';
 import PageHeader from '../components/PageHeader';
-import { MyAiIcon } from '../components/icons';
+import { MessageIcon, MyAiIcon } from '../components/icons';
 import CreatingPortrait from '../components/my-ai/CreatingPortrait';
 
 /**
@@ -56,10 +56,10 @@ const POLL_MAX_ATTEMPTS = 60;
  */
 function CompanionCard({ companion }: { companion: MyAiCompanion }) {
   return (
-    <Link
-      to={`/my-ai/${companion.id}`}
-      className="relative block overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900"
-    >
+    /* The card and the chat button are SIBLINGS, not nested links: an <a>
+       inside an <a> is invalid and browsers resolve it by dropping one. */
+    <div className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900">
+      <Link to={`/my-ai/${companion.id}`} className="block">
       {/*
        * NO FIXED ASPECT ON A LOADED PICTURE — this is where heads got cut.
        *
@@ -116,7 +116,18 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
           <p className="text-sm text-zinc-300">{companion.age} years</p>
         </div>
       </div>
-    </Link>
+      </Link>
+
+      {/* Straight into the conversation, without going through her page —
+          talking to her is the thing people come back for. */}
+      <Link
+        to={`/my-ai/${companion.id}/chat`}
+        aria-label={`Chat with ${companion.name}`}
+        className="absolute right-3 top-3 z-10 flex h-12 w-12 items-center justify-center rounded-full bg-rose-600 text-white shadow-lg transition-colors hover:bg-rose-500"
+      >
+        <MessageIcon className="h-5 w-5" />
+      </Link>
+    </div>
   );
 }
 

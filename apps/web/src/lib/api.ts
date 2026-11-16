@@ -47,6 +47,7 @@ import type {
   HealthResponse,
   MyAiCompanion,
   MyAiDraft,
+  MyAiMessage,
   MyAiPhoto,
   PublicCharacter,
   SendMessageResult,
@@ -173,6 +174,19 @@ export const myAiApi = {
     return request<{ photo: MyAiPhoto }>(`/api/my-ai/${encodeURIComponent(id)}/photos`, {
       method: 'POST',
       body: JSON.stringify(body),
+    });
+  },
+
+  /** Her conversation, oldest first. She is the thread: no conversation id. */
+  messages(id: string): Promise<{ messages: MyAiMessage[] }> {
+    return request<{ messages: MyAiMessage[] }>(`/api/my-ai/${encodeURIComponent(id)}/messages`);
+  },
+
+  /** Say something to her. Returns the pair: what was said, and her answer. */
+  say(id: string, body: string): Promise<{ messages: MyAiMessage[] }> {
+    return request<{ messages: MyAiMessage[] }>(`/api/my-ai/${encodeURIComponent(id)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
     });
   },
 

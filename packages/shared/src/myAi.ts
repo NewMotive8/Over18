@@ -526,3 +526,27 @@ export function myAiPhotoProblems(input: { prompt?: unknown; style?: unknown }):
 
   return problems;
 }
+
+/* ------------------------------------------------------------------ *
+ * Talking to her
+ * ------------------------------------------------------------------ */
+
+/** Long enough for anything anyone types at a companion, short enough to bound. */
+export const MY_AI_MESSAGE_MAX_LENGTH = 2_000;
+
+/** One line of a conversation with a companion, as the API reports it. */
+export interface MyAiMessage {
+  id: string;
+  /** `user` is her owner; `character` is her. */
+  sender: 'user' | 'character';
+  body: string;
+  createdAt: string;
+}
+
+/** Validate something typed at her. Shared, so the button and the route agree. */
+export function myAiMessageProblem(body: unknown): string | null {
+  if (typeof body !== 'string') return 'message';
+  const trimmed = body.trim();
+  if (trimmed.length === 0 || trimmed.length > MY_AI_MESSAGE_MAX_LENGTH) return 'message';
+  return null;
+}
