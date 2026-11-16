@@ -435,6 +435,13 @@
       "when": 1794769497623,
       "tag": "0061_my_ai_provider_character_id",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1794769498623,
+      "tag": "0062_my_ai_companion_photos",
+      "breakpoints": true
     }
   ]
 }

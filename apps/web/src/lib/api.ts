@@ -47,6 +47,7 @@ import type {
   HealthResponse,
   MyAiCompanion,
   MyAiDraft,
+  MyAiPhoto,
   PublicCharacter,
   SendMessageResult,
 } from '@over18/shared';
@@ -160,6 +161,27 @@ export const myAiApi = {
   /** Permanent: her row and her picture both go. 204, or 404 if she is not yours. */
   remove(id: string): Promise<void> {
     return request<void>(`/api/my-ai/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  /** Her gallery: the original portrait first, then everything since. */
+  photos(id: string): Promise<{ photos: MyAiPhoto[] }> {
+    return request<{ photos: MyAiPhoto[] }>(`/api/my-ai/${encodeURIComponent(id)}/photos`);
+  },
+
+  /** Asks for another photograph of her. Costs money at the provider. */
+  createPhoto(id: string, body: { prompt: string; style: string }): Promise<{ photo: MyAiPhoto }> {
+    return request<{ photo: MyAiPhoto }>(`/api/my-ai/${encodeURIComponent(id)}/photos`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** `reference` removes her original portrait; she survives it. */
+  removePhoto(id: string, photoId: string): Promise<void> {
+    return request<void>(
+      `/api/my-ai/${encodeURIComponent(id)}/photos/${encodeURIComponent(photoId)}`,
+      { method: 'DELETE' },
+    );
   },
 };
 

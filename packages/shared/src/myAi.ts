@@ -446,3 +446,83 @@ export function myAiTileUrl(
 export function myAiEthnicityTileUrl(ethnicity: MyAiEthnicity): string {
   return `/create/realistic/ethnicity-${ethnicity}.jpg`;
 }
+
+/* ------------------------------------------------------------------ *
+ * Further photographs of a companion
+ * ------------------------------------------------------------------ */
+
+/**
+ * The provider's two looks, in words a user recognises.
+ *
+ * `glam` is their default: an even-lit, high-end photograph. `amateur` is the
+ * phone-in-the-bedroom look. It changes the result more than any wording in
+ * the prompt does, which is why it is a control rather than something to be
+ * typed.
+ */
+export const MY_AI_PHOTO_STYLES = [
+  { id: 'glam', label: 'Studio' },
+  { id: 'amateur', label: 'Candid' },
+] as const satisfies readonly MyAiOption[];
+
+export const MY_AI_PHOTO_PROMPT_MAX = 300;
+export const MY_AI_PHOTO_PROMPT_MIN = 3;
+
+/**
+ * Starting points, not options.
+ *
+ * A blank box is the hardest thing in any interface to answer. These fill it
+ * with something editable — one tap to get a sentence, then change any word
+ * of it. They are not a menu: anything the user types is sent as typed.
+ */
+export const MY_AI_PHOTO_IDEAS = [
+  'In a red bikini by the pool',
+  'In black lingerie, on a bed',
+  'Topless, in soft morning light',
+  'Nude, on white sheets',
+  'In a little black dress at a bar',
+  'In gym clothes, at the gym',
+  'In a summer dress in a park',
+  'Wet, in the shower',
+] as const;
+
+/** One photograph of a companion, as the API reports her. */
+export interface MyAiPhoto {
+  id: string;
+  /** Owner-scoped route, or null while she is still being drawn. */
+  url: string | null;
+  /** What the user asked for. Empty for her original portrait. */
+  prompt: string;
+  style: string;
+  status: MyAiStatus;
+  createdAt: string;
+  /**
+   * TRUE FOR HER ORIGINAL PORTRAIT ONLY — the one the provider drew from her
+   * attributes, which every other photograph is generated from. It carries
+   * the reserved id `reference` rather than a row id, because it does not
+   * live in the photographs table.
+   */
+  isReference: boolean;
+}
+
+/** The id the original portrait answers to. Never a real row id. */
+export const MY_AI_REFERENCE_PHOTO_ID = 'reference';
+
+/**
+ * Validate a request for another photograph.
+ *
+ * Shared, like `myAiDraftProblems`, so the button that is enabled and the
+ * request that is accepted cannot disagree.
+ */
+export function myAiPhotoProblems(input: { prompt?: unknown; style?: unknown }): string[] {
+  const problems: string[] = [];
+
+  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+  if (prompt.length < MY_AI_PHOTO_PROMPT_MIN || prompt.length > MY_AI_PHOTO_PROMPT_MAX) {
+    problems.push('prompt');
+  }
+
+  const styles = MY_AI_PHOTO_STYLES.map((s) => s.id as string);
+  if (typeof input.style !== 'string' || !styles.includes(input.style)) problems.push('style');
+
+  return problems;
+}

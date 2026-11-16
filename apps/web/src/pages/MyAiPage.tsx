@@ -7,7 +7,8 @@ import { absoluteMediaUrl } from '../lib/media';
 import { useAuth } from '../auth/AuthContext';
 import CreateFlow from '../components/my-ai/CreateFlow';
 import PageHeader from '../components/PageHeader';
-import { MyAiIcon, TrashIcon } from '../components/icons';
+import { MyAiIcon } from '../components/icons';
+import CreatingPortrait from '../components/my-ai/CreatingPortrait';
 
 /**
  * My AI — where a user builds and keeps their own companion.
@@ -40,85 +41,38 @@ const POLL_INTERVAL_MS = 3_000;
 const POLL_MAX_ATTEMPTS = 60;
 
 /**
- * How long this has been going, counting up.
+ * One companion, filling the screen.
  *
- * Deliberately elapsed time and NOT a progress bar: OhAPI reports no progress,
- * only `generating` and then `ready`, so a bar would be a number we invented.
- * A clock that is visibly moving says "still working" just as well and does
- * not claim to know how far along she is.
- */
-function ElapsedSeconds() {
-  const [seconds, setSeconds] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => setSeconds((s) => s + 1), 1_000);
-    return () => window.clearInterval(id);
-  }, []);
-  return <>{seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`}</>;
-}
-
-/**
- * The minute she takes to draw, made visible.
+ * ── WHY FULL-BLEED AND NOT A GRID ───────────────────────────────────────────
  *
- * A still "Drawing her…" on a dark rectangle is indistinguishable from a
- * screen that has stopped working — which is exactly what it must not look
- * like while the provider is busy and the clock is running. Three independent
- * signs of life instead: the frame breathes, a sweep of light crosses it, and
- * the seconds count up.
+ * A two-up grid of 150px thumbnails shows you that you have companions. It
+ * does not show you the companions. These pictures took a minute each to make
+ * and are the entire point of the feature, so they get the width of the
+ * phone and are scrolled through one at a time.
+ *
+ * THE WHOLE CARD IS THE LINK. Delete and "new photo" live on her own page,
+ * one tap away, rather than crowding a picture with controls — which also
+ * means nothing here can be tapped by accident while scrolling past.
  */
-function CreatingPortrait() {
+function CompanionCard({ companion }: { companion: MyAiCompanion }) {
   return (
-    <div className="absolute inset-0 overflow-hidden bg-zinc-900">
-      <div className="absolute inset-0 animate-pulse bg-gradient-to-br from-zinc-800 via-zinc-900 to-zinc-800" />
-      {/* motion-safe: a sweep is decoration, and nobody who asked their
-          machine for less motion needs it to know something is happening. */}
-      <span className="pointer-events-none absolute inset-y-0 left-0 w-full bg-gradient-to-r from-transparent via-white/10 to-transparent motion-safe:animate-shimmer" />
-      <div className="relative flex h-full w-full flex-col items-center justify-center gap-3 px-4 text-center">
-        <span
-          aria-hidden="true"
-          className="h-9 w-9 animate-spin rounded-full border-2 border-zinc-700 border-t-rose-500"
-        />
-        <span className="text-sm font-medium text-zinc-200">Creating…</span>
-        <span className="text-xs tabular-nums text-zinc-500">
-          <ElapsedSeconds />
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function CompanionCard({
-  companion,
-  onDelete,
-  deleting = false,
-}: {
-  companion: MyAiCompanion;
-  /** Omitted where deleting makes no sense — the card shown mid-creation. */
-  onDelete?: (companion: MyAiCompanion) => void;
-  deleting?: boolean;
-}) {
-  const [confirming, setConfirming] = useState(false);
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
-      <div className="relative aspect-[3/4] w-full bg-zinc-900">
+    <Link
+      to={`/my-ai/${companion.id}`}
+      className="relative block overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900"
+    >
+      <div className="relative aspect-[3/4] w-full">
         {companion.imageUrl ? (
           /*
-           * `absoluteMediaUrl`, NOT the bare path — and this is where the
-           * first finished companion came out as a broken-image icon.
-           *
-           * The API answers on its own host in every deployed environment.
-           * `/api/my-ai/:id/image` asked of the WEB host reaches a static
-           * server that has no such route, so the browser got HTML where it
-           * wanted a JPEG. Every other image in this app goes through the
-           * same helper for the same reason.
-           *
-           * The session cookie still rides along: it is set SameSite=None;
-           * Secure, so a cross-origin <img> carries it and the route can
-           * still check that she is yours.
+           * `absoluteMediaUrl`, NOT the bare path — where the first finished
+           * companion came out as a broken-image icon. The API answers on its
+           * own host; `/api/my-ai/:id/image` asked of the WEB host reaches a
+           * static server that returns index.html, so the browser got HTML
+           * where it wanted a JPEG. The session cookie still rides along: it
+           * is SameSite=None; Secure, so a cross-origin <img> carries it.
            */
           <img
             src={absoluteMediaUrl(companion.imageUrl)}
-            alt={`${companion.name}`}
+            alt={companion.name}
             loading="lazy"
             decoding="async"
             className="h-full w-full object-cover"
@@ -131,57 +85,12 @@ function CompanionCard({
           <CreatingPortrait />
         )}
 
-        {onDelete && !confirming && (
-          <button
-            type="button"
-            onClick={() => setConfirming(true)}
-            aria-label={`Delete ${companion.name}`}
-            className="absolute right-2 top-2 z-10 rounded-full bg-black/60 p-2 text-zinc-300 backdrop-blur transition-colors hover:bg-black/80 hover:text-white"
-          >
-            <TrashIcon className="h-4 w-4" />
-          </button>
-        )}
-
-        {/*
-         * CONFIRMED ON THE CARD, not in a dialog over the page.
-         *
-         * On a phone a modal covering a two-up grid hides the very thing it
-         * is asking about, and "which one did I just tap?" is a bad question
-         * to be left with when the answer is permanent. Asked here, over her
-         * own picture, it cannot be about anybody else.
-         */}
-        {confirming && onDelete && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/85 px-3 text-center">
-            <p className="text-sm font-semibold text-zinc-100">Delete {companion.name}?</p>
-            <p className="text-xs leading-snug text-zinc-400">
-              Her picture goes too. This cannot be undone.
-            </p>
-            <div className="mt-1 flex w-full flex-col gap-2">
-              <button
-                type="button"
-                disabled={deleting}
-                onClick={() => onDelete(companion)}
-                className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
-              >
-                {deleting ? 'Deleting…' : 'Delete'}
-              </button>
-              <button
-                type="button"
-                disabled={deleting}
-                onClick={() => setConfirming(false)}
-                className="rounded-lg border border-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-200 transition-colors hover:border-zinc-600"
-              >
-                Keep her
-              </button>
-            </div>
-          </div>
-        )}
-
-        <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-3 pb-2 pt-8 text-sm font-semibold text-white">
-          {companion.name} <span className="font-normal text-zinc-300">· {companion.age}</span>
-        </span>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent px-4 pb-5 pt-20">
+          <p className="text-2xl font-semibold text-white">{companion.name}</p>
+          <p className="text-sm text-zinc-300">{companion.age} years</p>
+        </div>
       </div>
-    </div>
+    </Link>
   );
 }
 
@@ -191,7 +100,6 @@ export default function MyAiPage() {
   const [pending, setPending] = useState<MyAiCompanion | null>(null);
   const [creatingAnother, setCreatingAnother] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   /** Set on unmount so a poll in flight cannot update a dead component. */
   const live = useRef(true);
@@ -278,31 +186,6 @@ export default function MyAiPage() {
     }
   };
 
-  /**
-   * Delete her, for good.
-   *
-   * The card has already asked. A 404 means she is already gone — which is
-   * the outcome the user wanted, so it drops her from the list rather than
-   * reporting a failure for work that is done.
-   */
-  const remove = async (companion: MyAiCompanion) => {
-    setDeletingId(companion.id);
-    setNotice(null);
-    try {
-      await myAiApi.remove(companion.id);
-      setCompanions((prev) => (prev ?? []).filter((c) => c.id !== companion.id));
-      setPending((p) => (p?.id === companion.id ? null : p));
-    } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 404) {
-        setCompanions((prev) => (prev ?? []).filter((c) => c.id !== companion.id));
-      } else {
-        setNotice(`We could not delete ${companion.name}. Please try again.`);
-      }
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
   /* ---------------------------------------------------------------- *
    * Waiting for the provider
    * ---------------------------------------------------------------- */
@@ -385,7 +268,7 @@ export default function MyAiPage() {
       <PageHeader
         eyebrow="My AI"
         title="Your companions"
-        subtitle="Only you can see these."
+        subtitle="Only you can see these. Tap one for her photos."
       />
 
       {notice && (
@@ -394,25 +277,23 @@ export default function MyAiPage() {
         </p>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
-        {companions.map((companion) => (
-          <CompanionCard
-            key={companion.id}
-            companion={companion}
-            onDelete={remove}
-            deleting={deletingId === companion.id}
-          />
-        ))}
-      </div>
-
+      {/* At the TOP, where the screenshot puts it: making another is the
+          thing people come back for, and burying it under a scroll of
+          full-height cards hides it behind however many they already have. */}
       <button
         type="button"
         onClick={() => setCreatingAnother(true)}
-        className="flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+        className="flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-5 py-4 text-base font-semibold text-white transition-colors hover:bg-rose-500"
       >
-        <MyAiIcon className="h-4 w-4" />
-        Create another
+        <MyAiIcon className="h-5 w-5" />
+        Create new AI
       </button>
+
+      <div className="flex flex-col gap-5">
+        {companions.map((companion) => (
+          <CompanionCard key={companion.id} companion={companion} />
+        ))}
+      </div>
 
       <Link to="/characters" className="text-center text-sm text-zinc-400 transition-colors hover:text-zinc-200">
         Browse everyone else

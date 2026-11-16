@@ -96,7 +96,7 @@ describe('what is not worth asking twice', () => {
 
     const error = await downloadPortrait(URL_AT_PROVIDER, dir, ID, noSleep).catch((e) => e);
     expect(error).toBeInstanceOf(OhRequestError);
-    expect((error as OhRequestError).providerDetail).toBe('portrait download 500');
+    expect((error as OhRequestError).providerDetail).toBe('image download 500');
     // The owner is told something plain -- never a URL, never provider text.
     expect(error.message).not.toContain('example.invalid');
   });

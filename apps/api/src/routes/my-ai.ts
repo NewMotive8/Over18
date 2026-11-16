@@ -1,13 +1,29 @@
 import { createReadStream } from 'node:fs';
 import { existsSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
-import { myAiDraftProblems, type MyAiDraft } from '@over18/shared';
+import {
+  MY_AI_REFERENCE_PHOTO_ID,
+  myAiDraftProblems,
+  myAiPhotoProblems,
+  type MyAiDraft,
+} from '@over18/shared';
 import type { Db } from '../db/client.js';
 import type { MyAiEnv } from '../env.js';
 import { isInsideStorageRoot } from '../services/message-media-service.js';
 import {
+  countGenerating,
+  createPhoto,
+  deletePhoto,
+  getPhoto,
+  listPhotos,
+  referencePhoto,
+  runPhotoGeneration,
+  toPhotoWire,
+} from '../services/my-ai/my-ai-photos.js';
+import {
   createCompanion,
   deleteCompanion,
+  deletePortrait,
   getCompanion,
   listCompanions,
   runGeneration,
@@ -135,6 +151,169 @@ export default async function myAiRoutes(
         return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
       }
       return { companion: toWire(row) };
+    },
+  );
+
+  /* ---------------------------------------------------------------- *
+   * Further photographs of a companion she already has
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Her gallery: the original portrait first, then everything asked for
+   * since, newest first.
+   *
+   * The portrait is not a row in the photographs table — the provider drew it
+   * from her attributes and every other picture is generated from it — so it
+   * arrives carrying the reserved id `reference`. One list for the client,
+   * two things in the schema, and the distinction kept where it matters.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/my-ai/:id/photos',
+    { preHandler: app.requireAuth },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!UUID_RE.test(id)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+      const companion = await getCompanion(db, request.currentUser!.id, id);
+      if (!companion) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+
+      const rows = await listPhotos(db, id);
+      const original = referencePhoto(companion);
+      return { photos: [...(original ? [original] : []), ...rows.map(toPhotoWire)] };
+    },
+  );
+
+  /**
+   * Ask for another photograph of her.
+   *
+   * THIS COSTS REAL MONEY, once per request. Pricing and deduction are not
+   * built yet and are deliberately not pretended at here; the only brake is
+   * the same one-at-a-time guard that creating a companion has, which is the
+   * floor under a pricing decision rather than the decision itself.
+   */
+  app.post<{ Params: { id: string }; Body: { prompt?: unknown; style?: unknown } }>(
+    '/api/my-ai/:id/photos',
+    { preHandler: app.requireAuth },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!UUID_RE.test(id)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+
+      // Validation BEFORE the availability check, exactly as on create: a
+      // malformed request is malformed whether or not this environment can
+      // render anything, so the contract does not change with deployment.
+      const problems = myAiPhotoProblems(request.body ?? {});
+      if (problems.length > 0) {
+        return reply.code(400).send({
+          error: 'invalid_photo_request',
+          message: 'Describe the photo you want.',
+          fields: problems,
+        });
+      }
+
+      if (!opts.myAi) {
+        return reply.code(503).send({
+          error: 'my_ai_unavailable',
+          message: 'New photos are not available here yet.',
+        });
+      }
+
+      const companion = await getCompanion(db, request.currentUser!.id, id);
+      if (!companion) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+
+      /*
+       * No provider id means she was never saved at the provider, so there is
+       * nobody there to photograph. Said plainly rather than as a failed
+       * generation the user waits a minute for.
+       */
+      if (companion.providerCharacterId === null) {
+        return reply.code(409).send({
+          error: 'companion_not_ready',
+          message: 'She is not ready for new photos yet.',
+        });
+      }
+
+      if ((await countGenerating(db, request.currentUser!.id)) > 0) {
+        return reply.code(409).send({
+          error: 'already_generating',
+          message: 'One photo is still being made. Give it a moment.',
+        });
+      }
+
+      const body = request.body as { prompt: string; style: string };
+      const photo = await createPhoto(db, id, { prompt: body.prompt, style: body.style });
+
+      // Not awaited: the response goes back now and the work continues behind
+      // it. `runPhotoGeneration` never throws.
+      void runPhotoGeneration(
+        { db, env: opts.myAi, storageDir, log: request.log },
+        photo.id,
+      ).catch((cause) =>
+        request.log.error({ cause: String(cause) }, 'my-ai photo generation escaped its handler'),
+      );
+
+      return reply.code(202).send({ photo: toPhotoWire(photo) });
+    },
+  );
+
+  /** One photograph's bytes — owner-checked exactly like her portrait. */
+  app.get<{ Params: { id: string; photoId: string } }>(
+    '/api/my-ai/:id/photos/:photoId/image',
+    { preHandler: app.requireAuth },
+    async (request, reply) => {
+      const notFound = () =>
+        reply.code(404).send({ error: 'not_found', message: 'Image not found.' });
+
+      const { id, photoId } = request.params;
+      if (!UUID_RE.test(id) || !UUID_RE.test(photoId)) return notFound();
+
+      const photo = await getPhoto(db, request.currentUser!.id, id, photoId);
+      if (!photo?.imagePath) return notFound();
+
+      if (!isInsideStorageRoot(storageDir, photo.imagePath)) {
+        request.log.warn({ photoId }, 'refused a photo resolving outside MEDIA_STORAGE_DIR');
+        return notFound();
+      }
+      if (!existsSync(photo.imagePath)) return notFound();
+
+      reply.header('Cache-Control', 'private, max-age=3600');
+      reply.type('image/jpeg');
+      return reply.send(createReadStream(photo.imagePath));
+    },
+  );
+
+  /**
+   * Delete one photograph.
+   *
+   * `reference` deletes her ORIGINAL portrait, which is a different row and a
+   * different file — her own. She survives it: the provider keeps its copy of
+   * her reference, so further photographs still work, and the gallery falls
+   * back to whatever else she has.
+   */
+  app.delete<{ Params: { id: string; photoId: string } }>(
+    '/api/my-ai/:id/photos/:photoId',
+    { preHandler: app.requireAuth },
+    async (request, reply) => {
+      const notFound = () =>
+        reply.code(404).send({ error: 'not_found', message: 'Photo not found.' });
+
+      const { id, photoId } = request.params;
+      if (!UUID_RE.test(id)) return notFound();
+
+      if (photoId === MY_AI_REFERENCE_PHOTO_ID) {
+        const removed = await deletePortrait(db, request.currentUser!.id, id, storageDir);
+        return removed ? reply.code(204).send() : notFound();
+      }
+
+      if (!UUID_RE.test(photoId)) return notFound();
+      const removed = await deletePhoto(db, request.currentUser!.id, id, photoId, storageDir);
+      return removed ? reply.code(204).send() : notFound();
     },
   );
 

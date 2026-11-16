@@ -3644,3 +3644,63 @@ export const userCompanions = pgTable(
 );
 
 export type UserCompanionRow = typeof userCompanions.$inferSelect;
+
+/**
+ * Further photographs of a companion the user already has.
+ *
+ * ── HER REFERENCE PORTRAIT IS NOT ONE OF THESE ──────────────────────────────
+ *
+ * `userCompanions.imagePath` keeps the portrait the provider drew from her
+ * attributes. It is categorically different from the rows here: it is their
+ * canonical record of how she looks, and it is the INPUT every photograph
+ * below is generated from. The gallery shows them together; the schema keeps
+ * them apart, because collapsing them would lose which one is the original.
+ *
+ * ── EACH ROW IS ONE GENERATION, AND IT COSTS MONEY ──────────────────────────
+ *
+ * The row exists before the provider is called, so a user whose generation
+ * fails sees a photograph marked failed with a reason, rather than a button
+ * that did nothing. Pricing is not wired up yet; when it is, this table is
+ * what it counts.
+ */
+export const userCompanionPhotos = pgTable(
+  'user_companion_photos',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    companionId: uuid('companion_id')
+      .notNull()
+      .references(() => userCompanions.id, { onDelete: 'cascade' }),
+
+    /**
+     * What the user asked for, in their own words.
+     *
+     * The only record of why a photograph looks the way it does, and what a
+     * retry would have to send again. Never shown to anyone but her owner.
+     */
+    prompt: text('prompt').notNull(),
+
+    /** The provider's look setting: 'glam' or 'amateur'. Text, not an enum, so
+     *  a third one of theirs costs no migration here. */
+    style: text('style').notNull().default('glam'),
+
+    status: userCompanionStatus('status').notNull().default('generating'),
+
+    /** The provider's async job id, kept only so an in-flight one can be polled. */
+    providerJobId: text('provider_job_id'),
+
+    /**
+     * ABSOLUTE PATH ON THE MEDIA VOLUME, exactly like her portrait, and for
+     * the same reason: the provider answers with a presigned URL that expires,
+     * so a photograph we only linked to would quietly stop existing.
+     */
+    imagePath: text('image_path'),
+
+    errorMessage: text('error_message'),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('user_companion_photos_companion_created_idx').on(t.companionId, t.createdAt)],
+);
+
+export type UserCompanionPhotoRow = typeof userCompanionPhotos.$inferSelect;

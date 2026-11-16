@@ -15,6 +15,7 @@ import {
   type MyAiEthnicity,
 } from '@over18/shared';
 import { API_URL } from './api';
+import { MY_AI_PHOTO_IDEAS, myAiPhotoProblems } from '@over18/shared';
 import { absoluteMediaUrl } from './media';
 
 const COMPLETE: MyAiDraft = {
@@ -206,25 +207,45 @@ describe('naming her is a step, not a row on the review', () => {
   });
 });
 
-describe('deleting a companion', () => {
+describe('deleting, which is permanent', () => {
   /*
-   * Permanent, and taking her picture with her — so it is asked ON HER CARD,
-   * over her own photograph, rather than in a dialog floating above a two-up
-   * grid where "which one did I just tap?" is a question with a permanent
-   * answer.
+   * Deleting moved OFF the feed card when the feed became full-bleed: a
+   * picture you scroll past should not carry a destructive control, and the
+   * actions that are about HER belong on her own page.
    */
-  it('asks first, on the card, and says what is lost', () => {
-    const page = readFileSync(new URL('../pages/MyAiPage.tsx', import.meta.url), 'utf8');
-    expect(page).toContain('aria-label={`Delete ${companion.name}`}');
-    expect(page).toContain('onClick={() => setConfirming(true)}');
+  const her = () =>
+    readFileSync(new URL('../pages/MyAiCompanionPage.tsx', import.meta.url), 'utf8');
+
+  it('asks before deleting her, and says what else goes', () => {
+    const page = her();
     expect(page).toContain('Delete {companion.name}?');
-    expect(page).toContain('Her picture goes too. This cannot be undone.');
+    expect(page).toContain('of her photos go. This cannot be undone.');
     expect(page).toContain('Keep her');
   });
 
-  it('has a client call for it', () => {
+  it('asks before deleting one photo, over that photo', () => {
+    const page = her();
+    expect(page).toContain('aria-label={`Delete this photo of ${name}`}');
+    expect(page).toContain('onClick={() => setConfirming(true)}');
+    expect(page).toContain('Delete this photo?');
+  });
+
+  it('says plainly that deleting her original picture does not delete her', () => {
+    // She survives it: the provider keeps its own reference, so new photos
+    // still work. Somebody about to press a permanent button deserves that.
+    expect(her()).toContain('stays, and you can still make new photos of her');
+  });
+
+  it('has client calls for both', () => {
     const api = readFileSync(new URL('./api.ts', import.meta.url), 'utf8');
     expect(api).toContain('remove(id: string): Promise<void>');
+    expect(api).toContain('removePhoto(id: string, photoId: string): Promise<void>');
+  });
+
+  it('the feed card carries no destructive control at all', () => {
+    const feed = readFileSync(new URL('../pages/MyAiPage.tsx', import.meta.url), 'utf8');
+    expect(feed).not.toContain('TrashIcon');
+    expect(feed).not.toContain('myAiApi.remove');
   });
 });
 
@@ -262,5 +283,43 @@ describe('the review step shows its choices instead of hiding them', () => {
     expect(picker).toContain('onChange(voice);');
     // A voice with no sample stays selectable.
     expect(picker).toContain('setSilent((prev) => new Set(prev).add(voice));');
+  });
+});
+
+describe('asking for another photo of her', () => {
+  const composer = () =>
+    readFileSync(new URL('../components/my-ai/PhotoComposer.tsx', import.meta.url), 'utf8');
+
+  it('is a box the user types in, not a menu to pick from', () => {
+    // The point of the feature is that the user decides. A fixed list of
+    // looks would be a different, smaller feature wearing this one's name.
+    const source = composer();
+    expect(source).toContain('<textarea');
+    expect(source).toContain('onCreate({ prompt: prompt.trim(), style })');
+  });
+
+  it('offers starting points that only fill the box', () => {
+    // One tap replaces a blank box with an editable sentence; nothing locks.
+    expect(composer()).toContain('onClick={() => setPrompt(idea)}');
+    expect(MY_AI_PHOTO_IDEAS.length).toBeGreaterThan(4);
+  });
+
+  it('refuses an empty or oversized description, on both sides', () => {
+    expect(myAiPhotoProblems({ prompt: '', style: 'glam' })).toContain('prompt');
+    expect(myAiPhotoProblems({ prompt: '  ', style: 'glam' })).toContain('prompt');
+    expect(myAiPhotoProblems({ prompt: 'x'.repeat(400), style: 'glam' })).toContain('prompt');
+    expect(myAiPhotoProblems({ prompt: 'In a red bikini', style: 'glam' })).toEqual([]);
+  });
+
+  it('accepts only the provider’s two looks', () => {
+    expect(myAiPhotoProblems({ prompt: 'ok then', style: 'amateur' })).toEqual([]);
+    expect(myAiPhotoProblems({ prompt: 'ok then', style: 'cinematic' })).toContain('style');
+    expect(myAiPhotoProblems({ prompt: 'ok then' })).toContain('style');
+  });
+
+  it('makes one at a time, and says so while one is running', () => {
+    const page = readFileSync(new URL('../pages/MyAiCompanionPage.tsx', import.meta.url), 'utf8');
+    expect(page).toContain("busy ? 'A photo is being made…'");
+    expect(page).toContain('disabled={busy}');
   });
 });

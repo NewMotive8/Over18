@@ -158,6 +158,87 @@ export async function getCharacterStatus(env: MyAiEnv, guid: string): Promise<Oh
 export async function saveCharacter(env: MyAiEnv, guid: string): Promise<void> {
   await ohFetch(env, '/api/v2/characters/save', {
     method: 'POST',
-    body: { characterGuid: guid },
+    /*
+     * THE CEILING IS RAISED HERE, AND ONLY HERE.
+     *
+     * `contentLevel` governs what the provider will render for a character —
+     * her reference portrait AND every photograph asked for later. She is
+     * GENERATED at `Sexy` so the portrait that represents her is clothed;
+     * that was the fix for the first companion arriving naked.
+     *
+     * But her owner can ask for anything afterwards, and a companion capped
+     * at "suggestive/clothed" would have those requests refused by the
+     * provider with no way to lift the cap. Save documents itself as "any
+     * fields provided here override what was generated", so this is the one
+     * moment both are possible: the portrait is already drawn, and the
+     * ceiling applies from now on.
+     */
+    body: { characterGuid: guid, contentLevel: 'Sex' },
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * Further photographs of a character that already exists
+ * ------------------------------------------------------------------ */
+
+export type OhJobStatus = 'queued' | 'processing' | 'completed' | 'failed';
+
+export interface OhImageJob {
+  jobId: string;
+  status: OhJobStatus;
+}
+
+export interface OhJobResult {
+  status: OhJobStatus;
+  /** The finished image, as a presigned URL that expires. Null until done. */
+  url: string | null;
+  error: string | null;
+}
+
+/**
+ * Ask for another photograph of a character the provider already holds.
+ *
+ * ── WHY THIS IS NOT THE ENDPOINT THAT MADE HER ──────────────────────────────
+ *
+ * `/characters/generate` invents a person from attributes. This one addresses
+ * a person who exists — so the result is recognisably HER rather than a new
+ * woman matching the same description, which is the entire point of the
+ * feature. It needs her provider id, which only exists once she is saved.
+ *
+ * `prompt_enhancement` is ON: with it the provider rewrites the request in
+ * the chosen style and, for an explicit request, composes the scene properly.
+ * With it off, a short phrase like "nude, on white sheets" is handed to the
+ * model raw, and the results are markedly worse.
+ */
+export async function generateImage(
+  env: MyAiEnv,
+  input: { characterId: string; prompt: string; style: string },
+): Promise<OhImageJob> {
+  const body = (await ohFetch(env, '/api/v1/images', {
+    method: 'POST',
+    body: {
+      character_id: input.characterId,
+      prompt: input.prompt,
+      prompt_enhancement: true,
+      style: input.style,
+    },
+  })) as { job_id?: string; status?: OhJobStatus };
+
+  if (!body.job_id) {
+    throw new OhRequestError(200, JSON.stringify(body).slice(0, 300), 'The image service did not start the job.');
+  }
+  return { jobId: body.job_id, status: body.status ?? 'queued' };
+}
+
+/** Where an async job has got to, and its result when it has one. */
+export async function getJobStatus(env: MyAiEnv, jobId: string): Promise<OhJobResult> {
+  const body = (await ohFetch(env, `/api/v1/jobs/${encodeURIComponent(jobId)}/status`, {
+    method: 'GET',
+  })) as { status?: OhJobStatus; url?: string; error?: string };
+
+  return {
+    status: body.status ?? 'processing',
+    url: typeof body.url === 'string' && body.url.length > 0 ? body.url : null,
+    error: typeof body.error === 'string' ? body.error : null,
+  };
 }

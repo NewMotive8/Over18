@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MyAiDraft } from '@over18/shared';
-import { userCompanions } from '../db/schema.js';
+import { userCompanionPhotos, userCompanions } from '../db/schema.js';
 import {
   createTestContext,
   destroyTestContext,
@@ -381,5 +381,267 @@ describe('deleting one', () => {
     const res = await on.app.inject({ method: 'GET', url: '/api/my-ai', cookies: bob });
     const { companions } = res.json<{ companions: { name: string }[] }>();
     expect(companions.map((c) => c.name)).toEqual(['Bobs']);
+  });
+});
+
+/**
+ * Further photographs of a companion she already has.
+ *
+ * THE RULE IS THE SAME ONE AS EVERYWHERE ELSE HERE: a photograph has no
+ * owner of its own. It belongs to a companion, and the companion belongs to
+ * an account — so every route joins back to that account, and a photo id on
+ * its own proves nothing about who may see it.
+ */
+async function givePhoto(
+  companionId: string,
+  opts: { prompt?: string; withImage?: boolean; status?: 'generating' | 'ready' | 'failed' } = {},
+) {
+  const [row] = await on.db
+    .insert(userCompanionPhotos)
+    .values({
+      companionId,
+      prompt: opts.prompt ?? 'In a red bikini by the pool',
+      style: 'glam',
+      status: opts.status ?? 'ready',
+    })
+    .returning();
+
+  if (opts.withImage !== false) {
+    const dir = join(testEnv.media.storageDir, 'my-ai', 'photos');
+    const path = join(dir, `${row.id}.jpg`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, JPEG);
+    await on.pool.query('UPDATE user_companion_photos SET image_path = $1 WHERE id = $2', [
+      path,
+      row.id,
+    ]);
+  }
+  return row;
+}
+
+describe('her gallery', () => {
+  it('puts her original portrait first, then everything since', async () => {
+    const hers = await giveCompanion(aliceId);
+    await givePhoto(hers.id, { prompt: 'Nude, on white sheets' });
+
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/my-ai/${hers.id}/photos`,
+      cookies: alice,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const { photos } = res.json<{ photos: { isReference: boolean; prompt: string }[] }>();
+    expect(photos).toHaveLength(2);
+    expect(photos[0].isReference).toBe(true);
+    expect(photos[1].prompt).toBe('Nude, on white sheets');
+  });
+
+  it('shows nobody else’s gallery', async () => {
+    const hers = await giveCompanion(aliceId);
+    const stranger = await on.app.inject({
+      method: 'GET',
+      url: `/api/my-ai/${hers.id}/photos`,
+      cookies: bob,
+    });
+    expect(stranger.statusCode).toBe(404);
+  });
+
+  it('serves a photo to her owner and to nobody else', async () => {
+    const hers = await giveCompanion(aliceId);
+    const photo = await givePhoto(hers.id);
+
+    const owner = await on.app.inject({
+      method: 'GET',
+      url: `/api/my-ai/${hers.id}/photos/${photo.id}/image`,
+      cookies: alice,
+    });
+    expect(owner.statusCode).toBe(200);
+    expect(owner.headers['content-type']).toContain('image/jpeg');
+    expect(owner.headers['cache-control']).toContain('private');
+
+    const stranger = await on.app.inject({
+      method: 'GET',
+      url: `/api/my-ai/${hers.id}/photos/${photo.id}/image`,
+      cookies: bob,
+    });
+    expect(stranger.statusCode).toBe(404);
+  });
+
+  /*
+   * THE ONE MOST WORTH WRITING DOWN. A photo id is a uuid in a URL. If the
+   * route looked it up without joining back to the account, anybody holding
+   * one could read it — and the companion id in the path would be decoration.
+   */
+  it('refuses a photo asked for under somebody else’s companion id', async () => {
+    const hers = await giveCompanion(aliceId);
+    const photo = await givePhoto(hers.id);
+    const his = await giveCompanion(bobId, { name: 'His' });
+
+    const res = await on.app.inject({
+      method: 'GET',
+      url: `/api/my-ai/${his.id}/photos/${photo.id}/image`,
+      cookies: bob,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('needs a session for every one of them', async () => {
+    const hers = await giveCompanion(aliceId);
+    const photo = await givePhoto(hers.id);
+    for (const url of [
+      `/api/my-ai/${hers.id}/photos`,
+      `/api/my-ai/${hers.id}/photos/${photo.id}/image`,
+    ]) {
+      expect((await on.app.inject({ method: 'GET', url })).statusCode, url).toBe(401);
+    }
+    expect(
+      (await on.app.inject({ method: 'POST', url: `/api/my-ai/${hers.id}/photos`, payload: {} }))
+        .statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await on.app.inject({
+          method: 'DELETE',
+          url: `/api/my-ai/${hers.id}/photos/${photo.id}`,
+        })
+      ).statusCode,
+    ).toBe(401);
+  });
+});
+
+describe('asking for another photo', () => {
+  it('refuses a description the composer could not have produced', async () => {
+    const hers = await giveCompanion(aliceId);
+    const res = await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/photos`,
+      cookies: alice,
+      payload: { prompt: '', style: 'cinematic' },
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json<{ error: string; fields: string[] }>();
+    expect(body.error).toBe('invalid_photo_request');
+    expect(body.fields).toEqual(expect.arrayContaining(['prompt', 'style']));
+  });
+
+  it('says plainly when the environment has no provider configured', async () => {
+    const hers = await giveCompanion(aliceId);
+    const res = await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/photos`,
+      cookies: alice,
+      payload: { prompt: 'In a red bikini by the pool', style: 'glam' },
+    });
+    expect(res.statusCode).toBe(503);
+  });
+
+  it('writes nothing when it refuses', async () => {
+    const hers = await giveCompanion(aliceId);
+    await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/photos`,
+      cookies: alice,
+      payload: { prompt: 'In a red bikini by the pool', style: 'glam' },
+    });
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companion_photos');
+    expect(rows[0].n).toBe(0);
+  });
+});
+
+describe('deleting photographs', () => {
+  it('removes one photo and its file, leaving her and the rest', async () => {
+    const hers = await giveCompanion(aliceId);
+    const one = await givePhoto(hers.id, { prompt: 'One' });
+    await givePhoto(hers.id, { prompt: 'Two' });
+    const path = join(testEnv.media.storageDir, 'my-ai', 'photos', `${one.id}.jpg`);
+
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: `/api/my-ai/${hers.id}/photos/${one.id}`,
+      cookies: alice,
+    });
+
+    expect(res.statusCode).toBe(204);
+    expect(existsSync(path)).toBe(false);
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companion_photos');
+    expect(rows[0].n).toBe(1);
+    const still = await on.app.inject({ method: 'GET', url: '/api/my-ai', cookies: alice });
+    expect(still.json<{ companions: unknown[] }>().companions).toHaveLength(1);
+  });
+
+  it('refuses somebody else’s photo and leaves it alone', async () => {
+    const hers = await giveCompanion(aliceId);
+    const photo = await givePhoto(hers.id);
+
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: `/api/my-ai/${hers.id}/photos/${photo.id}`,
+      cookies: bob,
+    });
+
+    expect(res.statusCode).toBe(404);
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companion_photos');
+    expect(rows[0].n).toBe(1);
+  });
+
+  /*
+   * `reference` is a reserved id, not a row: her original portrait lives on
+   * the companion. Deleting it must clear that and nothing else — SHE stays,
+   * because the provider keeps its own copy and further photos still work.
+   */
+  it('deletes her original portrait without deleting her', async () => {
+    const hers = await giveCompanion(aliceId);
+    const path = join(testEnv.media.storageDir, 'my-ai', `${hers.id}.jpg`);
+
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: `/api/my-ai/${hers.id}/photos/reference`,
+      cookies: alice,
+    });
+
+    expect(res.statusCode).toBe(204);
+    expect(existsSync(path)).toBe(false);
+    const { rows } = await on.pool.query('SELECT image_path FROM user_companions WHERE id = $1', [
+      hers.id,
+    ]);
+    expect(rows).toHaveLength(1); // she is still here
+    expect(rows[0].image_path).toBeNull();
+  });
+
+  it('404s her portrait when she has none', async () => {
+    const hers = await giveCompanion(aliceId, { withImage: false });
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: `/api/my-ai/${hers.id}/photos/reference`,
+      cookies: alice,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  /*
+   * THE ONE THAT LEAVES RUBBISH BEHIND IF IT IS WRONG. The foreign key
+   * cascades, so her photo ROWS go on their own — taking with them any
+   * record of where their files are. The paths have to be read first.
+   */
+  it('takes every photo file with her when she is deleted', async () => {
+    const hers = await giveCompanion(aliceId);
+    const one = await givePhoto(hers.id, { prompt: 'One' });
+    const two = await givePhoto(hers.id, { prompt: 'Two' });
+    const paths = [one, two].map((p) =>
+      join(testEnv.media.storageDir, 'my-ai', 'photos', `${p.id}.jpg`),
+    );
+    expect(paths.every((p) => existsSync(p))).toBe(true);
+
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: `/api/my-ai/${hers.id}`,
+      cookies: alice,
+    });
+
+    expect(res.statusCode).toBe(204);
+    expect(paths.some((p) => existsSync(p))).toBe(false);
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companion_photos');
+    expect(rows[0].n).toBe(0);
   });
 });

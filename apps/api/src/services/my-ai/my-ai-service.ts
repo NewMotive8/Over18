@@ -1,11 +1,10 @@
-import { mkdir, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
 import { and, desc, eq } from 'drizzle-orm';
 import type { MyAiCompanion, MyAiDraft } from '@over18/shared';
 import type { Db } from '../../db/client.js';
 import { userCompanions, type UserCompanionRow } from '../../db/schema.js';
 import type { MyAiEnv } from '../../env.js';
-import { isInsideStorageRoot } from '../message-media-service.js';
+import { DOWNLOAD_ATTEMPTS, downloadImage, removeImage } from './media.js';
+import { photoPathsFor } from './my-ai-photos.js';
 import { toOhPayload, type OhCharacterPayload } from './oh-mapping.js';
 import {
   generateCharacter,
@@ -30,9 +29,6 @@ import {
 /** Minutes a generation may take before we stop waiting and call it failed. */
 const POLL_TIMEOUT_MS = 4 * 60 * 1000;
 const POLL_INTERVAL_MS = 4_000;
-/** A portrait is a few hundred KB. Anything far past that is not one. */
-const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
-
 /**
  * The provider states that mean she has been drawn.
  *
@@ -43,14 +39,6 @@ const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 export const RENDERED_STATUSES: readonly OhStatus[] = ['ready', 'saving', 'saved'];
 export const isRendered = (status: OhStatus): boolean => RENDERED_STATUSES.includes(status);
 
-/**
- * How long to keep asking for the picture after she is drawn.
- *
- * Six attempts, five seconds apart. The URL is named in the very first
- * response and the file appears behind it a moment later; this is the gap.
- */
-const DOWNLOAD_ATTEMPTS = 6;
-const DOWNLOAD_RETRY_MS = 5_000;
 
 export function toWire(row: UserCompanionRow): MyAiCompanion {
   return {
@@ -129,19 +117,6 @@ export async function createCompanion(
 }
 
 /**
- * Remove a portrait from our volume, carefully.
- *
- * The path comes out of our own row, but it is still checked against
- * MEDIA_STORAGE_DIR before anything is unlinked — a delete that trusts a
- * stored path is one bad row away from removing something else entirely.
- * A file that is already gone is not an error.
- */
-async function removePortrait(path: string, storageDir: string): Promise<void> {
-  if (!isInsideStorageRoot(storageDir, path)) return;
-  await unlink(path).catch(() => {});
-}
-
-/**
  * Delete one of her owner's companions, and her picture with her.
  *
  * Owner-scoped like every other operation here, and it answers false for
@@ -158,13 +133,24 @@ export async function deleteCompanion(
   const row = await getCompanion(db, userId, id);
   if (!row) return false;
 
+  /*
+   * HER PHOTOGRAPHS' FILES ARE COLLECTED BEFORE THE ROW GOES.
+   *
+   * The foreign key cascades, so deleting her removes those rows for us — and
+   * with them any record of where their files are. Read the paths first or
+   * the pictures stay on the volume for ever, referenced by nothing, which is
+   * the one outcome a delete must not produce.
+   */
+  const photoFiles = await photoPathsFor(db, id);
+
   const deleted = await db
     .delete(userCompanions)
     .where(and(eq(userCompanions.id, id), eq(userCompanions.userId, userId)))
     .returning({ id: userCompanions.id });
   if (deleted.length === 0) return false;
 
-  if (row.imagePath) await removePortrait(row.imagePath, storageDir);
+  if (row.imagePath) await removeImage(row.imagePath, storageDir);
+  for (const path of photoFiles) await removeImage(path, storageDir);
   return true;
 }
 
@@ -278,7 +264,7 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
      * behind on the volume that nothing will ever reference or clean up.
      */
     if (finished.length === 0) {
-      await removePortrait(imagePath, deps.storageDir);
+      await removeImage(imagePath, deps.storageDir);
       log.info({ companionId }, 'my-ai companion was deleted while being created; portrait discarded');
       return;
     }
@@ -401,62 +387,47 @@ async function startGeneration(
 }
 
 /**
- * Copy the portrait onto OUR media volume.
+ * Copy her reference portrait onto OUR media volume.
  *
- * The provider hands back a URL on their servers. A URL we do not host is not
- * storage: it expires, it depends on their uptime for every future view, and
- * it survives exactly as long as our account does. Downloading the bytes once
- * means a companion keeps her face if we change provider, and puts her inside
- * the same volume the backup process already covers.
- *
- * AND IT ASKS MORE THAN ONCE. The URL is named before the file exists, so a
- * 404 just after she is drawn means "not uploaded yet", not "wrong address".
- * One attempt is how a finished companion gets thrown away over a second of
- * CDN lag. Anything that is not a 404 or a 403 is not going to improve by
- * asking again, so it stops immediately.
- *
- * Exported for testing: this is the one part whose behaviour is a sequence of
- * provider responses rather than a value, and it is where the first live
- * creation failed.
+ * A thin wrapper over the shared downloader, kept by name because this is the
+ * one picture that is NOT a row in `user_companion_photos`: the provider drew
+ * it from her attributes, and it is the input to every photograph asked for
+ * later.
  */
-export async function downloadPortrait(
+export function downloadPortrait(
   url: string,
   storageDir: string,
   companionId: string,
   sleep: (ms: number) => Promise<void>,
   attempts = DOWNLOAD_ATTEMPTS,
 ): Promise<string> {
-  let lastStatus = 0;
+  return downloadImage(url, storageDir, 'my-ai', companionId, sleep, attempts);
+}
 
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+/**
+ * Delete her ORIGINAL portrait, leaving her in place.
+ *
+ * She survives it. The provider keeps its own copy of her reference image —
+ * this is a copy on our volume — so further photographs of her still work.
+ * The gallery simply falls back to whatever else she has, and a companion
+ * with nothing left shows the empty state rather than disappearing.
+ */
+export async function deletePortrait(
+  db: Db,
+  userId: string,
+  id: string,
+  storageDir: string,
+): Promise<boolean> {
+  const row = await getCompanion(db, userId, id);
+  if (!row?.imagePath) return false;
 
-    if (response.ok) {
-      const buffer = Buffer.from(await response.arrayBuffer());
-      if (buffer.byteLength === 0 || buffer.byteLength > MAX_IMAGE_BYTES) {
-        throw new OhRequestError(200, `portrait size ${buffer.byteLength}`, 'Her picture could not be downloaded.');
-      }
+  const cleared = await db
+    .update(userCompanions)
+    .set({ imagePath: null, updatedAt: new Date() })
+    .where(and(eq(userCompanions.id, id), eq(userCompanions.userId, userId)))
+    .returning({ id: userCompanions.id });
+  if (cleared.length === 0) return false;
 
-      /*
-       * The filename is built from the companion's own UUID and a fixed
-       * extension — never from the provider's URL, which is attacker-adjacent
-       * input and the usual way a path escapes its directory. There is nothing
-       * here for `..` to come from.
-       */
-      const path = resolve(join(storageDir, 'my-ai', `${companionId}.jpg`));
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, buffer);
-      return path;
-    }
-
-    lastStatus = response.status;
-    if (response.status !== 404 && response.status !== 403) break;
-    if (attempt < attempts) await sleep(DOWNLOAD_RETRY_MS);
-  }
-
-  throw new OhRequestError(
-    lastStatus,
-    `portrait download ${lastStatus}`,
-    'Her picture could not be downloaded.',
-  );
+  await removeImage(row.imagePath, storageDir);
+  return true;
 }
