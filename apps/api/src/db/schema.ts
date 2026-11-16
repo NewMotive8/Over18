@@ -3572,6 +3572,24 @@ export const userCompanionStatus = pgEnum('user_companion_status', [
   'failed',
 ]);
 
+/**
+ * HER PHOTOGRAPH'S PROGRESS, which is not the same thing as hers.
+ *
+ * Her opening photograph is a second provider render and it takes ~53 seconds
+ * — measured four times, and there is no parameter that shortens it. Her
+ * character is drawn in ~15-19s and needs nothing more to be talked to, so
+ * `status` stops waiting for the picture and this carries it instead.
+ *
+ * It exists because "no picture yet" and "no picture coming" look identical
+ * from the outside, and a client that cannot tell them apart either stops
+ * polling before the photograph lands or polls for ever when it never will.
+ */
+export const userCompanionPortraitStatus = pgEnum('user_companion_portrait_status', [
+  'pending',
+  'ready',
+  'failed',
+]);
+
 export const userCompanions = pgTable(
   'user_companions',
   {
@@ -3594,6 +3612,16 @@ export const userCompanions = pgTable(
     attributes: jsonb('attributes').$type<MyAiAttributes>().notNull(),
 
     status: userCompanionStatus('status').notNull().default('generating'),
+
+    /**
+     * Whether her opening photograph is still coming.
+     *
+     * 'pending' from the moment she is created until the second render
+     * finishes, which is about a minute after she becomes usable. The web
+     * client polls on THIS rather than on `status`, which now flips to
+     * 'ready' as soon as she is drawn.
+     */
+    portraitStatus: userCompanionPortraitStatus('portrait_status').notNull().default('pending'),
 
     /**
      * The provider's own id for her, kept only so an in-flight generation can

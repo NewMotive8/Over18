@@ -328,11 +328,27 @@ export type MyAiAttributes = Pick<
 
 export type MyAiStatus = 'generating' | 'ready' | 'failed';
 
+/**
+ * Her photograph's progress, which finishes about a minute after she does.
+ *
+ * Her character is drawn in ~15-19s; her opening photograph is a SECOND
+ * provider render and takes ~53s, measured four times with no parameter that
+ * shortens it. So she is `ready` as soon as she is drawn, and this says
+ * whether her picture is still on its way.
+ *
+ * 'failed' and 'pending' must stay distinct: "no picture yet" and "no picture
+ * coming" look identical on screen, and a client that cannot tell them apart
+ * either gives up before the photograph lands or waits for ever.
+ */
+export type MyAiPortraitStatus = 'pending' | 'ready' | 'failed';
+
 export interface MyAiCompanion {
   id: string;
   name: string;
   age: number;
   status: MyAiStatus;
+  /** Whether her opening photograph is still being made. */
+  portraitStatus: MyAiPortraitStatus;
   imageUrl: string | null;
   createdAt: string;
 }

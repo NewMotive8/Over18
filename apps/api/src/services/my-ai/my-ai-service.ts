@@ -29,11 +29,13 @@ import {
 /** Minutes a generation may take before we stop waiting and call it failed. */
 const POLL_TIMEOUT_MS = 4 * 60 * 1000;
 /*
- * Tightened from 4s. Every stage here begins with a wait, so the interval is
- * added to the real work three times over before a companion appears — and a
- * poll against a status endpoint is cheap next to the generation it watches.
+ * Tightened from 4s, then from 2.5s. This interval is now ON the headline
+ * number — a companion becomes usable the moment this loop notices she is
+ * drawn, so on average half of it is added to the only wait the user sees.
+ * A status GET is cheap next to the render it watches; a second of her life
+ * is not.
  */
-const POLL_INTERVAL_MS = 2_500;
+const POLL_INTERVAL_MS = 1_500;
 /**
  * The provider states that mean she has been drawn.
  *
@@ -51,6 +53,12 @@ export function toWire(row: UserCompanionRow): MyAiCompanion {
     name: row.name,
     age: row.age,
     status: row.status,
+    /*
+     * Her picture's progress, separately from hers. The client polls on this,
+     * because `status` now reaches 'ready' about a minute before the
+     * photograph does.
+     */
+    portraitStatus: row.portraitStatus,
     /*
      * An OWNER-SCOPED route, not a storage key and not the provider's URL.
      * Deliberately not the public `/api/media/assets/:id/file` the lobby uses,
@@ -170,10 +178,37 @@ interface GenerationDeps {
   now?: () => number;
 }
 
+/**
+ * She could not be drawn at all.
+ *
+ * `portraitStatus` goes with her: a companion who never existed has no
+ * photograph on the way, and leaving it 'pending' would have the client poll
+ * for one until the tab is closed.
+ */
 const fail = async (db: Db, id: string, message: string) => {
   await db
     .update(userCompanions)
-    .set({ status: 'failed', errorMessage: message, updatedAt: new Date() })
+    .set({
+      status: 'failed',
+      portraitStatus: 'failed',
+      errorMessage: message,
+      updatedAt: new Date(),
+    })
+    .where(eq(userCompanions.id, id));
+};
+
+/**
+ * Settle the PHOTOGRAPH's outcome, leaving her alone.
+ *
+ * Used for every way the picture can be lost after she is already `ready` and
+ * in use — a provider save that never reports an id, a render that throws.
+ * Deliberately never touches `status`: she is finished and may be mid
+ * conversation, and the only thing that failed is a picture.
+ */
+const markPortrait = async (db: Db, id: string, outcome: 'ready' | 'failed') => {
+  await db
+    .update(userCompanions)
+    .set({ portraitStatus: outcome, updatedAt: new Date() })
     .where(eq(userCompanions.id, id));
 };
 
@@ -189,6 +224,17 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
 
   const startedAt = now();
   const since = () => Math.round((now() - startedAt) / 1000);
+
+  /*
+   * Whether she has already been handed to her owner.
+   *
+   * Everything after the flip to `ready` — the provider save, the opening
+   * photograph — concerns her PICTURE, not her. Once this is true a thrown
+   * error must never mark her failed: she is on her owner's list and may be
+   * mid-conversation, and "she could not be created" about a companion you
+   * are talking to is simply a lie.
+   */
+  let isUsable = false;
 
   try {
     const [row] = await db
@@ -252,24 +298,64 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
      */
 
     /*
+     * ── SHE IS FINISHED HERE, AND THIS IS THE WHOLE POINT ───────────────────
+     *
+     * `ready` the moment she is DRAWN — not when her photograph arrives.
+     *
+     * Creation used to mean three serial provider jobs, and it was measured on
+     * staging four times over: drawn in 15-19s, saved in a further 17s, and
+     * then a 53-second second render for her opening photograph. Eighty-odd
+     * seconds, of which she spent sixty-five already existing.
+     *
+     * None of what makes her usable is waiting on those two. Her conversation
+     * is built from her own attributes and runs through our own model, so she
+     * can be talked to the instant she is drawn; the save exists ONLY to mint
+     * the provider id her photograph needs, and the photograph is a picture of
+     * somebody who is already there.
+     *
+     * The 53 seconds cannot be shortened — there is no quality, step or model
+     * parameter on the provider's image endpoint, `imageModel` is accepted
+     * unvalidated, and resolution makes no difference (52s at 1080x1920, 53s
+     * at 720x1280). So the wait is not removed, it is moved OFF the thing the
+     * user is waiting for. She arrives in under half a minute and her
+     * photograph develops behind her.
+     */
+    log.info({ companionId, afterSeconds: since() }, 'my-ai: character drawn');
+
+    const [usable] = await db
+      .update(userCompanions)
+      .set({ status: 'ready', errorMessage: null, updatedAt: new Date() })
+      .where(eq(userCompanions.id, companionId))
+      .returning();
+    if (!usable) {
+      log.info({ companionId }, 'my-ai companion was deleted while being created');
+      return;
+    }
+    isUsable = true;
+    log.info({ companionId, afterSeconds: since() }, 'my-ai companion ready');
+
+    /*
      * SAVE HER AT THE PROVIDER, which is what mints the numeric id. A
      * generated-but-unsaved character has `characterId: null`, and that id is
      * how the image endpoint addresses a character — so until she is saved
      * there can be no photograph of her at all, which now includes the first
-     * one. Measured on staging: unsaved reports null, saved reports a number.
+     * one. Verified both ways on staging: unsaved reports null, and the image
+     * endpoint answers `404 Character <guid> not found` when handed the guid,
+     * so this step cannot be skipped or run alongside the photograph.
      *
      * It happens automatically rather than behind a "Confirm" button, because
      * saving costs nothing and cannot be done twice ("already saved" is a
      * 400), and a companion who is finished but unsaved could never be
      * photographed again.
+     *
+     * A FAILURE HERE NO LONGER FAILS HER. She is already `ready` and her owner
+     * is already talking to her; only the photograph is lost.
      */
-    log.info({ companionId, afterSeconds: since() }, 'my-ai: character drawn');
-
     await saveCharacter(env, started.characterGuid);
     const characterId = await awaitSavedId(deps, started.characterGuid);
     if (characterId === null) {
       log.warn({ companionId }, 'my-ai: provider save did not report an id in time');
-      await fail(db, companionId, 'She could not be finished. Please try again.');
+      await markPortrait(db, companionId, 'failed');
       return;
     }
 
@@ -307,11 +393,12 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       });
     } catch (cause) {
       /*
-       * SHE STILL EXISTS. The expensive, irreversible part — the character
-       * herself — is done and saved, so losing her over a failed photograph
-       * would throw away the thing that cost the most. She arrives without a
-       * picture and her page invites one; what must never happen is falling
-       * back to the nude reference to fill the gap.
+       * SHE STILL EXISTS — and by now her owner may well be mid-conversation
+       * with her, because she became `ready` a minute ago. The expensive,
+       * irreversible part is done; losing her over a failed photograph would
+       * throw away the thing that cost the most. Her page invites a picture
+       * instead. What must never happen is falling back to the nude reference
+       * to fill the gap.
        */
       log.warn(
         { companionId, providerDetail: cause instanceof OhRequestError ? cause.providerDetail : String(cause) },
@@ -319,9 +406,18 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       );
     }
 
+    /*
+     * HER STATUS IS NOT TOUCHED HERE. She was marked `ready` the moment she
+     * was drawn, and re-asserting it now would quietly undo anything that
+     * happened to her in the meantime.
+     */
     const finished = await db
       .update(userCompanions)
-      .set({ status: 'ready', imagePath, errorMessage: null, updatedAt: new Date() })
+      .set({
+        imagePath,
+        portraitStatus: imagePath ? ('ready' as const) : ('failed' as const),
+        updatedAt: new Date(),
+      })
       .where(eq(userCompanions.id, companionId))
       .returning({ id: userCompanions.id });
 
@@ -341,18 +437,32 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
      * The stage timings are logged because "it took over a minute" was
      * otherwise a question only archaeology could answer: three provider
      * jobs, and no way to tell which one was slow without reconstructing it
-     * from timestamps afterwards.
+     * from timestamps afterwards. `afterSeconds` here is the PHOTOGRAPH's
+     * arrival, long after the companion's own.
      */
     log.info(
       { companionId, withPhoto: imagePath !== null, afterSeconds: since() },
-      'my-ai companion ready',
+      'my-ai: opening photo settled',
     );
   } catch (cause) {
     // Provider text goes to the log; the owner gets something plain.
     log.error(
-      { companionId, providerDetail: cause instanceof OhRequestError ? cause.providerDetail : String(cause) },
+      { companionId, isUsable, providerDetail: cause instanceof OhRequestError ? cause.providerDetail : String(cause) },
       'my-ai generation errored',
     );
+
+    /*
+     * ONLY THE PICTURE FAILED, if she was already handed over. The provider
+     * save throws from here — it is the step between her becoming usable and
+     * her photograph being asked for — and marking a companion her owner is
+     * talking to as "could not be created" would be both wrong and
+     * destructive.
+     */
+    if (isUsable) {
+      await markPortrait(db, companionId, 'failed').catch(() => {});
+      return;
+    }
+
     await fail(
       db,
       companionId,

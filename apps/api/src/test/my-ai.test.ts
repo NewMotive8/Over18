@@ -85,7 +85,17 @@ async function register(email: string): Promise<[Record<string, string>, string]
 /** A finished companion, inserted straight in — no provider involved. */
 async function giveCompanion(
   userId: string,
-  opts: { name?: string; withImage?: boolean; status?: 'generating' | 'ready' | 'failed' } = {},
+  opts: {
+    name?: string;
+    withImage?: boolean;
+    status?: 'generating' | 'ready' | 'failed';
+    /**
+     * Her PHOTOGRAPH's progress, which finishes about a minute after she does.
+     * Defaults to match whether she was given a picture, so a fixture reads
+     * the way a real companion would.
+     */
+    portraitStatus?: 'pending' | 'ready' | 'failed';
+  } = {},
 ) {
   const [row] = await on.db
     .insert(userCompanions)
@@ -100,6 +110,8 @@ async function giveCompanion(
         relationship: 'girlfriend', job: 'nurse', interests: ['yoga'],
       },
       status: opts.status ?? 'ready',
+      portraitStatus:
+        opts.portraitStatus ?? (opts.withImage === false ? ('failed' as const) : ('ready' as const)),
     })
     .returning();
 
@@ -121,6 +133,62 @@ describe('a companion belongs to exactly one account', () => {
     expect(res.statusCode).toBe(200);
     const { companions } = res.json<{ companions: { name: string }[] }>();
     expect(companions.map((c) => c.name)).toEqual(['Alices']);
+  });
+
+  /*
+   * ── SHE IS USABLE A MINUTE BEFORE HER PICTURE EXISTS ────────────────────
+   *
+   * Creating a companion is three serial provider jobs: drawn in 15-19s, a
+   * further ~17s to save her, then a 53-second second render for her opening
+   * photograph. Only the first produces anything the user needs — her
+   * conversation is built from her own attributes — so she is `ready` while
+   * `portraitStatus` is still 'pending', and both facts have to survive the
+   * trip to the client or the screen cannot tell the two waits apart.
+   */
+  it('hands her over before her photograph exists, and says the picture is still coming', async () => {
+    const hers = await giveCompanion(aliceId, {
+      status: 'ready',
+      withImage: false,
+      portraitStatus: 'pending',
+    });
+
+    const res = await on.app.inject({ method: 'GET', url: '/api/my-ai', cookies: alice });
+    const { companions } = res.json<{
+      companions: { status: string; portraitStatus: string; imageUrl: string | null }[];
+    }>();
+    expect(companions).toHaveLength(1);
+    expect(companions[0].status).toBe('ready');
+    expect(companions[0].portraitStatus).toBe('pending');
+    expect(companions[0].imageUrl).toBeNull();
+
+    // And she talks, which is the entire reason for handing her over early.
+    const said = await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/messages`,
+      cookies: alice,
+      payload: { body: 'Hello you' },
+    });
+    expect(said.statusCode).toBe(200);
+
+    /*
+     * But she is not accepted for ANOTHER photograph yet. The provider mints
+     * the id its image endpoint needs only on save, and it answers
+     * `404 Character <guid> not found` when handed a guid instead — so a
+     * request now could not be fulfilled.
+     *
+     * The code here is 503, not the 409 the companion check would give: this
+     * suite runs with `testEnv.myAi` null so that no test can spend money at
+     * the provider, and the "no provider configured" guard is reached first.
+     * What matters either way is that it is REFUSED rather than started.
+     */
+    const photo = await on.app.inject({
+      method: 'POST',
+      url: `/api/my-ai/${hers.id}/photos`,
+      cookies: alice,
+      payload: { prompt: 'In a red dress', style: 'glam' },
+    });
+    expect(photo.statusCode).not.toBe(202);
+    expect([409, 503]).toContain(photo.statusCode);
   });
 
   it('refuses to fetch someone else’s, with the same 404 as one that does not exist', async () => {

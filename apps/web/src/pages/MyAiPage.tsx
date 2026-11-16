@@ -41,6 +41,18 @@ const POLL_INTERVAL_MS = 3_000;
 const POLL_MAX_ATTEMPTS = 60;
 
 /**
+ * Is anything about this companion still being made?
+ *
+ * Her character and her photograph finish about a minute apart, so this asks
+ * about BOTH: `status` leaves 'generating' when she is drawn, and
+ * `portraitStatus` leaves 'pending' only when her picture has settled one way
+ * or the other. Module scope, so the polling effect is not closing over a
+ * function rebuilt on every render.
+ */
+const outstanding = (c: MyAiCompanion) =>
+  c.status === 'generating' || c.portraitStatus === 'pending';
+
+/**
  * One companion, filling the screen.
  *
  * ── WHY FULL-BLEED AND NOT A GRID ───────────────────────────────────────────
@@ -92,22 +104,37 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
           <div className="flex aspect-[3/4] w-full items-center justify-center bg-zinc-900 text-sm text-zinc-500">
             Couldn&apos;t be drawn
           </div>
-        ) : companion.status === 'ready' ? (
+        ) : companion.portraitStatus === 'pending' ? (
           /*
-           * SHE EXISTS, WITH NO PICTURE. Her opening photograph failed while
-           * the character herself — the expensive, irreversible part — was
-           * already saved. Keeping her is right; filling the gap with the
-           * provider's nude reference would not be. Her page offers a photo.
+           * ── HER PICTURE IS STILL COMING, AND SHE MAY ALREADY BE FINISHED ──
+           *
+           * These are two different waits wearing the same placeholder. She is
+           * drawn in about twenty seconds; her opening photograph is a second
+           * provider render that takes a further minute and cannot be made
+           * faster. So for most of this frame's life she is DONE — named, on
+           * the list, and ready to talk to — and only her photograph is
+           * outstanding. The label says which wait this is, because "Creating…"
+           * over a companion you could already be chatting to is just wrong.
+           *
+           * The placeholder has no picture to take its height from, so unlike
+           * a loaded photograph it keeps a shape of its own.
+           */
+          <div className="relative aspect-[3/4] w-full">
+            <CreatingPortrait
+              label={companion.status === 'ready' ? 'Her photo is developing' : 'Creating…'}
+            />
+          </div>
+        ) : (
+          /*
+           * SHE EXISTS, WITH NO PICTURE AND NONE ON THE WAY. Her opening
+           * photograph failed while the character herself — the expensive,
+           * irreversible part — was already saved. Keeping her is right;
+           * filling the gap with the provider's nude reference would not be.
+           * Her page offers a photo.
            */
           <div className="flex aspect-[3/4] w-full flex-col items-center justify-center gap-1 bg-zinc-900 px-6 text-center">
             <span className="text-sm text-zinc-400">No photo yet</span>
             <span className="text-xs text-zinc-600">Tap to make her one</span>
-          </div>
-        ) : (
-          /* The placeholder has no picture to take its height from, so it
-             keeps a shape of its own. */
-          <div className="relative aspect-[3/4] w-full">
-            <CreatingPortrait />
           </div>
         )}
 
@@ -196,11 +223,22 @@ export default function MyAiPage() {
    * open her, or leave entirely. A progress screen that owns the whole
    * display is the thing that made a minute feel like five.
    *
-   * It stops: when nothing is generating, on unmount, and after a bounded
+   * ── WHY THIS WATCHES THE PICTURE AND NOT HER ────────────────────────────
+   *
+   * `status` reaches 'ready' as soon as she is drawn, roughly a minute before
+   * her photograph lands. Polling on `status` alone would therefore stop at
+   * the earlier of the two and her picture would never appear without a
+   * reload — so the condition is the PHOTOGRAPH's progress, which 'pending'
+   * covers for both waits at once.
+   *
+   * This is also why 'pending' and 'failed' had to be told apart: a lost
+   * photograph that still read as "coming" would poll until the tab closed.
+   *
+   * It stops: when nothing is outstanding, on unmount, and after a bounded
    * number of attempts. An unbounded poll against a stuck job is a tab that
    * heats a phone until it is closed.
    */
-  const waiting = companions?.some((c) => c.status === 'generating') ?? false;
+  const waiting = companions?.some(outstanding) ?? false;
 
   useEffect(() => {
     if (!waiting) return;
@@ -214,7 +252,7 @@ export default function MyAiPage() {
         const { companions: next } = await myAiApi.list();
         if (!live.current) return;
         setCompanions(next);
-        if (!next.some((c) => c.status === 'generating')) return;
+        if (!next.some(outstanding)) return;
       } catch {
         // A blip between polls is not a failure; the attempt cap ends it.
       }

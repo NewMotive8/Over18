@@ -68,9 +68,20 @@ export default function MyAiCompanionPage() {
     });
   }, [load]);
 
-  /** Poll while anything is still being made, and stop when nothing is. */
+  /**
+   * Poll while anything is still being made, and stop when nothing is.
+   *
+   * HER OWN PORTRAIT IS ONE OF THOSE THINGS. She is reachable about a minute
+   * before her opening photograph arrives, so this page is often open while
+   * that render is still running — and her portrait is not a row in `photos`,
+   * it lands on her own record. So the poll reloads BOTH her and her gallery,
+   * and watches `portraitStatus` as well as the photographs.
+   */
   useEffect(() => {
-    if (!photos?.some((p) => p.status === 'generating')) return;
+    const stillGoing =
+      companion?.portraitStatus === 'pending' ||
+      (photos?.some((p) => p.status === 'generating') ?? false);
+    if (!stillGoing) return;
 
     let attempts = 0;
     let timer = 0;
@@ -78,10 +89,9 @@ export default function MyAiCompanionPage() {
       if (!live.current) return;
       attempts += 1;
       try {
-        const { photos: next } = await myAiApi.photos(id);
-        if (!live.current) return;
-        setPhotos(next);
-        if (!next.some((p) => p.status === 'generating')) return;
+        // `load` refreshes her and her photographs together; reloading only
+        // the gallery would leave her portrait stuck on screen for ever.
+        await load();
       } catch {
         // A blip between polls is not a failure; the attempt cap ends it.
       }
@@ -91,7 +101,7 @@ export default function MyAiCompanionPage() {
     };
     timer = window.setTimeout(tick, POLL_INTERVAL_MS);
     return () => window.clearTimeout(timer);
-  }, [id, photos]);
+  }, [load, companion?.portraitStatus, photos]);
 
   const createPhoto = async (input: { prompt: string; style: string }) => {
     setStarting(true);
@@ -158,7 +168,19 @@ export default function MyAiCompanionPage() {
     return <div className="py-16 text-center text-sm text-zinc-500">Loading…</div>;
   }
 
-  const busy = photos.some((p) => p.status === 'generating');
+  /*
+   * HER OPENING PHOTOGRAPH COUNTS AS BUSY, and it is why this is not just a
+   * look at `photos`.
+   *
+   * She becomes reachable the moment she is drawn — about a minute before her
+   * first picture lands — so this page is now routinely open while that render
+   * is still running. Her opening portrait is not a row in `photos` (it lands
+   * on her own record), so without `portraitStatus` the button would look
+   * available, and pressing it would either be refused with "she is not ready
+   * for new photos yet" or start a second provider render alongside the first.
+   */
+  const portraitPending = companion.portraitStatus === 'pending';
+  const busy = portraitPending || photos.some((p) => p.status === 'generating');
 
   return (
     <section className="flex flex-col gap-4 pb-8">
@@ -208,7 +230,11 @@ export default function MyAiCompanionPage() {
           disabled={busy}
           className="w-full rounded-xl border border-zinc-700 px-5 py-3 text-sm font-semibold text-zinc-200 transition-colors hover:border-zinc-600 disabled:cursor-not-allowed disabled:text-zinc-600"
         >
-          {busy ? 'A photo is being made…' : `New photo of ${companion.name}`}
+          {portraitPending
+            ? 'Her first photo is being made…'
+            : busy
+              ? 'A photo is being made…'
+              : `New photo of ${companion.name}`}
         </button>
       )}
 

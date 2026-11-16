@@ -319,8 +319,24 @@ describe('asking for another photo of her', () => {
 
   it('makes one at a time, and says so while one is running', () => {
     const page = readFileSync(new URL('../pages/MyAiCompanionPage.tsx', import.meta.url), 'utf8');
-    expect(page).toContain("busy ? 'A photo is being made…'");
+    expect(page).toContain("? 'A photo is being made…'");
     expect(page).toContain('disabled={busy}');
+  });
+
+  /*
+   * HER OPENING PHOTOGRAPH IS ONE OF THE ONES BEING MADE.
+   *
+   * She is reachable about a minute before it lands, so this page is now
+   * routinely open while that render is running. Her portrait is not a row in
+   * `photos` — it lands on her own record — so without `portraitStatus` the
+   * button would look available, and pressing it would either be refused or
+   * start a second provider render alongside the first.
+   */
+  it('counts her first photograph as one being made', () => {
+    const page = readFileSync(new URL('../pages/MyAiCompanionPage.tsx', import.meta.url), 'utf8');
+    expect(page).toContain("const portraitPending = companion.portraitStatus === 'pending';");
+    expect(page).toContain('const busy = portraitPending ||');
+    expect(page).toContain("'Her first photo is being made…'");
   });
 });
 
@@ -377,11 +393,34 @@ describe('nobody waits on a blank screen while she is made', () => {
     expect(source).not.toContain('Back to My AI');
   });
 
-  it('keeps the list fresh only while something is being made', () => {
+  /*
+   * ── IT WATCHES THE PICTURE, NOT HER ───────────────────────────────────────
+   *
+   * `status` reaches 'ready' as soon as she is DRAWN, which is about a minute
+   * before her opening photograph arrives. Polling on `status` alone would
+   * therefore stop at the earlier of the two waits and her picture would
+   * never appear without a reload — so the condition is the photograph's own
+   * progress, which covers both at once.
+   */
+  it('keeps the list fresh until her picture has settled, not just until she exists', () => {
     const source = page();
-    expect(source).toContain("const waiting = companions?.some((c) => c.status === 'generating') ?? false;");
+    expect(source).toContain("c.status === 'generating' || c.portraitStatus === 'pending'");
+    expect(source).toContain('const waiting = companions?.some(outstanding) ?? false;');
     expect(source).toContain('if (!waiting) return;');
+    expect(source).toContain('if (!next.some(outstanding)) return;');
     // And it is bounded: an unbounded poll is a tab that heats a phone.
     expect(source).toContain('attempts < POLL_MAX_ATTEMPTS');
+  });
+
+  /*
+   * A LOST PHOTOGRAPH MUST NOT READ AS ONE STILL COMING. 'pending' and
+   * 'failed' are distinct for exactly this reason: if they collapsed, a
+   * companion whose picture failed would be polled for until the tab closed.
+   */
+  it('tells a developing photograph apart from one that will never arrive', () => {
+    const source = page();
+    expect(source).toContain("companion.portraitStatus === 'pending' ?");
+    expect(source).toContain("label={companion.status === 'ready' ? 'Her photo is developing' : 'Creating…'}");
+    expect(source).toContain('No photo yet');
   });
 });

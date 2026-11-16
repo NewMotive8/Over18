@@ -165,7 +165,58 @@ describe('when she counts as drawn', () => {
       'utf8',
     );
     expect(source).toContain("'my-ai: opening photo failed; she exists without a picture'");
-    expect(source).toContain(".set({ status: 'ready', imagePath, errorMessage: null, updatedAt: new Date() })");
+    // The picture's outcome is recorded; her own status is NOT re-asserted.
+    expect(source).toContain("portraitStatus: imagePath ? ('ready' as const) : ('failed' as const),");
+  });
+
+  /*
+   * ── SHE IS FINISHED BEFORE HER PHOTOGRAPH IS ──────────────────────────────
+   *
+   * Measured on staging four times: drawn in 15-19s, a further ~17s for the
+   * provider save, then a 53-second second render for her opening photograph.
+   * Nothing that makes her usable depends on the last two — her conversation
+   * is built from her own attributes — so `ready` is set at the drawing and
+   * the picture lands behind her. This is the ordering that makes creation
+   * take twenty seconds instead of ninety, so it is pinned here.
+   */
+  it('marks her ready when she is drawn, long before the save and the photograph', () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('../services/my-ai/my-ai-service.ts', import.meta.url)),
+      'utf8',
+    );
+
+    const flip = source.indexOf(".set({ status: 'ready', errorMessage: null, updatedAt: new Date() })");
+    const save = source.indexOf('const characterId = await awaitSavedId(');
+    const photo = source.indexOf('await renderPhotoToFile(');
+
+    expect(flip).toBeGreaterThan(-1);
+    expect(flip).toBeLessThan(save);
+    expect(flip).toBeLessThan(photo);
+
+    // And the save still precedes the photograph: the provider answers
+    // `404 Character <guid> not found` when the image endpoint is handed a
+    // guid, so an unsaved character cannot be photographed at all.
+    expect(save).toBeLessThan(photo);
+  });
+
+  it('does not fail a companion her owner is already talking to', () => {
+    /*
+     * The provider save throws from between the flip and the photograph. Before
+     * this, such a throw reached the outer catch and marked her `failed` —
+     * "she could not be created", about a companion already on the list and
+     * answering messages.
+     */
+    const source = readFileSync(
+      fileURLToPath(new URL('../services/my-ai/my-ai-service.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(source).toContain('let isUsable = false;');
+    expect(source).toContain('isUsable = true;');
+
+    const guard = source.indexOf('if (isUsable) {');
+    const failCall = source.indexOf('await fail(\n      db,\n      companionId,');
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(failCall);
   });
 });
 
