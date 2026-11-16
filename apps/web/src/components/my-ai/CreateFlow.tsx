@@ -625,7 +625,14 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
               onClick={() => setStep((s) => s + 1)}
               className="flex-1 rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
             >
-              {stepComplete ? 'Continue' : 'Choose to continue'}
+              {/* "Choose to continue" is wrong when the only thing missing is
+                  a name — nothing is waiting to be chosen, something is
+                  waiting to be typed. The button says which. */}
+              {stepComplete
+                ? 'Continue'
+                : problems.includes('name') && STEP_FIELDS[step].includes('name')
+                  ? 'Name her to continue'
+                  : 'Choose to continue'}
             </button>
           ) : (
             <button
