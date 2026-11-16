@@ -92,6 +92,17 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
           <div className="flex aspect-[3/4] w-full items-center justify-center bg-zinc-900 text-sm text-zinc-500">
             Couldn&apos;t be drawn
           </div>
+        ) : companion.status === 'ready' ? (
+          /*
+           * SHE EXISTS, WITH NO PICTURE. Her opening photograph failed while
+           * the character herself — the expensive, irreversible part — was
+           * already saved. Keeping her is right; filling the gap with the
+           * provider's nude reference would not be. Her page offers a photo.
+           */
+          <div className="flex aspect-[3/4] w-full flex-col items-center justify-center gap-1 bg-zinc-900 px-6 text-center">
+            <span className="text-sm text-zinc-400">No photo yet</span>
+            <span className="text-xs text-zinc-600">Tap to make her one</span>
+          </div>
         ) : (
           /* The placeholder has no picture to take its height from, so it
              keeps a shape of its own. */
@@ -222,7 +233,7 @@ export default function MyAiPage() {
                  * nothing about it.
                  */
                 'She was not created. You can try again.'
-              : 'This takes about a minute. You can leave this screen — she will be here when you come back.'
+              : 'This takes a minute or two — she is drawn, then photographed. You can leave this screen; she will be here when you come back.'
           }
         />
         <div className="mx-auto w-full max-w-[16rem]">

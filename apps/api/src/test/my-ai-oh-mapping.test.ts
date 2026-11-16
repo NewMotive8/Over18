@@ -17,6 +17,7 @@ import {
   PORTRAIT_OUTFIT,
   PORTRAIT_SCENES,
   dateOfBirthForAge,
+  openingPhotoPrompt,
   portraitSceneFor,
   toOhPayload,
 } from '../services/my-ai/oh-mapping.js';
@@ -125,14 +126,11 @@ describe('the values OhAPI actually uses', () => {
 });
 
 describe('hair style, which OhAPI has no field for', () => {
-  it('uses a real hairLength where one exists and adds no prose about hair', () => {
+  it('uses a real hairLength where one exists and adds no prose at all', () => {
     for (const id of ['straight', 'bob', 'pixie']) {
       const payload = build({ hairStyle: id });
       expect(payload.hairLength).toBeTruthy();
-      // The free text is the outfit and the setting, and nothing else: these
-      // three styles are expressible as a real `hairLength`.
-      expect(payload.additionalDescription).toContain(PORTRAIT_OUTFIT);
-      expect(payload.additionalDescription).not.toContain('hair,');
+      expect(payload.additionalDescription).toBeUndefined();
     }
   });
 
@@ -186,27 +184,39 @@ describe('date of birth', () => {
 
 describe('what she wears, and where she stands', () => {
   /*
-   * THE FIRST LIVE COMPANION CAME BACK NAKED. `contentLevel` was `Sex`, and
-   * OhAPI's own definition of that value is "explicit sexual content" --
-   * governing the reference image, not just the chat.
+   * HONDA CAME BACK NAKED, with `contentLevel: 'Sexy'` and "wearing a bikini"
+   * in `additionalDescription`. Neither dresses anybody: that field is
+   * documented as traits the structured fields cannot express — a piercing,
+   * freckles, a tattoo — and contentLevel is a ceiling on what she will
+   * ENGAGE with, not an instruction about what to draw.
+   *
+   * So the outfit left the character request entirely. It lives on the image
+   * request, which is the only one that takes a description of a picture.
    */
-  it('asks the provider for suggestive and clothed, not explicit', () => {
+  it('puts no outfit and no setting on the character request', () => {
+    const text = build().additionalDescription ?? '';
+    expect(text).not.toContain('bikini');
+    for (const scene of PORTRAIT_SCENES) expect(text).not.toContain(scene);
+  });
+
+  it('keeps the ceiling low on the character, which is all it is for', () => {
     expect(build().contentLevel).toBe('Sexy');
   });
 
-  it('dresses her and puts her somewhere, on every single companion', () => {
-    // Including the three hairstyles that contribute no prose of their own,
-    // which is how a portrait ends up against a blank studio void.
-    for (const hairStyle of ['straight', 'bob', 'pixie', 'ponytail', 'braids']) {
-      const text = build({ hairStyle }).additionalDescription ?? '';
-      expect(text).toContain(PORTRAIT_OUTFIT);
-      expect(PORTRAIT_SCENES.some((scene) => text.includes(scene))).toBe(true);
+  it('dresses every companion in her OPENING PHOTO instead', () => {
+    for (const name of ['Maya', 'Honda', 'Zara']) {
+      const prompt = openingPhotoPrompt({ name, age: 24, attributes: BASE } as never);
+      expect(prompt).toContain(PORTRAIT_OUTFIT);
+      expect(PORTRAIT_SCENES.some((scene) => prompt.includes(scene))).toBe(true);
+      // The two things worth guaranteeing on a card.
+      expect(prompt).toContain('full body');
+      expect(prompt).toContain('face clearly visible');
     }
   });
 
   it('gives the same companion the same setting every time', () => {
-    // A re-run of one draft must not quietly become a different photograph.
-    expect(build().additionalDescription).toBe(build().additionalDescription);
+    const once = openingPhotoPrompt({ name: 'Maya', attributes: BASE });
+    expect(openingPhotoPrompt({ name: 'Maya', attributes: BASE })).toBe(once);
     expect(portraitSceneFor('maya|curvy|blonde|flirty')).toBe(
       portraitSceneFor('maya|curvy|blonde|flirty'),
     );
@@ -215,14 +225,13 @@ describe('what she wears, and where she stands', () => {
   it('does not put every companion in the same place', () => {
     const seen = new Set(
       ['Maya', 'Lisa', 'Nora', 'Zara', 'Elena', 'Ivy', 'Sofia', 'Luna', 'Jade', 'Mia'].map(
-        (name) => toOhPayload({ name, age: 24, attributes: BASE }).additionalDescription,
+        (name) => openingPhotoPrompt({ name, attributes: BASE }),
       ),
     );
     expect(seen.size).toBeGreaterThan(1);
   });
 
   it('stays inside the provider’s 1,000-character limit with everything on', () => {
-    const payload = build({ hairStyle: 'braids' });
-    expect((payload.additionalDescription ?? '').length).toBeLessThan(1000);
+    expect((build({ hairStyle: 'braids' }).additionalDescription ?? '').length).toBeLessThan(1000);
   });
 });

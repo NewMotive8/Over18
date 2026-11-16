@@ -382,15 +382,38 @@ export function toOhPayload(input: {
   if (backstories.length) payload.backstory = backstories.join(' ');
 
   /*
-   * Last, and always present. The attribute phrases above are occasional —
-   * only five of eight hairstyles need one — but every portrait needs an
-   * outfit and somewhere to stand, or the model decides both for itself.
+   * NO OUTFIT AND NO SETTING HERE ANY MORE, and that is the lesson Honda
+   * taught: this field does not dress anybody. OhAPI documents it as traits
+   * the structured fields cannot express — a piercing, freckles, a tattoo,
+   * glasses — and "wearing a bikini" sent through it produced a nude
+   * reference image exactly as before.
+   *
+   * Worse than useless, in fact: whatever lands here becomes part of her
+   * stored description, so a bikini written into her traits would lean every
+   * future photograph toward one even when her owner asks for something
+   * else. The outfit belongs on the IMAGE request, which is the only one
+   * that takes a description of a picture. See `openingPhotoPrompt`.
    */
-  descriptions.push(
-    `${PORTRAIT_OUTFIT}, ${portraitSceneFor(`${input.name}|${a.figure}|${a.hairColour}|${a.personality}`)}`,
-  );
   // Capped well under OH's 1,000 characters; this is only ever a few phrases.
-  payload.additionalDescription = descriptions.join(', ').slice(0, 900);
+  if (descriptions.length) payload.additionalDescription = descriptions.join(', ').slice(0, 900);
 
   return payload;
+}
+
+/**
+ * THE PROMPT EVERY COMPANION'S FIRST PHOTOGRAPH IS MADE FROM.
+ *
+ * Automatic, and never offered as a choice in the flow: whatever anyone
+ * picked on the way through, the picture that represents her is a bikini
+ * somewhere bright. It is composed here rather than at the call site so
+ * there is exactly one place that decides what a new companion looks like.
+ *
+ * "full body" and "her face clearly visible" are in it because the two
+ * things most worth guaranteeing on a card are that she is dressed and that
+ * you can see who she is.
+ */
+export function openingPhotoPrompt(input: { name: string; attributes: MyAiAttributes }): string {
+  const { name, attributes: a } = input;
+  const scene = portraitSceneFor(`${name}|${a.figure}|${a.hairColour}|${a.personality}`);
+  return `${PORTRAIT_OUTFIT}, ${scene}, full body, her face clearly visible`;
 }

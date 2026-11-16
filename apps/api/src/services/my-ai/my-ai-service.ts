@@ -3,9 +3,9 @@ import type { MyAiCompanion, MyAiDraft } from '@over18/shared';
 import type { Db } from '../../db/client.js';
 import { userCompanions, type UserCompanionRow } from '../../db/schema.js';
 import type { MyAiEnv } from '../../env.js';
-import { DOWNLOAD_ATTEMPTS, downloadImage, removeImage } from './media.js';
-import { photoPathsFor } from './my-ai-photos.js';
-import { toOhPayload, type OhCharacterPayload } from './oh-mapping.js';
+import { removeImage } from './media.js';
+import { photoPathsFor, renderPhotoToFile } from './my-ai-photos.js';
+import { openingPhotoPrompt, toOhPayload, type OhCharacterPayload } from './oh-mapping.js';
 import {
   generateCharacter,
   getCharacterStatus,
@@ -199,27 +199,15 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       .where(eq(userCompanions.id, companionId));
 
     /*
-     * WHERE THE PICTURE COMES FROM, AND WHY WAITING IS A SEPARATE QUESTION.
+     * WAIT UNTIL SHE IS DRAWN, which is a question only the status endpoint
+     * answers. The 202 that accepts the job reports a status too, and it is
+     * the status of a job that has not started — treating it as "done" is how
+     * the first companion ever created failed 1.3 seconds in.
      *
-     * THE FIRST COMPANION EVER CREATED FAILED HERE, 1.3 SECONDS IN, on
-     * "portrait download 404". The reason is that these two facts come from
-     * two different places and the old loop assumed they came from one:
-     *
-     *   · The 202 that accepts the job ALREADY NAMES the image URLs. They are
-     *     where the picture will be, not where it is — OhAPI is still drawing.
-     *     Measured on staging 2026-11-16: accepted 06:15:06.490, ready
-     *     06:15:17. Downloading on acceptance is downloading eleven seconds
-     *     too early, every single time.
-     *
-     *   · The status endpoint says WHEN she is drawn — and carries no images
-     *     at all. Verified against that same finished character: status
-     *     `ready`, no `images` key in the body. So waiting for a URL to appear
-     *     in a poll would simply time out after four minutes.
-     *
-     * The URL therefore comes from the 202 and the readiness from the poll.
-     * Neither one on its own is enough.
+     * Her reference image is NOT collected here. It exists, and it is naked
+     * every time whatever we send; the picture this product shows is asked
+     * for in words further down.
      */
-    let imageUrl = started.images?.nsfw_image ?? started.images?.sfw_image ?? null;
     let status = started.status;
 
     const deadline = now() + POLL_TIMEOUT_MS;
@@ -227,9 +215,6 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       await sleep(POLL_INTERVAL_MS);
       const polled = await getCharacterStatus(env, started.characterGuid);
       status = polled.status;
-      // Taken if it is ever offered — today it never is. Never overwritten
-      // with nothing, because the 202's URL is the one that works.
-      imageUrl = polled.images?.nsfw_image ?? polled.images?.sfw_image ?? imageUrl;
       if (status === 'failed') {
         log.warn({ companionId, providerStatus: status, providerDetail: polled.errorMessage }, 'my-ai generation failed at the provider');
         await fail(db, companionId, 'She could not be created. Nothing was charged.');
@@ -243,13 +228,84 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       return;
     }
 
-    if (!imageUrl) {
-      log.warn({ companionId, providerStatus: status }, 'my-ai generation finished with no picture to fetch');
-      await fail(db, companionId, 'Her picture could not be downloaded.');
+    /*
+     * ── HER REFERENCE IMAGE IS DELIBERATELY NOT DOWNLOADED ──────────────────
+     *
+     * It exists, and `imageUrl` points at it, and it is NAKED — every time,
+     * whatever we send. It is a single canonical body render, and nothing on
+     * the character request controls clothing: `additionalDescription` is
+     * documented as traits (a piercing, freckles, a tattoo), and
+     * `contentLevel` is a ceiling on what she will engage with rather than an
+     * instruction about what to draw. Both were tried. Honda arrived naked.
+     *
+     * So the provider keeps that image as their own record of her, and the
+     * picture WE show is asked for in words below. Nothing nude is ever
+     * downloaded or displayed unless her owner asks for it in so many words.
+     */
+
+    /*
+     * SAVE HER AT THE PROVIDER, which is what mints the numeric id. A
+     * generated-but-unsaved character has `characterId: null`, and that id is
+     * how the image endpoint addresses a character — so until she is saved
+     * there can be no photograph of her at all, which now includes the first
+     * one. Measured on staging: unsaved reports null, saved reports a number.
+     *
+     * It happens automatically rather than behind a "Confirm" button, because
+     * saving costs nothing and cannot be done twice ("already saved" is a
+     * 400), and a companion who is finished but unsaved could never be
+     * photographed again.
+     */
+    await saveCharacter(env, started.characterGuid);
+    const characterId = await awaitSavedId(deps, started.characterGuid);
+    if (characterId === null) {
+      log.warn({ companionId }, 'my-ai: provider save did not report an id in time');
+      await fail(db, companionId, 'She could not be finished. Please try again.');
       return;
     }
 
-    const imagePath = await downloadPortrait(imageUrl, deps.storageDir, companionId, sleep);
+    const [withId] = await db
+      .update(userCompanions)
+      .set({ providerCharacterId: characterId, updatedAt: new Date() })
+      .where(eq(userCompanions.id, companionId))
+      .returning();
+    if (!withId) {
+      log.info({ companionId }, 'my-ai companion was deleted while being created');
+      return;
+    }
+
+    /*
+     * ── HER OPENING PHOTOGRAPH ──────────────────────────────────────────────
+     *
+     * Automatic, and never a choice in the flow: a bikini and somewhere
+     * bright. This is the request that takes a description of a picture, and
+     * therefore the only one that can promise she is dressed.
+     *
+     * It is a second generation, and it costs. That is the price of a card
+     * that is not pornographic by default, and there is no cheaper mechanism
+     * at this provider.
+     */
+    const prompt = openingPhotoPrompt({ name: withId.name, attributes: withId.attributes });
+    let imagePath: string | null = null;
+    try {
+      imagePath = await renderPhotoToFile({ db, env, storageDir: deps.storageDir, log, sleep, now }, withId, {
+        prompt,
+        style: 'glam',
+        subdir: 'my-ai',
+        fileId: companionId,
+      });
+    } catch (cause) {
+      /*
+       * SHE STILL EXISTS. The expensive, irreversible part — the character
+       * herself — is done and saved, so losing her over a failed photograph
+       * would throw away the thing that cost the most. She arrives without a
+       * picture and her page invites one; what must never happen is falling
+       * back to the nude reference to fill the gap.
+       */
+      log.warn(
+        { companionId, providerDetail: cause instanceof OhRequestError ? cause.providerDetail : String(cause) },
+        'my-ai: opening photo failed; she exists without a picture',
+      );
+    }
 
     const finished = await db
       .update(userCompanions)
@@ -258,55 +314,18 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       .returning({ id: userCompanions.id });
 
     /*
-     * SHE WAS DELETED WHILE SHE WAS BEING DRAWN. Nothing to update means the
-     * row is gone, so the file just written belongs to nobody — remove it,
-     * or a user who deleted a companion mid-generation leaves a portrait
-     * behind on the volume that nothing will ever reference or clean up.
+     * SHE WAS DELETED WHILE SHE WAS BEING MADE. Nothing to update means the
+     * row is gone, so the file just written belongs to nobody — remove it, or
+     * a user who deleted a companion mid-generation leaves a picture behind
+     * that nothing will ever reference or clean up.
      */
     if (finished.length === 0) {
-      await removeImage(imagePath, deps.storageDir);
+      if (imagePath) await removeImage(imagePath, deps.storageDir);
       log.info({ companionId }, 'my-ai companion was deleted while being created; portrait discarded');
       return;
     }
 
-    log.info({ companionId }, 'my-ai companion ready');
-
-    /*
-     * SAVE HER AT THE PROVIDER, and keep the id that comes back.
-     *
-     * Not bookkeeping — this is what gives her a lasting identity there.
-     * A generated-but-unsaved character has `characterId: null`, and that
-     * numeric id is how OhAPI's image endpoint addresses a character, so
-     * until she is saved there can never be a second photograph of her.
-     * Measured on staging: unsaved reports null, saved reports a number.
-     *
-     * It happens automatically rather than behind a "Confirm" button,
-     * because saving costs nothing, cannot be done twice ("already saved" is
-     * a 400), and a companion who is finished but unsaved is one who can
-     * never be photographed again — a worse outcome than a saved companion
-     * the user deletes, which is a button they already have.
-     *
-     * Deliberately AFTER we are done: her picture is downloaded and her row
-     * says ready, so a failure here must not undo any of it. She simply has
-     * no provider id, which is recoverable later and invisible for now.
-     */
-    try {
-      await saveCharacter(env, started.characterGuid);
-      const characterId = await awaitSavedId(deps, started.characterGuid);
-      if (characterId !== null) {
-        await db
-          .update(userCompanions)
-          .set({ providerCharacterId: characterId, updatedAt: new Date() })
-          .where(eq(userCompanions.id, companionId));
-      } else {
-        log.warn({ companionId }, 'my-ai: provider save did not report an id in time');
-      }
-    } catch (cause) {
-      log.warn(
-        { companionId, providerDetail: cause instanceof OhRequestError ? cause.providerDetail : String(cause) },
-        'my-ai: provider save failed after the companion was already complete',
-      );
-    }
+    log.info({ companionId, withPhoto: imagePath !== null }, 'my-ai companion ready');
   } catch (cause) {
     // Provider text goes to the log; the owner gets something plain.
     log.error(
@@ -384,24 +403,6 @@ async function startGeneration(
     const { additionalDescription: _dropped, ...withoutFreeText } = payload;
     return generateCharacter(env, withoutFreeText);
   }
-}
-
-/**
- * Copy her reference portrait onto OUR media volume.
- *
- * A thin wrapper over the shared downloader, kept by name because this is the
- * one picture that is NOT a row in `user_companion_photos`: the provider drew
- * it from her attributes, and it is the input to every photograph asked for
- * later.
- */
-export function downloadPortrait(
-  url: string,
-  storageDir: string,
-  companionId: string,
-  sleep: (ms: number) => Promise<void>,
-  attempts = DOWNLOAD_ATTEMPTS,
-): Promise<string> {
-  return downloadImage(url, storageDir, 'my-ai', companionId, sleep, attempts);
 }
 
 /**

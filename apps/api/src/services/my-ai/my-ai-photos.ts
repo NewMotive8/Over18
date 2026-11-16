@@ -306,3 +306,49 @@ async function startImageJob(
     });
   }
 }
+
+/**
+ * Ask for one picture and put it on our volume. Throws if it does not arrive.
+ *
+ * ── WHY THIS IS SHARED WITH COMPANION CREATION ──────────────────────────────
+ *
+ * THE PROVIDER'S REFERENCE IMAGE CANNOT BE DRESSED. It is a single canonical
+ * body render, and nothing on the character-creation request controls what
+ * she is wearing: `additionalDescription` is documented as traits — a
+ * piercing, freckles, a tattoo, glasses — and `contentLevel` is a ceiling on
+ * what she will ENGAGE with, not an instruction about what to draw. Both were
+ * tried, and Honda arrived naked anyway.
+ *
+ * This endpoint is the only one that takes "a description of the image to
+ * generate". So a companion's opening portrait is made the same way as every
+ * later photograph: by asking for it in words. The nude reference stays at
+ * the provider as their own record and is never downloaded or shown.
+ */
+export async function renderPhotoToFile(
+  deps: PhotoGenerationDeps,
+  companion: UserCompanionRow,
+  input: { prompt: string; style: string; subdir: string; fileId: string },
+): Promise<string> {
+  const { env, log } = deps;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const now = deps.now ?? (() => Date.now());
+
+  const job = await startImageJob(env, companion, input.prompt, input.style, log, input.fileId);
+
+  const deadline = now() + JOB_TIMEOUT_MS;
+  let url: string | null = null;
+  while (now() < deadline) {
+    await sleep(JOB_INTERVAL_MS);
+    const polled = await getJobStatus(env, job.jobId);
+    if (polled.status === 'failed') {
+      throw new OhRequestError(200, `image job failed: ${polled.error ?? 'no reason given'}`, 'That photo could not be made.');
+    }
+    if (polled.status === 'completed' && polled.url) {
+      url = polled.url;
+      break;
+    }
+  }
+  if (!url) throw new OhRequestError(200, 'image job timed out', 'That photo took too long.');
+
+  return downloadImage(url, deps.storageDir, input.subdir, input.fileId, sleep);
+}

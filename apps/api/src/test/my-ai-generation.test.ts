@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { OhRequestError, getCharacterStatus } from '../services/my-ai/oh-client.js';
-import { downloadPortrait, isRendered } from '../services/my-ai/my-ai-service.js';
+import { isRendered } from '../services/my-ai/my-ai-service.js';
+import { downloadImage } from '../services/my-ai/media.js';
 
 /**
  * Getting her picture off the provider and onto our volume.
@@ -50,7 +51,7 @@ describe('a 404 just after she is drawn means “not uploaded yet”', () => {
   it('asks again, and keeps the picture when it appears', async () => {
     fetchMock.mockResolvedValueOnce(notOk(404)).mockResolvedValueOnce(ok());
 
-    const path = await downloadPortrait(URL_AT_PROVIDER, dir, ID, noSleep);
+    const path = await downloadImage(URL_AT_PROVIDER, dir, 'my-ai', ID, noSleep);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(path).toBe(join(dir, 'my-ai', `${ID}.jpg`));
@@ -59,14 +60,14 @@ describe('a 404 just after she is drawn means “not uploaded yet”', () => {
 
   it('treats a 403 the same way — a signed URL a moment early', async () => {
     fetchMock.mockResolvedValueOnce(notOk(403)).mockResolvedValueOnce(ok());
-    await expect(downloadPortrait(URL_AT_PROVIDER, dir, ID, noSleep)).resolves.toBeTruthy();
+    await expect(downloadImage(URL_AT_PROVIDER, dir, 'my-ai', ID, noSleep)).resolves.toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('gives up after the cap rather than asking for ever', async () => {
     fetchMock.mockResolvedValue(notOk(404));
 
-    await expect(downloadPortrait(URL_AT_PROVIDER, dir, ID, noSleep, 3)).rejects.toThrow(
+    await expect(downloadImage(URL_AT_PROVIDER, dir, 'my-ai', ID, noSleep, 3)).rejects.toThrow(
       OhRequestError,
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -76,7 +77,7 @@ describe('a 404 just after she is drawn means “not uploaded yet”', () => {
     fetchMock.mockResolvedValue(notOk(404));
     const sleep = vi.fn(() => Promise.resolve());
 
-    await expect(downloadPortrait(URL_AT_PROVIDER, dir, ID, sleep, 3)).rejects.toThrow();
+    await expect(downloadImage(URL_AT_PROVIDER, dir, 'my-ai', ID, sleep, 3)).rejects.toThrow();
     expect(sleep).toHaveBeenCalledTimes(2); // 3 attempts, 2 gaps
   });
 });
@@ -85,7 +86,7 @@ describe('what is not worth asking twice', () => {
   it('stops at the first answer that is not a 404 or a 403', async () => {
     fetchMock.mockResolvedValue(notOk(500));
 
-    await expect(downloadPortrait(URL_AT_PROVIDER, dir, ID, noSleep)).rejects.toThrow(
+    await expect(downloadImage(URL_AT_PROVIDER, dir, 'my-ai', ID, noSleep)).rejects.toThrow(
       /picture could not be downloaded/,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -94,7 +95,7 @@ describe('what is not worth asking twice', () => {
   it('names the provider’s status for the log, and nothing else for the user', async () => {
     fetchMock.mockResolvedValue(notOk(500));
 
-    const error = await downloadPortrait(URL_AT_PROVIDER, dir, ID, noSleep).catch((e) => e);
+    const error = await downloadImage(URL_AT_PROVIDER, dir, 'my-ai', ID, noSleep).catch((e) => e);
     expect(error).toBeInstanceOf(OhRequestError);
     expect((error as OhRequestError).providerDetail).toBe('image download 500');
     // The owner is told something plain -- never a URL, never provider text.
@@ -103,12 +104,12 @@ describe('what is not worth asking twice', () => {
 
   it('refuses an empty body or an implausibly large one', async () => {
     fetchMock.mockResolvedValue(ok(Buffer.alloc(0)));
-    await expect(downloadPortrait(URL_AT_PROVIDER, dir, ID, noSleep)).rejects.toThrow(
+    await expect(downloadImage(URL_AT_PROVIDER, dir, 'my-ai', ID, noSleep)).rejects.toThrow(
       OhRequestError,
     );
 
     fetchMock.mockResolvedValue(ok(Buffer.alloc(16 * 1024 * 1024)));
-    await expect(downloadPortrait(URL_AT_PROVIDER, dir, ID, noSleep)).rejects.toThrow(
+    await expect(downloadImage(URL_AT_PROVIDER, dir, 'my-ai', ID, noSleep)).rejects.toThrow(
       OhRequestError,
     );
   });
@@ -127,22 +128,44 @@ describe('when she counts as drawn', () => {
   });
 
   /*
-   * THE REGRESSION ITSELF. Having a URL is not having a picture, and the
-   * download must sit behind the wait, not in front of it.
+   * THE REGRESSION ITSELF, twice over.
+   *
+   * First: having a URL is not having a picture — the download must sit
+   * behind the wait, not in front of it.
+   *
+   * Second, and the reason Honda arrived naked: the provider's REFERENCE
+   * image is never what we show. It is a single canonical body render and
+   * nothing on the character request dresses it. Her portrait is a prompted
+   * photograph, made after she is saved.
    */
-  it('the generation waits for a drawn status before it fetches anything', () => {
+  it('waits for a drawn status, and never downloads the reference image', () => {
     const source = readFileSync(
       fileURLToPath(new URL('../services/my-ai/my-ai-service.ts', import.meta.url)),
       'utf8',
     );
     expect(source).toContain('while (!isRendered(status) && now() < deadline)');
     expect(source).toContain('if (!isRendered(status)) {');
-    // The URL is the 202's; the poll only ever adds one, never clears it.
-    expect(source).toContain('imageUrl = polled.images?.nsfw_image ?? polled.images?.sfw_image ?? imageUrl;');
-    // And the download happens after that loop, not inside the accept step.
-    expect(source.indexOf('const imagePath = await downloadPortrait(')).toBeGreaterThan(
-      source.indexOf('while (!isRendered(status)'),
+
+    // The naked one is never fetched, by any name.
+    expect(source).not.toContain('nsfw_image');
+    expect(source).not.toContain('await downloadPortrait(');
+
+    // Her picture is asked for in words, after the save that mints her id.
+    expect(source).toContain('openingPhotoPrompt({');
+    expect(source.indexOf('await renderPhotoToFile(')).toBeGreaterThan(
+      source.indexOf('const characterId = await awaitSavedId('),
     );
+  });
+
+  it('keeps her when the opening photo fails, rather than falling back to the nude one', () => {
+    // The character is the expensive, irreversible part and it is already
+    // saved by then. She arrives without a picture and her page invites one.
+    const source = readFileSync(
+      fileURLToPath(new URL('../services/my-ai/my-ai-service.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(source).toContain("'my-ai: opening photo failed; she exists without a picture'");
+    expect(source).toContain(".set({ status: 'ready', imagePath, errorMessage: null, updatedAt: new Date() })");
   });
 });
 
