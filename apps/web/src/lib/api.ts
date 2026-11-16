@@ -156,6 +156,11 @@ export const myAiApi = {
   get(id: string): Promise<{ companion: MyAiCompanion }> {
     return request<{ companion: MyAiCompanion }>(`/api/my-ai/${encodeURIComponent(id)}`);
   },
+
+  /** Permanent: her row and her picture both go. 204, or 404 if she is not yours. */
+  remove(id: string): Promise<void> {
+    return request<void>(`/api/my-ai/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
 };
 
 export const conversationsApi = {

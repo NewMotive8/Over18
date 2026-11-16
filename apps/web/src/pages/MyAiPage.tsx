@@ -7,7 +7,7 @@ import { absoluteMediaUrl } from '../lib/media';
 import { useAuth } from '../auth/AuthContext';
 import CreateFlow from '../components/my-ai/CreateFlow';
 import PageHeader from '../components/PageHeader';
-import { MyAiIcon } from '../components/icons';
+import { MyAiIcon, TrashIcon } from '../components/icons';
 
 /**
  * My AI — where a user builds and keeps their own companion.
@@ -86,7 +86,18 @@ function CreatingPortrait() {
   );
 }
 
-function CompanionCard({ companion }: { companion: MyAiCompanion }) {
+function CompanionCard({
+  companion,
+  onDelete,
+  deleting = false,
+}: {
+  companion: MyAiCompanion;
+  /** Omitted where deleting makes no sense — the card shown mid-creation. */
+  onDelete?: (companion: MyAiCompanion) => void;
+  deleting?: boolean;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
       <div className="relative aspect-[3/4] w-full bg-zinc-900">
@@ -119,6 +130,53 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
         ) : (
           <CreatingPortrait />
         )}
+
+        {onDelete && !confirming && (
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            aria-label={`Delete ${companion.name}`}
+            className="absolute right-2 top-2 z-10 rounded-full bg-black/60 p-2 text-zinc-300 backdrop-blur transition-colors hover:bg-black/80 hover:text-white"
+          >
+            <TrashIcon className="h-4 w-4" />
+          </button>
+        )}
+
+        {/*
+         * CONFIRMED ON THE CARD, not in a dialog over the page.
+         *
+         * On a phone a modal covering a two-up grid hides the very thing it
+         * is asking about, and "which one did I just tap?" is a bad question
+         * to be left with when the answer is permanent. Asked here, over her
+         * own picture, it cannot be about anybody else.
+         */}
+        {confirming && onDelete && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/85 px-3 text-center">
+            <p className="text-sm font-semibold text-zinc-100">Delete {companion.name}?</p>
+            <p className="text-xs leading-snug text-zinc-400">
+              Her picture goes too. This cannot be undone.
+            </p>
+            <div className="mt-1 flex w-full flex-col gap-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => onDelete(companion)}
+                className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setConfirming(false)}
+                className="rounded-lg border border-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-200 transition-colors hover:border-zinc-600"
+              >
+                Keep her
+              </button>
+            </div>
+          </div>
+        )}
+
         <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-3 pb-2 pt-8 text-sm font-semibold text-white">
           {companion.name} <span className="font-normal text-zinc-300">· {companion.age}</span>
         </span>
@@ -133,6 +191,7 @@ export default function MyAiPage() {
   const [pending, setPending] = useState<MyAiCompanion | null>(null);
   const [creatingAnother, setCreatingAnother] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   /** Set on unmount so a poll in flight cannot update a dead component. */
   const live = useRef(true);
@@ -216,6 +275,31 @@ export default function MyAiPage() {
         throw new MyAiSignInRequired();
       }
       throw err;
+    }
+  };
+
+  /**
+   * Delete her, for good.
+   *
+   * The card has already asked. A 404 means she is already gone — which is
+   * the outcome the user wanted, so it drops her from the list rather than
+   * reporting a failure for work that is done.
+   */
+  const remove = async (companion: MyAiCompanion) => {
+    setDeletingId(companion.id);
+    setNotice(null);
+    try {
+      await myAiApi.remove(companion.id);
+      setCompanions((prev) => (prev ?? []).filter((c) => c.id !== companion.id));
+      setPending((p) => (p?.id === companion.id ? null : p));
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 404) {
+        setCompanions((prev) => (prev ?? []).filter((c) => c.id !== companion.id));
+      } else {
+        setNotice(`We could not delete ${companion.name}. Please try again.`);
+      }
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -304,9 +388,20 @@ export default function MyAiPage() {
         subtitle="Only you can see these."
       />
 
+      {notice && (
+        <p className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-400">
+          {notice}
+        </p>
+      )}
+
       <div className="grid grid-cols-2 gap-3">
         {companions.map((companion) => (
-          <CompanionCard key={companion.id} companion={companion} />
+          <CompanionCard
+            key={companion.id}
+            companion={companion}
+            onDelete={remove}
+            deleting={deletingId === companion.id}
+          />
         ))}
       </div>
 

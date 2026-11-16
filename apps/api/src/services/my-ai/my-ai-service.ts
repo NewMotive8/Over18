@@ -1,11 +1,12 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { and, desc, eq } from 'drizzle-orm';
 import type { MyAiCompanion, MyAiDraft } from '@over18/shared';
 import type { Db } from '../../db/client.js';
 import { userCompanions, type UserCompanionRow } from '../../db/schema.js';
 import type { MyAiEnv } from '../../env.js';
-import { toOhPayload } from './oh-mapping.js';
+import { isInsideStorageRoot } from '../message-media-service.js';
+import { toOhPayload, type OhCharacterPayload } from './oh-mapping.js';
 import {
   generateCharacter,
   getCharacterStatus,
@@ -127,6 +128,46 @@ export async function createCompanion(
   return row;
 }
 
+/**
+ * Remove a portrait from our volume, carefully.
+ *
+ * The path comes out of our own row, but it is still checked against
+ * MEDIA_STORAGE_DIR before anything is unlinked — a delete that trusts a
+ * stored path is one bad row away from removing something else entirely.
+ * A file that is already gone is not an error.
+ */
+async function removePortrait(path: string, storageDir: string): Promise<void> {
+  if (!isInsideStorageRoot(storageDir, path)) return;
+  await unlink(path).catch(() => {});
+}
+
+/**
+ * Delete one of her owner's companions, and her picture with her.
+ *
+ * Owner-scoped like every other operation here, and it answers false for
+ * "not yours" and "does not exist" alike, which the route turns into the same
+ * 404. Her row goes and her bytes go: a deleted companion that leaves a
+ * portrait on the volume is a picture the user believes they removed.
+ */
+export async function deleteCompanion(
+  db: Db,
+  userId: string,
+  id: string,
+  storageDir: string,
+): Promise<boolean> {
+  const row = await getCompanion(db, userId, id);
+  if (!row) return false;
+
+  const deleted = await db
+    .delete(userCompanions)
+    .where(and(eq(userCompanions.id, id), eq(userCompanions.userId, userId)))
+    .returning({ id: userCompanions.id });
+  if (deleted.length === 0) return false;
+
+  if (row.imagePath) await removePortrait(row.imagePath, storageDir);
+  return true;
+}
+
 interface GenerationDeps {
   db: Db;
   env: MyAiEnv;
@@ -164,7 +205,7 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
     if (!row) return;
 
     const payload = toOhPayload({ name: row.name, age: row.age, attributes: row.attributes });
-    const started = await generateCharacter(env, payload);
+    const started = await startGeneration(env, payload, log, companionId);
 
     await db
       .update(userCompanions)
@@ -224,10 +265,23 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
 
     const imagePath = await downloadPortrait(imageUrl, deps.storageDir, companionId, sleep);
 
-    await db
+    const finished = await db
       .update(userCompanions)
       .set({ status: 'ready', imagePath, errorMessage: null, updatedAt: new Date() })
-      .where(eq(userCompanions.id, companionId));
+      .where(eq(userCompanions.id, companionId))
+      .returning({ id: userCompanions.id });
+
+    /*
+     * SHE WAS DELETED WHILE SHE WAS BEING DRAWN. Nothing to update means the
+     * row is gone, so the file just written belongs to nobody — remove it,
+     * or a user who deleted a companion mid-generation leaves a portrait
+     * behind on the volume that nothing will ever reference or clean up.
+     */
+    if (finished.length === 0) {
+      await removePortrait(imagePath, deps.storageDir);
+      log.info({ companionId }, 'my-ai companion was deleted while being created; portrait discarded');
+      return;
+    }
 
     log.info({ companionId }, 'my-ai companion ready');
 
@@ -255,6 +309,42 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
       companionId,
       cause instanceof OhRequestError ? cause.message : 'She could not be created. Please try again.',
     ).catch(() => {});
+  }
+}
+
+/**
+ * Start the generation, and survive the one 400 that is worth a second try.
+ *
+ * `additionalDescription` is the only free text in the payload — everything
+ * else is a value from a fixed vocabulary — and OhAPI moderates it, answering
+ * `400 {"message":"Additional details blocked by moderation"}`. Rather than
+ * lose a companion the user has just spent five steps building, it goes again
+ * without that field: she arrives without the outfit phrase, and for five of
+ * eight hairstyles without the prose describing her hair. A smaller loss than
+ * nothing at all, and the second attempt costs nothing because a refused
+ * request was never a generation.
+ *
+ * ONLY on moderation. A 400 for a missing field or an under-21 date of birth
+ * means precisely the same thing the second time.
+ */
+async function startGeneration(
+  env: MyAiEnv,
+  payload: OhCharacterPayload,
+  log: GenerationDeps['log'],
+  companionId: string,
+) {
+  try {
+    return await generateCharacter(env, payload);
+  } catch (cause) {
+    const moderated =
+      cause instanceof OhRequestError &&
+      cause.status === 400 &&
+      /moderat/i.test(cause.providerDetail);
+    if (!moderated || payload.additionalDescription === undefined) throw cause;
+
+    log.warn({ companionId }, 'my-ai: provider moderation refused the free text; retrying without it');
+    const { additionalDescription: _dropped, ...withoutFreeText } = payload;
+    return generateCharacter(env, withoutFreeText);
   }
 }
 

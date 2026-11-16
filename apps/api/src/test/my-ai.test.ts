@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MyAiDraft } from '@over18/shared';
 import { userCompanions } from '../db/schema.js';
@@ -291,5 +291,82 @@ describe('the database refuses what the routes refuse', () => {
     await on.pool.query('DELETE FROM users WHERE id = $1', [aliceId]);
     const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companions');
     expect(rows[0].n).toBe(0);
+  });
+});
+
+describe('deleting one', () => {
+  /*
+   * A companion nobody else can see is not something to keep a copy of, so
+   * this is a real delete: the row AND the file. A "deleted" companion whose
+   * picture is still on the volume is a picture the user believes is gone.
+   */
+  it('removes her row and her picture together', async () => {
+    const hers = await giveCompanion(aliceId);
+    const path = join(testEnv.media.storageDir, 'my-ai', `${hers.id}.jpg`);
+    expect(existsSync(path)).toBe(true);
+
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: `/api/my-ai/${hers.id}`,
+      cookies: alice,
+    });
+
+    expect(res.statusCode).toBe(204);
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companions');
+    expect(rows[0].n).toBe(0);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('refuses somebody else’s, and does not touch her', async () => {
+    const hers = await giveCompanion(aliceId);
+    const path = join(testEnv.media.storageDir, 'my-ai', `${hers.id}.jpg`);
+
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: `/api/my-ai/${hers.id}`,
+      cookies: bob,
+    });
+
+    expect(res.statusCode).toBe(404);
+    const { rows } = await on.pool.query('SELECT count(*)::int AS n FROM user_companions');
+    expect(rows[0].n).toBe(1);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('answers the same 404 for one that never existed', async () => {
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: '/api/my-ai/11111111-1111-4111-8111-111111111111',
+      cookies: alice,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('needs a session', async () => {
+    const hers = await giveCompanion(aliceId);
+    const res = await on.app.inject({ method: 'DELETE', url: `/api/my-ai/${hers.id}` });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('deletes one who has no picture yet', async () => {
+    // Still being drawn, or failed before her portrait arrived.
+    const hers = await giveCompanion(aliceId, { status: 'generating', withImage: false });
+    const res = await on.app.inject({
+      method: 'DELETE',
+      url: `/api/my-ai/${hers.id}`,
+      cookies: alice,
+    });
+    expect(res.statusCode).toBe(204);
+  });
+
+  it('leaves the other account’s companions alone', async () => {
+    const hers = await giveCompanion(aliceId);
+    await giveCompanion(bobId, { name: 'Bobs' });
+
+    await on.app.inject({ method: 'DELETE', url: `/api/my-ai/${hers.id}`, cookies: alice });
+
+    const res = await on.app.inject({ method: 'GET', url: '/api/my-ai', cookies: bob });
+    const { companions } = res.json<{ companions: { name: string }[] }>();
+    expect(companions.map((c) => c.name)).toEqual(['Bobs']);
   });
 });

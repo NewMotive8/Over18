@@ -205,3 +205,25 @@ describe('naming her is a step, not a row on the review', () => {
     expect(myAiDraftProblems({ ...COMPLETE, name: '' })).toEqual(['name']);
   });
 });
+
+describe('deleting a companion', () => {
+  /*
+   * Permanent, and taking her picture with her — so it is asked ON HER CARD,
+   * over her own photograph, rather than in a dialog floating above a two-up
+   * grid where "which one did I just tap?" is a question with a permanent
+   * answer.
+   */
+  it('asks first, on the card, and says what is lost', () => {
+    const page = readFileSync(new URL('../pages/MyAiPage.tsx', import.meta.url), 'utf8');
+    expect(page).toContain('aria-label={`Delete ${companion.name}`}');
+    expect(page).toContain('onClick={() => setConfirming(true)}');
+    expect(page).toContain('Delete {companion.name}?');
+    expect(page).toContain('Her picture goes too. This cannot be undone.');
+    expect(page).toContain('Keep her');
+  });
+
+  it('has a client call for it', () => {
+    const api = readFileSync(new URL('./api.ts', import.meta.url), 'utf8');
+    expect(api).toContain('remove(id: string): Promise<void>');
+  });
+});

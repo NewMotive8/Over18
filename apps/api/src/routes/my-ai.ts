@@ -7,6 +7,7 @@ import type { MyAiEnv } from '../env.js';
 import { isInsideStorageRoot } from '../services/message-media-service.js';
 import {
   createCompanion,
+  deleteCompanion,
   getCompanion,
   listCompanions,
   runGeneration,
@@ -134,6 +135,35 @@ export default async function myAiRoutes(
         return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
       }
       return { companion: toWire(row) };
+    },
+  );
+
+  /**
+   * Delete one of hers, and her picture with her.
+   *
+   * Permanent and immediate — there is no archive and no trash, because a
+   * companion nobody can see is not something to keep a copy of. The client
+   * asks for confirmation; this route does not second-guess it.
+   *
+   * A companion still being drawn can be deleted too. The generation running
+   * behind her finds nothing to update, discards the portrait it downloaded
+   * and stops, so a deletion mid-flight leaves no orphan on the volume.
+   */
+  app.delete<{ Params: { id: string } }>(
+    '/api/my-ai/:id',
+    { preHandler: app.requireAuth },
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!UUID_RE.test(id)) {
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+
+      const removed = await deleteCompanion(db, request.currentUser!.id, id, storageDir);
+      if (!removed) {
+        // Same answer for "not yours" as for "never existed".
+        return reply.code(404).send({ error: 'not_found', message: 'Companion not found.' });
+      }
+      return reply.code(204).send();
     },
   );
 

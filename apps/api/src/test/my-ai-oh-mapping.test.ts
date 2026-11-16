@@ -13,7 +13,13 @@ import {
   MY_AI_PERSONALITIES,
   MY_AI_RELATIONSHIPS,
 } from '@over18/shared';
-import { dateOfBirthForAge, toOhPayload } from '../services/my-ai/oh-mapping.js';
+import {
+  PORTRAIT_OUTFIT,
+  PORTRAIT_SCENES,
+  dateOfBirthForAge,
+  portraitSceneFor,
+  toOhPayload,
+} from '../services/my-ai/oh-mapping.js';
 
 /**
  * The provider vocabulary, which is the one part of My AI that cannot be
@@ -119,11 +125,14 @@ describe('the values OhAPI actually uses', () => {
 });
 
 describe('hair style, which OhAPI has no field for', () => {
-  it('uses a real hairLength where one exists and adds no prose', () => {
+  it('uses a real hairLength where one exists and adds no prose about hair', () => {
     for (const id of ['straight', 'bob', 'pixie']) {
       const payload = build({ hairStyle: id });
       expect(payload.hairLength).toBeTruthy();
-      expect(payload.additionalDescription).toBeUndefined();
+      // The free text is the outfit and the setting, and nothing else: these
+      // three styles are expressible as a real `hairLength`.
+      expect(payload.additionalDescription).toContain(PORTRAIT_OUTFIT);
+      expect(payload.additionalDescription).not.toContain('hair,');
     }
   });
 
@@ -172,5 +181,48 @@ describe('date of birth', () => {
   it('never yields a date OH would reject as under 21', () => {
     const year = Number(dateOfBirthForAge(21, now).slice(0, 4));
     expect(now.getUTCFullYear() - year).toBe(21);
+  });
+});
+
+describe('what she wears, and where she stands', () => {
+  /*
+   * THE FIRST LIVE COMPANION CAME BACK NAKED. `contentLevel` was `Sex`, and
+   * OhAPI's own definition of that value is "explicit sexual content" --
+   * governing the reference image, not just the chat.
+   */
+  it('asks the provider for suggestive and clothed, not explicit', () => {
+    expect(build().contentLevel).toBe('Sexy');
+  });
+
+  it('dresses her and puts her somewhere, on every single companion', () => {
+    // Including the three hairstyles that contribute no prose of their own,
+    // which is how a portrait ends up against a blank studio void.
+    for (const hairStyle of ['straight', 'bob', 'pixie', 'ponytail', 'braids']) {
+      const text = build({ hairStyle }).additionalDescription ?? '';
+      expect(text).toContain(PORTRAIT_OUTFIT);
+      expect(PORTRAIT_SCENES.some((scene) => text.includes(scene))).toBe(true);
+    }
+  });
+
+  it('gives the same companion the same setting every time', () => {
+    // A re-run of one draft must not quietly become a different photograph.
+    expect(build().additionalDescription).toBe(build().additionalDescription);
+    expect(portraitSceneFor('maya|curvy|blonde|flirty')).toBe(
+      portraitSceneFor('maya|curvy|blonde|flirty'),
+    );
+  });
+
+  it('does not put every companion in the same place', () => {
+    const seen = new Set(
+      ['Maya', 'Lisa', 'Nora', 'Zara', 'Elena', 'Ivy', 'Sofia', 'Luna', 'Jade', 'Mia'].map(
+        (name) => toOhPayload({ name, age: 24, attributes: BASE }).additionalDescription,
+      ),
+    );
+    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  it('stays inside the provider’s 1,000-character limit with everything on', () => {
+    const payload = build({ hairStyle: 'braids' });
+    expect((payload.additionalDescription ?? '').length).toBeLessThan(1000);
   });
 });

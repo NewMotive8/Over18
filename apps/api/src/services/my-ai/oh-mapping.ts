@@ -266,6 +266,45 @@ export function dateOfBirthForAge(age: number, now = new Date()): string {
  * the logs to say why — and since the shared validator has already run, an
  * unknown id here means a real defect, not bad input.
  */
+/**
+ * WHAT SHE IS WEARING, AND WHERE SHE IS STANDING.
+ *
+ * The first live companion came back naked. That was not the model being
+ * lurid — it was us: `contentLevel` was `Sex`, and OhAPI's own definition of
+ * that value is "explicit sexual content", governing the reference image as
+ * much as the chat. `Sexy` is their "suggestive/clothed".
+ *
+ * The level alone says nothing about the outfit or the setting, and an
+ * unprompted portrait tends to arrive against a blank studio void. Both go in
+ * `additionalDescription`, which OhAPI documents as "free-text traits added
+ * to the reference image" — the only field in the 67 that reaches it.
+ */
+export const PORTRAIT_OUTFIT = 'wearing a bikini';
+
+export const PORTRAIT_SCENES = [
+  'standing on a sunlit beach with the sea behind her',
+  'at the edge of a swimming pool in warm afternoon light',
+  'on a hotel balcony overlooking the sea',
+  'on a sunny terrace with palm trees behind her',
+  'on a wooden jetty above clear blue water',
+] as const;
+
+/**
+ * The same companion always gets the same setting, and two companions rarely
+ * get the same one.
+ *
+ * Deterministic rather than random so a re-run of the same draft produces the
+ * same intent — and varied rather than fixed so a grid of companions does not
+ * look like five photographs taken in one afternoon. Seeded on what the user
+ * chose, never on ethnicity alone: the setting must not become a claim about
+ * where somebody of a given background belongs.
+ */
+export function portraitSceneFor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  return PORTRAIT_SCENES[hash % PORTRAIT_SCENES.length];
+}
+
 export function toOhPayload(input: {
   name: string;
   age: number;
@@ -320,8 +359,13 @@ export function toOhPayload(input: {
     nationality: merged.nationality!,
     ethnicity: merged.ethnicity!,
     style: 'realistic',
-    // A per-character ceiling the provider enforces on text and media.
-    contentLevel: 'Sex',
+    /*
+     * `Sexy`, the provider's "suggestive/clothed" — NOT `Sex`, which is their
+     * "explicit sexual content" and is why the first companion arrived naked.
+     * It is a ceiling on text and media alike, and the image is the only part
+     * of OhAPI this product uses.
+     */
+    contentLevel: 'Sexy',
     eyeColour: merged.eyeColour,
     hairColour: merged.hairColour,
     hairLength: merged.hairLength,
@@ -336,8 +380,17 @@ export function toOhPayload(input: {
 
   if (interests.length) payload.interests = interests;
   if (backstories.length) payload.backstory = backstories.join(' ');
+
+  /*
+   * Last, and always present. The attribute phrases above are occasional —
+   * only five of eight hairstyles need one — but every portrait needs an
+   * outfit and somewhere to stand, or the model decides both for itself.
+   */
+  descriptions.push(
+    `${PORTRAIT_OUTFIT}, ${portraitSceneFor(`${input.name}|${a.figure}|${a.hairColour}|${a.personality}`)}`,
+  );
   // Capped well under OH's 1,000 characters; this is only ever a few phrases.
-  if (descriptions.length) payload.additionalDescription = descriptions.join(', ').slice(0, 900);
+  payload.additionalDescription = descriptions.join(', ').slice(0, 900);
 
   return payload;
 }
