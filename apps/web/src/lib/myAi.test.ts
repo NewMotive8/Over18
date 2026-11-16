@@ -359,3 +359,29 @@ describe('nothing crops her face', () => {
     }
   });
 });
+
+describe('nobody waits on a blank screen while she is made', () => {
+  /*
+   * Creating a companion is two provider jobs — she is drawn, then she is
+   * photographed — and they cannot be collapsed: the photograph is generated
+   * FROM her, so she has to exist first. What CAN go is the waiting. She
+   * joins the list the moment the request is accepted, counting on her own
+   * card, and the user is free to scroll, open her, or leave.
+   */
+  const page = () => readFileSync(new URL('../pages/MyAiPage.tsx', import.meta.url), 'utf8');
+
+  it('puts her on the list immediately, with no screen to dismiss', () => {
+    const source = page();
+    expect(source).toContain('setCompanions((prev) => [companion, ...(prev ?? [])]);');
+    expect(source).not.toContain('setPending');
+    expect(source).not.toContain('Back to My AI');
+  });
+
+  it('keeps the list fresh only while something is being made', () => {
+    const source = page();
+    expect(source).toContain("const waiting = companions?.some((c) => c.status === 'generating') ?? false;");
+    expect(source).toContain('if (!waiting) return;');
+    // And it is bounded: an unbounded poll is a tab that heats a phone.
+    expect(source).toContain('attempts < POLL_MAX_ATTEMPTS');
+  });
+});

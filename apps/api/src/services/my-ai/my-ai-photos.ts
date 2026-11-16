@@ -32,7 +32,7 @@ import { OhRequestError, generateImage, getJobStatus } from './oh-client.js';
 
 /** Long enough for a busy queue, short enough that a stuck job is not forever. */
 const JOB_TIMEOUT_MS = 5 * 60 * 1000;
-const JOB_INTERVAL_MS = 4_000;
+const JOB_INTERVAL_MS = 2_500;
 
 export function toPhotoWire(row: UserCompanionPhotoRow): MyAiPhoto {
   return {

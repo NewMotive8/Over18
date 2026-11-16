@@ -28,7 +28,12 @@ import {
 
 /** Minutes a generation may take before we stop waiting and call it failed. */
 const POLL_TIMEOUT_MS = 4 * 60 * 1000;
-const POLL_INTERVAL_MS = 4_000;
+/*
+ * Tightened from 4s. Every stage here begins with a wait, so the interval is
+ * added to the real work three times over before a companion appears — and a
+ * poll against a status endpoint is cheap next to the generation it watches.
+ */
+const POLL_INTERVAL_MS = 2_500;
 /**
  * The provider states that mean she has been drawn.
  *
@@ -342,7 +347,7 @@ export async function runGeneration(deps: GenerationDeps, companionId: string): 
 
 /** How long to wait for a save to land before giving up on the id for now. */
 const SAVE_TIMEOUT_MS = 60_000;
-const SAVE_INTERVAL_MS = 3_000;
+const SAVE_INTERVAL_MS = 2_000;
 
 /**
  * Wait for the save to finish and report the id it minted.

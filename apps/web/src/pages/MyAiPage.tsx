@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { MyAiCompanion, MyAiDraft } from '@over18/shared';
 import { ApiRequestError, myAiApi } from '../lib/api';
@@ -123,7 +123,6 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
 export default function MyAiPage() {
   const { user } = useAuth();
   const [companions, setCompanions] = useState<MyAiCompanion[] | null>(null);
-  const [pending, setPending] = useState<MyAiCompanion | null>(null);
   const [creatingAnother, setCreatingAnother] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -173,37 +172,56 @@ export default function MyAiPage() {
     };
   }, [user?.id]);
 
-  const poll = useCallback((id: string) => {
+  /**
+   * Keep the list fresh while anything on it is still being made.
+   *
+   * ── NOBODY WAITS ON A BLANK SCREEN ──────────────────────────────────────
+   *
+   * Creating a companion takes the provider two jobs — she is drawn, then
+   * she is photographed — and there is no way to collapse them: the
+   * photograph is generated FROM her, so she has to exist first. What CAN go
+   * is the waiting. She joins the list the moment the request is accepted,
+   * with the clock running on her own card, and the user is free to scroll,
+   * open her, or leave entirely. A progress screen that owns the whole
+   * display is the thing that made a minute feel like five.
+   *
+   * It stops: when nothing is generating, on unmount, and after a bounded
+   * number of attempts. An unbounded poll against a stuck job is a tab that
+   * heats a phone until it is closed.
+   */
+  const waiting = companions?.some((c) => c.status === 'generating') ?? false;
+
+  useEffect(() => {
+    if (!waiting) return;
+
     let attempts = 0;
+    let timer = 0;
     const tick = async () => {
       if (!live.current) return;
       attempts += 1;
       try {
-        const { companion } = await myAiApi.get(id);
+        const { companions: next } = await myAiApi.list();
         if (!live.current) return;
-        setPending(companion);
-        if (companion.status === 'ready') {
-          setCompanions((prev) => [companion, ...(prev ?? []).filter((c) => c.id !== companion.id)]);
-          setPending(null);
-          return;
-        }
-        if (companion.status === 'failed') return;
+        setCompanions(next);
+        if (!next.some((c) => c.status === 'generating')) return;
       } catch {
         // A blip between polls is not a failure; the attempt cap ends it.
       }
       if (attempts < POLL_MAX_ATTEMPTS && live.current) {
-        window.setTimeout(tick, POLL_INTERVAL_MS);
+        timer = window.setTimeout(tick, POLL_INTERVAL_MS);
       }
     };
-    window.setTimeout(tick, POLL_INTERVAL_MS);
-  }, []);
+    timer = window.setTimeout(tick, POLL_INTERVAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [waiting]);
 
   const submit = async (draft: MyAiDraft) => {
     try {
       const { companion } = await myAiApi.create(draft);
-      setPending(companion);
+      // Straight onto the list, at the top, already counting. No handover
+      // screen and nothing to dismiss.
+      setCompanions((prev) => [companion, ...(prev ?? [])]);
       setCreatingAnother(false);
-      poll(companion.id);
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 401) {
         throw new MyAiSignInRequired();
@@ -211,47 +229,6 @@ export default function MyAiPage() {
       throw err;
     }
   };
-
-  /* ---------------------------------------------------------------- *
-   * Waiting for the provider
-   * ---------------------------------------------------------------- */
-  if (pending) {
-    const failed = pending.status === 'failed';
-    return (
-      <section className="flex flex-col gap-5">
-        <PageHeader
-          eyebrow="My AI"
-          title={failed ? 'That did not work' : `Creating ${pending.name}`}
-          subtitle={
-            failed
-              ? /*
-                 * NOT "nothing was charged", which we cannot promise. Some
-                 * failures happen after the provider has already drawn her —
-                 * the first live creation failed on the download, with the
-                 * picture sitting finished at the other end. Telling someone
-                 * their money is safe when it may not be is worse than saying
-                 * nothing about it.
-                 */
-                'She was not created. You can try again.'
-              : 'This takes a minute or two — she is drawn, then photographed. You can leave this screen; she will be here when you come back.'
-          }
-        />
-        <div className="mx-auto w-full max-w-[16rem]">
-          <CompanionCard companion={pending} />
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            setPending(null);
-            setCreatingAnother(failed);
-          }}
-          className="w-full rounded-xl border border-zinc-700 px-5 py-3 text-sm font-semibold text-zinc-200 transition-colors hover:border-zinc-600"
-        >
-          {failed ? 'Start again' : 'Back to My AI'}
-        </button>
-      </section>
-    );
-  }
 
   /* ---------------------------------------------------------------- *
    * Still loading the list — render nothing rather than flashing the
