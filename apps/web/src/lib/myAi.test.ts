@@ -227,3 +227,40 @@ describe('deleting a companion', () => {
     expect(api).toContain('remove(id: string): Promise<void>');
   });
 });
+
+describe('the review step shows its choices instead of hiding them', () => {
+  /*
+   * Voice, job and interests were collapsed rows: a pre-filled value and a
+   * chevron. Reported twice over, in two different forms -- "there is no way
+   * to name her", then "I cannot see that I can edit these". A chevron says
+   * something is hidden; it does not invite anyone to look.
+   */
+  const flow = () =>
+    readFileSync(new URL('../components/my-ai/CreateFlow.tsx', import.meta.url), 'utf8');
+
+  it('lays voice, job and interests out in the open', () => {
+    const source = flow();
+    expect(source).toContain('<VoicePicker value={draft.voice}');
+    expect(source).toContain('<OptionChips label="Job"');
+    expect(source).toContain('label="Interests"');
+    // None of the three is behind a fold any more.
+    expect(source).not.toContain("term=\"Voice\"");
+    expect(source).not.toContain("term=\"Job\"");
+    expect(source).not.toContain("term=\"Interests\"");
+  });
+
+  it('plays the sample from the API, by the name the wizard shows', () => {
+    const picker = readFileSync(
+      new URL('../components/my-ai/VoicePicker.tsx', import.meta.url),
+      'utf8',
+    );
+    // The API host, not the web host -- same trap as her portrait.
+    expect(picker).toContain('`${API_URL}/api/voice-samples/${encodeURIComponent(voice)}`');
+    // Choosing and hearing are one tap: a separate play button makes hearing
+    // the voice an optional extra step, and optional extra steps go untaken.
+    expect(picker).toContain('onClick={() => pick(voice.id)}');
+    expect(picker).toContain('onChange(voice);');
+    // A voice with no sample stays selectable.
+    expect(picker).toContain('setSilent((prev) => new Set(prev).add(voice));');
+  });
+});

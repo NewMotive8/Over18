@@ -41,6 +41,7 @@ import adminHomeBannerRoutes from './routes/admin-home-banners.js';
 import adminHomeRoutes from './routes/admin-home.js';
 import adminDiscoveryRoutes from './routes/admin-discovery.js';
 import publicHomeRoutes from './routes/public-home.js';
+import voiceSampleRoutes from './routes/voice-samples.js';
 import { deterministicReplyProvider, type ReplyProvider } from './services/character-reply.js';
 import { noopMemoryExtractor, type MemoryExtractor } from './services/memory-extractor.js';
 import {
@@ -428,6 +429,14 @@ export async function buildApp(env: Env, db: Db, options: BuildAppOptions = {}) 
     myAi: env.myAi,
     storageDir: env.media.storageDir,
   });
+
+  /*
+   * Voice previews, public and separate from My AI on purpose. The samples
+   * are 28 fixed recordings of one sentence, identical for every visitor and
+   * about nobody — and the wizard that plays them is deliberately usable
+   * before anyone signs in.
+   */
+  await app.register(voiceSampleRoutes, { storageDir: env.media.storageDir });
 
   // US-36 internal media endpoints — registered only when providers are
   // injected (server.ts wires the env-selected adapter; tests inject the mock).

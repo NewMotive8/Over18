@@ -27,6 +27,7 @@ import {
 } from '@over18/shared';
 import TileRow from './TileRow';
 import OptionChips from './OptionChips';
+import VoicePicker from './VoicePicker';
 import { MyAiSignInRequired, myAiDraftStash } from '../../lib/myAiDraft';
 
 /**
@@ -506,37 +507,30 @@ export default function CreateFlow({ onSubmit }: CreateFlowProps) {
               <p className="mt-2 text-xs text-zinc-500">All companions are adults, 21 and over.</p>
             </SummaryRow>
 
-            <SummaryRow
-              term="Voice"
-              value={labelOf(MY_AI_VOICES, draft.voice)}
-              open={editing === 'voice'}
-              onToggle={() => setEditing(editing === 'voice' ? null : 'voice')}
-            >
-              <OptionChips label="Voice" name="voice" options={MY_AI_VOICES} value={draft.voice} onChange={(v) => set('voice', v)} />
-            </SummaryRow>
-
-            <SummaryRow
-              term="Job"
-              value={labelOf(MY_AI_JOBS, draft.job)}
-              open={editing === 'job'}
-              onToggle={() => setEditing(editing === 'job' ? null : 'job')}
-            >
-              <OptionChips label="Job" name="job" options={MY_AI_JOBS} value={draft.job} onChange={(v) => set('job', v)} />
-            </SummaryRow>
-
-            <SummaryRow
-              term="Interests"
-              value={
-                draft.interests.length
-                  ? draft.interests.map((i) => labelOf(MY_AI_INTERESTS, i)).join(', ')
-                  : 'None'
-              }
-              open={editing === 'interests'}
-              onToggle={() => setEditing(editing === 'interests' ? null : 'interests')}
-            >
-              <OptionChips label="Interests" name="interests" options={MY_AI_INTERESTS} value={draft.interests} onChange={toggleInterest} max={MY_AI_MAX_INTERESTS} />
-            </SummaryRow>
           </dl>
+
+          {/* ------------------------------------------------------------ *
+           * OPEN, NOT FOLDED.
+           *
+           * These three were collapsed rows showing a pre-filled value and a
+           * chevron, and the flow read as having no voice, job or interests
+           * at all — the same way it read as having no way to name her. A
+           * chevron is a promise that something is hidden; it is not an
+           * invitation to look. Laid out, the choices are the invitation.
+           * ------------------------------------------------------------ */}
+          <div className="flex flex-col gap-6">
+            <VoicePicker value={draft.voice} onChange={(v) => set('voice', v)} />
+            <OptionChips label="Job" name="job" options={MY_AI_JOBS} value={draft.job} onChange={(v) => set('job', v)} />
+            <OptionChips
+              label="Interests"
+              name="interests"
+              options={MY_AI_INTERESTS}
+              value={draft.interests}
+              onChange={toggleInterest}
+              max={MY_AI_MAX_INTERESTS}
+              hint="Optional — up to three."
+            />
+          </div>
 
           <p className="text-xs leading-relaxed text-zinc-500">
             {labelOf(MY_AI_ETHNICITIES, draft.ethnicity)} · {labelOf(MY_AI_HAIR_COLOURS, draft.hairColour)}{' '}
