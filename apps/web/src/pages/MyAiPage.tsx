@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import type { MyAiCompanion, MyAiDraft } from '@over18/shared';
 import { ApiRequestError, myAiApi } from '../lib/api';
 import { MyAiSignInRequired } from '../lib/myAiDraft';
+import { absoluteMediaUrl } from '../lib/media';
 import { useAuth } from '../auth/AuthContext';
 import CreateFlow from '../components/my-ai/CreateFlow';
 import PageHeader from '../components/PageHeader';
@@ -90,8 +91,22 @@ function CompanionCard({ companion }: { companion: MyAiCompanion }) {
     <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/40">
       <div className="relative aspect-[3/4] w-full bg-zinc-900">
         {companion.imageUrl ? (
+          /*
+           * `absoluteMediaUrl`, NOT the bare path — and this is where the
+           * first finished companion came out as a broken-image icon.
+           *
+           * The API answers on its own host in every deployed environment.
+           * `/api/my-ai/:id/image` asked of the WEB host reaches a static
+           * server that has no such route, so the browser got HTML where it
+           * wanted a JPEG. Every other image in this app goes through the
+           * same helper for the same reason.
+           *
+           * The session cookie still rides along: it is set SameSite=None;
+           * Secure, so a cross-origin <img> carries it and the route can
+           * still check that she is yours.
+           */
           <img
-            src={companion.imageUrl}
+            src={absoluteMediaUrl(companion.imageUrl)}
             alt={`${companion.name}`}
             loading="lazy"
             decoding="async"

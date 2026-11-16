@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   MY_AI_CHOICES,
@@ -12,6 +13,8 @@ import {
   type MyAiDraft,
   type MyAiEthnicity,
 } from '@over18/shared';
+import { API_URL } from './api';
+import { absoluteMediaUrl } from './media';
 
 const COMPLETE: MyAiDraft = {
   ethnicity: 'latina',
@@ -143,5 +146,30 @@ describe('asset addressing', () => {
     expect(myAiTileUrl('eyeColour', 'blue', 'white' as MyAiEthnicity)).toBe(
       '/create/realistic/white/eyes-blue.jpg',
     );
+  });
+});
+
+describe('her portrait is fetched from the API, not the web host', () => {
+  /*
+   * THE FIRST FINISHED COMPANION CAME OUT AS A BROKEN-IMAGE ICON.
+   *
+   * Her picture had downloaded and her row said ready; the card asked the
+   * WEB host for `/api/my-ai/:id/image`, which is a static server with no
+   * such route, and got HTML back. Every image in this app is addressed
+   * through `absoluteMediaUrl` for exactly this reason, and the one new
+   * surface that forgot is the one that broke.
+   */
+  it('the My AI card puts her through absoluteMediaUrl', () => {
+    const page = readFileSync(new URL('../pages/MyAiPage.tsx', import.meta.url), 'utf8');
+    expect(page).toContain("import { absoluteMediaUrl } from '../lib/media'");
+    expect(page).toContain('src={absoluteMediaUrl(companion.imageUrl)}');
+    // Never the bare path, which is what resolved against the wrong origin.
+    expect(page).not.toContain('src={companion.imageUrl}');
+  });
+
+  it('the helper keeps an /api/ path pointed at the API', () => {
+    // Guards the assumption above: the route the server hands back starts
+    // with /api/, which is the only prefix the helper rewrites.
+    expect(absoluteMediaUrl('/api/my-ai/abc/image')).toBe(`${API_URL}/api/my-ai/abc/image`);
   });
 });
